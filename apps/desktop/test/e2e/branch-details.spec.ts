@@ -12,6 +12,20 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { expect, type Locator, type Page, test } from "@playwright/test";
+import {
+  CollaboratorArtifactType,
+  DirectCollaboratorSource,
+  normalizeArtifactCollaboratorBatchResponse,
+} from "@repo/api/src/types/artifact-collaborators.ts";
+import { encodeBranchId } from "@repo/api/src/types/branch.ts";
+import {
+  BranchCollaboratorSource,
+  BranchIdentityAvailability,
+} from "@repo/api/src/types/branch-identity.ts";
+import { BRANCH_COMMENT_PROVIDER_NAME } from "@repo/app/branches/components/comments/branch-comment-card.tsx";
+import { BRANCH_COMMENTS_READ_FAILED } from "@repo/app/branches/components/comments/branch-comments-model.ts";
+import { artifactCollaboratorBatchFixture } from "@repo/app/shared/__tests__/fixtures/artifact-collaborators.ts";
+import { TRACE_COMMENT_SELECTION_GUIDANCE } from "@repo/app/shared/components/comments/comments-pane-model.ts";
 import axe from "axe-core";
 import {
   ACTIVE_COMMENT,
@@ -20,6 +34,7 @@ import {
   PROVIDER_OMITTED_DISCLOSURE,
   PROVIDER_REPLY_AUTHOR,
   PROVIDER_ROOT_AUTHOR,
+  SESSION_NATIVE_COMMENT,
 } from "../../../../e2e/helpers/branch-details-comprehensive-comments-trace";
 import {
   ACTIVE_DESCRIPTION,
@@ -32,18 +47,20 @@ import {
   withUnavailableEmptyLinkedArtifacts,
 } from "../../../../e2e/helpers/branch-details-comprehensive-data";
 import { expectWcagAaClean } from "../../../../e2e/helpers/critical-wcag-aa";
+import type { DesktopApi } from "../../src/renderer/types/desktop-api";
 import {
   type DesktopAuthState,
   DesktopAuthStatus,
 } from "../../src/shared/contracts.js";
+import { launchAuthenticatedDesktopApp } from "./helpers/authenticated-desktop-app";
 import {
   AUTHENTICATED_ACCESS_TOKEN,
   AUTHENTICATED_GATEWAY_ID,
   AUTHENTICATED_ORGANIZATION_ID,
   AUTHENTICATED_USER_ID,
+  CLOUD_COLLABORATOR_ARTIFACT_IDS,
+  createAuthenticatedDesktopSessionRecord,
   isAuthenticatedBranchRequest,
-  launchAuthenticatedDesktopApp,
-  seedAuthenticatedDesktopSession,
   startAuthenticatedBranchCloudServer,
 } from "./helpers/branch-details-authenticated-cloud";
 import {
@@ -52,18 +69,21 @@ import {
   gotoNav,
   launchDesktopApp,
   seedDesktopSettings,
+  widenToAllTime,
 } from "./helpers/desktop-app";
-import { startFakeGitHubAuthorityServer } from "./helpers/fake-github-authority-server";
 import {
   type BranchDetailsSeed,
+  SEEDED_TURN_DURATION_MS,
   seedBranchDetails,
 } from "./helpers/seed-branch-details-db";
 import { waitForBranchesSchema } from "./helpers/seed-branches-db";
 
 const NARROW_VIEWPORT = { height: 844, width: 390 };
-const MERGED_PULL_REQUEST_OPTION = /#4473.*Merged/;
+const OLDER_PULL_REQUEST_OPTION = /#4473/;
+const LOCAL_ACTIVE_PULL_REQUEST_OPTION = /#4474/;
 const ACTIVE_PULL_REQUEST_OPTION = new RegExp(`#${ACTIVE_PR}.*Open`);
 const RAN_ONE_TOOL = /Ran 1 tool/;
+const TURN_DURATION_ROW = /TurnDuration/;
 const REFRESH_NAME = /refresh/i;
 const SCREEN_READER_ONLY_CLASS = /sr-only/;
 const CLAMPED_CLASS_PATTERN = /clamped/;
@@ -75,7 +95,6 @@ const REVIEW_REPLY_METADATA = /Review reply · Resolved/;
 const REVIEW_COMMENT_LINK = /review comment.*GitHub/i;
 const REVIEW_REPLY_LINK = /review reply.*GitHub/i;
 const ISSUE_COMMENT_LINK = /issue comment.*GitHub/i;
-const GITHUB_LINK = /GitHub/i;
 const PROVIDER_MUTATION_ACTION =
   /create|reply|edit|delete|react|resolve|unresolve|jump to (file|line)|file anchor/i;
 
@@ -88,24 +107,18 @@ declare global {
   }
 }
 const SEED: BranchDetailsSeed = {
-  repoFullName: "closedloop-ai/example-repo",
+  repoFullName: "closedloop-ai/closedloop-ai",
   branchName: "feat/fea-4473-comprehensive-branch-details",
   sessionId: "iss-4473-branch-details-session",
   mergedPullRequest: {
     number: 4473,
     title: "Ship the historical Branch Details foundation",
     mergedAt: "2026-08-04T15:00:00.000Z",
-    additions: 180,
-    deletions: 40,
-    filesChanged: 8,
   },
   activePullRequest: {
     number: 4474,
     title: "Complete the active Branch Details review",
     openedAt: "2026-08-05T16:00:00.000Z",
-    additions: 72,
-    deletions: 12,
-    filesChanged: 4,
   },
 };
 
@@ -122,13 +135,9 @@ test.describe("Branch Details", () => {
     const userDataDir = fs.mkdtempSync(
       path.join(os.tmpdir(), "branch-details-udd-")
     );
-    const authorityServer = await startFakeGitHubAuthorityServer([
-      SEED.repoFullName,
-    ]);
     const env = {
       CLAUDE_HOME: claudeHome,
       CODEX_HOME: codexHome,
-      ...authorityServer.env,
     };
 
     try {
@@ -153,20 +162,61 @@ test.describe("Branch Details", () => {
       try {
         await openSeededBranch(page);
         await expectBranchIdentityAndForbiddenChrome(page);
+        const localCollaborators = await page.evaluate(
+          async (id) =>
+            (
+              await (window.desktopApi as DesktopApi).branchesApi.detail({
+                id,
+                skipCloudHydration: true,
+              })
+            )?.collaborators,
+          encodeBranchId({
+            repoFullName: SEED.repoFullName,
+            branchName: SEED.branchName,
+          })
+        );
+        expect(localCollaborators).toEqual({
+          availability: BranchIdentityAvailability.Unavailable,
+          people: [],
+          sources: {
+            [DirectCollaboratorSource.Creator]:
+              BranchIdentityAvailability.Unavailable,
+            [DirectCollaboratorSource.Interactions]:
+              BranchIdentityAvailability.Unavailable,
+            [DirectCollaboratorSource.Comments]:
+              BranchIdentityAvailability.Unavailable,
+            [BranchCollaboratorSource.PullRequestAuthors]:
+              BranchIdentityAvailability.Unavailable,
+            [BranchCollaboratorSource.Pushes]:
+              BranchIdentityAvailability.Unavailable,
+            [BranchCollaboratorSource.PullRequestComments]:
+              BranchIdentityAvailability.Unavailable,
+            [BranchCollaboratorSource.BranchComments]:
+              BranchIdentityAvailability.Unavailable,
+            [BranchCollaboratorSource.SessionComments]:
+              BranchIdentityAvailability.Unavailable,
+          },
+        });
 
         const pullRequestSelector = page.getByRole("combobox", {
           name: "Pull request",
         });
+        // ISS-12709 (#8970): Desktop stores no GitHub PR state, so both seeded
+        // PRs are unobserved, and two unobserved PRs are ambiguous under the
+        // shared ISS-8422 selector — no default is picked. The reader chooses.
+        await expect(pullRequestSelector).toHaveAttribute(
+          "data-placeholder",
+          ""
+        );
+        await pullRequestSelector.click();
+        await page
+          .getByRole("option", { name: LOCAL_ACTIVE_PULL_REQUEST_OPTION })
+          .click();
         await expect(pullRequestSelector).toContainText("#4474");
         const activePullRequestRegion = page.getByRole("region", {
           name: "Branch and pull request #4474 evidence",
         });
         await expect(activePullRequestRegion).toBeVisible();
-        await expect(
-          activePullRequestRegion.getByText(SEED.activePullRequest.title, {
-            exact: true,
-          })
-        ).toBeVisible();
 
         await expectMetricAndLocalEvidence(page, 4474);
         await expectWcagAaClean(page, axe.source, { criticalOnly: true });
@@ -174,18 +224,13 @@ test.describe("Branch Details", () => {
 
         await pullRequestSelector.click();
         await page
-          .getByRole("option", { name: MERGED_PULL_REQUEST_OPTION })
+          .getByRole("option", { name: OLDER_PULL_REQUEST_OPTION })
           .click();
         await expect(pullRequestSelector).toContainText("#4473");
         const mergedPullRequestRegion = page.getByRole("region", {
           name: "Branch and pull request #4473 evidence",
         });
         await expect(mergedPullRequestRegion).toBeVisible();
-        await expect(
-          mergedPullRequestRegion.getByText(SEED.mergedPullRequest.title, {
-            exact: true,
-          })
-        ).toBeVisible();
         await expectMetricAndLocalEvidence(page, 4473);
 
         await page.getByRole("tab", { name: "Sessions & timeline" }).click();
@@ -199,6 +244,7 @@ test.describe("Branch Details", () => {
         await expect(
           page.getByText("Seeded substantive tool invocation")
         ).toBeVisible();
+        await expectNoTurnDurationRow(page);
         await expect(page.getByText("Lanes", { exact: true })).toHaveCount(0);
         await expectWcagAaClean(page, axe.source, { criticalOnly: true });
 
@@ -238,7 +284,6 @@ test.describe("Branch Details", () => {
         await cleanup();
       }
     } finally {
-      await authorityServer.close();
       fs.rmSync(userDataDir, { recursive: true, force: true });
       fs.rmSync(claudeHome, { recursive: true, force: true });
       fs.rmSync(codexHome, { recursive: true, force: true });
@@ -266,28 +311,9 @@ test.describe("Branch Details", () => {
     });
 
     try {
-      const sessionSeedLaunch = await launchAuthenticatedDesktopApp({
-        env: { CLAUDE_HOME: claudeHome, CODEX_HOME: codexHome },
-        userDataDir,
-      });
-      try {
-        await seedAuthenticatedDesktopSession(
-          sessionSeedLaunch.app,
-          userDataDir
-        );
-      } finally {
-        await sessionSeedLaunch.cleanup();
-      }
-
       const { page, pageErrors, cleanup } = await launchAuthenticatedDesktopApp(
         {
-          // ISS-5714: authentication alone no longer puts Branches on the cloud
-          // — the cutover must first establish that the cloud HOLDS this
-          // machine's history, or a still-uploading device would render an empty
-          // workspace beside a populated Sessions page. This spec asserts the
-          // authenticated CLOUD Branch Details path, so it owes that
-          // precondition explicitly instead of inheriting it from whatever the
-          // burn-down sampler happens not to have measured yet.
+          sameProcessSessionSeed: createAuthenticatedDesktopSessionRecord(),
           cloudReadReadiness: drainedCloudReadReadiness(),
           beforeLaunch: (launchUserDataDir) => {
             seedDesktopSettings(launchUserDataDir, {
@@ -325,6 +351,55 @@ test.describe("Branch Details", () => {
             userId: AUTHENTICATED_USER_ID,
           });
         await gotoHash(page, `/branches/${BRANCH_ID}`);
+        for (const artifactType of [
+          CollaboratorArtifactType.Session,
+          CollaboratorArtifactType.Branch,
+        ]) {
+          const params = new URLSearchParams({ artifactType });
+          for (const id of CLOUD_COLLABORATOR_ARTIFACT_IDS) {
+            params.append("artifactIds", id);
+          }
+          const result = await page.evaluate(
+            async (query) =>
+              (window.desktopApi as DesktopApi).cloudApiFetch({
+                path: `/artifacts/collaborators?${query}`,
+                method: "GET",
+              }),
+            params.toString()
+          );
+          expect(result.kind).toBe("response");
+          if (result.kind !== "response") {
+            throw new Error(
+              "Launched Desktop collaborator request failed at its Cloud bridge"
+            );
+          }
+          expect(result.status).toBe(200);
+          const envelope = JSON.parse(result.bodyText);
+          expect(
+            normalizeArtifactCollaboratorBatchResponse(
+              envelope.data,
+              artifactType
+            )
+          ).toEqual(
+            artifactCollaboratorBatchFixture(
+              artifactType,
+              CLOUD_COLLABORATOR_ARTIFACT_IDS
+            )
+          );
+          const request = server.requests.find(
+            (entry) =>
+              entry.pathname === "/artifacts/collaborators" &&
+              new URLSearchParams(entry.search).get("artifactType") ===
+                artifactType
+          );
+          expect(request?.method).toBe("GET");
+          expect(request?.authorization).toBe(
+            `Bearer ${AUTHENTICATED_ACCESS_TOKEN}`
+          );
+          expect(
+            new URLSearchParams(request?.search).getAll("artifactIds")
+          ).toEqual([...CLOUD_COLLABORATOR_ARTIFACT_IDS]);
+        }
         await expect(
           page.getByRole("combobox", { name: "Pull request" })
         ).toBeVisible({ timeout: 30_000 });
@@ -382,13 +457,38 @@ test.describe("Branch Details", () => {
           commentsRail.getByText(PROVIDER_OMITTED_DISCLOSURE)
         ).toHaveCount(0);
         await expect(
-          commentsRail.getByRole("link", { name: GITHUB_LINK })
+          commentsRail.getByRole("link", {
+            name: BRANCH_COMMENT_PROVIDER_NAME,
+          })
         ).toHaveCount(0);
         await expect(page.getByText("Combined session trace")).toBeVisible();
+        await expect(
+          commentsRail.getByText(SESSION_NATIVE_COMMENT)
+        ).toBeVisible();
+        expect(
+          server.requests.filter(
+            (request) =>
+              request.pathname === `/branches/${BRANCH_ID}/trace-comments` &&
+              new URLSearchParams(request.search).get("includeSessions") ===
+                "true"
+          )
+        ).toHaveLength(1);
+        expect(
+          server.requests.filter(
+            (request) =>
+              request.pathname ===
+              "/agent-sessions/session-build/trace-comments"
+          )
+        ).toHaveLength(0);
+
         const timeline = page.locator("section.bq-act", {
           hasText: "PR timeline",
         });
-        const chartableCost = timeline.getByText("$16.00*", { exact: true });
+        // ISS-12665 (#9008) repeats the cost in the peak-bucket fact; the
+        // chartable total is the header's cost stat.
+        const chartableCost = timeline
+          .locator(".bq-stat > b")
+          .getByText("$16.00*", { exact: true });
         await expect(chartableCost).toBeVisible();
         await expect(chartableCost).toHaveAccessibleDescription(
           TIMING_DISCLOSURE
@@ -528,10 +628,11 @@ async function openSeededBranch(page: Page): Promise<void> {
   await expect(
     page.locator("header").getByText("Branches", { exact: true })
   ).toBeVisible({ timeout: 30_000 });
-  const allTime = page.locator('[aria-label="All time"]:visible').first();
-  if (await allTime.isVisible()) {
-    await allTime.click();
-  }
+  // The list is windowed to the shared 7d default and the seeded fixture's
+  // activity is older than that, so widening is load-bearing: wait for the
+  // control instead of racing a no-wait isVisible() against the toolbar render
+  // (the race was harmless only while the default window covered the seed).
+  await widenToAllTime(page);
   const branchLink = page
     .locator('a[href^="#/branches/"]')
     .filter({ hasText: SEED.branchName });
@@ -652,9 +753,13 @@ async function expectUnavailableLocalComments(page: Page): Promise<void> {
   ).toBeVisible();
   await expect(
     commentsRegion.getByRole("alert").filter({
-      hasText: "Comments are unavailable in this view.",
+      hasText: BRANCH_COMMENTS_READ_FAILED,
     })
   ).toBeVisible({ timeout: 30_000 });
+  // ISS-12597: no creation guidance while existing comments are unreadable.
+  await expect(
+    commentsRegion.getByText(TRACE_COMMENT_SELECTION_GUIDANCE)
+  ).toHaveCount(0);
   await commentsToggle.click();
   await expect(commentsToggle).toHaveAccessibleName("Show comments rail");
   await expect(commentsRegion).toHaveCount(0);
@@ -698,4 +803,16 @@ async function expectAuthenticatedPrDescription(page: Page): Promise<void> {
   await expect(description).not.toHaveClass(CLAMPED_CLASS_PATTERN);
   await region.getByRole("button", { name: "Show less" }).click();
   await expect(description).toHaveClass(CLAMPED_CLASS_PATTERN);
+}
+
+/**
+ * ISS-12467: the seeded end-of-turn `TurnDuration` row is a timing marker, not
+ * a trace row — neither its raw event type nor its raw millisecond summary may
+ * render as a separator between turns.
+ */
+async function expectNoTurnDurationRow(page: Page): Promise<void> {
+  await expect(page.getByText(TURN_DURATION_ROW)).toHaveCount(0);
+  await expect(
+    page.getByText(SEEDED_TURN_DURATION_MS, { exact: true })
+  ).toHaveCount(0);
 }

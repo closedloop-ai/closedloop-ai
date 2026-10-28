@@ -35,7 +35,7 @@ describe("assertKpiParity", () => {
     const result = assertKpiParity(goldenRows(), null, {
       [DeliveryKpiKey.MergedCount]: 2,
       [DeliveryKpiKey.MergeRate]: 67, // 2/3 → 66.7 → round0 → 67
-      [DeliveryKpiKey.Kloc]: 0.4, // 400 gross / 1000 → 0.4
+      [DeliveryKpiKey.Loc]: 400, // ISS-8184 ruling 4: the gross sum, unscaled
       [DeliveryKpiKey.Cost]: 4,
     });
     expect(result.ok).toBe(true);

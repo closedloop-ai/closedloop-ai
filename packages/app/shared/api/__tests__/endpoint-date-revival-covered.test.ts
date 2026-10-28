@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { DATE_REVIVAL_KEYS } from "../date-revival-keys";
+import { stringOnlyDateKeysForPath } from "../endpoint-date-revival";
 import {
   ENDPOINT_STRING_ONLY_DATE_KEYS,
   type EndpointStringOnlyDateKeys,
-  stringOnlyDateKeysForPath,
-} from "../endpoint-date-revival";
+} from "../endpoint-date-revival-table";
 import { loadRepoSources } from "./date-revival-discovery";
 import {
   deriveEndpointStringOnlyDateKeys,
@@ -86,7 +86,7 @@ describe("endpoint-scoped date revival (ISS-6208)", () => {
 
     expect(
       ENDPOINT_STRING_ONLY_DATE_KEYS,
-      "The shipped suppression table no longer matches the route payloads. Regenerate `ENDPOINT_STRING_ONLY_DATE_KEYS` in `endpoint-date-revival.ts` from this derivation — an entry that disappeared means that endpoint now declares the key as a `Date`, and an entry that appeared means a live string contract is being handed back as a `Date`."
+      "The shipped suppression table no longer matches the route payloads. Regenerate `ENDPOINT_STRING_ONLY_DATE_KEYS` in `endpoint-date-revival-table.ts` from this derivation — an entry that disappeared means that endpoint now declares the key as a `Date`, and an entry that appeared means a live string contract is being handed back as a `Date`."
     ).toEqual(derived);
   });
 
@@ -167,6 +167,12 @@ describe("endpoint-scoped date revival (ISS-6208)", () => {
     expect(stringOnlyDateKeysForPath("/api/gateway/sessions").size).toBe(0);
     expect(stringOnlyDateKeysForPath("").size).toBe(0);
     expect(stringOnlyDateKeysForPath("/").size).toBe(0);
+  });
+
+  it("keeps grid preference response timestamps as strings", () => {
+    expect(stringOnlyDateKeysForPath("/settings/grid-preferences")).toEqual(
+      new Set(["createdAt", "updatedAt"])
+    );
   });
 
   it("shadows a literal sibling of a dynamic suppression entry", () => {

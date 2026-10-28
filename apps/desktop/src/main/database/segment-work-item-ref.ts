@@ -59,11 +59,12 @@
  * (code-point comparison, never `localeCompare`), so the same links + segments
  * yield a byte-identical map regardless of input order or host OS.
  */
+
+import { ACTIVITY_PHASE } from "@repo/api/src/types/activity-phase";
 import {
   type ArtifactRefRelation,
   ArtifactRefTargetKind,
 } from "@repo/api/src/types/session-artifact-link";
-import { ACTIVITY_PHASE } from "../collectors/parsing/activity-taxonomy.js";
 import type { WorkItemOccurrence } from "../collectors/parsing/work-item-occurrences.js";
 
 /**

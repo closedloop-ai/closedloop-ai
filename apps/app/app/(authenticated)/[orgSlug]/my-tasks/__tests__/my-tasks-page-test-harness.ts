@@ -92,8 +92,6 @@ export function buildDocumentListPage(
 export type MyTasksPageMocks = {
   enabledFeatureFlags: Set<string>;
   useProjects: Mock;
-  useBranchList: Mock;
-  useMergedProjectTrees: Mock;
   useAssignedArtifactTree: Mock;
   useFeatureFlagEnabled: Mock;
   useFeatureFlagsLoaded: Mock;
@@ -111,26 +109,12 @@ export type MyTasksPageMocks = {
   useViewStatePersistence: Mock;
   useScrollRestore: Mock;
   isDocumentRowItem: Mock;
-  refetchContributorBranches: Mock;
-  refetchMergedProjectTrees: Mock;
   refetchAssignedArtifactTree: Mock;
 };
 
 /** The settled, signed-in, nothing-failing baseline every suite starts from. */
 export function setBaseMocks(mocks: MyTasksPageMocks) {
   mocks.useProjects.mockReturnValue({ data: [], isLoading: false });
-  mocks.useBranchList.mockReturnValue({
-    data: undefined,
-    isLoading: false,
-    isError: false,
-    refetch: mocks.refetchContributorBranches,
-  });
-  mocks.useMergedProjectTrees.mockReturnValue({
-    data: undefined,
-    isLoading: false,
-    isError: false,
-    refetch: mocks.refetchMergedProjectTrees,
-  });
   mocks.useAssignedArtifactTree.mockReturnValue({
     data: undefined,
     isLoading: false,
@@ -157,6 +141,20 @@ export function setBaseMocks(mocks: MyTasksPageMocks) {
     applyFilters: (items: unknown[]) => items,
     clearAllFilters: vi.fn(),
     clearPersistedFilters: vi.fn(),
+    // ISS-10472: the page reads the selection itself now, to build the
+    // assigned-tree facet params. A mock without it is a shape gap, not a
+    // behavior change — the real hook has always returned this.
+    canSelectUnknownStatus: true,
+    filters: {
+      assigneeIds: [],
+      assignToMe: false,
+      date: null,
+      favoritesOnly: false,
+      hideCompletedItems: false,
+      priorities: [],
+      statuses: [],
+      tagIds: [],
+    },
   });
   mocks.useFilterCurrentUser.mockReturnValue(null);
   mocks.useGroupBy.mockReturnValue({ groupBy: "none", setGroupBy: vi.fn() });
@@ -174,4 +172,86 @@ export function setBaseMocks(mocks: MyTasksPageMocks) {
   // Default: no row item is a navigable document, so the kanban selection is
   // empty unless a card test opts a fixture in.
   mocks.isDocumentRowItem.mockReturnValue(false);
+}
+
+/**
+ * Return type is explicit for the same reason {@link DocsResult} is: `refetch`
+ * defaults to `vi.fn()`, and letting that widen to vitest's `Mock` makes the
+ * exported signature unnameable outside this package (TS2883/TS2742).
+ */
+export type ServerPagedTreeResult = {
+  data: {
+    externalParents: unknown[];
+    nodes: {
+      root: Record<string, unknown>;
+      children: unknown[];
+    }[];
+    page: {
+      limit: number;
+      offset: number;
+      rowsBefore: number;
+      total: number;
+    };
+  };
+  isError: boolean;
+  isLoading: boolean;
+  refetch: () => void;
+};
+
+/**
+ * A SERVER-PAGED assigned-tree result: renderable root nodes plus the `page`
+ * envelope the route returns once `limit` is sent (ISS-10472).
+ *
+ * The All tab draws its rows and its total from THIS read, not from
+ * `useDocumentsPage`, so a footer assertion about that tab has to seed it here.
+ * A fixture that seeds only the documents stream describes the pre-ISS-10472
+ * board, where the two were merged in the browser.
+ *
+ * `total` defaults to the node count — the single-page case. Pass a larger one
+ * for the multi-page case; it is the server's count over the whole predicate,
+ * so it is deliberately independent of how many nodes this page holds.
+ */
+export function serverPagedTreeResult(
+  nodeCount: number,
+  overrides: {
+    total?: number;
+    limit?: number;
+    offset?: number;
+    rowsBefore?: number;
+    refetch?: () => void;
+  } = {}
+): ServerPagedTreeResult {
+  const nodes = Array.from({ length: nodeCount }, (_unused, index) => ({
+    root: {
+      assignee: null,
+      assigneeId: "user-1",
+      createdAt: "2026-10-01T00:00:00.000Z",
+      id: `root-${index}`,
+      name: `Root ${index}`,
+      priority: null,
+      projectId: null,
+      slug: `ISS-${index}`,
+      sortOrder: index,
+      status: "TODO",
+      subtype: "FEATURE",
+      type: "DOCUMENT",
+      updatedAt: "2026-10-02T00:00:00.000Z",
+    },
+    children: [],
+  }));
+  return {
+    data: {
+      externalParents: [],
+      nodes,
+      page: {
+        limit: overrides.limit ?? 50,
+        offset: overrides.offset ?? 0,
+        rowsBefore: overrides.rowsBefore ?? 0,
+        total: overrides.total ?? nodeCount,
+      },
+    },
+    isError: false,
+    isLoading: false,
+    refetch: overrides.refetch ?? vi.fn(),
+  };
 }

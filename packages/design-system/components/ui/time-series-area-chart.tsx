@@ -173,13 +173,23 @@ export function TimeSeriesAreaChart({
   // below-cap chart on the natural order this ticket measured as failing.
   const capped = seriesCap !== undefined;
 
-  const config: ChartConfig = {};
+  // ISS-8565: null-prototype containers, spread-restored at the point of use.
+  // `entry.key` is a model string from the wire, and on a plain `{}` a model
+  // named `__proto__` hits the inherited setter and creates no own key. The two
+  // maps then fail DIFFERENTLY, which is why both are fixed:
+  //   `config`     loses that series' label, so the legend/tooltip go unnamed.
+  //   `colorByKey` is worse than a loss — the write is a silent no-op (the
+  //                setter ignores a string), and the later READ returns
+  //                `Object.prototype` through the same accessor, so an OBJECT
+  //                reaches `fill`/`stroke` where a colour string is required
+  //                and the chart CRASHES rather than merely dropping a band.
+  const config: ChartConfig = Object.create(null);
   // Resolve each series' palette color up front and bind it to the Area
   // directly (below). We can't route through the `--color-<key>` CSS variable
   // that `chart.tsx` emits: model keys like "gpt-5.4" contain a ".", which is
   // not a valid CSS identifier character, so `var(--color-gpt-5.4)` resolves to
   // nothing and the series renders uncolored.
-  const colorByKey: Record<string, string> = {};
+  const colorByKey: Record<string, string> = Object.create(null);
   // The aggregate band leads `drawnSeries` but must not consume a palette slot,
   // so real series are numbered independently of their position in the array.
   let paletteSlot = 0;
@@ -216,14 +226,21 @@ export function TimeSeriesAreaChart({
       : {}),
   }));
 
+  // Both maps are spread at the point of use below: spread DEFINES rather than
+  // assigns, so an own `__proto__` key survives the copy and the chart runtime
+  // still receives a normally-prototyped object.
   return (
-    <ChartContainer className="h-full w-full" config={config} resetKey={resetKey}>
+    <ChartContainer
+      className="h-full w-full"
+      config={{ ...config }}
+      resetKey={resetKey}
+    >
       {/* FEA-4264: the plot lives in a child of ChartContainer so it can read
           the interactive-legend hidden-series state from context and drop
           toggled-off areas. */}
       <TimeSeriesAreaChartPlot
         allowDecimals={allowDecimals}
-        colorByKey={colorByKey}
+        colorByKey={{ ...colorByKey }}
         comparisonPoints={comparisonPoints}
         markers={markers}
         points={drawnPoints}

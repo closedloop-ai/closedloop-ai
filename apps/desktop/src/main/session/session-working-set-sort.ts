@@ -1,40 +1,48 @@
+import { sessionCostIsNumeric } from "@repo/api/src/agent-session-filters";
+import {
+  compareListQueryText,
+  ListQueryTextOrdering,
+} from "@repo/api/src/types/list-query-ordering-semantics";
+import { PRIORITY_ORDINAL } from "@repo/api/src/types/search-query";
 import {
   resolveSessionDurationLifecycle,
   SessionDurationLifecycle,
 } from "@repo/api/src/types/session-status";
+import { compareSessionSortIdentityDescending } from "@repo/api/src/types/session-status-root-order";
 import type { SyncedAgentSession } from "../agent-sync/agent-session-sync-contract.js";
-import { isDisplayedStatusParityEnabled } from "./displayed-status-parity-gate.js";
 import {
   getOrgDirectorySnapshot,
   resolveOwner,
 } from "./org-directory-cache.js";
 import { parseSessionDate } from "./session-instant.js";
 import { sessionRepositoryName } from "./session-repository-facet.js";
-import { sumTokenUsage } from "./session-usage-totals.js";
 import {
-  displayedSharedStatusRank,
-  isKnownSharedStatus,
-  projectDisplayedSharedStatus,
-  resolveDisplayedSharedSessionStatus,
-} from "./shared-agent-session-status.js";
+  localSubstantiveCounts,
+  sumTokenUsage,
+} from "./session-usage-totals.js";
+import { resolveDisplayedSharedSessionStatus } from "./shared-agent-session-status.js";
 import type { SanitizedQuery } from "./shared-agent-sessions-query.js";
 import { displayUserName } from "./user-display-name.js";
 
-// FEA-4426: the precomputed, comparable sort key for one session. A string for
-// the string columns (harness/model), a number for the numeric columns
-// (cost/timestamps), a nulls-last wrapper for the columns whose value can be
-// genuinely ABSENT — `user` (an unresolved owner), `repo` (no resolved Git
-// remote, "Unknown") and, since ISS-5131, `duration` (a terminal session with no
-// end instant, which the cell renders blank) — whose `null` needs
-// `compareNullsLast`'s nulls-last (both directions) placement rather than plain
-// comparison, or a status wrapper for the `status` column (FEA-4301: sorted by
-// DISPLAYED-status lifecycle rank with unknown statuses last in both directions,
-// not by raw string).
-type SessionSortKey =
+// FEA-4426: the precomputed, comparable sort key for one session. A string
+// for the string columns (harness), a number for the
+// timestamp columns, flagged Status as root key plus target/session identity, or a
+// nulls-last wrapper for the
+// columns whose value can be genuinely ABSENT — `user` (an unresolved owner),
+// `repo` (no resolved Git remote, "Unknown"), `priority`, since ISS-5131
+// `duration` (a terminal session with no end instant, which the cell renders
+// blank), and since ISS-9479 `model` (none recorded) and `cost` (a cell that
+// shows no figure) — whose `null` needs `compareNullsLast`'s nulls-last (both
+// directions) placement rather than plain comparison.
+export type SessionSortKey =
   | string
   | number
   | { nullsLast: string | number | null }
-  | { statusRank: number; known: boolean };
+  | {
+      statusRootRank: number | null;
+      computeTargetId: string | null;
+      externalSessionId: string;
+    };
 
 /**
  * Sort the filtered working set by a column id (matching the table headers).
@@ -44,7 +52,9 @@ type SessionSortKey =
  */
 export function sortSyncedSessions(
   sessions: SyncedAgentSession[],
-  query: SanitizedQuery
+  query: SanitizedQuery,
+  statusRootRank?: (status: string) => number | null,
+  computeTargetId: string | null = null
 ): SyncedAgentSession[] {
   if (!query.sortBy) {
     return sessions;
@@ -59,19 +69,20 @@ export function sortSyncedSessions(
   // (new Date + getTime, twice) ~2·N·log N times. Derive each session's key
   // ONCE up front, sort on the precomputed keys, then undecorate. Node's
   // `Array.prototype.sort` is stable, so preserving the original index for
-  // equal keys reproduces the previous comparator's tie order exactly (the
-  // recency tiebreak the `user` column relies on).
+  // equal non-Status keys reproduces their previous tie order exactly (the
+  // recency tiebreak the `user` and flag-off Status columns rely on). Flagged
+  // Status alone owns an explicit cross-host identity tie.
   //
-  // FEA-4300/FEA-4330/FEA-4299 (merged): the Owner and Repository sorts own
-  // their own direction so they keep null rows (owner-less, or "Unknown" with no
-  // resolved remote) LAST in BOTH directions — a nulls-last key is compared by
+  // FEA-4300/FEA-4330/FEA-4299 (merged): the nulls-last sorts (Owner,
+  // Repository and the rest `SessionSortKey` lists) own their own direction so
+  // they keep null rows LAST in BOTH directions — a nulls-last key is compared by
   // `compareNullsLast(a, b, dir)` (which applies `dir` internally and never flips
   // nulls), NOT multiplied by the outer `factor`. Every other key uses the
   // ascending `compareSortKeys` flipped by `factor`, identical to before.
   const decorated = sessions.map((session, index) => ({
     session,
     index,
-    key: sessionSortKey(session, sortKey),
+    key: sessionSortKey(session, sortKey, statusRootRank, computeTargetId),
   }));
   decorated.sort((a, b) => {
     const byKey = compareDecoratedKeys(a.key, b.key, dir, factor);
@@ -81,11 +92,54 @@ export function sortSyncedSessions(
 }
 
 /**
+ * ISS-6895: the decorate half of {@link sortSyncedSessions}, exposed so a
+ * windowed read can retain a session's SORT KEY instead of the session itself.
+ * `null` when the read carries no sort — the incoming (cursor) order stands, and
+ * there is nothing to compare.
+ */
+export function sessionSortKeyForQuery(
+  session: SyncedAgentSession,
+  query: SanitizedQuery,
+  statusRootRank?: (status: string) => number | null,
+  computeTargetId: string | null = null
+): SessionSortKey | null {
+  return query.sortBy
+    ? sessionSortKey(session, query.sortBy, statusRootRank, computeTargetId)
+    : null;
+}
+
+/**
+ * ISS-6895: the compare half of {@link sortSyncedSessions}, over two keys from
+ * {@link sessionSortKeyForQuery}. `null` for a read with no sort — the incoming
+ * (cursor) order already IS the answer, so the caller keeps it rather than
+ * ordering by a key that does not exist. Ties return 0 so the caller's own
+ * stable tiebreak (incoming position) decides for ordinary ties, exactly as
+ * it does inside `sortSyncedSessions`; flagged Status carries its own identity.
+ */
+export function sessionSortKeyComparator(
+  query: SanitizedQuery
+): ((a: SessionSortKey | null, b: SessionSortKey | null) => number) | null {
+  if (!query.sortBy) {
+    return null;
+  }
+  const dir = query.sortDir === "asc" ? "asc" : "desc";
+  const factor = dir === "asc" ? 1 : -1;
+  return (a, b) => {
+    // Two rows with no key are equally unordered; `sessionSortKeyForQuery` only
+    // yields null for a read this comparator is never built for.
+    if (a === null || b === null) {
+      return 0;
+    }
+    return compareDecoratedKeys(a, b, dir, factor);
+  };
+}
+
+/**
  * FEA-4330: compare two nullable string sort keys with NULL always sorting LAST,
  * independent of `dir` — the shared shape of the cloud's `nulls: "last"` ORDER BY
  * for every nullable column. The present-value comparison follows `dir`
- * (ascending `localeCompare`, negated for descending). Used by the Owner and
- * Repository ("Unknown" rows) sorts so their null placement cannot drift.
+ * (ascending, collated per ISS-9585 for strings, negated for descending). Used
+ * by every nulls-last key so their null placement cannot drift.
  */
 export function compareNullsLast(
   a: string | number | null,
@@ -108,7 +162,7 @@ export function compareNullsLast(
   const cmp =
     typeof a === "number" && typeof b === "number"
       ? a - b
-      : String(a).localeCompare(String(b));
+      : compareCollated(String(a), String(b));
   return dir === "asc" ? cmp : -cmp;
 }
 
@@ -178,13 +232,21 @@ export function sessionDurationMs(
  * session is not known to be running and carries no end instant.
  *
  * ONE classifier ({@link resolveSessionDurationLifecycle}) rather than a local
- * list of status literals (whitlockk, #4409). This comparator reads the RAW stored
- * `session.status` (`error`), while the row the reader sees is built by
- * `mapListItem` AFTER `canonicalSharedStatus` rewrites that to `failed` — so two
- * hand-rolled copies of "is this terminal", each spelling out its own literals,
- * put one session's cell and its own sort key on opposite sides of the branch:
- * a live, growing duration in the cell, sorted with the blanks. The shared
- * classifier folds both spellings, so the split cannot survive.
+ * list of status literals (whitlockk, #4409). The split it closed, stated in the
+ * past tense it now belongs in: this comparator once read the RAW stored
+ * `session.status` (`error`) while the row the reader saw was built by
+ * `mapListItem` AFTER `canonicalSharedStatus` had rewritten that to `failed`, so
+ * two hand-rolled copies of "is this terminal", each spelling out its own
+ * literals, put one session's cell and its own sort key on opposite sides of the
+ * branch: a live, growing duration in the cell, sorted with the blanks.
+ *
+ * ISS-5592 deleted BOTH the alias and the boundary rewrite that manufactured it
+ * — `canonicalSharedStatus` case-folds and nothing else — so the classifier no
+ * longer folds that spelling onto `error`. It does not recognize it at all:
+ * `failed` is an UNRECOGNIZED status and takes the `Indeterminate` branch
+ * described below, not the branch `error` takes. ONE classifier is still the
+ * point, but what it buys now is that all three copies answer an unrecognized
+ * status identically, and that a FUTURE alias cannot reopen the split.
  *
  * `Indeterminate` — an unrecognized status, or a display-only `stale`/`unknown`
  * — resolves by EVIDENCE and never reaches the clock: an `endedAt` bounds it,
@@ -219,7 +281,7 @@ function resolveDurationEndMs(
 
 /**
  * FEA-4426 + FEA-4300/FEA-4330/FEA-4299: compare two precomputed keys for the
- * sort. A nulls-last key (Owner or Repository) routes to `compareNullsLast` with
+ * sort. A nulls-last key routes to `compareNullsLast` with
  * the requested `dir` so its null rows stay LAST in both directions (never
  * flipped by `factor`); every other key is the ascending `compareSortKeys`
  * result flipped by `factor`.
@@ -230,72 +292,67 @@ function compareDecoratedKeys(
   dir: "asc" | "desc",
   factor: number
 ): number {
+  if (isStatusRootSortKey(a) && isStatusRootSortKey(b)) {
+    const byRank = compareNullsLast(a.statusRootRank, b.statusRootRank, dir);
+    return byRank === 0 ? compareSessionSortIdentityDescending(a, b) : byRank;
+  }
   if (isNullsLastSortKey(a) && isNullsLastSortKey(b)) {
     return compareNullsLast(a.nullsLast, b.nullsLast, dir);
-  }
-  if (isStatusSortKey(a) && isStatusSortKey(b)) {
-    return compareStatusRank(a, b, dir);
   }
   return compareSortKeys(a, b) * factor;
 }
 
 /**
- * FEA-4301: compare two displayed-status sort keys. An UNKNOWN (future/legacy)
- * status sorts LAST regardless of `dir` — mirroring the cloud
- * `compareByDisplayedStatus` unknown-last placement — so a descending page cannot
- * promote an unknown status to the front the way a direction-flipped rank would.
- * Among known statuses the lifecycle rank follows `dir` (ascending Active →
- * Waiting → …, negated for descending). Equal ranks return 0 so the stable sort's
- * incoming recency order (the index tiebreak in `sortSyncedSessions`) decides.
- */
-function compareStatusRank(
-  a: { statusRank: number; known: boolean },
-  b: { statusRank: number; known: boolean },
-  dir: "asc" | "desc"
-): number {
-  if (a.known !== b.known) {
-    return a.known ? -1 : 1;
-  }
-  const delta = a.statusRank - b.statusRank;
-  return dir === "asc" ? delta : -delta;
-}
-
-/**
  * FEA-4426: the comparable sort key for one session under `sortKey`, derived
- * once per session by `sortSyncedSessions`. String columns yield a string,
- * numeric columns (cost/duration/timestamps) yield a number, and the nulls-last
- * columns (`user` owner display name, `repo` repositoryFullName) yield a
- * `{ nullsLast }` wrapper carrying the resolved value or `null`;
- * `compareDecoratedKeys` compares two keys of the same kind with semantics
- * identical to the old per-comparison `compareSessions` switch.
+ * once per session by `sortSyncedSessions`. String columns yield a string, the
+ * timestamp columns yield a number, and the nulls-last columns (`repo`, `model`,
+ * `user`, `cost`, `priority`, `duration`) yield a `{ nullsLast }` wrapper
+ * carrying the resolved value or `null`; `compareDecoratedKeys` compares two
+ * keys of the same kind.
  */
 function sessionSortKey(
   session: SyncedAgentSession,
-  sortKey: string
+  sortKey: string,
+  statusRootRank?: (status: string) => number | null,
+  computeTargetId: string | null = null
 ): SessionSortKey {
   switch (sortKey) {
-    case "status": {
-      // FEA-4301: order by the DISPLAYED status lifecycle rank — the SAME
-      // projection + rank the cloud `compareByDisplayedStatus` uses — so a row
-      // awaiting input sorts as Waiting (not by its raw `active` string) and a
-      // header click orders identically in desktop Local mode and the cloud.
-      // Sorting the raw canonical string with `localeCompare` (the old behavior)
-      // ordered alphabetically and could not project Waiting.
+    case "status":
+      if (statusRootRank) {
+        return {
+          statusRootRank: statusRootRank(session.status),
+          computeTargetId,
+          externalSessionId: session.externalSessionId,
+        };
+      }
+      // ISS-9939 / ISS-10262: order by the PERSISTED lifecycle status — the
+      // same value cloud's off-path sort compares (plain RAW string), not the
+      // DISPLAYED/projected one FEA-4301 used to rank by. A row awaiting input
+      // (stored `active`) sorts with the other Active rows now, not contiguous
+      // with a genuinely displayed-Waiting one — that FEA-4301 behavior is
+      // knowingly superseded on both surfaces, together, so a header click
+      // keeps ordering identically in desktop Local mode and the cloud.
+      // DISPLAY (the badge), the Status FACET, and Duration are UNCHANGED —
+      // they still read the displayed projection
+      // (`resolveDisplayedSharedSessionStatus`, used below for Duration).
       //
-      // ISS-4556: the gate is passed through so the sort ranks the SAME value
-      // `mapListItem` serves and `matchesStatusFilter` buckets. ON, a long-silent
-      // `active` row ranks as Stale (4) instead of Active (0), matching the cloud
-      // and the badge the shared row already renders; OFF, the ranking is
-      // unchanged, so this stays inside the closed-by-default rollout.
-      const displayed = projectDisplayedSharedStatus(
-        session,
-        isDisplayedStatusParityEnabled()
-      );
-      return {
-        statusRank: displayedSharedStatusRank(displayed),
-        known: isKnownSharedStatus(displayed),
-      };
-    }
+      // marisolashgrove (#7289 review): this used to route through
+      // `normalizeSessionStatus`, on the premise that cloud's `artifacts.status`
+      // is "already normalized" and desktop's local producer is the only side
+      // that can still store the literal `waiting`. That premise is false —
+      // the ISS-5981 migration deliberately leaves a LIVE-AND-ANCHORLESS
+      // session (`sessionEndedAt` null, `awaitingInputSince` null) storing the
+      // literal `waiting`, permanently, on the CLOUD side too, and no later
+      // migration drains it. Folding only here reopened the exact drift this
+      // ticket exists to close, on that one residual population: cloud sorted
+      // that row by the raw string (after `inactive`, ascending) while desktop
+      // folded it into the Active group. Comparing the raw string on BOTH
+      // surfaces — no fold, matching cloud's `dbColumnOrderBy` — is what
+      // "reduced to the three PERSISTED statuses" actually means: a value
+      // outside that set (a legacy `waiting` literal, or an unrecognized
+      // future spelling) sorts by its own persisted spelling on both off-paths.
+      // D5's flagged path above instead places such values last.
+      return session.status;
     case "repo":
       // FEA-4299/FEA-4330: the repository sort keeps rows with no resolved
       // remote (null `repositoryFullName`, rendered "Unknown") LAST in BOTH
@@ -307,7 +364,9 @@ function sessionSortKey(
     case "harness":
       return session.harness ?? "";
     case "model":
-      return session.model ?? "";
+      // ISS-9479: a session with no recorded model sorts LAST in both
+      // directions, the cloud's NULLS LAST, as FEA-4299 did for `repo`.
+      return { nullsLast: session.model ?? null };
     case "user":
       // Multiplayer owner attribution (org-directory resolution) now gives each
       // row a real owner, so the User column is sortable rather than an inert
@@ -319,7 +378,14 @@ function sessionSortKey(
       // tiebreak.
       return { nullsLast: sessionOwnerSortKey(session) };
     case "cost":
-      return sumTokenUsage(session).estimatedCost;
+      return { nullsLast: sessionDisplayedCost(session) };
+    case "priority":
+      // ISS-10332: the cloud comparator's key — the wire ordinal, never the
+      // enum spelling ("HIGH" sorts before "LOW" as a string) — with no-priority
+      // rows last in both directions.
+      return {
+        nullsLast: session.priority ? PRIORITY_ORDINAL[session.priority] : null,
+      };
     case "duration":
       // ISS-5131: nulls-last, like the Owner and Repository columns. An
       // unmeasurable duration renders BLANK in the cell, so it must collect with
@@ -346,14 +412,13 @@ function sessionSortKey(
 
 /**
  * FEA-4426: compare two precomputed session sort keys of the same non-nulls-last
- * kind, matching the ascending-direction result the old `compareSessions` switch
- * produced — `localeCompare` for strings, subtraction for numbers. The nulls-last
- * keys (`user` owner, `repo` repository) are handled separately by
+ * kind in ascending direction — collated per ISS-9585 for strings, subtraction
+ * for numbers. The nulls-last keys are handled separately by
  * `compareDecoratedKeys` (nulls-last, both directions) and never reach this path.
  */
 function compareSortKeys(a: SessionSortKey, b: SessionSortKey): number {
   if (typeof a === "string" && typeof b === "string") {
-    return a.localeCompare(b);
+    return compareCollated(a, b);
   }
   if (typeof a === "number" && typeof b === "number") {
     return a - b;
@@ -367,10 +432,12 @@ function isNullsLastSortKey(
   return typeof key === "object" && "nullsLast" in key;
 }
 
-function isStatusSortKey(
-  key: SessionSortKey
-): key is { statusRank: number; known: boolean } {
-  return typeof key === "object" && "statusRank" in key;
+function isStatusRootSortKey(key: SessionSortKey): key is {
+  statusRootRank: number | null;
+  computeTargetId: string | null;
+  externalSessionId: string;
+} {
+  return typeof key === "object" && "statusRootRank" in key;
 }
 
 /**
@@ -386,4 +453,29 @@ function sessionOwnerSortKey(session: SyncedAgentSession): string | null {
     return null;
   }
   return displayUserName(owner).toLowerCase();
+}
+
+/**
+ * ISS-9479: the ISS-9585 collation, pinned to one locale, so the order does not
+ * follow the host's locale the way a bare `localeCompare()` does.
+ */
+function compareCollated(a: string, b: string): number {
+  return compareListQueryText(a, b, ListQueryTextOrdering.Collated);
+}
+
+/**
+ * ISS-9479: the cost the Cost cell shows, or `null` where the cell shows no
+ * figure. `sessionCostIsNumeric` is the numeric-vs-unknown boundary the Cost
+ * facet reads and the cell's `deriveCostAvailability` mirrors, so an unknown
+ * cost sorts with the other blanks, last in both directions like the cloud's
+ * NULLS LAST, rather than as a $0.
+ */
+function sessionDisplayedCost(session: SyncedAgentSession): number | null {
+  const cost = sumTokenUsage(session).estimatedCost;
+  const numeric = sessionCostIsNumeric({
+    estimatedCost: cost,
+    billingMode: session.billingMode ?? null,
+    ...localSubstantiveCounts(session),
+  });
+  return numeric ? cost : null;
 }

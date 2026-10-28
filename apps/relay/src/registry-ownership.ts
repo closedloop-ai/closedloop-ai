@@ -1,7 +1,13 @@
 import { log } from "@repo/observability/log";
 import { redactGatewaySessionId } from "@repo/observability/redact-correlation";
-import { TelemetryCategory } from "@repo/observability/telemetry/schema";
-import type { TargetMetadata, TargetRegistry } from "./target-registry.js";
+import { TelemetryCategory } from "@repo/observability/telemetry/telemetry-category";
+import {
+  ReclaimOutcome,
+  RegistryLookupOutcome,
+  RegistryOperation,
+  type TargetMetadata,
+  type TargetRegistry,
+} from "./target-registry.js";
 
 /**
  * The subset of a live worker this module needs to reason about ownership.
@@ -28,6 +34,9 @@ const RegistryHealOutcome = {
   /** We created an entry, then found the worker had been disposed mid-flight,
    *  so the entry we created was removed again. */
   RolledBack: "rolled_back",
+  /** The registry itself failed. Unlike `NotNeeded` this is not a decision:
+   *  nothing is known about the entry and the target may be undiscoverable. */
+  Failed: "failed",
 } as const;
 type RegistryHealOutcome =
   (typeof RegistryHealOutcome)[keyof typeof RegistryHealOutcome];
@@ -70,7 +79,9 @@ export async function isLocalWorkerCurrentOwner(
   worker: RegistryOwnerCandidate,
   instanceId: string
 ): Promise<boolean> {
-  const registered = await registry.lookup(targetId);
+  const lookup = await registry.lookup(targetId);
+  const registered =
+    lookup.outcome === RegistryLookupOutcome.Found ? lookup.metadata : null;
   return isCurrentRegistryOwner(registered, worker, instanceId);
 }
 
@@ -113,9 +124,30 @@ export async function healMissingRegistryEntry(
     return RegistryHealOutcome.SkippedDisposed;
   }
 
-  const healed = await registry.reclaim(targetId, metadata);
-  if (!healed) {
-    return RegistryHealOutcome.NotNeeded;
+  const result = await registry.reclaim(targetId, metadata);
+  switch (result.outcome) {
+    case ReclaimOutcome.Error:
+      log.error(
+        "Target registry reclaim failed; target may be undiscoverable",
+        {
+          category: TelemetryCategory.ConnectionStaleHeartbeat,
+          computeTargetId: targetId,
+          registryOperation: RegistryOperation.Reclaim,
+          gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
+          error: result.error,
+        }
+      );
+      return RegistryHealOutcome.Failed;
+    case ReclaimOutcome.Refused:
+      return RegistryHealOutcome.NotNeeded;
+    case ReclaimOutcome.Reclaimed:
+      break;
+    default: {
+      const unhandled: never = result;
+      throw new Error(
+        `Unhandled reclaim outcome: ${JSON.stringify(unhandled)}`
+      );
+    }
   }
 
   if (!isStillCurrentWorker()) {

@@ -1,5 +1,6 @@
 import { Button } from "@repo/design-system/components/ui/button";
 import { InlineEditEditorShell } from "@repo/design-system/components/ui/inline-edit-editor-shell";
+import { remountKey } from "@repo/design-system/storybook/remount-key";
 import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
 
@@ -54,12 +55,18 @@ function InlineEditEditorShellDemo({
 }
 
 const meta = {
-  title: "Design System/Documents & Conversation/Inline Edit Editor Shell",
+  title: "Composites v1.0/Documents/Inline Edit Editor Shell",
   component: InlineEditEditorShellDemo,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: {
     layout: "padded",
   },
+  render: (args) => (
+    <InlineEditEditorShellDemo
+      key={remountKey(args.initialExpanded)}
+      {...args}
+    />
+  ),
 } satisfies Meta<typeof InlineEditEditorShellDemo>;
 
 export default meta;

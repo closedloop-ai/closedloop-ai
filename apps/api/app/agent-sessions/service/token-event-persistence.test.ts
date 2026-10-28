@@ -9,12 +9,22 @@ import {
   TokenSourceIdentityAvailability,
   TokenSourceIdentityUnavailableReason,
 } from "@repo/api/src/types/token-cost-provenance";
-import { describe, expect, it, vi } from "vitest";
+import { PARENT_AGENT_EXTERNAL_ID } from "@repo/api/src/types/token-event-agent-owner";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSessionUpsertTx } from "./records";
+import { SessionSyncMetric } from "./session-sync-metrics";
 import {
   persistSessionTokenEvents,
   toTokenEventCostEvidence,
 } from "./token-event-persistence";
+
+const metrics = vi.hoisted(() => ({ emitTelemetryMetric: vi.fn() }));
+vi.mock("@repo/observability/telemetry/metrics", () => metrics);
+/** ISS-12552: the sync request's answer; on unless a case says off. */
+const flag = vi.hoisted(() => ({ on: true }));
+vi.mock("@/lib/attribution-evidence-policy-feature", () => ({
+  isAttributionEvidenceReadOnForOrganization: vi.fn(() => flag.on),
+}));
 
 const ARTIFACT_ID = "019fa111-1111-7111-8111-111111111111";
 const ORGANIZATION_ID = "019fa222-2222-7222-8222-222222222222";
@@ -358,9 +368,175 @@ function buildTx(persistedEvents: SyncedAgentSessionTokenEvent[]) {
     );
   });
   const executeRawUnsafe = vi.fn().mockResolvedValue(0);
+  const updateMany = vi.fn().mockResolvedValue({ count: 0 });
   const tx = {
-    agentSessionTokenEvent: { createMany, findMany },
+    agentSessionTokenEvent: { createMany, findMany, updateMany },
     $executeRawUnsafe: executeRawUnsafe,
   } as unknown as AgentSessionUpsertTx;
-  return { tx, createMany, findMany, executeRawUnsafe };
+  return { tx, createMany, findMany, updateMany, executeRawUnsafe };
 }
+
+/** The owner UPDATE's (externalEventId, owner) pairs, or [] when none ran. */
+function ownerWrites(executeRawUnsafe: ReturnType<typeof vi.fn>) {
+  const call = executeRawUnsafe.mock.calls.find((args) =>
+    String(args[0]).includes("SET agent_external_id")
+  );
+  return call ? call.slice(2, -1) : [];
+}
+
+describe("token-event agent owner (ISS-12552, PRD-800)", () => {
+  afterEach(() => {
+    flag.on = true;
+  });
+
+  async function persist(
+    stored: SyncedAgentSessionTokenEvent[],
+    incoming: SyncedAgentSessionTokenEvent[]
+  ) {
+    const harness = buildTx(stored);
+    await persistSessionTokenEvents(
+      harness.tx,
+      ARTIFACT_ID,
+      ORGANIZATION_ID,
+      buildSession(incoming),
+      true
+    );
+    return harness;
+  }
+
+  it("replaces a stored owner with a different incoming one, without rejecting the event", async () => {
+    // Counterfactual of the retired "rejects a different owner" case: the
+    // owner is mutable evidence now, so a re-attributed event is accepted.
+    const { executeRawUnsafe } = await persist(
+      [buildTokenEvent({ agentExternalId: "agent-lane" })],
+      [buildTokenEvent({ agentExternalId: "agent-other" })]
+    );
+
+    expect(ownerWrites(executeRawUnsafe)).toEqual([
+      "transport-1",
+      "agent-other",
+    ]);
+    expect(metrics.emitTelemetryMetric).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metric: SessionSyncMetric.TokenEventAgentOwnerChanged,
+        level: "info",
+        status: "info",
+        count: 1,
+      })
+    );
+  });
+
+  it("leaves a stored owner when an older client omits the field", async () => {
+    const { executeRawUnsafe } = await persist(
+      [
+        buildTokenEvent({ agentExternalId: "agent-lane" }),
+        buildTokenEvent({
+          externalEventId: "transport-2",
+          agentExternalId: "agent-lane",
+        }),
+      ],
+      [
+        buildTokenEvent(),
+        buildTokenEvent({
+          externalEventId: "transport-2",
+          agentExternalId: null,
+        }),
+      ]
+    );
+
+    expect(ownerWrites(executeRawUnsafe)).toEqual([]);
+  });
+
+  it("clears a stored owner when the client states the main agent", async () => {
+    const { executeRawUnsafe } = await persist(
+      [buildTokenEvent({ agentExternalId: "agent-lane" })],
+      [buildTokenEvent({ agentExternalId: PARENT_AGENT_EXTERNAL_ID })]
+    );
+
+    expect(ownerWrites(executeRawUnsafe)).toEqual(["transport-1", null]);
+  });
+
+  it("fills an owner the stored row lacks, and logs the fill as a change (PRD-800)", async () => {
+    const { executeRawUnsafe } = await persist(
+      [buildTokenEvent()],
+      [buildTokenEvent({ agentExternalId: "agent-lane" })]
+    );
+
+    expect(ownerWrites(executeRawUnsafe)).toEqual([
+      "transport-1",
+      "agent-lane",
+    ]);
+    expect(metrics.emitTelemetryMetric).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metric: SessionSyncMetric.TokenEventAgentOwnerChanged,
+        count: 1,
+      })
+    );
+  });
+
+  it("stores the main agent's first insert as no owner", async () => {
+    const { createMany } = await persist(
+      [buildTokenEvent()],
+      [buildTokenEvent({ agentExternalId: PARENT_AGENT_EXTERNAL_ID })]
+    );
+
+    expect(createMany.mock.calls[0]?.[0].data).toEqual([
+      expect.objectContaining({ agentExternalId: null }),
+    ]);
+  });
+
+  it("stores a new event's sent owner, and the main agent as no owner, while the flag is off", async () => {
+    flag.on = false;
+    const { createMany } = await persist(
+      [buildTokenEvent(), buildTokenEvent({ externalEventId: "transport-2" })],
+      [
+        buildTokenEvent({ agentExternalId: "agent-lane" }),
+        buildTokenEvent({
+          externalEventId: "transport-2",
+          agentExternalId: PARENT_AGENT_EXTERNAL_ID,
+        }),
+      ]
+    );
+
+    expect(createMany.mock.calls[0]?.[0].data).toEqual([
+      expect.objectContaining({ agentExternalId: "agent-lane" }),
+      expect.objectContaining({ agentExternalId: null }),
+    ]);
+  });
+
+  it("keeps a stored owner the client moved to the main agent while the flag is off", async () => {
+    flag.on = false;
+    const { executeRawUnsafe } = await persist(
+      [buildTokenEvent({ agentExternalId: "agent-lane" })],
+      [buildTokenEvent({ agentExternalId: PARENT_AGENT_EXTERNAL_ID })]
+    );
+
+    expect(ownerWrites(executeRawUnsafe)).toEqual([]);
+  });
+
+  it("keeps a stored owner the client changed, without rejecting the event, while the flag is off", async () => {
+    flag.on = false;
+    const { executeRawUnsafe } = await persist(
+      [buildTokenEvent({ agentExternalId: "agent-lane" })],
+      [buildTokenEvent({ agentExternalId: "agent-other" })]
+    );
+
+    expect(ownerWrites(executeRawUnsafe)).toEqual([]);
+    expect(metrics.emitTelemetryMetric).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        metric: SessionSyncMetric.TokenEventAgentOwnerChanged,
+      })
+    );
+  });
+
+  it("keeps the owner when one payload repeats an event with and without it", async () => {
+    const { createMany } = await persist(
+      [buildTokenEvent({ agentExternalId: "agent-lane" })],
+      [buildTokenEvent({ agentExternalId: "agent-lane" }), buildTokenEvent()]
+    );
+
+    expect(createMany.mock.calls[0]?.[0].data).toEqual([
+      expect.objectContaining({ agentExternalId: "agent-lane" }),
+    ]);
+  });
+});

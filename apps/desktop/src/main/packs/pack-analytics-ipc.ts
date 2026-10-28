@@ -45,6 +45,14 @@ const packAnalyticsShape = {
   klocPerDollar: z.number().nullable().optional(),
   owners: z.array(z.string()),
   deviceCount: z.number(),
+  // ISS-9854: exact installer count from a rowless aggregate. Optional for
+  // version skew — a pre-ISS-9854 cloud omits it; the renderer falls back
+  // to `owners.length`. A count is a nonnegative INTEGER or it is not a
+  // count: the renderer prints this as "N teammates" and divides it into an
+  // adoption percentage, so a fractional, negative or non-finite value would
+  // draw a confident ring around junk. Anything unusable degrades to the same
+  // omission fallback instead of reaching the UI.
+  installerCount: z.number().int().nonnegative().optional().catch(undefined),
   // Comparison-based delivery metrics (FEA-2923 Performance tab). Deltas are
   // nullable (no baseline); quality is computed server-side but hidden in the UI.
   //
@@ -71,7 +79,7 @@ const packAnalyticsShape = {
   // ISS-6462: NO `.default(false)`, unlike its neighbours. The other
   // skew-sensitive fields have an empty value that means the same thing a
   // missing one does; this one does not. A cloud predating the disclosure
-  // omits the flag while applying the very same `COHORT_SCAN_CAP`, so
+  // omits the flag while applying the very same cohort scan cap, so
   // defaulting the omission to `false` would make the renderer's tile assert
   // full-cohort coverage precisely when it cannot. Absence stays absent, and
   // `resolveMergedPrsCoverage` reads it as unknown.
@@ -94,6 +102,19 @@ const packAnalyticsShape = {
     .boolean()
     .nullish()
     .transform((value) => value ?? undefined)
+    .catch(undefined),
+  // ISS-9853: a positive INTEGER or `null`, and nothing else. `null` is a
+  // declared state here ("the comparator was not a strict sample"), unlike the
+  // truncation flag's null, so it rides through rather than folding to
+  // undefined — but a fractional, zero, negative or non-finite count is wire
+  // data that cannot be right, and the renderer would print it as a confident
+  // "sampled from N". All of those degrade to undeclared, exactly like junk.
+  baselineSampleSize: z
+    .number()
+    .int()
+    .positive()
+    .nullable()
+    .optional()
     .catch(undefined),
   qualityScore: z.number().nullable().default(null),
   qualityDelta: z.number().nullable().default(null),

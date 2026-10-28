@@ -2,9 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   dedupeMergedPrs,
   dedupeMergedPrsWithEarliestCreation,
-  distinctMergedPrCount,
   type MergedPrLocInput,
-  mergedPrLoc,
+  mergedLocKpis,
   mergedPrLocTotals,
   projectedPrIdentity,
 } from "./merged-pr-loc";
@@ -14,7 +13,7 @@ function pr(overrides: Partial<MergedPrLocInput> = {}): MergedPrLocInput {
     id: "row-1",
     number: 42,
     githubId: null,
-    repositoryFullName: "closedloop-ai/example-repo",
+    repositoryFullName: "closedloop-ai/closedloop-ai",
     repositoryId: null,
     additions: 10,
     deletions: 5,
@@ -48,6 +47,23 @@ describe("projectedPrIdentity", () => {
     expect(projectedPrIdentity(desktopRow)).toBe(projectedPrIdentity(appRow));
   });
 
+  it("uses installed repository authority before stale PR row names", () => {
+    const appRow = pr({
+      id: "row-app",
+      githubId: "PR_node_1",
+      repository: { fullName: "acme/canonical" },
+      repositoryFullName: "acme/stale-name",
+      repositoryId: "repo-uuid",
+    });
+    const desktopTwin = pr({
+      id: "row-desktop",
+      repositoryFullName: "acme/canonical",
+    });
+
+    expect(projectedPrIdentity(appRow)).toBe(projectedPrIdentity(desktopTwin));
+    expect(dedupeMergedPrs([appRow, desktopTwin])).toHaveLength(1);
+  });
+
   it("still keys a repo-less row by its github id", () => {
     // The identity an App row has if it ever lands before repo enrichment.
     expect(
@@ -66,43 +82,6 @@ describe("projectedPrIdentity", () => {
     );
 
     expect(a).not.toBe(b);
-  });
-});
-
-describe("mergedPrLoc", () => {
-  it("treats a half-projected row as unknown, not as a one-sided diff", () => {
-    expect(mergedPrLoc(pr({ additions: 10, deletions: null }))).toBeNull();
-    expect(mergedPrLoc(pr({ additions: null, deletions: 5 }))).toBeNull();
-  });
-
-  it("distinguishes a known-zero PR from an unknown one", () => {
-    expect(mergedPrLoc(pr({ additions: 0, deletions: 0 }))).toBe(0);
-    expect(mergedPrLoc(pr({ additions: null, deletions: null }))).toBeNull();
-  });
-
-  it("treats a non-finite or absent count as unknown, never as NaN", () => {
-    // This module reads a persistence boundary: a row that never selected the
-    // column presents as `undefined`, and a corrupt projection can carry NaN or
-    // Infinity. A `=== null` check alone let those through and produced a NaN
-    // KLOC — garbage on screen instead of the honest unknown the caller handles.
-    const absent = {
-      additions: undefined,
-      deletions: undefined,
-    } as unknown as Pick<MergedPrLocInput, "additions" | "deletions">;
-
-    expect(mergedPrLoc(pr(absent))).toBeNull();
-    expect(mergedPrLoc(pr({ additions: Number.NaN, deletions: 5 }))).toBeNull();
-    expect(
-      mergedPrLoc(pr({ additions: Number.POSITIVE_INFINITY, deletions: 5 }))
-    ).toBeNull();
-  });
-
-  it("treats a negative count as unknown, not as a subtraction", () => {
-    // `Number.isFinite(-5)` is true, so a corrupt projection would otherwise
-    // subtract from the KLOC sum and could drive lines-per-dollar below zero —
-    // a figure no diff can produce.
-    expect(mergedPrLoc(pr({ additions: -5, deletions: 5 }))).toBeNull();
-    expect(mergedPrLoc(pr({ additions: 10, deletions: -1 }))).toBeNull();
   });
 });
 
@@ -229,75 +208,6 @@ describe("mergedPrLocTotals", () => {
   });
 });
 
-describe("distinctMergedPrCount", () => {
-  it("subtracts the duplicate rows the scan can see from the exact row count", () => {
-    // The scan holds three rows for two pull requests: the adopted App row and
-    // the repo-less twin `adoptRepolessPullRequestDetail` leaves behind. The
-    // uncorrected count would report 3 merged PRs beside a deduped "2 scanned".
-    const scanned = [
-      pr({ id: "row-app", number: 1, githubId: "PR_node_1" }),
-      pr({ id: "row-desktop", number: 1 }),
-      pr({ id: "row-other", number: 2 }),
-    ];
-
-    expect(distinctMergedPrCount(3, scanned)).toBe(2);
-  });
-
-  it("keeps the count uncapped: rows beyond the scan still count", () => {
-    // The whole reason the count is a separate query — the scan is bounded, so
-    // a distinct count taken of the scan ALONE would report 2 for an org that
-    // merged 5000 PRs.
-    const scanned = [
-      pr({ id: "row-app", number: 1, githubId: "PR_node_1" }),
-      pr({ id: "row-desktop", number: 1 }),
-      pr({ id: "row-other", number: 2 }),
-    ];
-
-    expect(distinctMergedPrCount(5000, scanned)).toBe(4999);
-  });
-
-  it("leaves a duplicate-free scan's count untouched", () => {
-    expect(
-      distinctMergedPrCount(2, [
-        pr({ id: "a", number: 1 }),
-        pr({ id: "b", number: 2 }),
-      ])
-    ).toBe(2);
-  });
-
-  it("floors a racing count at the scan's own distinct count, never at zero", () => {
-    // Count and scan are separate queries: a twin row written between them can
-    // leave the scan holding a duplicate the count never saw. 1 row counted
-    // minus 1 duplicate would read 0 — beside sibling facets built from the
-    // very scan that is holding the pull request. The scan saw one real PR, so
-    // one is the floor that cannot lie.
-    expect(
-      distinctMergedPrCount(1, [
-        pr({ id: "a", number: 1 }),
-        pr({ id: "b", number: 1 }),
-      ])
-    ).toBe(1);
-    expect(
-      distinctMergedPrCount(0, [
-        pr({ id: "a", number: 1 }),
-        pr({ id: "b", number: 1 }),
-      ])
-    ).toBe(1);
-  });
-
-  it("never reports fewer pull requests than the scan holds distinct identities", () => {
-    // The other race: rows written after the count land in the scan as NEW
-    // identities, not duplicates. The subtraction alone would keep the stale
-    // count; the scan's distinct count is the sharper lower bound.
-    expect(
-      distinctMergedPrCount(1, [
-        pr({ id: "a", number: 1 }),
-        pr({ id: "b", number: 2 }),
-      ])
-    ).toBe(2);
-  });
-});
-
 describe("dedupeMergedPrsWithEarliestCreation", () => {
   const withCreation = (
     overrides: Partial<MergedPrLocInput>,
@@ -352,5 +262,98 @@ describe("dedupeMergedPrsWithEarliestCreation", () => {
 
     expect(deduped).toContainEqual(a);
     expect(deduped).toContainEqual(b);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ISS-8184 — the raw-line KPIs that ship beside the deprecated KLOC ones
+// ---------------------------------------------------------------------------
+
+describe("mergedLocKpis raw-line twins", () => {
+  // Two keys per pair, deliberately: ruling 3 is a per-key contract, and a
+  // single-key fixture cannot tell a per-field migration from a producer that
+  // renamed one key and called it done.
+  it("emits both vocabularies, the KLOC one in thousands and the LOC one in lines", () => {
+    const kpis = mergedLocKpis(
+      mergedPrLocTotals([pr({ additions: 8000, deletions: 987 })]),
+      null
+    );
+
+    expect(kpis.kloc.value).toBe(9);
+    expect(kpis.loc.value).toBe(8987);
+    expect(kpis.mergedKloc.value).toBe(9);
+    expect(kpis.mergedLoc.value).toBe(8987);
+  });
+
+  it("labels the raw-line pair for the basis, not the unit-prefixed acronym", () => {
+    const kpis = mergedLocKpis(mergedPrLocTotals([pr()]), null);
+
+    expect(kpis.loc.label).toBe("Merged LOC");
+    expect(kpis.mergedLoc.label).toBe("Merged LOC");
+    // The deprecated pair keeps emitting for a client that predates the flag.
+    expect(kpis.kloc.label).toBe("KLOC merged");
+    expect(kpis.mergedKloc.label).toBe("KLOC merged");
+  });
+
+  it("does not recover lines by scaling the rounded KLOC back up", () => {
+    // 8,987 lines rounds to 9.0 KLOC. A consumer multiplying that by 1,000 gets
+    // 9,000 — the precision loss that makes the raw-line key necessary rather
+    // than merely tidier.
+    const kpis = mergedLocKpis(
+      mergedPrLocTotals([pr({ additions: 8000, deletions: 987 })]),
+      null
+    );
+
+    expect(kpis.loc.value).not.toBe((kpis.kloc.value as number) * 1000);
+  });
+
+  it("carries the unknown through to the raw-line pair rather than reporting 0", () => {
+    // No merged PR carries line counts, so the window's volume is UNKNOWN. A
+    // raw-line 0 here would read as a measured "nothing landed".
+    const kpis = mergedLocKpis(
+      mergedPrLocTotals([pr({ additions: null, deletions: null })]),
+      null
+    );
+
+    expect(kpis.kloc.value).toBeNull();
+    expect(kpis.loc.value).toBeNull();
+    expect(kpis.mergedLoc.value).toBeNull();
+  });
+
+  it("keeps the raw-line pair internal-vs-visible exactly as the KLOC pair is", () => {
+    const kpis = mergedLocKpis(mergedPrLocTotals([pr()]), null);
+
+    expect(kpis.loc.internal).toBe(kpis.kloc.internal);
+    expect(kpis.mergedLoc.internal).toBe(kpis.mergedKloc.internal);
+  });
+});
+
+/**
+ * ISS-11589 moved Median PR size onto the Branches card's Product-eligible
+ * cohort while the lines-landed tiles kept folding the deduped row scan. The two
+ * are different populations — the scan applies the Wrote check with no
+ * default-branch authority gate — so each caption has to quote its own.
+ */
+describe("the Delivery size-coverage captions", () => {
+  it("quotes the median's own population, not the row scan's", () => {
+    const kpis = mergedLocKpis(
+      mergedPrLocTotals([
+        pr({ id: "a", number: 1 }),
+        pr({ id: "b", number: 2 }),
+        pr({ id: "c", number: 3, additions: null, deletions: null }),
+      ]),
+      { medianSize: 15, merged: 2, sized: 1 }
+    );
+
+    expect(kpis.kloc.sub).toContain("sized 2 of 3");
+    expect(kpis.prSize.sub).toContain("sized 1 of 2");
+    expect(kpis.prSize.value).toBe(15);
+  });
+
+  it("leaves the median's caption bare when no median was read", () => {
+    const kpis = mergedLocKpis(mergedPrLocTotals([pr()]), null);
+
+    expect(kpis.prSize.value).toBeNull();
+    expect(kpis.prSize.sub).toBe("lines changed");
   });
 });

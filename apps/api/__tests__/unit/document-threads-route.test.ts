@@ -8,12 +8,14 @@ vi.mock("@repo/database", () => ({
 }));
 
 vi.mock("@/lib/auth/with-any-auth", () => ({
-  withAnyAuth: (handler: any) => (request: any, context: any) =>
-    handler(
-      { user: { id: "user-1", organizationId: "org-1" } },
-      request,
-      context.params
-    ),
+  withAnyAuth:
+    (handler: (...args: unknown[]) => Promise<Response>) =>
+    (request: unknown, context: { params: Promise<unknown> }) =>
+      handler(
+        { user: { id: "user-1", organizationId: "org-1" } },
+        request,
+        context.params
+      ),
 }));
 
 vi.mock("@/lib/identifier-utils", () => ({
@@ -103,7 +105,8 @@ describe("POST /artifacts/:id/threads", () => {
       "PRD-7",
       "user-1",
       "Hello",
-      "Summary"
+      "Summary",
+      undefined
     );
     expect(
       commentsService.createArtifactLevelDocumentThread
@@ -182,7 +185,8 @@ describe("POST /artifacts/:id/threads", () => {
       "PRD-7",
       "user-1",
       "Hello",
-      "Summary"
+      "Summary",
+      undefined
     );
   });
 
@@ -208,7 +212,7 @@ describe("POST /artifacts/:id/threads", () => {
     });
     expect(
       commentsService.createArtifactLevelDocumentThread
-    ).toHaveBeenCalledWith("org-1", "PRD-7", "user-1", "Hello");
+    ).toHaveBeenCalledWith("org-1", "PRD-7", "user-1", "Hello", undefined);
     expect(commentsService.createDocumentThread).not.toHaveBeenCalled();
   });
 
@@ -368,7 +372,7 @@ describe("POST /artifacts/:id/threads", () => {
 
     expect(
       commentsService.createArtifactLevelDocumentThread
-    ).toHaveBeenCalledWith("org-1", "PRD-7", "user-1", "Hello");
+    ).toHaveBeenCalledWith("org-1", "PRD-7", "user-1", "Hello", undefined);
   });
 
   it("returns 413 when request body exceeds DOCUMENT_THREAD_REQUEST_MAX_BYTES, calls no service", async () => {

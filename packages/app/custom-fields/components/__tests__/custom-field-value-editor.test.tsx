@@ -2,8 +2,7 @@
  * Component tests for CustomFieldValueEditor.
  *
  * Covers: renders the correct sub-editor for each field type,
- * blur-to-save calls mutation for TextFieldEditor,
- * and enum selector calls mutation on change.
+ * blur-to-save calls mutation for TextFieldEditor.
  */
 
 import type {
@@ -16,13 +15,12 @@ import {
   CustomFieldType,
   NumberFormat,
 } from "@repo/api/src/types/custom-field";
+import { INLINE_SCALAR_NUMBER_INVALID_MESSAGE } from "@repo/app/shared/lib/inline-scalar-invalid-message";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CustomFieldValueEditor } from "../custom-field-value-editor";
 
-// ---------------------------------------------------------------------------
 // Mock useUpdateCustomFieldValue
-// ---------------------------------------------------------------------------
 
 const mockMutate = vi.fn();
 
@@ -68,9 +66,7 @@ vi.mock("@repo/design-system/components/ui/date-picker-popover", () => ({
   ),
 }));
 
-// ---------------------------------------------------------------------------
 // Fixtures
-// ---------------------------------------------------------------------------
 
 const BASE_ENTITY = {
   entityType: CustomFieldEntityType.Project,
@@ -106,6 +102,7 @@ function makeSetting(
       customLabelPosition: null,
       isGlobalToOrg: false,
       entityTypes: [CustomFieldEntityType.Project],
+      referenceTargetSources: [],
       showInTable: false,
       isSearchable: false,
       isSortable: false,
@@ -115,9 +112,7 @@ function makeSetting(
   };
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 describe("CustomFieldValueEditor", () => {
   beforeEach(() => {
@@ -128,9 +123,7 @@ describe("CustomFieldValueEditor", () => {
     vi.restoreAllMocks();
   });
 
-  // -------------------------------------------------------------------------
   // Renders correct sub-editor per field type
-  // -------------------------------------------------------------------------
 
   describe("renders correct editor for each field type", () => {
     it("renders a text input for TEXT field type", () => {
@@ -165,6 +158,38 @@ describe("CustomFieldValueEditor", () => {
       expect(screen.getByTestId("date-picker")).toBeTruthy();
     });
 
+    it("renders the date picker empty for an Invalid Date value instead of throwing (ISS-8884)", () => {
+      render(
+        <CustomFieldValueEditor
+          {...BASE_ENTITY}
+          setting={makeSetting(CustomFieldType.Date)}
+          value={
+            {
+              id: "v-date",
+              customFieldId: "field-1",
+              entityId: "proj-1",
+              name: "Due",
+              fieldType: CustomFieldType.Date,
+              displayValue: null,
+              showInTable: false,
+              textValue: null,
+              numberValue: null,
+              // The revived shape of an ISO-looking junk string.
+              dateValue: new Date("2026-99-99T00:00:00.000Z"),
+              enumValue: null,
+              multiEnumValues: [],
+              peopleValues: [],
+              referenceValues: [],
+            } satisfies CustomFieldValueDetail
+          }
+        />
+      );
+      expect(screen.getByTestId("date-picker")).toHaveAttribute(
+        "data-value",
+        ""
+      );
+    });
+
     it("renders a 'No people assigned' message for empty PEOPLE field", () => {
       render(
         <CustomFieldValueEditor
@@ -185,6 +210,7 @@ describe("CustomFieldValueEditor", () => {
               enumValue: null,
               multiEnumValues: [],
               peopleValues: [],
+              referenceValues: [],
             } satisfies CustomFieldValueDetail
           }
         />
@@ -210,6 +236,91 @@ describe("CustomFieldValueEditor", () => {
       expect(screen.getByText("Select option...")).toBeTruthy();
     });
 
+    it("calls mutation when an enum option is selected", () => {
+      const setting = makeSetting(CustomFieldType.Enum, {
+        enumOptions: [
+          {
+            id: "opt-1",
+            customFieldId: "field-1",
+            name: "High",
+            color: "#ff0000",
+            enabled: true,
+            sortOrder: 0,
+          },
+        ],
+      });
+      const { container } = render(
+        <CustomFieldValueEditor {...BASE_ENTITY} setting={setting} />
+      );
+
+      const trigger = container.querySelector('[role="combobox"]');
+      expect(trigger).toBeTruthy();
+      fireEvent.click(trigger!);
+      const option = screen.getByText("High");
+      fireEvent.click(option);
+
+      expect(mockMutate).toHaveBeenCalledWith(
+        { fieldId: "field-1", value: "opt-1" },
+        expect.anything()
+      );
+    });
+
+    it("calls mutation with null when None is selected for enum", () => {
+      const setting = makeSetting(CustomFieldType.Enum, {
+        enumOptions: [
+          {
+            id: "opt-1",
+            customFieldId: "field-1",
+            name: "High",
+            color: "#ff0000",
+            enabled: true,
+            sortOrder: 0,
+          },
+        ],
+      });
+      render(
+        <CustomFieldValueEditor
+          {...BASE_ENTITY}
+          setting={setting}
+          value={
+            {
+              id: "v1",
+              customFieldId: "field-1",
+              entityId: "proj-1",
+              name: "Priority",
+              fieldType: CustomFieldType.Enum,
+              displayValue: "High",
+              showInTable: false,
+              textValue: null,
+              numberValue: null,
+              dateValue: null,
+              enumValue: {
+                id: "opt-1",
+                customFieldId: "field-1",
+                name: "High",
+                color: "#ff0000",
+                enabled: true,
+                sortOrder: 0,
+              },
+              multiEnumValues: [],
+              peopleValues: [],
+              referenceValues: [],
+            } satisfies CustomFieldValueDetail
+          }
+        />
+      );
+
+      const trigger = screen.getByRole("combobox");
+      fireEvent.click(trigger);
+      const noneOption = screen.getByText("None");
+      fireEvent.click(noneOption);
+
+      expect(mockMutate).toHaveBeenCalledWith(
+        { fieldId: "field-1", value: null },
+        expect.anything()
+      );
+    });
+
     it("renders a multi-select trigger button for MULTI_ENUM field type", () => {
       const setting = makeSetting(CustomFieldType.MultiEnum);
       render(<CustomFieldValueEditor {...BASE_ENTITY} setting={setting} />);
@@ -217,9 +328,7 @@ describe("CustomFieldValueEditor", () => {
     });
   });
 
-  // -------------------------------------------------------------------------
   // Blur-to-save for TextFieldEditor
-  // -------------------------------------------------------------------------
 
   describe("TextFieldEditor blur-to-save", () => {
     it("calls mutation with trimmed text value on blur", () => {
@@ -242,6 +351,7 @@ describe("CustomFieldValueEditor", () => {
               enumValue: null,
               multiEnumValues: [],
               peopleValues: [],
+              referenceValues: [],
             } satisfies CustomFieldValueDetail
           }
         />
@@ -278,6 +388,7 @@ describe("CustomFieldValueEditor", () => {
               enumValue: null,
               multiEnumValues: [],
               peopleValues: [],
+              referenceValues: [],
             } satisfies CustomFieldValueDetail
           }
         />
@@ -292,28 +403,80 @@ describe("CustomFieldValueEditor", () => {
         value: null,
       });
     });
-  });
 
-  // -------------------------------------------------------------------------
-  // NumberFieldEditor blur-to-save
-  // -------------------------------------------------------------------------
-
-  describe("NumberFieldEditor blur-to-save", () => {
-    it("calls mutation with parsed float on blur", () => {
+    it("restores text and exits without writing when Escape cancels", () => {
       render(
         <CustomFieldValueEditor
           {...BASE_ENTITY}
-          setting={makeSetting(CustomFieldType.Number, {
-            name: "Score",
-            numberFormat: NumberFormat.None,
-          })}
+          setting={makeSetting(CustomFieldType.Text, { name: "Title" })}
+          value={
+            {
+              id: "v1",
+              customFieldId: "field-1",
+              entityId: "proj-1",
+              name: "Title",
+              fieldType: CustomFieldType.Text,
+              displayValue: null,
+              showInTable: false,
+              textValue: "initial",
+              numberValue: null,
+              dateValue: null,
+              enumValue: null,
+              multiEnumValues: [],
+              peopleValues: [],
+              referenceValues: [],
+            } satisfies CustomFieldValueDetail
+          }
         />
       );
 
-      const input = screen.getByRole("textbox", { name: "Score" });
+      const input = screen.getByRole("textbox", { name: "Title" });
       fireEvent.focus(input);
-      fireEvent.change(input, { target: { value: "42.5" } });
+      fireEvent.change(input, { target: { value: "discarded" } });
+      fireEvent.keyDown(input, { key: "Escape" });
+
+      expect(input).toHaveValue("initial");
+      expect(input).not.toHaveFocus();
+      expect(mockMutate).not.toHaveBeenCalled();
+    });
+  });
+
+  // NumberFieldEditor blur-to-save
+
+  describe("NumberFieldEditor blur-to-save", () => {
+    function mountNumberEditor(
+      extra: Partial<CustomFieldSettingWithOptions["customField"]> = {},
+      entityId: string = BASE_ENTITY.entityId
+    ) {
+      render(
+        <CustomFieldValueEditor
+          {...BASE_ENTITY}
+          entityId={entityId}
+          setting={makeSetting(CustomFieldType.Number, {
+            name: "Score",
+            numberFormat: NumberFormat.None,
+            ...extra,
+          })}
+        />
+      );
+    }
+
+    function renderNumberEditor(
+      extra: Partial<CustomFieldSettingWithOptions["customField"]> = {}
+    ) {
+      mountNumberEditor(extra);
+      return screen.getByRole("textbox", { name: "Score" });
+    }
+
+    function typeAndBlur(input: HTMLElement, raw: string) {
+      fireEvent.focus(input);
+      fireEvent.change(input, { target: { value: raw } });
       fireEvent.blur(input);
+    }
+
+    it("calls mutation with parsed float on blur", () => {
+      const input = renderNumberEditor();
+      typeAndBlur(input, "42.5");
 
       expect(mockMutate).toHaveBeenCalledWith({
         fieldId: "field-1",
@@ -322,14 +485,7 @@ describe("CustomFieldValueEditor", () => {
     });
 
     it("calls mutation with null on blur when input is empty", () => {
-      render(
-        <CustomFieldValueEditor
-          {...BASE_ENTITY}
-          setting={makeSetting(CustomFieldType.Number, { name: "Score" })}
-        />
-      );
-
-      const input = screen.getByRole("textbox", { name: "Score" });
+      const input = renderNumberEditor();
       fireEvent.focus(input);
       fireEvent.blur(input);
 
@@ -338,11 +494,108 @@ describe("CustomFieldValueEditor", () => {
         value: null,
       });
     });
+
+    it("treats whitespace-only input as a clear, never as zero", () => {
+      const input = renderNumberEditor();
+      typeAndBlur(input, "   ");
+
+      expect(mockMutate).toHaveBeenCalledTimes(1);
+      expect(mockMutate).toHaveBeenCalledWith({
+        fieldId: "field-1",
+        value: null,
+      });
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+
+    it.each([
+      ["1.5", 1.5],
+      ["0", 0],
+      ["-3", -3],
+      // Number() accepts radix syntax; the grid cell and the server validator
+      // already accept it through the same helper, so the editor matches them.
+      ["0x10", 16],
+    ])("persists %s as %s", (raw, expected) => {
+      const input = renderNumberEditor();
+      typeAndBlur(input, raw);
+
+      expect(mockMutate).toHaveBeenCalledTimes(1);
+      expect(mockMutate).toHaveBeenCalledWith({
+        fieldId: "field-1",
+        value: expected,
+      });
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+
+    it.each(["1e999", "-1e999", "12abc", "1,234", "+", ".", "Infinity"])(
+      "rejects %s without writing and keeps the typed text on screen",
+      (raw) => {
+        const input = renderNumberEditor();
+        typeAndBlur(input, raw);
+
+        expect(mockMutate).not.toHaveBeenCalled();
+        const alert = screen.getByRole("alert");
+        expect(alert).toHaveTextContent(INLINE_SCALAR_NUMBER_INVALID_MESSAGE);
+        expect(alert.id).not.toBe("");
+        expect(input).toHaveAttribute("aria-invalid", "true");
+        expect(input).toHaveAttribute("aria-describedby", alert.id);
+        expect(input).toHaveValue(raw);
+      }
+    );
+
+    it("clears the error once the user types again", () => {
+      const input = renderNumberEditor();
+      typeAndBlur(input, "1e999");
+      expect(screen.getByRole("alert")).toBeVisible();
+
+      fireEvent.change(input, { target: { value: "1e9" } });
+
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(input).toHaveAttribute("aria-invalid", "false");
+      expect(input).not.toHaveAttribute("aria-describedby");
+    });
+
+    it("gives two editors of the same field distinct alert ids", () => {
+      mountNumberEditor({}, "proj-1");
+      mountNumberEditor({}, "proj-2");
+      const inputs = screen.getAllByRole("textbox", { name: "Score" });
+      expect(inputs).toHaveLength(2);
+      for (const input of inputs) {
+        typeAndBlur(input, "1e999");
+      }
+
+      const alerts = screen.getAllByRole("alert");
+      expect(alerts).toHaveLength(2);
+      expect(alerts[0].id).not.toBe(alerts[1].id);
+      expect(inputs[0]).toHaveAttribute("aria-describedby", alerts[0].id);
+      expect(inputs[1]).toHaveAttribute("aria-describedby", alerts[1].id);
+    });
+
+    it("renders the error row beneath a currency prefix", () => {
+      const input = renderNumberEditor({ numberFormat: NumberFormat.Currency });
+      typeAndBlur(input, "12abc");
+
+      expect(screen.getByText("$")).toBeVisible();
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        INLINE_SCALAR_NUMBER_INVALID_MESSAGE
+      );
+      expect(mockMutate).not.toHaveBeenCalled();
+    });
+
+    it("renders the error row beneath a percentage suffix", () => {
+      const input = renderNumberEditor({
+        numberFormat: NumberFormat.Percentage,
+      });
+      typeAndBlur(input, "1e999");
+
+      expect(screen.getByText("%")).toBeVisible();
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        INLINE_SCALAR_NUMBER_INVALID_MESSAGE
+      );
+      expect(mockMutate).not.toHaveBeenCalled();
+    });
   });
 
-  // -------------------------------------------------------------------------
   // MultiEnumFieldEditor — disabled-but-selected "ghost" values (FEA-3269)
-  // -------------------------------------------------------------------------
 
   describe("MultiEnumFieldEditor ghost selections", () => {
     const OPT_ACTIVE: CustomFieldEnumOption = {
@@ -385,6 +638,7 @@ describe("CustomFieldValueEditor", () => {
               enumValue: null,
               multiEnumValues: selected,
               peopleValues: [],
+              referenceValues: [],
             } satisfies CustomFieldValueDetail
           }
         />
@@ -452,9 +706,7 @@ describe("CustomFieldValueEditor", () => {
     });
   });
 
-  // -------------------------------------------------------------------------
   // Field label rendered from customField.name
-  // -------------------------------------------------------------------------
 
   it("displays the field name as a label", () => {
     render(

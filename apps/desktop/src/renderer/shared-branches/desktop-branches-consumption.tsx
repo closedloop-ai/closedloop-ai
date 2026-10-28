@@ -20,6 +20,7 @@ type DesktopBranchesConsumption = {
     refetchOnReconnect: boolean;
     refetchOnWindowFocus: boolean;
     staleTime?: number;
+    networkMode?: "always";
   };
   useCanonicalCloudSource: boolean;
 };
@@ -38,24 +39,24 @@ const DesktopBranchesConsumptionContext =
  * before descendants render, making the previous identity unreachable.
  */
 export function DesktopBranchesConsumptionProvider({
-  cloudHoldsHistory,
+  readsCloud,
   children,
 }: Readonly<{
   /**
-   * ISS-5714: `CloudReadCutoverDecision.cloudHoldsHistory` — the backlog axis of
-   * the SAME decision that selects the Sessions read source. Passed down by
-   * `DesktopAppCoreModeStack` rather than re-read from a context here, so this
-   * module keeps no import edge back to the app-core provider that mounts it.
+   * ISS-6972: `mode === DesktopAppCoreMode.Cloud` — the SAME decision that
+   * selects the Sessions read source. Passed down by `DesktopAppCoreModeStack`
+   * rather than re-read from a context here, so this module keeps no import edge
+   * back to the app-core provider that mounts it.
    *
    * REQUIRED, with no default: a silent `false` would strand Branches on the
    * local source at a future mount site with nothing failing, which is the same
-   * shape of quiet divergence this ticket closed.
+   * shape of quiet divergence ISS-5714 closed.
    */
-  cloudHoldsHistory: boolean;
+  readsCloud: boolean;
   children: ReactNode;
 }>) {
   const { state } = useDesktopAuth();
-  const value = useDesktopBranchesConsumptionForAuth(state, cloudHoldsHistory);
+  const value = useDesktopBranchesConsumptionForAuth(state, readsCloud);
   return (
     <DesktopBranchesConsumptionContext.Provider value={value}>
       {children}
@@ -68,12 +69,13 @@ export function DesktopBranchesConsumptionProvider({
  * keeps direct test/story mounts on their existing local source and parent
  * QueryClient.
  *
- * ISS-5714: `useCanonicalCloudSource` is a complete cloud identity AND the
- * ISS-5477 cutover having established that the cloud actually holds this
- * machine's history. Identity alone put Branches on an empty cloud projection
- * while Sessions correctly stayed on populated local data — one app telling a
- * user its data lives in two places, and handing them a blank page on one of
- * them. Both surfaces now read the same `CloudReadCutoverDecision`.
+ * ISS-5714 / ISS-6972: `useCanonicalCloudSource` is a complete cloud identity
+ * AND the app-core mode being Cloud. Identity alone put Branches on an empty
+ * cloud projection while Sessions correctly stayed on populated local data — one
+ * app telling a user its data lives in two places, and handing them a blank page
+ * on one of them. Both surfaces now read the same mode, including offline: the
+ * carve-out that kept Branches on cached cloud rows while Sessions dropped to
+ * Local is retired, so one screen can no longer name two stores.
  *
  * ISS-5567: `useCanonicalCloudSource` is also the SINGLE answer to "who would
  * serve a `/branches/:id` opened right now" — branch ids are not interchangeable
@@ -89,14 +91,13 @@ export function useDesktopBranchesConsumption(): DesktopBranchesConsumption {
 
 function useDesktopBranchesConsumptionForAuth(
   state: DesktopAuthState,
-  cloudHoldsHistory: boolean
+  readsCloud: boolean
 ): DesktopBranchesConsumption {
   const identityKey = canonicalBranchesIdentityKey(state);
-  // ISS-5714: a complete identity is necessary but no longer sufficient. The
-  // cloud must also actually HOLD this machine's history, or Branches renders
-  // the empty workspace the ISS-5477 cutover gate exists to keep off screen —
-  // beside a Sessions page that correctly stayed local and stayed populated.
-  const useCanonicalCloudSource = identityKey !== null && cloudHoldsHistory;
+  // ISS-5714: a complete identity is necessary but not sufficient — Branches
+  // also needs a non-empty org for its cache namespace, which the mode never
+  // checks, so the two terms are both load-bearing.
+  const useCanonicalCloudSource = identityKey !== null && readsCloud;
   const queryClientRef = useRef<QueryClient | null>(null);
   const priorIdentityKeyRef = useRef<string | null>(identityKey);
   if (!queryClientRef.current) {
@@ -123,11 +124,11 @@ function useDesktopBranchesConsumptionForAuth(
     queryClient?.mount();
     return () => queryClient?.unmount();
   }, []);
-  // Memoized because ISS-5714 moved this provider inside `DesktopAppCoreModeStack`,
-  // which re-renders on every readiness poll (every `CLOUD_READ_READINESS_POLL_MS`
-  // for the whole pre-cutover window). A fresh object literal per render would
-  // push that cadence straight through the context into both consumers — one of
-  // which is the whole `SessionDetailView`.
+  // Memoized because ISS-5714 moved this provider inside
+  // `DesktopAppCoreModeStack`. ISS-6972 removed the readiness poll that used to
+  // re-render that stack every few seconds, but a fresh object literal per render
+  // would still push every parent render straight through the context into both
+  // consumers — one of which is the whole `SessionDetailView`.
   return useMemo(
     () => ({
       queryClient: queryClientRef.current,
@@ -170,4 +171,10 @@ const DESKTOP_LOCAL_BRANCH_QUERY_POLICY = {
   refetchOnReconnect: false,
   refetchOnWindowFocus: false,
   staleTime: Number.POSITIVE_INFINITY,
+  // ISS-6972: the local source reads SQLite over IPC, which needs no network.
+  // React Query's default `networkMode: "online"` pauses a fetch whenever the
+  // browser reports offline, so without this the one state that now sends
+  // Branches to the local source — going offline — is the one state in which it
+  // could never actually read it, and the view renders nothing at all.
+  networkMode: "always",
 } as const;

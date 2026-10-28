@@ -3,7 +3,7 @@
  * @description The one pair-equality predicate for a signed-in desktop user.
  *
  * Several lanes carry the same `(user_id, organization_id)` pair — the
- * trace-comment identity resolver that resolves it, the db-host identity
+ * API-key identity resolver that resolves it, the db-host identity
  * publisher that forwards it to the SQLite child, and the session writers that
  * stamp it. They must all agree on what "the identity changed" means, because
  * the pair is the unit: a user id that survives an org switch is still a
@@ -64,4 +64,44 @@ export function createUserIdentityChangeSubscription(
       unsubscribeResolved();
     };
   };
+}
+
+/**
+ * `UserIdentityPair` narrowed to actually-signed-in. Lanes that only act for a
+ * signed-in account take this instead of re-declaring the pair, so a new field
+ * reaches all of them at once — the drift this file's header exists to stop.
+ */
+export type SignedInUserIdentity = {
+  organizationId: string;
+  userId: string;
+};
+
+/** The (possibly unstamped) owner pair a session row carries. */
+export type SessionOwnerIdentityPair = {
+  userId?: string | null;
+  organizationId?: string | null;
+};
+
+/**
+ * ISS-7096 / cr-81036: THE foreign-ownership predicate — a session is foreign
+ * only when its row carries a FULL identity pair that differs from the
+ * signed-in one. A NULL-owner or locally-absent session is never foreign (the
+ * ISS-6168 boot claim may still stamp it as ours). Every JS gate imports this
+ * one function; its two query-level twins are
+ * `loadForeignOwnedInvocationSessionIds` and the `ownerIdentity` clause of
+ * `loadPendingInvocationTemplates` (both in
+ * `database/invocation-sync-pending-templates.ts`) — keep all three in
+ * agreement. The type-guard narrowing hands callers the proven non-null pair.
+ */
+export function isForeignOwnedSession(
+  owner: SessionOwnerIdentityPair | null | undefined,
+  identity: SignedInUserIdentity
+): owner is { userId: string; organizationId: string } {
+  return (
+    owner != null &&
+    owner.userId != null &&
+    owner.organizationId != null &&
+    (owner.userId !== identity.userId ||
+      owner.organizationId !== identity.organizationId)
+  );
 }

@@ -16,6 +16,7 @@ import {
 } from "@repo/api/src/types/agent-session";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { persistedSessionDetail } from "@/__tests__/support/agent-sessions/service.test-harness";
 
 const mocks = vi.hoisted(() => ({
   dbNull: Symbol("db-null"),
@@ -142,7 +143,9 @@ function installDb(
           });
         }
       ),
-      upsert: vi.fn().mockResolvedValue({ artifactId: PERSISTED_ARTIFACT_ID }),
+      upsert: vi
+        .fn()
+        .mockResolvedValue(persistedSessionDetail(PERSISTED_ARTIFACT_ID)),
       update: vi.fn().mockResolvedValue({}),
     },
     agentSessionEvent: {
@@ -304,8 +307,9 @@ describe("upsertSessions — ISS-4678/ISS-4827 watermark wiring", () => {
       // no loop so no back-link write follows the commit, and the two fold flags
       // feed the batch-level retired-status tally.
       .mockResolvedValueOnce({
-        loopBacklink: null,
         persisted: true,
+        // PLN-1775 M1: the post-commit discovery tally this slice contributes.
+        observedRepositoryFullNames: [],
       })
       .mockRejectedValueOnce(txFailure);
 

@@ -60,7 +60,7 @@ export type CloudReadLaneConfig = {
  * Why {@link lane} is not applicable under {@link config}, or `null` when it is
  * applicable — or when no configuration switch governs it.
  *
- * Four of the five lanes have no such switch: they are gated on identity,
+ * Every other lane has no such switch: they are gated on identity,
  * connectivity and org policy, all of which are live state that reopens. They
  * answer `null` by design, and that keeps a surface waiting on them.
  */

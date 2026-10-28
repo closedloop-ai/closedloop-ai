@@ -1,14 +1,20 @@
 import type { AgentSessionUsageSummary } from "@repo/api/src/types/agent-session";
 import { AgentSessionViewerScope } from "@repo/api/src/types/agent-session";
-import { LOC_PER_DOLLAR_MERGED_LABEL } from "@repo/api/src/utils/loc-per-dollar";
+import { LOC_PER_DOLLAR_LABEL } from "@repo/api/src/utils/loc-per-dollar";
 import {
   buildSessionSummaryDeltas,
   type SessionSummaryDeltas,
 } from "@repo/app/agents/lib/session-summary-deltas";
 import { NO_COMPARISON_LABEL } from "@repo/app/insights/components/kpi-delta-placeholder";
+import { GROWTH_LABEL } from "@repo/app/insights/lib/dashboard-range";
 import { KPI_NOT_COMPUTED_REASON } from "@repo/app/insights/lib/kpi-no-comparison-copy";
 import { WithUnifiedDeltaPill } from "@repo/app/shared/feature-flags/metric-delta-treatment-fixtures";
-import { MetricPolarity } from "@repo/design-system/components/ui/primitives/metric-polarity";
+import { DateRange } from "@repo/app/shared/lib/format-utils";
+import {
+  DELTA_SENTIMENT_CAPTION,
+  DeltaSentiment,
+  MetricPolarity,
+} from "@repo/design-system/components/ui/primitives/metric-polarity";
 import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import {
@@ -117,7 +123,11 @@ describe("PRs Shipped delta chip (FEA-4202)", () => {
     // "better" beside it.
     expect(chip).toHaveClass("text-success");
     expect(chip.querySelector("svg.lucide-trending-up")).not.toBeNull();
-    expect(within(card).queryByText("better")).toBeNull();
+    expect(
+      within(card).queryByText(
+        String(DELTA_SENTIMENT_CAPTION[DeltaSentiment.Improvement])
+      )
+    ).toBeNull();
     expect(within(card).getByText("WoW")).toBeInTheDocument();
     // The value it is grading is still the real count.
     expect(within(card).getByText("7")).toBeInTheDocument();
@@ -146,7 +156,11 @@ describe("PRs Shipped delta chip (FEA-4202)", () => {
     // glyph; the word does not.
     expect(chip).toHaveClass("text-destructive");
     expect(chip.querySelector("svg.lucide-trending-down")).not.toBeNull();
-    expect(within(card).queryByText("worse")).toBeNull();
+    expect(
+      within(card).queryByText(
+        String(DELTA_SENTIMENT_CAPTION[DeltaSentiment.Regression])
+      )
+    ).toBeNull();
   });
 
   // ISS-4779 closed-by-default counterfactual for THIS file (tamsinb review).
@@ -195,8 +209,13 @@ describe("PRs Shipped delta chip (FEA-4202)", () => {
     const card = cardFor(PRS_SHIPPED_METRIC_CARD_LABEL);
     expect(within(card).queryByTestId(DELTA_CHIP)).not.toBeInTheDocument();
     expect(within(card).queryByText("+25%")).not.toBeInTheDocument();
-    // It is the signed-out dash that is rendered, not a value.
-    expect(within(card).getByText("—")).toBeInTheDocument();
+    // ISS-7866: the signed-out card now withdraws its value through
+    // `value={null}` — the muted "No data" glyph the other gated GitHub-truth
+    // surfaces already use — rather than the `—` sentinel it used to print
+    // beside a sign-in ask. The contract this case holds is unchanged and is
+    // the reason it stays: no chip may grade a value the card refused to state,
+    // so the assertion follows the withdrawn value to its new glyph.
+    expect(within(card).getByText("No data")).toBeInTheDocument();
   });
 
   // A failed read is "Unavailable": the trend is not merely unknown, it is
@@ -369,7 +388,7 @@ describe("LOC / $ carries no comparison (FEA-4202 / ISS-6398)", () => {
       />
     );
 
-    const card = cardFor(LOC_PER_DOLLAR_MERGED_LABEL);
+    const card = cardFor(LOC_PER_DOLLAR_LABEL);
     expect(within(card).queryByTestId(DELTA_CHIP)).not.toBeInTheDocument();
     expect(within(card).queryByText(NO_PRIOR_PERIOD)).not.toBeInTheDocument();
     // The slot is FILLED, so the row does not end on a hollow card — and the
@@ -403,7 +422,7 @@ describe("LOC / $ carries no comparison (FEA-4202 / ISS-6398)", () => {
       within(cardFor(PRS_SHIPPED_METRIC_CARD_LABEL)).getByTestId(DELTA_CHIP)
     ).toHaveTextContent("+25%");
     expect(
-      within(cardFor(LOC_PER_DOLLAR_MERGED_LABEL)).queryByTestId(DELTA_CHIP)
+      within(cardFor(LOC_PER_DOLLAR_LABEL)).queryByTestId(DELTA_CHIP)
     ).not.toBeInTheDocument();
   });
 });
@@ -487,7 +506,7 @@ describe("delivery pair is gated on the rollout flag (FEA-4202)", () => {
   it("renders no LOC / $ placeholder when the flag is off", () => {
     renderForFlag(false);
 
-    const card = cardFor(LOC_PER_DOLLAR_MERGED_LABEL);
+    const card = cardFor(LOC_PER_DOLLAR_LABEL);
     expect(
       within(card).queryByTestId(DELTA_PLACEHOLDER)
     ).not.toBeInTheDocument();
@@ -500,7 +519,7 @@ describe("delivery pair is gated on the rollout flag (FEA-4202)", () => {
   it("renders the LOC / $ placeholder once the flag is on (positive control)", () => {
     renderForFlag(true);
 
-    const card = cardFor(LOC_PER_DOLLAR_MERGED_LABEL);
+    const card = cardFor(LOC_PER_DOLLAR_LABEL);
     expect(within(card).getByTestId(DELTA_PLACEHOLDER)).toBeInTheDocument();
     expect(
       within(card).getByText(`. ${KPI_NOT_COMPUTED_REASON}`)
@@ -518,7 +537,9 @@ describe("delivery pair is gated on the rollout flag (FEA-4202)", () => {
     expect(within(card).getByTestId(DELTA_CHIP)).toBeInTheDocument();
     // ISS-5315 caption wording, byte-for-byte — NOT the v2 cadence.
     expect(within(card).getByText("vs. prior 7 days")).toBeInTheDocument();
-    expect(within(card).queryByText("WoW")).not.toBeInTheDocument();
+    expect(
+      within(card).queryByText(GROWTH_LABEL[DateRange.Last7Days])
+    ).not.toBeInTheDocument();
   });
 
   it("switches that caption to the cadence once the flag is on (positive control)", () => {

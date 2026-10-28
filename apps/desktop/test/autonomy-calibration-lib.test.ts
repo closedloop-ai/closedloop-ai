@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import { clampPercent, median } from "@repo/api/src/utils/math";
+import { describe, test } from "vitest";
 import {
   ANCESTOR_LONG_STRETCH_MS,
   ANCESTOR_PROMPT_BURST_MS,

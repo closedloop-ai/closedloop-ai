@@ -1,3 +1,4 @@
+import { DesktopHelloNackReason } from "@repo/api/src/types/compute-target";
 import type { Socket } from "socket.io";
 
 /**
@@ -16,4 +17,18 @@ export function emitSocketEvents(
   for (const { event, payload } of events) {
     socket.emit(event, payload);
   }
+}
+
+/**
+ * Tells the desktop its hello failed on the relay/API side rather than being
+ * refused (ISS-7976, ISS-11843). `internal_error` is an already-shipped
+ * `DesktopHelloNackReason`, so every installed desktop maps it.
+ */
+export function emitHelloInternalErrorNack(socket: Pick<Socket, "emit">): void {
+  emitSocketEvents(socket, [
+    {
+      event: "desktop.hello.nack",
+      payload: { reason: DesktopHelloNackReason.InternalError },
+    },
+  ]);
 }

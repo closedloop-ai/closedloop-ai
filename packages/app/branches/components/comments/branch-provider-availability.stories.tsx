@@ -11,7 +11,8 @@ const meta = {
       </div>
     ),
   ],
-  title: "App Core/Branches/Provider Availability",
+  tags: ["deprecated", "autodocs"],
+  title: "Primitives v1.0/Feedback & Status/Branch Provider Availability",
 } satisfies Meta<typeof BranchProviderAvailability>;
 
 export default meta;

@@ -3,6 +3,10 @@ import { emitDbPoolMetric } from "@repo/observability/telemetry/metrics";
 import { ORIGIN } from "@repo/observability/telemetry/origin";
 import type { TracingConfig } from "@repo/observability/tracing/config";
 import { TracingDisabledReason } from "@repo/observability/tracing/config";
+import {
+  createPerfPoolWaitSink,
+  PERF_PROFILE_DIR_ENV,
+} from "@/lib/perf-pool-wait-sink";
 
 /**
  * Registers the API instrumentation that depends on Node-only modules.
@@ -32,6 +36,8 @@ export async function registerNodeInstrumentation(): Promise<void> {
   await registerTracing();
   await registerPoolTelemetry();
   await registerSchemaBootstrap();
+  await registerS3KeyspacePrefix();
+  await registerPinnedFeatureFlags();
 }
 
 /**
@@ -78,12 +84,21 @@ async function registerTracing(): Promise<void> {
  * `origin` must be present in the emitted payload for the Vercel Log Drain.
  * The database import remains dynamic so it occurs only after tracing patches
  * `pg` in `registerTracing()`.
+ *
+ * ISS-6820 tees the same samples to a file when `CLOSEDLOOP_PROFILE_DIR` names
+ * a run directory, so the API profiling lane can report pool wait SEPARATELY
+ * from statement time — the distinction ISS-6821 turns on. The tee is null
+ * unless that var is set, so production installs exactly what it did before,
+ * and the Datadog emit runs FIRST so no defect in the profiling path can
+ * suppress the production metric.
  */
 async function registerPoolTelemetry(): Promise<void> {
   const { setPoolTelemetrySink } = await import("@repo/database");
-  setPoolTelemetrySink((sample) =>
-    emitDbPoolMetric({ ...sample, origin: ORIGIN })
-  );
+  const perfSink = createPerfPoolWaitSink(process.env[PERF_PROFILE_DIR_ENV]);
+  setPoolTelemetrySink((sample) => {
+    emitDbPoolMetric({ ...sample, origin: ORIGIN });
+    perfSink?.(sample);
+  });
 }
 
 /**
@@ -108,4 +123,51 @@ async function registerSchemaBootstrap(): Promise<void> {
     "@/lib/preview-schema-bootstrap"
   );
   setSchemaBootstrapHook(() => ensurePreviewSchemaBootstrap());
+}
+
+/**
+ * ISS-12056: on a preview runtime, moves the shared S3 client's keys under the
+ * vibe environment's prefix when the schema carries the vibe marker. Any other
+ * runtime returns without setting a resolver, so its client's middleware sends
+ * every key as given.
+ * Runs after `registerTracing` because the resolver module reaches
+ * `@repo/database`.
+ */
+async function registerS3KeyspacePrefix(): Promise<void> {
+  const {
+    createVibeKeyspacePrefixResolver,
+    readRuntimeSchemaComment,
+    runtimePreviewSchema,
+    runtimeRequiresVibeMarker,
+  } = await import("@/lib/s3-keyspace-prefix");
+  const schema = runtimePreviewSchema();
+  if (schema === null) {
+    return;
+  }
+  const { setS3KeyspacePrefixResolver } = await import("@repo/aws/s3-client");
+  setS3KeyspacePrefixResolver(
+    createVibeKeyspacePrefixResolver(
+      schema,
+      readRuntimeSchemaComment,
+      runtimeRequiresVibeMarker()
+    )
+  );
+}
+
+/**
+ * ISS-12048: pins every server flag read to the preview schema's stored
+ * production snapshot, when this runtime is a preview with one. The reader
+ * answers `null` everywhere else, so production keeps reading PostHog live.
+ * Dynamic for the same reason as the hooks above: it reaches `@repo/database`.
+ */
+async function registerPinnedFeatureFlags(): Promise<void> {
+  const { setPinnedFeatureFlagsProvider } = await import(
+    "@repo/analytics/feature-flags"
+  );
+  const { readActiveFeatureFlagSnapshot } = await import(
+    "@/lib/feature-flags/feature-flag-snapshot"
+  );
+  setPinnedFeatureFlagsProvider(
+    async () => (await readActiveFeatureFlagSnapshot())?.flags ?? null
+  );
 }

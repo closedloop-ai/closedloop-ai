@@ -7,8 +7,8 @@
  * collector-test fixtures and live in `normalized-session-test-utils.ts`
  * (`writeClaudeTranscript`, `makePopulatedSession`); import those from there.
  */
-import { execSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { execFileSync, execSync } from "node:child_process";
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { hermeticGitEnv } from "../scripts/hermetic-git-env.mjs";
@@ -72,4 +72,30 @@ export function initGitRepoWithOrigin(dir: string, orgRepo: string): void {
   } as const;
   execSync("git init -q", options);
   execSync(`git remote add origin git@github.com:${orgRepo}.git`, options);
+}
+
+/**
+ * Executable shim that records one byte per invocation, then execs real git.
+ * Point `configureBinaryPathsResolver` (or a `gitPath` parameter) at it to count
+ * the `git` spawns a resolver makes.
+ */
+export function writeCountingGitShim(dir: string, name: string): string {
+  const realGit = execFileSync("sh", ["-c", "command -v git"], {
+    encoding: "utf8",
+  }).trim();
+  const shimPath = path.join(dir, name);
+  const counterPath = `${shimPath}.count`;
+  writeFileSync(counterPath, "", "utf8");
+  writeFileSync(
+    shimPath,
+    `#!/bin/sh\nprintf 'x' >> '${counterPath}'\nexec '${realGit}' "$@"\n`,
+    "utf8"
+  );
+  chmodSync(shimPath, 0o755);
+  return shimPath;
+}
+
+/** How many times the shim from {@link writeCountingGitShim} has run. */
+export function readShimCount(shimPath: string): number {
+  return readFileSync(`${shimPath}.count`, "utf8").length;
 }

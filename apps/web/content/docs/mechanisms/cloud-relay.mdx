@@ -26,7 +26,6 @@ Every message carries `{ protocolVersion: "1", messageId: UUID, timestamp: ISO-8
 | `desktop.command.ack` | Ack or reject an inbound command (`accepted`, `state`, `reason`). |
 | `desktop.command.event` | Stream events back: `status | chunk | result | error | done`, carrying `sequence` numbers for resume. |
 | `desktop.presence` | Presence updates: `online | degraded | paused`, plus optional `activeCommands` and `queueDepth`. |
-| `desktop.telemetry` | Telemetry events (Datadog-bound). |
 
 ### Inbound events (relay → desktop)
 

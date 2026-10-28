@@ -1,42 +1,28 @@
 import { randomUUID } from "node:crypto";
 import type { Server as HttpServer } from "node:http";
-import { nodeAnalytics } from "@repo/analytics/node";
 import {
-  DESKTOP_AGENT_SESSIONS_SOCKET_EVENT,
-  type DesktopAgentSessionsAck,
-  DesktopAgentSessionsAckReason,
-} from "@repo/api/src/types/agent-session";
-import { DesktopHelloNackReason } from "@repo/api/src/types/compute-target";
+  DESKTOP_HELLO_ACK_SOCKET_EVENT,
+  DesktopHelloNackReason,
+} from "@repo/api/src/types/compute-target";
 import { log } from "@repo/observability/log";
 import { redactGatewaySessionId } from "@repo/observability/redact-correlation";
 import { buildTelemetryTraceContext } from "@repo/observability/telemetry/context";
 import { Server, type Socket } from "socket.io";
-import { apiKeysService } from "../app/api-keys/service";
 import {
   computeTargetsService,
   isComputeTargetGatewayConflictResult,
 } from "../app/compute-targets/service";
-import { usersService } from "../app/users/service";
-import { isAgentSessionSyncSupportedForUser } from "./agent-session-sync-feature";
-import { getDesktopManagedPopRequestFailure } from "./auth/desktop-managed-pop";
 import {
   CommandSigningEligibilityStatus,
   isDirectDesktopAuthSigningEligible,
 } from "./compute-target-signing-eligibility";
-import { handleDesktopAgentSessionsEvent } from "./desktop-agent-sessions-handler";
-import {
-  type DesktopAnalyticsCaptureInput,
-  handleDesktopAnalyticsEvent,
-} from "./desktop-analytics-handler";
-import {
-  DESKTOP_ANALYTICS_SOCKET_EVENT,
-  type DesktopAnalyticsAck,
-  DesktopAnalyticsAckReason,
-} from "./desktop-analytics-schema";
 import { acknowledgeDesktopCommand } from "./desktop-command-ack-handler";
+import { enqueueEventIngestion } from "./desktop-command-event-chain";
 import { desktopCommandStore } from "./desktop-command-store";
 import { getRealDesktopCommandTelemetryContext } from "./desktop-command-telemetry-context";
-import { partitionPendingCommandsForReconnect } from "./desktop-gateway-reconnect";
+import { refuseUnboundedHelloFields } from "./desktop-gateway-hello-field-guard";
+import { emitPendingCommandsForReconnect } from "./desktop-gateway-reconnect";
+import { resolveDesktopAuthContext } from "./desktop-gateway-socket-auth";
 import {
   type DesktopAuthContext,
   type DesktopGatewaySocketServer,
@@ -44,20 +30,21 @@ import {
   type GatewaySocketData,
   HELLO_OPERATION_TIMEOUT_MS,
   PROTOCOL_VERSION,
+  SOCKET_HEARTBEAT_INTERVAL_MS,
   type SocketConnectionContext,
 } from "./desktop-gateway-types";
 import {
+  DESKTOP_GATEWAY_MAX_PAYLOAD_BYTES,
   emitCommand,
+  handleRelayOperationForSocket,
   parseCommandAckPayload,
   parseCommandEventPayload,
   parseHelloPayload,
   toEnvelope,
-  toWireCommandFromRelayOperation,
   toWireCommandFromStore,
 } from "./desktop-gateway-wire";
-import { publishLegacyRelayEvent } from "./desktop-relay-event-bridge";
+import { statedMintingOrigin } from "./desktop-hello-ack-minting-origin";
 import { buildDesktopServerCapabilities } from "./desktop-server-capabilities";
-import { handleTelemetryEvent } from "./desktop-telemetry-handler";
 import { relayEventBus } from "./relay-event-bus";
 import { isTrustedOrigin } from "./trusted-origins";
 import {
@@ -68,8 +55,6 @@ import {
 } from "./with-timeout";
 
 const SOCKET_NAMESPACE = "/desktop-gateway";
-const SOCKET_HEARTBEAT_INTERVAL_MS = 30_000;
-const DESKTOP_SOCKET_POP_VERIFICATION_PATH = "/internal/api-keys/verify";
 
 const serverInstances = new WeakMap<HttpServer, DesktopGatewaySocketServer>();
 const contextsBySocketId = new Map<string, SocketConnectionContext>();
@@ -79,33 +64,6 @@ const helloInFlight = new Set<string>();
 type CommandEventPayload = NonNullable<
   ReturnType<typeof parseCommandEventPayload>
 >;
-
-/**
- * Per-command promise chain to serialize event ingestion.
- * Without this, rapid socket events for the same command trigger concurrent
- * DB transactions that race on `lastSequenceAcked`, causing sequence_gap
- * rejections and expensive retry loops (O(n²) for n events).
- */
-const eventIngestionChains = new Map<string, Promise<void>>();
-
-function captureDesktopAnalytics(input: DesktopAnalyticsCaptureInput): void {
-  nodeAnalytics.capture(input);
-}
-
-function enqueueEventIngestion(
-  commandId: string,
-  fn: () => Promise<void>
-): void {
-  const previous = eventIngestionChains.get(commandId) ?? Promise.resolve();
-  const next = previous.then(fn, fn);
-  eventIngestionChains.set(commandId, next);
-  // Clean up the chain entry when it settles to avoid memory leaks
-  next.then(() => {
-    if (eventIngestionChains.get(commandId) === next) {
-      eventIngestionChains.delete(commandId);
-    }
-  });
-}
 
 async function ingestDesktopCommandEventForSocket(input: {
   socket: Socket;
@@ -137,9 +95,6 @@ async function ingestDesktopCommandEventForSocket(input: {
           sequence: result.sequence,
         })
       );
-      if (!result.duplicate) {
-        await publishLegacyRelayEvent(payload.commandId, payload);
-      }
       return;
     }
 
@@ -149,12 +104,13 @@ async function ingestDesktopCommandEventForSocket(input: {
       );
       if (command) {
         socket.emit(
-          "desktop.hello.ack",
+          DESKTOP_HELLO_ACK_SOCKET_EVENT,
           toEnvelope({
             computeTargetId: command.computeTargetId,
             sessionId:
               contextsBySocketId.get(socket.id)?.sessionId ?? randomUUID(),
             serverTime: new Date().toISOString(),
+            ...statedMintingOrigin(),
             ...(context.serverCapabilities
               ? { serverCapabilities: context.serverCapabilities }
               : {}),
@@ -178,113 +134,6 @@ async function ingestDesktopCommandEventForSocket(input: {
 
 function getSocketData(socket: Socket): GatewaySocketData {
   return socket.data as GatewaySocketData;
-}
-
-function extractApiKey(socket: Socket): string | null {
-  let authToken: string | null = null;
-  if (typeof socket.handshake.auth?.token === "string") {
-    authToken = socket.handshake.auth.token;
-  } else if (typeof socket.handshake.auth?.apiKey === "string") {
-    authToken = socket.handshake.auth.apiKey;
-  }
-
-  const authHeader = socket.handshake.headers.authorization;
-  const headerToken =
-    typeof authHeader === "string" && authHeader.startsWith("Bearer ")
-      ? authHeader.slice(7).trim()
-      : null;
-
-  const token = authToken ?? headerToken;
-  if (!token?.startsWith("sk_live_")) {
-    return null;
-  }
-  return token;
-}
-
-// Inlined API key auth — cannot import resolveApiKeyTokenContext because
-// resolve-any-auth-context.ts transitively pulls in clerk-service → server-only
-// which throws when running outside Next.js (the custom socket server via tsx).
-async function resolveDesktopAuthContext(
-  socket: Socket
-): Promise<DesktopAuthContext | null> {
-  const apiKey = extractApiKey(socket);
-  if (!apiKey) {
-    return null;
-  }
-
-  const keyContext = await apiKeysService.verifyKeyWithMetadata(apiKey, {
-    updateLastUsedAt: false,
-  });
-  if (!keyContext) {
-    return null;
-  }
-
-  if (!keyContext.scopes.includes("write")) {
-    return null;
-  }
-
-  const user = await usersService.findById(
-    keyContext.userId,
-    keyContext.organizationId
-  );
-  if (!user?.active) {
-    return null;
-  }
-
-  const popFailure = await getDesktopManagedPopRequestFailure({
-    keyContext: { ...keyContext, clerkUserId: user.clerkId },
-    request: buildDesktopSocketPopVerificationRequest(socket),
-  });
-  if (popFailure) {
-    log.warn("Desktop gateway socket PoP auth rejected", {
-      socketId: socket.id,
-      status: popFailure.status,
-    });
-    return null;
-  }
-
-  apiKeysService.touchLastUsedAt(keyContext.apiKeyId).catch((error) => {
-    log.warn("Failed updating desktop socket API key last-used timestamp", {
-      socketId: socket.id,
-      apiKeyId: keyContext.apiKeyId,
-      error,
-    });
-  });
-
-  return {
-    organizationId: keyContext.organizationId,
-    userId: keyContext.userId,
-    clerkUserId: user.clerkId,
-    apiKeySource: keyContext.source,
-    apiKeyGatewayId: keyContext.gatewayId,
-    apiKeyBoundPublicKey: keyContext.boundPublicKey,
-  };
-}
-
-function buildDesktopSocketPopVerificationRequest(socket: Socket): Request {
-  // Direct Socket.IO connects reuse the same PoP proof Desktop signs for relay
-  // API-key validation; relay and direct paths should accept the same handshake.
-  return new Request(
-    `https://desktop-gateway.local${DESKTOP_SOCKET_POP_VERIFICATION_PATH}`,
-    {
-      method: "POST",
-      headers: toRequestHeaders(socket.handshake.headers),
-    }
-  );
-}
-
-function toRequestHeaders(headers: Socket["handshake"]["headers"]): Headers {
-  const result = new Headers();
-  for (const [name, value] of Object.entries(headers)) {
-    if (Array.isArray(value)) {
-      for (const entry of value) {
-        result.append(name, entry);
-      }
-    } else if (typeof value === "string") {
-      result.set(name, value);
-    }
-  }
-  return result;
 }
 
 function removeSocketFromTarget(targetId: string, socketId: string): boolean {
@@ -311,6 +160,10 @@ export async function handleSocketHello(
     helloStartedAt: number;
   }
 ): Promise<void> {
+  if (!refuseUnboundedHelloFields(socket, payload)) {
+    return;
+  }
+
   const mergedCapabilities = {
     ...(payload.capabilities ?? {}),
     maxInFlightCommands: payload.maxInFlightCommands,
@@ -329,7 +182,6 @@ export async function handleSocketHello(
     pendingCommandsMs?: number;
     onlineStateMs?: number;
     featureFlagSigningMs?: number;
-    featureFlagSyncMs?: number;
     ackEmitMs?: number;
   } = {};
 
@@ -350,7 +202,7 @@ export async function handleSocketHello(
               platform: payload.platform,
               capabilities: mergedCapabilities,
               supportedOperations: payload.supportedOperations,
-              gatewayId: payload.gatewayId,
+              gatewayId: payload.gatewayId ?? null,
               desktopSecurityUpgradeProtocolVersion:
                 payload.desktopSecurityUpgradeProtocolVersion,
             }
@@ -406,7 +258,7 @@ export async function handleSocketHello(
               capabilities: mergedCapabilities,
               supportedOperations: payload.supportedOperations,
               pluginVersion: payload.pluginVersion,
-              gatewayId: payload.gatewayId,
+              gatewayId: payload.gatewayId ?? null,
               desktopSecurityUpgradeProtocolVersion:
                 payload.desktopSecurityUpgradeProtocolVersion,
             }
@@ -456,13 +308,7 @@ export async function handleSocketHello(
   relayEventBus.clearOperationBacklog(targetId);
   const unsubscribeOperations = relayEventBus.subscribeOperations(
     targetId,
-    (operation) => {
-      const wireCommand = toWireCommandFromRelayOperation(operation);
-      if (!wireCommand) {
-        return;
-      }
-      emitCommand(socket, wireCommand);
-    }
+    (operation) => handleRelayOperationForSocket(socket, operation, targetId)
   );
   const unsubscribeConnectionClose = relayEventBus.subscribeTargetConnection(
     targetId,
@@ -490,9 +336,7 @@ export async function handleSocketHello(
     targetId,
     organizationId: authContext.organizationId,
     userId: authContext.userId,
-    clerkUserId: authContext.clerkUserId,
     sessionId,
-    pluginVersion: payload.pluginVersion,
     unsubscribeOperations,
     unsubscribeConnectionClose,
     heartbeatTimer,
@@ -502,11 +346,11 @@ export async function handleSocketHello(
   socketIds.add(socket.id);
   socketIdsByTargetId.set(targetId, socketIds);
 
-  // Run all four post-target-resolution stages concurrently. Each stage
+  // Run all three post-target-resolution stages concurrently. Each stage
   // returns a typed result so per-stage nack reasons (and the timeout-vs-
   // failure distinction) are preserved without try/catch fan-out. Mirrors
   // the relay-path parallelism in `service.ts`.
-  const [pendingCommandsResult, onlineStateResult, signingResult, syncResult] =
+  const [pendingCommandsResult, onlineStateResult, signingResult] =
     await Promise.all([
       timeStage(stageTimings, "pendingCommandsMs", () =>
         runStage(
@@ -544,17 +388,6 @@ export async function handleSocketHello(
           }),
           HELLO_OPERATION_TIMEOUT_MS,
           "isDirectDesktopAuthSigningEligible",
-          DesktopHelloNackReason.InternalError
-        )
-      ),
-      timeStage(stageTimings, "featureFlagSyncMs", () =>
-        runStage(
-          isAgentSessionSyncSupportedForUser({
-            userId: authContext.userId,
-            clerkUserId: authContext.clerkUserId,
-          }),
-          HELLO_OPERATION_TIMEOUT_MS,
-          "isAgentSessionSyncSupportedForUser",
           DesktopHelloNackReason.InternalError
         )
       ),
@@ -609,14 +442,12 @@ export async function handleSocketHello(
   }
   const onlineUpdated = onlineStateResult.value;
 
-  // Feature flags soft-fail to `false` so a slow or broken feature-flag SDK
-  // cannot prevent the hello handshake from completing.
+  // The signing feature flag soft-fails to `false` so a slow or broken
+  // feature-flag SDK cannot prevent the hello handshake from completing.
   const commandSigningSupported =
     signingResult.ok &&
     signingResult.value.status === CommandSigningEligibilityStatus.Eligible;
-  const agentSessionSyncSupported = syncResult.ok ? syncResult.value : false;
   const serverCapabilities = buildDesktopServerCapabilities({
-    agentSessionSyncSupported,
     commandSigningSupported,
   });
 
@@ -684,11 +515,12 @@ export async function handleSocketHello(
   const ackSentAt = Date.now();
   const ackEmitStart = performance.now();
   socket.emit(
-    "desktop.hello.ack",
+    DESKTOP_HELLO_ACK_SOCKET_EVENT,
     toEnvelope({
       computeTargetId: targetId,
       sessionId,
       serverTime: new Date().toISOString(),
+      ...statedMintingOrigin(),
       ...(serverCapabilities ? { serverCapabilities } : {}),
       ...(Object.keys(resumeFromSequence).length > 0
         ? { resumeFromSequence }
@@ -697,21 +529,9 @@ export async function handleSocketHello(
   );
   stageTimings.ackEmitMs = Math.round(performance.now() - ackEmitStart);
 
-  const { emit: emittablePendingCommands, skipped: skippedPendingCommands } =
-    partitionPendingCommandsForReconnect(pendingCommands);
-  for (const command of skippedPendingCommands) {
-    log.warn(
-      "Pending command has non-gateway path — possible legacy command in store",
-      {
-        commandId: command.commandId,
-        computeTargetId: command.computeTargetId,
-        path: command.path,
-      }
-    );
-  }
-  for (const command of emittablePendingCommands) {
+  emitPendingCommandsForReconnect(pendingCommands, (command) => {
     emitCommand(socket, toWireCommandFromStore(command));
-  }
+  });
 
   log.info("desktop.gateway.hello.acknowledged", {
     socketId: socket.id,
@@ -719,6 +539,7 @@ export async function handleSocketHello(
     computeTargetId: targetId,
     organizationId: authContext.organizationId,
     userId: authContext.userId,
+    declaredGatewayId: payload.gatewayId ?? null,
     authDurationMs: timing.authDurationMs,
     helloProcessingMs: ackSentAt - timing.helloStartedAt,
     connectToHelloAckMs: timing.connectStartedAt
@@ -874,122 +695,6 @@ export function handleSocketConnection(socket: Socket): void {
     );
   });
 
-  socket.on("desktop.telemetry", (rawPayload: unknown) => {
-    const context = contextsBySocketId.get(socket.id);
-    if (!context) {
-      return;
-    }
-
-    try {
-      const result = handleTelemetryEvent(rawPayload, {
-        authenticatedTargetId: context.targetId,
-        pluginVersion: context.pluginVersion,
-        gatewaySessionId: context.sessionId,
-        organizationId: context.organizationId,
-        userId: context.userId,
-      });
-      if (!result.ok) {
-        for (const emit of result.emits) {
-          socket.emit(emit.event, emit.payload);
-        }
-      }
-    } catch (error) {
-      log.error("Failed handling desktop.telemetry", {
-        socketId: socket.id,
-        targetId: context.targetId,
-        computeTargetId: context.targetId,
-        gatewaySessionIdHash: redactGatewaySessionId(context.sessionId),
-        error,
-      });
-    }
-  });
-
-  socket.on(
-    DESKTOP_AGENT_SESSIONS_SOCKET_EVENT,
-    (
-      rawPayload: unknown,
-      ack?: (response: DesktopAgentSessionsAck) => void
-    ) => {
-      const context = contextsBySocketId.get(socket.id);
-      if (!context) {
-        ack?.({
-          accepted: false,
-          reason: DesktopAgentSessionsAckReason.ValidationFailed,
-        });
-        return;
-      }
-
-      handleDesktopAgentSessionsEvent(rawPayload, {
-        organizationId: context.organizationId,
-        userId: context.userId,
-        clerkUserId: context.clerkUserId,
-        targetId: context.targetId,
-        gatewaySessionId: context.sessionId,
-      })
-        .then((response) => {
-          ack?.(response);
-        })
-        .catch((error) => {
-          log.error("Failed handling desktop.agent-sessions", {
-            socketId: socket.id,
-            targetId: context.targetId,
-            computeTargetId: context.targetId,
-            gatewaySessionIdHash: redactGatewaySessionId(context.sessionId),
-            error,
-          });
-          ack?.({
-            accepted: false,
-            reason: DesktopAgentSessionsAckReason.ValidationFailed,
-          });
-        });
-    }
-  );
-
-  socket.on(
-    DESKTOP_ANALYTICS_SOCKET_EVENT,
-    (rawPayload: unknown, ack?: (response: DesktopAnalyticsAck) => void) => {
-      const context = contextsBySocketId.get(socket.id);
-      if (!context) {
-        ack?.({
-          accepted: false,
-          reason: DesktopAnalyticsAckReason.ValidationFailed,
-        });
-        return;
-      }
-
-      handleDesktopAnalyticsEvent(
-        rawPayload,
-        {
-          organizationId: context.organizationId,
-          userId: context.userId,
-          clerkUserId: context.clerkUserId,
-          targetId: context.targetId,
-          gatewaySessionId: context.sessionId,
-          pluginVersion: context.pluginVersion,
-        },
-        {
-          capture: captureDesktopAnalytics,
-        }
-      )
-        .then((response) => {
-          ack?.(response);
-        })
-        .catch((error) => {
-          log.error("Failed handling desktop.analytics", {
-            socketId: socket.id,
-            targetId: context.targetId,
-            computeTargetId: context.targetId,
-            gatewaySessionIdHash: redactGatewaySessionId(context.sessionId),
-            error,
-          });
-          ack?.({
-            accepted: false,
-            reason: DesktopAnalyticsAckReason.ValidationFailed,
-          });
-        });
-    }
-  );
-
   socket.on("disconnect", () => {
     // Capture the session id before handleSocketDisconnect deletes the context.
     const capturedSessionId = contextsBySocketId.get(socket.id)?.sessionId;
@@ -1013,7 +718,7 @@ export function initDesktopGatewaySocketServer(
 
   const io = new Server(httpServer, {
     transports: ["websocket"],
-    maxHttpBufferSize: 10 * 1024 * 1024, // 10MB for large loop artifacts
+    maxHttpBufferSize: DESKTOP_GATEWAY_MAX_PAYLOAD_BYTES,
     cors: {
       // Desktop gateway workers connect via Node socket.io-client and send no
       // browser Origin header — allow those. Any request that does carry an

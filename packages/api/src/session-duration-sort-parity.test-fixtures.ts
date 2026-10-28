@@ -38,10 +38,7 @@
  */
 
 import { UNRECOGNIZED_SESSION_STATUS } from "./agent-session-displayed-status-parity.test-fixtures.ts";
-import {
-  DISPLAYED_SESSION_STATUS,
-  SESSION_STATUS,
-} from "./types/session-status.ts";
+import { SESSION_STATUS } from "./types/session-status.ts";
 
 /** One hour, in milliseconds — the unit every offset below is expressed in. */
 const HOUR_MS = 3_600_000;
@@ -60,12 +57,11 @@ export type DurationSortParityCase = {
   readonly rawStatus: string;
   /**
    * The status spellings a PRODUCER can serve for this shape. More than one
-   * where the two producers legitimately differ: the cloud list projection
-   * applies the staleness fold server-side (`projectDisplayedSessionStatus`)
-   * while the desktop Local producer serves the raw canonical status unless the
-   * `sessions-displayed-status-parity` Labs gate is on. The cell must resolve the
-   * SAME span from every spelling here — that equality is what makes one oracle
-   * legitimate for both surfaces.
+   * where a producer can legitimately serve either: the cloud list applies the
+   * staleness fold server-side (`projectDisplayedSessionStatus`), while a
+   * version-skewed producer can still serve the raw canonical status. The cell
+   * must resolve the SAME span from every spelling here — that equality is what
+   * makes one oracle legitimate for both surfaces.
    */
   readonly servedStatuses: readonly string[];
   /** How long before `now` the session started. */
@@ -140,33 +136,39 @@ export const DURATION_SORT_PARITY_CASES: readonly DurationSortParityCase[] = [
     displayedSpanMs: 2 * HOUR_MS,
   },
   {
-    // ISS-6270, THE DEFECT: stored `active`, silent past the cutoff, no end
-    // instant. The cell folds it to Stale and renders BLANK because the run is
-    // not accumulating time; both comparators measured `now - start` off the raw
-    // status and made it the LONGEST row on the page.
-    name: "a stale-folded session with no end instant renders blank and must not outrank a measured span",
+    // ISS-6270's defect row, re-pointed by ISS-10364. Stored `active`, silent
+    // 30h, no end instant. It used to fold to Stale and render BLANK; the
+    // operator ruled on 2026-09-23 that active and stale are not to be
+    // distinguished, so the row IS active and a run with no recorded end
+    // accumulates time. Kept — with the silence that used to matter — so that a
+    // future change quietly restoring a cutoff has to edit this span.
+    name: "ISS-10364: a long-silent session with no end instant keeps timing",
     id: "d-stale-40h",
     rawStatus: SESSION_STATUS.ACTIVE,
-    servedStatuses: [SESSION_STATUS.ACTIVE, DISPLAYED_SESSION_STATUS.STALE],
+    // "stale" is a plain literal, not a vocabulary member: ISS-10364 retired it
+    // from `DISPLAYED_SESSION_STATUS`, so this spells the legacy/version-skewed
+    // spelling a producer predating that ruling can still serve.
+    servedStatuses: [SESSION_STATUS.ACTIVE, "stale"],
     startedBeforeMs: 40 * HOUR_MS,
     silentForMs: 30 * HOUR_MS,
     awaitingInputSinceBeforeMs: null,
     endedAfterStartMs: null,
-    displayedSpanMs: null,
+    displayedSpanMs: 40 * HOUR_MS,
   },
   {
-    // The control that keeps the fix honest: folding to Stale must not destroy a
-    // span the row's OWN end instant already bounds. A blanket "stale means no
-    // duration" would red here.
-    name: "a stale-folded session that DID record an end still measures that end",
+    // A stored `active` row keeps timing against `now` whether or not it
+    // carries a recorded end, so the 1h end instant here must NOT bound the
+    // span. Third of three rows tying at 40h (with `d-stale-40h` and
+    // `d-awaiting-40h`), which is what makes the shared id tiebreak reachable.
+    name: "an ended active row is not bounded by its own end — it keeps timing",
     id: "d-stale-ended-1h",
     rawStatus: SESSION_STATUS.ACTIVE,
-    servedStatuses: [SESSION_STATUS.ACTIVE, DISPLAYED_SESSION_STATUS.STALE],
+    servedStatuses: [SESSION_STATUS.ACTIVE],
     startedBeforeMs: 40 * HOUR_MS,
-    silentForMs: 30 * HOUR_MS,
+    silentForMs: 39 * HOUR_MS,
     awaitingInputSinceBeforeMs: null,
     endedAfterStartMs: 1 * HOUR_MS,
-    displayedSpanMs: 1 * HOUR_MS,
+    displayedSpanMs: 40 * HOUR_MS,
   },
   {
     // Pre-existing (ISS-5131), pinned here so the blanks population is not just
@@ -196,11 +198,13 @@ export const DURATION_SORT_PARITY_CASES: readonly DurationSortParityCase[] = [
     name: "a session awaiting input past the staleness cutoff keeps timing",
     id: "d-awaiting-40h",
     rawStatus: SESSION_STATUS.ACTIVE,
-    // The desktop Local producer serves the raw `active` with the
-    // `sessions-displayed-status-parity` Labs gate off and `waiting` with it on;
-    // the cloud list projection serves `waiting` unconditionally. The cell must
+    // Both producers serve `waiting` today — cloud through
+    // `projectDisplayedSessionStatus`, desktop Local since ISS-7019 — and a
+    // version-skewed one can still serve the raw `active`. The cell must
     // resolve the same 40h span from either spelling.
-    servedStatuses: [SESSION_STATUS.ACTIVE, DISPLAYED_SESSION_STATUS.WAITING],
+    // "waiting" is a plain literal too, for the same reason as the "stale" case
+    // above — it is no longer a `DISPLAYED_SESSION_STATUS` member.
+    servedStatuses: [SESSION_STATUS.ACTIVE, "waiting"],
     startedBeforeMs: 40 * HOUR_MS,
     silentForMs: 30 * HOUR_MS,
     awaitingInputSinceBeforeMs: 30 * HOUR_MS,
@@ -208,8 +212,11 @@ export const DURATION_SORT_PARITY_CASES: readonly DurationSortParityCase[] = [
     displayedSpanMs: 40 * HOUR_MS,
   },
   {
-    // Version skew: a status neither build recognizes never reaches the clock.
-    name: "an unrecognized status with no end instant renders blank",
+    // Version skew, re-pointed by ISS-10364: a status neither build recognizes
+    // used to answer the display-only `unknown`, an Indeterminate lifecycle that
+    // never reached the clock. It now fails OPEN to `active` like any other
+    // unreadable spelling, so it times like one. Kept as the counterfactual.
+    name: "ISS-10364: an unrecognized status with no end instant keeps timing",
     id: "d-unknown-no-end",
     rawStatus: UNRECOGNIZED_SESSION_STATUS,
     servedStatuses: [UNRECOGNIZED_SESSION_STATUS],
@@ -217,7 +224,7 @@ export const DURATION_SORT_PARITY_CASES: readonly DurationSortParityCase[] = [
     silentForMs: 1 * HOUR_MS,
     awaitingInputSinceBeforeMs: null,
     endedAfterStartMs: null,
-    displayedSpanMs: null,
+    displayedSpanMs: 6 * HOUR_MS,
   },
 ];
 

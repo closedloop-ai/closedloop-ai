@@ -6,13 +6,15 @@ import { computeTargetsService } from "./service";
 
 /**
  * GET /compute-targets
- * Lists compute targets available to the authenticated user (own + org-shared).
+ * Lists the authenticated user's own compute targets (owner-only since
+ * ISS-12617 retired target sharing).
  */
 export const GET = withAnyAuth<ComputeTarget[], "/compute-targets">(
   async ({ user }) => {
     try {
-      // Staleness safety-net: sweep the entire org so shared targets
-      // from teammates are also marked offline when heartbeats expire.
+      // Staleness safety-net: sweep the entire org, so teammates' targets
+      // (read org-wide by the status stream and the Sessions onboarding check)
+      // are also marked offline when heartbeats expire.
       waitUntil(
         computeTargetsService
           .markStaleTargetsOffline({

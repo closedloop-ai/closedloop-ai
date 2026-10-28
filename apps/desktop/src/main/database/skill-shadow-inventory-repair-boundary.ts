@@ -21,7 +21,7 @@ import {
   skillShadowInventoryRepairSchema,
 } from "./skill-shadow-inventory-maintenance.js";
 
-/** The store-op key registered in `db-host-worker.ts`'s `storeOps`. */
+/** The store-op key registered in `db-host/db-store-ops.ts`'s `createDbStoreOps`. */
 export const SKILL_SHADOW_INVENTORY_REPAIR_OP = "skillShadowInventory.repair";
 
 const NO_REPAIR: SkillShadowInventoryRepair = {

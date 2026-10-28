@@ -1,8 +1,5 @@
 import { AgentSessionCloudSyncState } from "@repo/api/src/types/agent-session-cloud-sync-state-constants";
-import {
-  DISPLAYED_SESSION_STATUS,
-  SESSION_STATUS,
-} from "@repo/api/src/types/session-status";
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import { TranscriptDisposition } from "@repo/api/src/types/transcript-disposition-constants";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAgentSessionListItemFixture } from "../../components/sessions/session-list-fixtures";
@@ -104,16 +101,7 @@ describe("isSessionSyncStateFolded", () => {
   });
 
   it("never folds a non-Active DISPLAYED status, so a real outcome is never crowded out", () => {
-    // `waiting` is the regression guard: `normalizeSessionStatus` collapses it
-    // into `active`, so the original predicate (#4202) folded awaiting-input rows
-    // despite excluding them in its own docstring. The fold reads the DISPLAYED
-    // vocabulary — the same one the Status facet offers and the Status sort ranks
-    // — so Waiting stays Waiting.
-    for (const status of [
-      SESSION_STATUS.ERROR,
-      DISPLAYED_SESSION_STATUS.WAITING,
-      SESSION_STATUS.INACTIVE,
-    ]) {
+    for (const status of [SESSION_STATUS.ERROR, SESSION_STATUS.INACTIVE]) {
       const item = createAgentSessionListItemFixture({
         status,
         cloudSyncState: AgentSessionCloudSyncState.Pending,
@@ -121,6 +109,20 @@ describe("isSessionSyncStateFolded", () => {
       });
       expect(isSessionSyncStateFolded(item, FOLD_ON)).toBe(false);
     }
+  });
+
+  it("ISS-10364: DOES fold a legacy 'waiting' status, now that it normalizes to Active", () => {
+    // Pre-ISS-10364 `waiting` was its own DISPLAYED_SESSION_STATUS member and
+    // this predicate's Active-only rule exempted it. The word is retired:
+    // `normalizeDisplayedSessionStatus("waiting")` now answers Active like any
+    // other unrecognized/retired spelling, so the Active-only rule no longer
+    // has anything to exempt it from.
+    const item = createAgentSessionListItemFixture({
+      status: "waiting",
+      cloudSyncState: AgentSessionCloudSyncState.Pending,
+      transcriptDisposition: TranscriptDisposition.Syncing,
+    });
+    expect(isSessionSyncStateFolded(item, FOLD_ON)).toBe(true);
   });
 
   it("never folds a settled (non-uploading) row, so stale/failed verdicts keep their inline badge", () => {
@@ -153,23 +155,14 @@ describe("toSessionTableRowWithSyncFold", () => {
   });
 
   /**
-   * ISS-6455: the row now projects Waiting from `awaitingInputSince`, so an
-   * uploading awaiting-input row stops folding — the Active-only rule this
-   * predicate has enforced since ISS-4846, now reached by a desktop-local row
-   * that already read "Waiting" everywhere else.
-   *
-   * This is PARITY, not a new rule: a CLOUD row in the same state has been
-   * getting this answer since the server started serving `waiting` outright, and
-   * the projection here is what brings the desktop-local row to the same place.
-   *
-   * It does drop the row's only in-flight signal in the grid, and that is stated
-   * rather than waved away: ISS-5666 cleared the Name cell and ISS-5770 deleted
-   * the `Signals` column, so `SessionSyncStatusBadge` has no production render
-   * site left and there is no inline badge to fall back on. Restoring one is a
-   * UI decision for the Sessions surface, not something this fold should decide
-   * by exempting `waiting` from a rule the cloud already applies.
+   * ISS-10364 (operator ruling, 2026-09-23/24) retired the Waiting projection
+   * this case used to pin: `resolveDisplayedSessionStatusWithWaiting` no
+   * longer reads `awaitingInputSince` at all, so a row carrying it alongside a
+   * stored `active` status now reads the row's status as plain Active —
+   * exactly like one with no awaiting-input anchor — and the sync fold applies
+   * to it the same way it would to any other uploading Active row.
    */
-  it("ISS-6455: stands down for an uploading row that is awaiting input", () => {
+  it("ISS-10364: folds an uploading row even while it is awaiting input, since Waiting is no longer projected", () => {
     const row = toSessionTableRowWithSyncFold(
       createAgentSessionListItemFixture({
         id: "uploading-awaiting",
@@ -183,8 +176,8 @@ describe("toSessionTableRowWithSyncFold", () => {
       FOLD_ON
     );
 
-    expect(row.status).toBe(DISPLAYED_SESSION_STATUS.WAITING);
-    expect(row.syncPresentation).toBeUndefined();
+    expect(row.status).toBe(SESSION_STATUS.ACTIVE);
+    expect(row.syncPresentation).toBe(SessionSyncPresentation.Syncing);
   });
 
   it("leaves `syncPresentation` unset for every non-folded row", () => {
@@ -204,11 +197,18 @@ describe("toSessionTableRowWithSyncFold", () => {
     ).toBeUndefined();
   });
 
-  it("emits a status the Status facet vocabulary can actually filter to (ISS-4846)", () => {
-    // The reconciliation this ticket is about: whatever the fold does to a row,
-    // the row's `status` must remain one of the values the Status facet offers,
-    // so "filter to what the cell shows" is always possible. A fold that wrote a
-    // sync-lane value (e.g. "syncing") into `status` would fail here.
+  it("never writes a sync-lane value into `status` (ISS-4846)", () => {
+    // The reconciliation this ticket is about: a fold that wrote a sync-lane
+    // value (e.g. "syncing") into `status` would put a word in the column that
+    // no facet and no badge has a meaning for. The facet option list is the
+    // convenient stand-in for "a value the product recognizes".
+    //
+    // ISS-9939 / ISS-10629: this case used to be named for, and justified by,
+    // "filter to what the cell shows is always possible". That invariant is
+    // RETIRED — a row can now badge Waiting or Stale and be gatherable by no
+    // facet — so the name and the rationale are narrowed to what the assertion
+    // actually pins. The fixture folds to `active`, so it could never have
+    // proven the wider claim either.
     const facetValues = new Set(
       SESSION_STATUS_FILTER_OPTIONS.map((option) => option.value)
     );

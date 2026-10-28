@@ -1,16 +1,18 @@
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   abortTranscriptMultipartUpload,
   completeTranscriptMultipartUpload,
   copyTranscriptPart,
   createTranscriptMultipartUpload,
   deleteTranscriptObjects,
+  getSignedTranscriptDownloadUrl,
+  getTranscriptObjectBytesRange,
   headTranscriptObject,
   listTranscriptParts,
   presignTranscriptPutObject,
   presignTranscriptUploadPart,
-} from "./index";
+} from "./transcript-storage";
 
 const { s3Send } = vi.hoisted(() => ({ s3Send: vi.fn() }));
 
@@ -35,6 +37,7 @@ vi.mock("@aws-sdk/client-s3", () => {
     UploadPartCommand: MockCommand,
     UploadPartCopyCommand: MockCommand,
     S3Client: class S3Client {
+      middlewareStack = { add: vi.fn() };
       send = s3Send;
     },
     StorageClass: { INTELLIGENT_TIERING: "INTELLIGENT_TIERING" },
@@ -56,7 +59,20 @@ vi.mock("./keys", () => ({
 
 function lastCommandInput(): Record<string, unknown> {
   const call = s3Send.mock.calls.at(-1);
-  return (call?.[0] as { input: Record<string, unknown> }).input;
+  if (!call) {
+    throw new Error("no S3 command was sent");
+  }
+  return (call[0] as { input: Record<string, unknown> }).input;
+}
+
+/** The command a presign was asked to sign, or a named failure if none was. */
+function signedCommandInput(
+  signCall: unknown[] | undefined
+): Record<string, unknown> {
+  if (!signCall) {
+    throw new Error("getSignedUrl was never called");
+  }
+  return (signCall[1] as { input: Record<string, unknown> }).input;
 }
 
 beforeEach(() => {
@@ -250,14 +266,12 @@ describe("presignTranscriptUploadPart", () => {
     });
 
     const signCall = vi.mocked(getSignedUrl).mock.calls.at(-1);
-    expect((signCall?.[1] as { input: Record<string, unknown> }).input).toEqual(
-      {
-        Bucket: "transcripts-bucket",
-        Key: "org/ct/s.jsonl",
-        PartNumber: 2,
-        UploadId: "u",
-      }
-    );
+    expect(signedCommandInput(signCall)).toEqual({
+      Bucket: "transcripts-bucket",
+      Key: "org/ct/s.jsonl",
+      PartNumber: 2,
+      UploadId: "u",
+    });
     expect(signCall?.[2]).toEqual({ expiresIn: 3600 });
   });
 
@@ -271,9 +285,7 @@ describe("presignTranscriptUploadPart", () => {
     });
 
     const signCall = vi.mocked(getSignedUrl).mock.calls.at(-1);
-    expect(
-      (signCall?.[1] as { input: Record<string, unknown> }).input.Bucket
-    ).toBe("override-bucket");
+    expect(signedCommandInput(signCall).Bucket).toBe("override-bucket");
     expect(signCall?.[2]).toEqual({ expiresIn: 60 });
   });
 });
@@ -402,5 +414,150 @@ describe("deleteTranscriptObjects", () => {
       "1000 transcript object(s) out of 1001 total"
     );
     expect(s3Send).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("getSignedTranscriptDownloadUrl", () => {
+  const SIGNING_INSTANT = new Date("2026-06-29T00:00:00.000Z");
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    vi.setSystemTime(SIGNING_INSTANT);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("signs against the transcripts bucket and bounds the cache to the URL's own expiry", async () => {
+    await getSignedTranscriptDownloadUrl("org/ct/ext.jsonl", {
+      expiresIn: 300,
+      bucket: "transcripts-bucket",
+    });
+
+    const command = vi.mocked(getSignedUrl).mock.calls[0][1] as {
+      input: Record<string, unknown>;
+    };
+    expect(command.input).toMatchObject({
+      Bucket: "transcripts-bucket",
+      Key: "org/ct/ext.jsonl",
+      ResponseCacheControl: "private",
+      // Cache lapses with the 5-min signature, so a cached transcript copy can
+      // never outlive the authorization window.
+      ResponseExpires: new Date("2026-06-29T00:05:00.000Z"),
+    });
+    expect(getSignedUrl).toHaveBeenCalledWith(expect.anything(), command, {
+      expiresIn: 300,
+    });
+  });
+});
+
+describe("getTranscriptObjectBytesRange", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("issues a bounded ranged GET and returns only the requested prefix bytes", async () => {
+    const payload = new Uint8Array([1, 2, 3, 4]);
+    s3Send.mockResolvedValueOnce({
+      Body: { transformToByteArray: () => Promise.resolve(payload) },
+    });
+
+    const result = await getTranscriptObjectBytesRange(
+      "org/ct/ext/main.jsonl",
+      4,
+      "transcripts-bucket"
+    );
+
+    expect(Buffer.from(result as Buffer)).toEqual(Buffer.from(payload));
+    const command = s3Send.mock.calls[0][0] as {
+      input: Record<string, unknown>;
+    };
+    // Range is 0-based inclusive: bytes 0..(maxBytes-1).
+    expect(command.input).toMatchObject({
+      Bucket: "transcripts-bucket",
+      Key: "org/ct/ext/main.jsonl",
+      Range: "bytes=0-3",
+    });
+  });
+
+  it("floors the range at a single byte for a zero/negative cap", async () => {
+    s3Send.mockResolvedValueOnce({
+      Body: {
+        transformToByteArray: () => Promise.resolve(new Uint8Array([9])),
+      },
+    });
+
+    await getTranscriptObjectBytesRange("k", 0, "transcripts-bucket");
+
+    const command = s3Send.mock.calls[0][0] as {
+      input: Record<string, unknown>;
+    };
+    expect(command.input.Range).toBe("bytes=0-0");
+  });
+
+  it("returns null for a missing object (NoSuchKey) instead of throwing", async () => {
+    s3Send.mockRejectedValueOnce(
+      Object.assign(new Error("no such key"), { name: "NoSuchKey" })
+    );
+
+    const result = await getTranscriptObjectBytesRange(
+      "missing",
+      100,
+      "transcripts-bucket"
+    );
+    expect(result).toBeNull();
+  });
+
+  it("rethrows a non-404 S3 error", async () => {
+    s3Send.mockRejectedValueOnce(
+      Object.assign(new Error("access denied"), { name: "AccessDenied" })
+    );
+
+    await expect(
+      getTranscriptObjectBytesRange("k", 100, "transcripts-bucket")
+    ).rejects.toThrow("access denied");
+  });
+});
+
+describe("resolveTranscriptsBucket", () => {
+  afterEach(() => {
+    vi.doUnmock("./keys");
+    vi.resetModules();
+  });
+
+  // ISS-8689: PRD-699 Appendix A classifies an unset TRANSCRIPTS_BUCKET as
+  // environmental, not row-attributable — a bare Error made that
+  // indistinguishable from a transient S3 outage to every caller. The
+  // discriminant field lets a classifier read a contract instead of the
+  // message string, so this test pins the instance/discriminant, not just
+  // that a throw occurred.
+  it("throws TranscriptStorageNotConfiguredError when TRANSCRIPTS_BUCKET is unset", async () => {
+    vi.resetModules();
+    vi.doMock("./keys", () => ({
+      keys: () => ({
+        AWS_REGION: "us-east-1",
+        TRANSCRIPTS_BUCKET: undefined,
+      }),
+    }));
+    const unconfigured = await import("./transcript-storage");
+
+    expect.assertions(4);
+    try {
+      await unconfigured.createTranscriptMultipartUpload("org/ct/s.jsonl");
+    } catch (error) {
+      expect(error).toBeInstanceOf(
+        unconfigured.TranscriptStorageNotConfiguredError
+      );
+      if (
+        !(error instanceof unconfigured.TranscriptStorageNotConfiguredError)
+      ) {
+        throw error;
+      }
+      expect(error.transcriptStorageNotConfigured).toBe(true);
+      expect(error.name).toBe("TranscriptStorageNotConfiguredError");
+      expect(error.message).toBe("TRANSCRIPTS_BUCKET is not configured");
+    }
   });
 });

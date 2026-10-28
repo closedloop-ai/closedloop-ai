@@ -25,7 +25,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import { runDataRevisionRebuild } from "../src/main/collectors/engine/data-revision-rebuild.js";
 import { LAUNCH_METADATA_REF_METHOD } from "../src/main/collectors/parsing/artifact-ref-extractor.js";
 import { openTestDb } from "./agent-db-test-utils.js";

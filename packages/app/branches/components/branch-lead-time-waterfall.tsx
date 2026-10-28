@@ -1,43 +1,74 @@
 "use client";
 
-import type { BranchPageDetail } from "@repo/api/src/types/branch";
+import type {
+  BranchPageDetail,
+  BranchSelectedPullRequestDetail,
+} from "@repo/api/src/types/branch";
 import {
+  BRANCH_METRIC_DICTIONARY,
   BranchMetricAvailability,
+  BranchMetricId,
   type BranchMetricResult,
 } from "@repo/api/src/types/branch-metrics";
 import {
   BranchPhaseAttributionCompleteness,
-  type BranchPhaseAttributionSegment,
+  BranchPhaseAttributionCompletenessReason,
+  type BranchPhaseAttributionResult,
   BranchVisibleLifecyclePhase,
   type BranchVisibleLifecyclePhase as VisiblePhase,
 } from "@repo/api/src/types/branch-phase-attribution";
+import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { BRANCH_DETAIL_METRIC_HONESTY_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { formatDurationMs } from "@repo/app/shared/lib/format-duration-ms";
+import { useMemo } from "react";
 import { getActivityPhaseDisplay } from "../lib/activity-taxonomy-display";
+import {
+  type DisplayableBranchMetricValue,
+  displayableBranchMetricValue,
+  shippedClampedBranchMetricValue,
+} from "../lib/branch-metric-value";
+import {
+  BRANCH_OUTCOME_BREAKDOWN_TITLE,
+  BRANCH_OUTCOME_EVIDENCE_ABSENT,
+  BRANCH_OUTCOME_EVIDENCE_CAPPED_FOOTNOTE,
+  BRANCH_OUTCOME_EVIDENCE_INCOMPLETE_FOOTNOTE,
+  BRANCH_OUTCOME_IDLE_UNAVAILABLE_FOOTNOTE,
+  BRANCH_OUTCOME_IDLE_UNAVAILABLE_SUMMARY,
+  branchPullRequestCycleAbsence,
+} from "../lib/branch-outcome-copy";
+import {
+  visibleOutcomeSegments,
+  type WaterfallSegment,
+} from "../lib/branch-outcome-waterfall-segments";
+import { formatBranchDurationMs } from "../lib/format-branch-duration-ms";
 
 export type BranchLeadTimeWaterfallProps = {
   detail: BranchPageDetail;
 };
 
-type WaterfallSegment = {
-  durationMs: number;
-  type: VisiblePhase | "idle";
-};
-
 type OutcomeTrack = {
   endLabel: "Closed" | "Merged";
+  evidenceCapped: boolean;
+  evidenceIncomplete: boolean;
   idleMs: number;
-  incomplete: boolean;
+  idlePartial: boolean;
+  idleUnavailable: boolean;
   openedPct: number | null;
-  outcomeLabel: "Abandonment Duration" | "Lead time for change";
-  segments: WaterfallSegment[];
+  outcomeLabel: string;
+  outcomePartial: boolean;
+  segments: WaterfallSegment[] | null;
   totalMs: number;
 };
 
-const PHASE_PRECEDENCE: readonly VisiblePhase[] = [
-  BranchVisibleLifecyclePhase.Rework,
-  BranchVisibleLifecyclePhase.Review,
-  BranchVisibleLifecyclePhase.Build,
-];
+type OutcomeTrackBase = {
+  attribution: NonNullable<BranchPageDetail["phaseAttribution"]>;
+  leadTime: DisplayableBranchMetricValue | null;
+  metrics: NonNullable<BranchPageDetail["canonicalMetrics"]>;
+  openedPct: number | null;
+  outcome: DisplayableBranchMetricValue;
+  segments: WaterfallSegment[];
+};
+
 const DISPLAY_PHASES: readonly VisiblePhase[] = [
   BranchVisibleLifecyclePhase.Build,
   BranchVisibleLifecyclePhase.Review,
@@ -48,118 +79,267 @@ const DISPLAY_PHASES: readonly VisiblePhase[] = [
 export function BranchLeadTimeWaterfall({
   detail,
 }: BranchLeadTimeWaterfallProps) {
-  const track = buildOutcomeTrack(detail);
-  const idlePct = track
-    ? Math.round((track.idleMs / track.totalMs) * 100)
+  const honest = useFeatureFlagEnabledOptional(
+    BRANCH_DETAIL_METRIC_HONESTY_FEATURE_FLAG_KEY
+  );
+  const { canonicalMetrics, phaseAttribution, selectedPullRequest } = detail;
+  // ISS-7039: the track builders sweep every attributed phase segment on the
+  // branch. Query structural sharing keeps `detail` itself stable across a poll
+  // that changed nothing, so the render this saves is the one where something
+  // ELSE moved — a check, a comment, a timeline row — handing down a new
+  // `detail` whose attribution inputs are the identical references. Keying on
+  // exactly the three fields the sweep reads is what makes that render free.
+  const track = useMemo(
+    () =>
+      honest
+        ? buildHonestOutcomeTrack(
+            canonicalMetrics,
+            selectedPullRequest,
+            phaseAttribution
+          )
+        : buildShippedOutcomeTrack(
+            canonicalMetrics,
+            selectedPullRequest,
+            phaseAttribution
+          ),
+    [honest, canonicalMetrics, selectedPullRequest, phaseAttribution]
+  );
+  const format = honest ? formatBranchDurationMs : formatDurationMs;
+  // ISS-6957, the same fix one section down. This waterfall breaks down the
+  // SELECTED pull request's cycle, so with no pull request selected the reason
+  // there is no track is the pull request, not the evidence — and it is the same
+  // reason the two cycle cards above already state. Reading it from the one
+  // helper is what stops the section contradicting the cards it decomposes.
+  const cycleAbsence = honest
+    ? branchPullRequestCycleAbsence(
+        detail.associatedPullRequests,
+        Boolean(detail.selectedPullRequest)
+      )
     : null;
 
   return (
     <section className="bq-lead">
       <div className="bq-sec-head">
         <span className="bq-sec-title">
-          {track?.outcomeLabel ?? "Lead time for change"}
+          {honest
+            ? BRANCH_OUTCOME_BREAKDOWN_TITLE
+            : (track?.outcomeLabel ??
+              BRANCH_METRIC_DICTIONARY[BranchMetricId.LeadTime].label)}
         </span>
         <span className="bq-sec-count">
           {track
-            ? `${formatDurationMs(track.totalMs)}${track.incomplete ? "*" : ""} · ${idlePct}% idle`
+            ? `${format(track.totalMs)}${track.outcomePartial ? "*" : ""} · ${idleSummary(track)}`
             : "—"}
         </span>
       </div>
-      {track ? <Waterfall track={track} /> : <UnavailableOutcome />}
+      {track ? (
+        <Waterfall format={format} track={track} />
+      ) : (
+        <AbsentOutcome reason={cycleAbsence?.detail ?? null} />
+      )}
     </section>
   );
 }
 
-function Waterfall({ track }: { track: OutcomeTrack }) {
-  const phaseDurations = phaseDurationTotals(track.segments);
-  const openedLabelEdge = waterfallOpenedLabelEdge(track.openedPct);
+function Waterfall({
+  format,
+  track,
+}: {
+  format: (ms: number) => string;
+  track: OutcomeTrack;
+}) {
+  const phaseDurations = track.segments
+    ? phaseDurationTotals(track.segments)
+    : null;
+  const openedLabelEdge = track.segments
+    ? waterfallOpenedLabelEdge(track.openedPct)
+    : null;
   return (
     <>
-      <div className="bq-lead-track-wrap">
-        <div className="bq-lead-track">
-          {track.segments.map((segment, index) => (
-            <span
-              className={
-                segment.type === "idle" ? "bq-lead-gap" : "bq-lead-seg"
-              }
-              // biome-ignore lint/suspicious/noArrayIndexKey: waterfall slices are positional.
-              key={`${segment.type}-${index}`}
-              style={{
-                width: `${(segment.durationMs / track.totalMs) * 100}%`,
-                ...(segment.type === "idle"
-                  ? {}
-                  : {
-                      background: getActivityPhaseDisplay(segment.type).color,
-                    }),
-              }}
-              title={`${phaseLabel(segment.type)} · ${formatDurationMs(segment.durationMs)}`}
-            />
-          ))}
-        </div>
-        {track.openedPct === null ? null : (
-          <span
-            aria-hidden
-            className="bq-lead-pr-opened-marker"
-            style={{ left: `${track.openedPct}%` }}
-          />
-        )}
-      </div>
-      <div
-        className="bq-lead-axis"
-        data-pr-opened-edge={openedLabelEdge ?? undefined}
-      >
-        <span className="font-mono">First code pushed</span>
-        {track.openedPct === null ? null : (
-          <span
-            className="bq-lead-pr-opened-label font-mono"
-            data-edge={openedLabelEdge ?? undefined}
-            style={{ left: `${track.openedPct}%` }}
+      {track.segments ? (
+        <>
+          <div className="bq-lead-track-wrap">
+            <div className="bq-lead-track">
+              {track.segments.map((segment, index) => (
+                <span
+                  className={
+                    segment.type === "idle" ? "bq-lead-gap" : "bq-lead-seg"
+                  }
+                  // biome-ignore lint/suspicious/noArrayIndexKey: waterfall slices are positional.
+                  key={`${segment.type}-${index}`}
+                  style={{
+                    width: `${(segment.durationMs / track.totalMs) * 100}%`,
+                    ...(segment.type === "idle"
+                      ? {}
+                      : {
+                          background: getActivityPhaseDisplay(segment.type)
+                            .color,
+                        }),
+                  }}
+                  title={`${phaseLabel(segment.type)} · ${format(segment.durationMs)}`}
+                />
+              ))}
+            </div>
+            {track.openedPct === null ? null : (
+              <span
+                aria-hidden
+                className="bq-lead-pr-opened-marker"
+                style={{ left: `${track.openedPct}%` }}
+              />
+            )}
+          </div>
+          <div
+            className="bq-lead-axis"
+            data-pr-opened-edge={openedLabelEdge ?? undefined}
           >
-            PR opened
-          </span>
-        )}
-        <span className="font-mono">{track.endLabel}</span>
-      </div>
-      <div className="bq-lead-key">
-        {DISPLAY_PHASES.map((phase) => (
-          <span className="bq-lead-kitem" key={phase}>
-            <span
-              className="bq-lead-ksw"
-              style={{ background: getActivityPhaseDisplay(phase).color }}
-            />
-            {getActivityPhaseDisplay(phase).label}
-            <b className="font-mono">
-              {formatDurationMs(phaseDurations.get(phase) ?? 0)}
-            </b>
-          </span>
-        ))}
-        <span className="bq-lead-kitem">
-          <span className="bq-lead-ksw idle" />
-          Idle / waiting
-          <b className="font-mono">{formatDurationMs(track.idleMs)}</b>
-        </span>
-      </div>
-      {track.incomplete ? (
+            <span className="font-mono">First code pushed</span>
+            {track.openedPct === null ? null : (
+              <span
+                className="bq-lead-pr-opened-label font-mono"
+                data-edge={openedLabelEdge ?? undefined}
+                style={{ left: `${track.openedPct}%` }}
+              >
+                PR opened
+              </span>
+            )}
+            <span className="font-mono">{track.endLabel}</span>
+          </div>
+          <div className="bq-lead-key">
+            {DISPLAY_PHASES.map((phase) => (
+              <span className="bq-lead-kitem" key={phase}>
+                <span
+                  className="bq-lead-ksw"
+                  style={{ background: getActivityPhaseDisplay(phase).color }}
+                />
+                {getActivityPhaseDisplay(phase).label}
+                <b className="font-mono">
+                  {format(phaseDurations?.get(phase) ?? 0)}
+                </b>
+              </span>
+            ))}
+            <span className="bq-lead-kitem">
+              <span className="bq-lead-ksw idle" />
+              Idle / waiting
+              <b className="font-mono">
+                {track.idleUnavailable ? "Unavailable" : format(track.idleMs)}
+              </b>
+            </span>
+          </div>
+        </>
+      ) : null}
+      {track.evidenceIncomplete ? (
         <p className="bq-lead-foot">
-          * Calculated from available selected-cycle evidence.
+          {track.evidenceCapped
+            ? BRANCH_OUTCOME_EVIDENCE_CAPPED_FOOTNOTE
+            : BRANCH_OUTCOME_EVIDENCE_INCOMPLETE_FOOTNOTE}
+        </p>
+      ) : null}
+      {track.idleUnavailable ? (
+        <p className="bq-lead-foot">
+          {BRANCH_OUTCOME_IDLE_UNAVAILABLE_FOOTNOTE}
         </p>
       ) : null}
     </>
   );
 }
 
-function UnavailableOutcome() {
+/**
+ * Why there is no waterfall. `reason` is the pull-request reason when the pull
+ * request is what is missing; `null` keeps the shipped sentence, which is the
+ * honest one once a pull request IS selected and the evidence still is not there.
+ */
+function AbsentOutcome({ reason }: { reason: string | null }) {
   return (
-    <p className="bq-lead-foot">
-      Selected-cycle outcome evidence is unavailable or not applicable.
-    </p>
+    <p className="bq-lead-foot">{reason ?? BRANCH_OUTCOME_EVIDENCE_ABSENT}</p>
   );
 }
 
-function buildOutcomeTrack(detail: BranchPageDetail): OutcomeTrack | null {
-  const metrics = detail.canonicalMetrics;
-  const selected = detail.selectedPullRequest;
-  const attribution = detail.phaseAttribution;
+function buildHonestOutcomeTrack(
+  metrics: BranchPageDetail["canonicalMetrics"],
+  selected: BranchSelectedPullRequestDetail | null | undefined,
+  attribution: BranchPhaseAttributionResult | undefined
+): OutcomeTrack | null {
+  const base = buildOutcomeTrackBase(
+    metrics,
+    selected,
+    attribution,
+    displayableBranchMetricValue
+  );
+  if (!base) {
+    return null;
+  }
+  const idleMetric = displayableBranchMetricValue(base.metrics.idleTimeMs);
+  const inferredIdleMs = segmentIdleDurationMs(base.segments);
+  const idleUnavailable = !(
+    idleMetric &&
+    idleMetric.value <= base.outcome.value &&
+    idleMetric.value === inferredIdleMs
+  );
+  return {
+    endLabel: base.leadTime ? "Merged" : "Closed",
+    evidenceCapped: attributionCoverageCapped(base.attribution),
+    evidenceIncomplete:
+      base.outcome.partial ||
+      base.attribution.coverage.completeness !==
+        BranchPhaseAttributionCompleteness.Complete ||
+      Boolean(idleMetric?.partial),
+    idleMs: idleMetric?.value ?? 0,
+    idlePartial: Boolean(idleMetric?.partial),
+    idleUnavailable,
+    openedPct: base.openedPct,
+    outcomeLabel: base.leadTime
+      ? BRANCH_METRIC_DICTIONARY[BranchMetricId.LeadTime].label
+      : BRANCH_METRIC_DICTIONARY[BranchMetricId.AbandonmentTime].label,
+    outcomePartial: base.outcome.partial,
+    segments: idleUnavailable ? null : base.segments,
+    totalMs: base.outcome.value,
+  };
+}
+
+function buildShippedOutcomeTrack(
+  metrics: BranchPageDetail["canonicalMetrics"],
+  selected: BranchSelectedPullRequestDetail | null | undefined,
+  attribution: BranchPhaseAttributionResult | undefined
+): OutcomeTrack | null {
+  const base = buildOutcomeTrackBase(
+    metrics,
+    selected,
+    attribution,
+    shippedClampedBranchMetricValue
+  );
+  if (!base) {
+    return null;
+  }
+  const incomplete =
+    base.outcome.partial ||
+    base.attribution.coverage.completeness !==
+      BranchPhaseAttributionCompleteness.Complete ||
+    base.metrics.idleTimeMs.state === BranchMetricAvailability.Partial;
+  return {
+    endLabel: base.leadTime ? "Merged" : "Closed",
+    evidenceCapped: attributionCoverageCapped(base.attribution),
+    evidenceIncomplete: incomplete,
+    idleMs: segmentIdleDurationMs(base.segments),
+    idlePartial: false,
+    idleUnavailable: false,
+    openedPct: base.openedPct,
+    outcomeLabel: base.leadTime
+      ? BRANCH_METRIC_DICTIONARY[BranchMetricId.LeadTime].label
+      : BRANCH_METRIC_DICTIONARY[BranchMetricId.AbandonmentTime].label,
+    outcomePartial: incomplete,
+    segments: base.segments,
+    totalMs: base.outcome.value,
+  };
+}
+
+function buildOutcomeTrackBase(
+  metrics: BranchPageDetail["canonicalMetrics"],
+  selected: BranchSelectedPullRequestDetail | null | undefined,
+  attribution: BranchPhaseAttributionResult | undefined,
+  metricValue: (
+    result: BranchMetricResult<number> | undefined
+  ) => DisplayableBranchMetricValue | null
+): OutcomeTrackBase | null {
   if (!(metrics && selected && attribution)) {
     return null;
   }
@@ -181,11 +361,6 @@ function buildOutcomeTrack(detail: BranchPageDetail): OutcomeTrack | null {
   if (segments.length === 0) {
     return null;
   }
-  const idleMs = segments.reduce(
-    (sum, segment) =>
-      segment.type === "idle" ? sum + segment.durationMs : sum,
-    0
-  );
   const openedMs = selected.openedAt
     ? Date.parse(selected.openedAt)
     : Number.NaN;
@@ -194,68 +369,13 @@ function buildOutcomeTrack(detail: BranchPageDetail): OutcomeTrack | null {
       ? ((openedMs - startMs) / outcome.value) * 100
       : null;
   return {
-    endLabel: leadTime ? "Merged" : "Closed",
-    idleMs,
-    incomplete:
-      outcome.partial ||
-      attribution.coverage.completeness !==
-        BranchPhaseAttributionCompleteness.Complete ||
-      metrics.idleTimeMs.state === BranchMetricAvailability.Partial,
+    attribution,
+    leadTime,
+    metrics,
     openedPct,
-    outcomeLabel: leadTime ? "Lead time for change" : "Abandonment Duration",
+    outcome,
     segments,
-    totalMs: outcome.value,
   };
-}
-
-function visibleOutcomeSegments(
-  source: readonly BranchPhaseAttributionSegment[],
-  startMs: number,
-  endMs: number
-): WaterfallSegment[] {
-  const clipped = source.flatMap((segment) => {
-    const start = Math.max(startMs, segment.startMs);
-    const end = Math.min(endMs, segment.endMs);
-    return end > start ? [{ end, phase: segment.phase, start }] : [];
-  });
-  const boundaries = [
-    ...new Set([
-      startMs,
-      endMs,
-      ...clipped.flatMap((segment) => [segment.start, segment.end]),
-    ]),
-  ].sort((left, right) => left - right);
-  const result: WaterfallSegment[] = [];
-  for (let index = 0; index < boundaries.length - 1; index += 1) {
-    const start = boundaries[index];
-    const end = boundaries[index + 1];
-    if (!(start !== undefined && end !== undefined && end > start)) {
-      continue;
-    }
-    const phase = PHASE_PRECEDENCE.find((candidate) =>
-      clipped.some(
-        (segment) =>
-          segment.phase === candidate &&
-          segment.start < end &&
-          segment.end > start
-      )
-    );
-    appendSegment(result, phase ?? "idle", end - start);
-  }
-  return result;
-}
-
-function appendSegment(
-  target: WaterfallSegment[],
-  type: WaterfallSegment["type"],
-  durationMs: number
-): void {
-  const previous = target.at(-1);
-  if (previous?.type === type) {
-    previous.durationMs += durationMs;
-  } else {
-    target.push({ durationMs, type });
-  }
 }
 
 function phaseDurationTotals(
@@ -279,20 +399,20 @@ function phaseLabel(type: WaterfallSegment["type"]): string {
     : getActivityPhaseDisplay(type).label;
 }
 
-function metricValue(
-  result: BranchMetricResult<number>
-): { partial: boolean; value: number } | null {
-  if (
-    (result.state !== BranchMetricAvailability.Complete &&
-      result.state !== BranchMetricAvailability.Partial) ||
-    result.value === null
-  ) {
-    return null;
+function segmentIdleDurationMs(segments: readonly WaterfallSegment[]): number {
+  return segments.reduce(
+    (sum, segment) =>
+      segment.type === "idle" ? sum + segment.durationMs : sum,
+    0
+  );
+}
+
+function idleSummary(track: OutcomeTrack): string {
+  if (track.idleUnavailable) {
+    return BRANCH_OUTCOME_IDLE_UNAVAILABLE_SUMMARY;
   }
-  return {
-    partial: result.state === BranchMetricAvailability.Partial,
-    value: Math.max(0, result.value),
-  };
+  const idlePct = Math.round((track.idleMs / track.totalMs) * 100);
+  return `${idlePct}% idle${track.idlePartial ? "*" : ""}`;
 }
 
 function waterfallOpenedLabelEdge(
@@ -305,4 +425,15 @@ function waterfallOpenedLabelEdge(
     return "start";
   }
   return openedPct > 80 ? "end" : null;
+}
+
+function attributionCoverageCapped(
+  attribution: BranchPhaseAttributionResult
+): boolean {
+  return (
+    attribution.coverage.completeness !==
+      BranchPhaseAttributionCompleteness.Complete &&
+    attribution.coverage.reason ===
+      BranchPhaseAttributionCompletenessReason.CoverageCapped
+  );
 }

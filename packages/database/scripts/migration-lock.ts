@@ -34,9 +34,10 @@ import { createSqlClient, endQuietly, type SqlClient } from "./db-utils";
  * for migration serialization and must not be reused by any other advisory
  * lock. `pg_advisory_lock` and `pg_advisory_xact_lock` share ONE keyspace, so
  * a collision (even with an xact-lock elsewhere) would spuriously serialize
- * unrelated work. Today the only other advisory locks are Prisma's `72707369`
- * and `pg_advisory_xact_lock(hashtext(...))` hashes, so this bare int is free —
- * keep it that way.
+ * unrelated work. Today the only other advisory locks are Prisma's `72707369`,
+ * `pg_advisory_xact_lock(hashtext(...))` hashes and the preview build locks
+ * above the int4 range (`previewBuildLockKey`, ISS-11785), so this bare int is
+ * free — keep it that way.
  */
 export const MIGRATION_SERIALIZE_LOCK_KEY = 30_650_000;
 
@@ -72,8 +73,13 @@ type MigrationLockLogger = { log: (message: string) => void };
  *    a best-effort catch-up is non-urgent, and running unguarded would make the
  *    walk itself a source of Prisma-lock (72707369) contention. A skipped schema
  *    is simply left to self-heal on its own next deploy.
+ *  - `"skip-on-timeout"`: fail closed ONLY when the budget's `statement_timeout`
+ *    cancelled the wait (57014, the lock stayed busy); fail open on any other
+ *    gate error, as `"run"` does. ISS-11781's `public` ensure: a busy gate
+ *    refuses with nothing run, while a gate broken for another reason keeps the
+ *    promise above (review: marisolashgrove).
  */
-export type SerializeLockContendedMode = "run" | "skip";
+export type SerializeLockContendedMode = "run" | "skip" | "skip-on-timeout";
 
 /**
  * Observed result of the gate acquire, for telemetry (ISS-4392). A plain string
@@ -164,7 +170,10 @@ export async function withMigrationSerializeLock<T>(
     await endQuietly(client);
     // Fail CLOSED when the caller opted in (`onContended: "skip"`): the work is
     // non-urgent and running unguarded would reintroduce Prisma-lock contention.
-    if (onContended === "skip") {
+    if (
+      onContended === "skip" ||
+      (onContended === "skip-on-timeout" && isStatementTimeoutCancel(error))
+    ) {
       notifyGateOutcome(
         deps.onOutcome,
         "fail_closed",
@@ -224,4 +233,13 @@ function notifyGateOutcome(
   } catch {
     // Telemetry is best-effort; a throwing callback must never change gate behavior.
   }
+}
+
+function isStatementTimeoutCancel(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === STATEMENT_TIMEOUT_SQLSTATE
+  );
 }

@@ -7,7 +7,7 @@ import { compactMetadataForPreview } from "@repo/lib/agent-sessions/metadata-pre
  *
  * The desktop client already minimizes session `metadata` before sync via
  * `compactSessionMetadataForSync` in
- * `apps/desktop/src/main/agent-sync/agent-session-sync-payload.ts` — it drops
+ * `apps/desktop/src/main/agent-sync/agent-session-sync-metadata.ts` — it drops
  * `messages[].content`, keeps only an allowlist of message fields, and caps
  * message count / nesting depth / string length. But the cloud ingest only runs
  * a Postgres-JSON validity + key-collision pass (`sanitizePostgresJson`) — NOT a
@@ -26,6 +26,15 @@ import { compactMetadataForPreview } from "@repo/lib/agent-sessions/metadata-pre
  * ships un-minimized content. Unlike the desktop, agent `metadata` is never
  * minimized producer-side (`sync-source.ts` ships it raw), so the same strip is
  * applied to both session and agent metadata here.
+ *
+ * ISS-7896 made ONE key asymmetric between the lanes, and ISS-9864 a second on
+ * the same terms: the desktop producer DERIVES `metadata.humanTurnTimestamps`
+ * and `metadata.agentTurnTimestamps` from its full local `messages` array, and
+ * this side can only BOUND what arrives. It deliberately never recomputes — by
+ * the time a payload reaches here `messages` is already capped at 100, so a
+ * recomputation would rebuild either key from the truncated array and reinstate
+ * the undercount those tickets removed. Every other key is still equal by
+ * construction.
  */
 
 /**

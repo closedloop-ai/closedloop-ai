@@ -1,9 +1,6 @@
-// The install-phase state machine for the Convert & Install sheet, extracted as
-// pure functions so the transitions — confirm, resolve to installed/error,
-// retry, the blocked guard, and the stepper mapping — are unit-testable without
-// a DOM. The sheet component (convert-sheet.tsx) drives these; the sandbox test
-// suite is node-only, so the logic that matters lives here rather than inside
-// the render.
+// The install-phase state machine for the Convert & Install sheet, as pure
+// functions: confirm, resolve to installed/error, retry, the blocked guard, and
+// the stepper mapping. The sheet component (convert-sheet.tsx) drives these.
 
 import { Convertibility, InstallOutcome, type SourceComponent } from "../mock";
 

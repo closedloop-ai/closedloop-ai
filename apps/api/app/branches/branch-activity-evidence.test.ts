@@ -5,6 +5,7 @@ import {
   BranchActivityEvidenceReason,
   BranchActivitySource,
 } from "@repo/api/src/types/branch-activity";
+import { MonitoredSessionActivityEventKind } from "@repo/api/src/types/branch-activity-kind";
 import { type TransactionClient, withDb } from "@repo/database";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -20,6 +21,8 @@ const BRANCH_ID = "019ff6d4-9f0b-70df-b07d-aa44ce3a432e";
 const PULL_REQUEST_ID = "019ff6d4-c23d-77d9-a3f2-943fef790c95";
 const OCCURRED_AT = "2026-08-12T10:00:00.000Z";
 const PRIOR_AT = "2026-08-11T10:00:00.000Z";
+const BEFORE_SHA = "1111111111111111111111111111111111111111";
+const AFTER_SHA = "2222222222222222222222222222222222222222";
 
 describe("Branch activity evidence persistence", () => {
   afterEach(() => {
@@ -75,16 +78,81 @@ describe("Branch activity evidence persistence", () => {
       ],
       skipDuplicates: true,
     });
-    expect(client.updateMany).toHaveBeenCalledWith({
-      where: {
-        artifactId: BRANCH_ID,
-        organizationId: ORGANIZATION_ID,
-        OR: [
-          { lastActivityAt: null },
-          { lastActivityAt: { lt: new Date(OCCURRED_AT) } },
-        ],
+    expect(client.executeRaw).toHaveBeenCalledOnce();
+  });
+
+  it("writes push evidence columns only for a push atom (ISS-10009)", async () => {
+    const pushClient = createClient();
+    await persistBranchActivityAtomInTransaction(pushClient.tx, {
+      ...input(),
+      atom: { ...branchAtom(), source: BranchActivitySource.PushLoc },
+      pushEvidence: {
+        beforeSha: BEFORE_SHA,
+        afterSha: AFTER_SHA,
+        lineDelta: { linesAdded: 12, linesRemoved: 3 },
       },
-      data: { lastActivityAt: new Date(OCCURRED_AT) },
+    });
+
+    expect(pushClient.createMany.mock.calls[0][0].data[0]).toMatchObject({
+      beforeSha: BEFORE_SHA,
+      afterSha: AFTER_SHA,
+      linesAdded: 12,
+      linesRemoved: 3,
+    });
+
+    // The sibling half: a lane that carries no push evidence must not bind the
+    // columns at all, so its INSERT still runs against a database that has not
+    // taken the migration yet (the stage window packages/database AGENTS.md
+    // describes for an added column).
+    const otherClient = createClient();
+    await persistBranchActivityAtomInTransaction(otherClient.tx, input());
+
+    expect(
+      Object.keys(otherClient.createMany.mock.calls[0][0].data[0])
+    ).not.toContain("beforeSha");
+  });
+
+  it("skips the Last-active recompute for a non-canonical source", async () => {
+    const pushClient = createClient();
+    await persistBranchActivityAtomInTransaction(pushClient.tx, {
+      ...input(),
+      atom: { ...branchAtom(), source: BranchActivitySource.PushLoc },
+      pushEvidence: {
+        beforeSha: BEFORE_SHA,
+        afterSha: AFTER_SHA,
+        lineDelta: { linesAdded: 1, linesRemoved: 0 },
+      },
+    });
+
+    // The recompute derives from canonical atoms only, so for push_loc it takes
+    // the branch row's lock and re-scans for a value it cannot move.
+    expect(pushClient.executeRaw).not.toHaveBeenCalled();
+
+    // Sibling positive: a canonical lane still recomputes.
+    const canonicalClient = createClient();
+    await persistBranchActivityAtomInTransaction(canonicalClient.tx, input());
+
+    expect(canonicalClient.executeRaw).toHaveBeenCalledOnce();
+  });
+
+  it("records an unknown push line delta as null, never as zero", async () => {
+    const client = createClient();
+
+    await persistBranchActivityAtomInTransaction(client.tx, {
+      ...input(),
+      atom: { ...branchAtom(), source: BranchActivitySource.PushLoc },
+      pushEvidence: {
+        beforeSha: BEFORE_SHA,
+        afterSha: AFTER_SHA,
+        lineDelta: null,
+      },
+    });
+
+    expect(client.createMany.mock.calls[0][0].data[0]).toMatchObject({
+      beforeSha: BEFORE_SHA,
+      afterSha: AFTER_SHA,
+      linesAdded: null,
+      linesRemoved: null,
     });
   });
 
@@ -99,10 +167,7 @@ describe("Branch activity evidence persistence", () => {
     ).resolves.toEqual({
       status: BranchActivityPersistStatus.InvalidAttribution,
     });
-    expect(client.pullRequestFind).toHaveBeenCalledWith({
-      where: { id: PULL_REQUEST_ID },
-      select: { branchArtifactId: true, id: true, organizationId: true },
-    });
+    expect(client.queryRaw).toHaveBeenCalledOnce();
     expect(client.createMany).not.toHaveBeenCalled();
     expect(client.updateMany).not.toHaveBeenCalled();
   });
@@ -131,11 +196,7 @@ describe("Branch activity evidence persistence", () => {
     await expect(
       persistBranchActivityAtomInTransaction(client.tx, input())
     ).resolves.toEqual({ status: BranchActivityPersistStatus.Replayed });
-    expect(client.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: { lastActivityAt: new Date(OCCURRED_AT) },
-      })
-    );
+    expect(client.executeRaw).toHaveBeenCalledOnce();
   });
 
   it("rejects a conflicting replay without using the incoming timestamp", async () => {
@@ -159,26 +220,27 @@ describe("Branch activity evidence persistence", () => {
         pullRequestDetailId: PULL_REQUEST_ID,
       },
     ],
-  ] satisfies [
-    string,
-    PersistedOverrides,
-  ][])("treats changed durable %s as a conflicting replay", async (_field, stored) => {
-    const client = createClient({
-      insertedCount: 0,
-      stored: persistedAtom(stored),
-    });
+  ] satisfies [string, PersistedOverrides][])(
+    "treats changed durable %s as a conflicting replay",
+    async (_field, stored) => {
+      const client = createClient({
+        insertedCount: 0,
+        stored: persistedAtom(stored),
+      });
 
-    await expect(
-      persistBranchActivityAtomInTransaction(client.tx, input())
-    ).resolves.toEqual({ status: BranchActivityPersistStatus.Conflict });
-    expect(client.updateMany).not.toHaveBeenCalled();
-  });
+      await expect(
+        persistBranchActivityAtomInTransaction(client.tx, input())
+      ).resolves.toEqual({ status: BranchActivityPersistStatus.Conflict });
+      expect(client.updateMany).not.toHaveBeenCalled();
+    }
+  );
 
   it("replays monitored evidence when only conservative completeness changed", async () => {
     const client = createClient({
       insertedCount: 0,
       stored: persistedAtom({
         source: BranchActivitySource.MonitoredSession,
+        activityKind: MonitoredSessionActivityEventKind.AgentRead,
         sourceEventId: "monitored-session-event",
         completeness: BranchActivityEvidenceCompleteness.Complete,
       }),
@@ -190,16 +252,13 @@ describe("Branch activity evidence persistence", () => {
         atom: {
           ...branchAtom(),
           source: BranchActivitySource.MonitoredSession,
+          kind: MonitoredSessionActivityEventKind.AgentRead,
           sourceEventId: "monitored-session-event",
           completeness: BranchActivityEvidenceCompleteness.Partial,
         },
       })
     ).resolves.toEqual({ status: BranchActivityPersistStatus.Replayed });
-    expect(client.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: { lastActivityAt: new Date(OCCURRED_AT) },
-      })
-    );
+    expect(client.executeRaw).toHaveBeenCalledOnce();
   });
 
   it("lets distinct older and equal-instant identities persist without weakening the scalar guard", async () => {
@@ -222,16 +281,7 @@ describe("Branch activity evidence persistence", () => {
         atom: { ...branchAtom(), sourceEventId: "equal-delivery" },
       })
     ).resolves.toEqual({ status: BranchActivityPersistStatus.Inserted });
-    expect(older.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          OR: [
-            { lastActivityAt: null },
-            { lastActivityAt: { lt: new Date(PRIOR_AT) } },
-          ],
-        }),
-      })
-    );
+    expect(older.executeRaw).toHaveBeenCalledOnce();
     expect(equal.createMany).toHaveBeenCalledOnce();
   });
 
@@ -377,7 +427,21 @@ function createClient(
       options.stored === undefined ? persistedAtom() : options.stored
     );
   const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+  const executeRaw = vi.fn().mockResolvedValue(1);
+  const queryRaw = vi.fn().mockResolvedValue(
+    options.pullRequest === null
+      ? []
+      : [
+          options.pullRequest ?? {
+            branchArtifactId: BRANCH_ID,
+            id: PULL_REQUEST_ID,
+            organizationId: ORGANIZATION_ID,
+          },
+        ]
+  );
   const tx = {
+    $executeRaw: executeRaw,
+    $queryRaw: queryRaw,
     branchActivityAtom: { createMany, findUnique: atomFind },
     branchDetail: { findUnique: branchFind, updateMany },
     pullRequestDetail: { findUnique: pullRequestFind },
@@ -386,7 +450,9 @@ function createClient(
     atomFind,
     branchFind,
     createMany,
+    executeRaw,
     pullRequestFind,
+    queryRaw,
     tx,
     updateMany,
   };

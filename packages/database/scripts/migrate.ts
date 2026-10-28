@@ -3,11 +3,12 @@
  * Runs Prisma migrations using IAM authentication.
  * This script generates an IAM token and runs prisma migrate deploy.
  *
- * For preview schemas (prefixed with "preview_"), if migrate deploy fails
+ * For ordinary preview schemas (prefixed with "preview_"), if migrate deploy fails
  * with P3005 (non-empty schema without migration history), P3009 (failed
  * migration blocking deploys), or P3018 (migration failed to apply), the
- * schema is dropped and recreated, then migrations are retried. This is safe
- * because preview schemas are ephemeral.
+ * schema is dropped and recreated, then migrations are retried. Retained vibe
+ * schemas refuse destructive recovery; an explicit mode request may rebuild
+ * them and recover while they are newly empty (ISS-12135).
  *
  * For non-preview schemas (production/staging), P3009/P3018 is recovered by
  * marking the failed migration as rolled-back, then retrying. If the retry
@@ -99,7 +100,7 @@ async function main() {
       );
       console.log("   Required: DATABASE_URL (with password) OR");
       console.log(
-        "   AWS_ROLE_ARN, AWS_REGION, PGHOST, PGUSER, PGDATABASE (for IAM auth)"
+        "   AWS_REGION, PGHOST, MIGRATE_PGUSER or PGUSER, PGDATABASE (for IAM auth)"
       );
       return;
     }

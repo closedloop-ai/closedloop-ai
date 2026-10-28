@@ -13,10 +13,14 @@ export const GET = withAnyAuth<
 >(
   async ({ user }, _, params) => {
     try {
+      // Next's route matcher already `decodeURIComponent`s every captured
+      // segment, so `slug` arrives decoded. Decoding again corrupts a slug
+      // containing a literal `%` (`skill::a%20b` -> `skill::a b`) or throws.
       const { slug } = await params;
       const detail = await agentComponentsService.getDetailForOrg(
         user.organizationId,
-        decodeURIComponent(slug)
+        slug,
+        { userId: user.id, clerkUserId: user.clerkId }
       );
       if (!detail) {
         return notFoundResponse("AgentComponent");

@@ -121,7 +121,8 @@ describe("POST /distributions", () => {
       "user-1",
       "clerk-org-1",
       "clerk-user-1",
-      expect.objectContaining({ catalogItemId: VALID_CATALOG_ID })
+      expect.objectContaining({ catalogItemId: VALID_CATALOG_ID }),
+      undefined
     );
   });
 
@@ -144,6 +145,38 @@ describe("POST /distributions", () => {
     );
 
     expect(response.status).toBe(403);
+  });
+
+  /**
+   * ISS-8661. The service hands this route a bare `StatusCode`, so the 403/503
+   * split only survives if the route maps it — the service-layer cases in
+   * `app/distributions/__tests__/service.test.ts` prove the code is produced,
+   * and this proves it is not flattened back into a 403 on the way out.
+   */
+  it("returns 503 role_unresolved when the service could not resolve the role", async () => {
+    vi.mocked(distributionsService.create).mockResolvedValue(
+      Result.err(Status.ServiceUnavailable)
+    );
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        url: "http://localhost:3002/distributions",
+        body: {
+          catalogItemId: VALID_CATALOG_ID,
+          mode: DistributionMode.AutoInstall,
+          targetingType: DistributionTargetingType.All,
+        },
+      }),
+      createMockRouteContext({})
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    // The code, not just the status: any other 5xx on this route would satisfy
+    // a status-only assertion. Written as a literal rather than imported from
+    // the module under test so deleting the constant fails this.
+    expect(body.code).toBe("role_unresolved");
   });
 
   it("returns 400 when the service reports an invalid catalogItemId", async () => {

@@ -38,7 +38,7 @@ const usage = createAgentSessionUsageSummaryFixture(
     ],
     byRepository: [
       {
-        repositoryFullName: "closedloop-ai/example-repo",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
         sessionCount: 7,
         inputTokens: 0,
         outputTokens: 0,
@@ -352,10 +352,10 @@ describe("sessionFilterFacetGroups", () => {
     );
     const repo = groups.find((g) => g.id === "repo");
     expect(repo?.options[0]).toMatchObject({
-      id: "closedloop-ai/example-repo",
-      label: "example-repo",
+      id: "closedloop-ai/closedloop-ai",
+      label: "closedloop-ai",
       count: 7,
-      searchText: "closedloop-ai/example-repo",
+      searchText: "closedloop-ai/closedloop-ai",
     });
   });
 
@@ -375,11 +375,13 @@ describe("sessionFilterFacetGroups", () => {
     };
     const groups = sessionFilterFacetGroups(filters, onChange, usage);
 
-    groups.find((g) => g.id === "repo")?.onToggle("closedloop-ai/example-repo");
+    groups
+      .find((g) => g.id === "repo")
+      ?.onToggle("closedloop-ai/closedloop-ai");
     expect(onChange).toHaveBeenCalledWith({
       ...DEFAULT_SESSION_FACET_FILTERS,
       statuses: [SESSION_STATUS.ACTIVE],
-      repositories: ["closedloop-ai/example-repo"],
+      repositories: ["closedloop-ai/closedloop-ai"],
     });
   });
 
@@ -410,7 +412,7 @@ describe("session facet filter URL params", () => {
       // retired spelling no longer round-trips, it folds (covered below).
       statuses: [SESSION_STATUS.ACTIVE, SESSION_STATUS.INACTIVE],
       userIds: ["019c2a66-37e4-7221-9c3b-e159549f4c93"],
-      repositories: ["closedloop-ai/example-repo"],
+      repositories: ["closedloop-ai/closedloop-ai"],
       harnesses: ["claude-code"],
       models: ["claude-sonnet-5"],
       autonomyTiers: [SESSION_AUTONOMY_TIER_FILTER_OPTIONS[0].value],
@@ -455,6 +457,34 @@ describe("session facet filter URL params", () => {
       SESSION_STATUS.INACTIVE,
       SESSION_STATUS.ACTIVE,
     ]);
+  });
+
+  it("drops a restored waiting/stale/unknown selection and keeps the rest", () => {
+    // ISS-10629 removed those three chips outright rather than keeping them
+    // read-only over an empty result, so a bookmarked URL must not restore one
+    // as a chip the menu can neither produce nor re-add. Asserted against a
+    // mixed selection, so a filter that dropped EVERYTHING would fail here too.
+    const parsed = parseSessionFacetFilterParams(
+      new URLSearchParams(
+        "status=waiting&status=active&status=stale&status=unknown&status=error"
+      )
+    );
+
+    expect(parsed.statuses).toEqual([
+      SESSION_STATUS.ACTIVE,
+      SESSION_STATUS.ERROR,
+    ]);
+  });
+
+  it("keeps a retired `completed` spelling, which was never a facet option", () => {
+    // The line ISS-10629 drew: it retired values THIS facet used to offer. A
+    // legacy wire spelling is an ordinary unrecognized value and still restores
+    // visibly, so the URL is not silently rewritten (ISS-5592).
+    const parsed = parseSessionFacetFilterParams(
+      new URLSearchParams("status=completed")
+    );
+
+    expect(parsed.statuses).toEqual(["completed"]);
   });
 
   // ISS-4605 (stage review): a selected Owner/Repository whose usage row dropped
@@ -508,7 +538,7 @@ describe("session facet filter URL params", () => {
       expect(
         hasActiveSessionFacet({
           ...DEFAULT_SESSION_FACET_FILTERS,
-          repositories: ["closedloop-ai/example-repo"],
+          repositories: ["closedloop-ai/closedloop-ai"],
         })
       ).toBe(true);
     });

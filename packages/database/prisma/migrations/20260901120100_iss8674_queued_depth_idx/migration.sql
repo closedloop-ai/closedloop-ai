@@ -1,0 +1,33 @@
+-- ISS-8674: the seek that makes the bounded sampler read a constant.
+--
+-- ALONE IN ITS OWN MIGRATION. `CREATE INDEX CONCURRENTLY` cannot run inside a
+-- transaction block, and Prisma sends a multi-statement migration file as one
+-- implicit transaction, which fails it with SQLSTATE 25001. This is why the
+-- column, constraint, trigger and backfill land in
+-- 20260901120000_iss8674_queued_command_count and the index lands here, the
+-- same split 20260831160000_iss8453_queued_commands_by_target_idx already uses.
+--
+-- WHY CONCURRENTLY. A plain CREATE INDEX holds a lock on `compute_targets` for
+-- the whole build, blocking the registration and heartbeat writes every desktop
+-- makes on a ~30-90s cadence. `IF NOT EXISTS` is deliberately absent: with
+-- CONCURRENTLY a failed build leaves a same-named INVALID index behind, and
+-- `scripts/lint/destructive-migrations/index-ddl.ts` requires the retry to fail
+-- closed on it rather than record the migration applied over an unusable index.
+--
+-- WHY DESCENDING, WITH `id` AS THE TIEBREAK. `countQueuedCommandsByTarget`
+-- reads the deepest backlogs first and stops at MAX_SAMPLED_TARGETS, so this
+-- key order serves the whole `ORDER BY … LIMIT` from the index with no sort
+-- step — that is what turns the sampler's per-tick database work into a
+-- constant instead of a function of fleet size. `id` ascending as the tiebreak
+-- keeps the existing ordering guarantee: ids are uuid7 and therefore
+-- creation-ordered, so a burst of freshly-registered targets sorts to the tail
+-- the cap drops rather than displacing the fleet already being sampled.
+--
+-- WHY PARTIAL. Registering a compute target costs an authenticated user nothing
+-- but a distinct machine name, so the target set never drains and grows with
+-- every registration ever made. `queued_command_count > 0` keeps this index the
+-- size of the targets currently HOLDING a backlog — small and self-draining —
+-- and excludes the sentinels, which run no executor.
+CREATE INDEX CONCURRENTLY "compute_targets_queued_depth_idx"
+  ON "compute_targets" ("queued_command_count" DESC, "id")
+  WHERE ((is_cloud_sentinel = false) AND (queued_command_count > 0));

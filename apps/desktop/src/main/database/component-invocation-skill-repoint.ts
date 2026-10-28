@@ -37,7 +37,7 @@
  * therefore becomes a modest per-skill OVERCOUNT rather than a stray command
  * row, and the transcript cannot distinguish it from the unlogged expansion that
  * dominates. The full reasoning for accepting that lives in the revision-68 note
- * in `collectors/engine/data-revision.ts`.
+ * in `docs/desktop-data-revision-history.md`.
  *
  * ## Why it runs here rather than in the candidate derivation
  *

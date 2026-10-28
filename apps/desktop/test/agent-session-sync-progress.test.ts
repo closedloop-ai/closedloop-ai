@@ -11,7 +11,7 @@
  * cannot latch on "checking" forever.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { AgentSessionSyncService } from "../src/main/agent-sync/agent-session-sync-service.js";
 import { buildAgentSessionSyncSourceKey } from "../src/main/agent-sync/agent-session-sync-source.js";
 import {
@@ -55,6 +55,14 @@ test("getSyncProgress reflects a draining first-connect backfill, then settles t
     identified: true,
     pendingBackfillSessions: 0,
     pendingIncrementalSessions: 0,
+    readyBackfillSessions: 0,
+    readyIncrementalSessions: 0,
+    // ISS-7099: all four were acked, so all four are DELIVERED. This is the
+    // end-to-end proof that the counter is fed by verified acks and not by the
+    // queue emptying — the queue empties on a dead-letter or a withhold too.
+    deliveredSessions: 4,
+    inFlightTotalSessions: 4,
+    sendingSessions: 0,
     backfilling: false,
     caughtUp: true,
     deadLetteredSessions: 0,
@@ -84,6 +92,11 @@ test("getSyncProgress reports caught up for an empty local store after the first
     identified: true,
     pendingBackfillSessions: 0,
     pendingIncrementalSessions: 0,
+    readyBackfillSessions: 0,
+    readyIncrementalSessions: 0,
+    deliveredSessions: 0,
+    inFlightTotalSessions: 0,
+    sendingSessions: 0,
     backfilling: false,
     caughtUp: true,
     deadLetteredSessions: 0,
@@ -171,4 +184,81 @@ test("getSyncProgress settles to caught up on a resumed persisted cursor (alread
   assert.equal(progress.backfilling, false);
   assert.equal(progress.pendingBackfillSessions, 0);
   service.stop();
+});
+
+// ISS-12529 (marisolashgrove, whitlockk review on PR #8877): in flight is the batch on
+// the wire, not the ready set. A first-connect backfill is all ready and the
+// drain sends one capped batch of it at a time.
+test("getSyncProgress reports the batch on the wire as sendingSessions, not the ready set", async () => {
+  const sessions = Array.from({ length: 40 }, (_, index) =>
+    makeSyncedSession(
+      `session-${index}`,
+      `2026-06-08T12:${String(index).padStart(2, "0")}:00.000Z`
+    )
+  );
+  const source = new FakeSyncSource(sessions);
+  const seenWhileSending: {
+    sending: number | null;
+    ready: number | null;
+    batch: number;
+  }[] = [];
+  let service: AgentSessionSyncService | null = null;
+  service = makeServiceWithIdentity(
+    source,
+    (batch) => {
+      const progress = service?.getSyncProgress();
+      seenWhileSending.push({
+        sending: progress?.sendingSessions ?? null,
+        ready: progress?.readyBackfillSessions ?? null,
+        batch: new Set(batch.sessions.map((s) => s.externalSessionId)).size,
+      });
+      return Promise.resolve({ accepted: true });
+    },
+    "target-sending"
+  );
+
+  // Before the walk has enumerated history the queues are empty because
+  // nothing has been listed yet, so the count is unmeasured, not zero.
+  assert.equal(service.getSyncProgress().sendingSessions, null);
+
+  try {
+    service.start();
+    await settleSelfContinuedDrain(service);
+
+    const first = seenWhileSending[0];
+    assert.ok(first, "the drain sent at least one batch");
+    assert.equal(first.ready, 40);
+    assert.equal(first.sending, first.batch);
+    assert.ok(first.batch < 40, "one capped batch, not the whole ready set");
+    for (const seen of seenWhileSending) {
+      assert.equal(seen.sending, seen.batch);
+    }
+    // Settled: nothing on the wire, and a measured zero rather than null.
+    assert.equal(service.getSyncProgress().caughtUp, true);
+    assert.equal(service.getSyncProgress().sendingSessions, 0);
+  } finally {
+    service.stop();
+  }
+});
+
+test("getSyncProgress clears sendingSessions when a send throws", async () => {
+  const source = new FakeSyncSource([
+    makeSyncedSession("session-1", "2026-06-08T12:01:00.000Z"),
+  ]);
+  const service = makeServiceWithIdentity(
+    source,
+    () => Promise.reject(new Error("socket hang up")),
+    "target-throw"
+  );
+  try {
+    service.start();
+    await flushAgentSessionSync();
+    await service.whenSessionSyncSettled();
+    const progress = service.getSyncProgress();
+    // Still owed, no longer on the wire.
+    assert.equal(progress.pendingBackfillSessions, 1);
+    assert.equal(progress.sendingSessions, 0);
+  } finally {
+    service.stop();
+  }
 });

@@ -46,7 +46,6 @@ describe("formatSourceLabel", () => {
   it("labels each known producer and omits unknown", () => {
     expect(formatSourceLabel("usage_api")).toBe("Usage endpoint");
     expect(formatSourceLabel("statusline")).toBe("Statusline");
-    expect(formatSourceLabel("rate_limit_event")).toBe("Rate-limit event");
     expect(formatSourceLabel(null)).toBeNull();
     expect(formatSourceLabel(undefined)).toBeNull();
   });

@@ -9,6 +9,7 @@ import {
   argumentText,
   clipText,
   commandDetail,
+  durationDetail,
   firstNonNull,
   formatDurationMs,
   getTurnItemRow,
@@ -58,6 +59,7 @@ describe("getTurnItemRow", () => {
 describe("firstNonNull", () => {
   it("returns the first truthy string, skipping nulls and undefineds", () => {
     expect(firstNonNull(null, undefined, "hello", "world")).toBe("hello");
+    expect(firstNonNull(null, "", "hello")).toBe("hello");
   });
 
   it("returns null when all values are null, undefined, or empty", () => {
@@ -67,9 +69,12 @@ describe("firstNonNull", () => {
 });
 
 describe("timestampMs", () => {
-  it("returns a finite number input directly", () => {
+  it("returns finite numbers directly and rejects non-finite numbers", () => {
     expect(timestampMs(42)).toBe(42);
     expect(timestampMs(0)).toBe(0);
+    expect(timestampMs(Number.NaN)).toBeUndefined();
+    expect(timestampMs(Number.POSITIVE_INFINITY)).toBeUndefined();
+    expect(timestampMs(Number.NEGATIVE_INFINITY)).toBeUndefined();
   });
 
   it("parses a valid ISO string to epoch-ms", () => {
@@ -114,6 +119,7 @@ describe("jsonToDisplayText", () => {
     const result = jsonToDisplayText({ key: "value" });
     expect(result).toContain('"key"');
     expect(result).toContain('"value"');
+    expect(result).toBe('{\n  "key": "value"\n}');
   });
 
   it("returns null when JSON.stringify produces no text (e.g. a function)", () => {
@@ -151,6 +157,8 @@ describe("formatDurationMs", () => {
   it("formats sub-minute durations in whole seconds", () => {
     expect(formatDurationMs(30_000)).toBe("30s");
     expect(formatDurationMs(0)).toBe("0s");
+    expect(formatDurationMs(1499)).toBe("1s");
+    expect(formatDurationMs(1500)).toBe("2s");
   });
 
   it("formats exact minute durations without trailing seconds", () => {
@@ -252,5 +260,68 @@ describe("statusDetail", () => {
 
   it("returns undefined when no exit code or status is present", () => {
     expect(statusDetail({}, null)).toBeUndefined();
+  });
+});
+
+describe("durationDetail", () => {
+  it("formats an explicit camelCase durationMs on the event data", () => {
+    expect(durationDetail({ durationMs: 30_000 }, null)).toBe("30s");
+  });
+
+  it("formats the snake_case duration_ms spelling other producers emit", () => {
+    expect(durationDetail({ duration_ms: 90_000 }, null)).toBe("1m 30s");
+  });
+
+  it("falls back to the tool response when the event data carries no duration", () => {
+    expect(durationDetail({}, { durationMs: 120_000 })).toBe("2m");
+  });
+
+  it("returns undefined when no duration field is present", () => {
+    expect(durationDetail({}, null)).toBeUndefined();
+    expect(durationDetail({}, {})).toBeUndefined();
+  });
+
+  it("returns undefined for a zero duration rather than rendering '0s'", () => {
+    expect(durationDetail({ durationMs: 0 }, null)).toBeUndefined();
+  });
+
+  it("returns undefined for a small negative that would render a lying '0s'", () => {
+    expect(durationDetail({ durationMs: -1 }, null)).toBeUndefined();
+    expect(durationDetail({ durationMs: -500 }, null)).toBeUndefined();
+  });
+
+  it("returns undefined for a negative that would render a nonsense '-1s'", () => {
+    expect(durationDetail({ durationMs: -600 }, null)).toBeUndefined();
+    expect(durationDetail({ duration_ms: -90_000 }, null)).toBeUndefined();
+    expect(durationDetail({}, { durationMs: -3_600_000 })).toBeUndefined();
+  });
+
+  it("returns undefined for a non-numeric duration", () => {
+    expect(durationDetail({ durationMs: "45000" }, null)).toBeUndefined();
+    expect(durationDetail({ durationMs: Number.NaN }, null)).toBeUndefined();
+  });
+
+  it("falls through a negative field to a usable lower-priority candidate", () => {
+    expect(durationDetail({ durationMs: -1 }, { durationMs: 120_000 })).toBe(
+      "2m"
+    );
+    expect(
+      durationDetail({ durationMs: -600, duration_ms: 30_000 }, null)
+    ).toBe("30s");
+  });
+
+  it("falls through a zero or non-numeric field to a usable lower-priority candidate", () => {
+    expect(durationDetail({ durationMs: 0 }, { durationMs: 90_000 })).toBe(
+      "1m 30s"
+    );
+    expect(
+      durationDetail({ durationMs: "45000" }, { durationMs: 30_000 })
+    ).toBe("30s");
+  });
+
+  it("returns undefined when every candidate is unusable", () => {
+    expect(
+      durationDetail({ durationMs: -1, duration_ms: 0 }, { durationMs: -600 })
+    ).toBeUndefined();
   });
 });

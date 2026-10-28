@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { after, before, describe, test } from "node:test";
+import { afterAll, beforeAll, describe, test } from "vitest";
 import {
   startCpuProfiler,
   stopCpuProfiler,
@@ -12,11 +12,11 @@ const STOP_FAILURE_LOG = /cpu-profiler stop failed/;
 
 let workDir = "";
 
-before(() => {
+beforeAll(() => {
   workDir = mkdtempSync(path.join(tmpdir(), "profiling-cpu-"));
 });
 
-after(() => {
+afterAll(() => {
   rmSync(workDir, { recursive: true, force: true });
 });
 

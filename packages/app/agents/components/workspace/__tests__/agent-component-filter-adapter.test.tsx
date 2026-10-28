@@ -5,13 +5,42 @@ import {
   SourceType,
 } from "@repo/api/src/types/agent-component";
 import { ComponentScope } from "@repo/api/src/types/component-scope";
-import { describe, expect, it } from "vitest";
 import {
   type AgentComponentFilters,
+  countFacetValues,
   DEFAULT_AGENT_COMPONENT_FILTERS,
   filterAgentComponentRows,
-} from "../../../hooks/use-agent-components-filter-state";
+} from "@repo/api/src/utils/agent-component-reduce";
+import { describe, expect, it } from "vitest";
 import { agentComponentFilterFacetGroups } from "../agent-component-filter-adapter";
+
+/**
+ * ISS-6822 moved the COUNTING out of the adapter (it now takes reduced counts,
+ * so a producer can do the counting beside the population). These cases still
+ * assert the same contract on the same rows — they just compose the count and
+ * the menu explicitly, which is exactly what the list does now.
+ */
+function facetGroupsFor(
+  rows: AgentComponent[],
+  allRows: AgentComponent[],
+  filters: AgentComponentFilters,
+  harnessCountRows: AgentComponent[],
+  honestSourceEnabled: boolean
+) {
+  return agentComponentFilterFacetGroups(
+    countFacetValues(
+      rows,
+      allRows,
+      filters,
+      harnessCountRows,
+      honestSourceEnabled
+    ),
+    filters,
+    () => {
+      // onChange is not exercised by these option/count assertions.
+    }
+  );
+}
 
 function makeRow(overrides: Partial<AgentComponent> = {}): AgentComponent {
   return {
@@ -45,13 +74,22 @@ function harnessOptions(
   filteredRows: AgentComponent[],
   filters: AgentComponentFilters
 ) {
-  const groups = agentComponentFilterFacetGroups(
+  // FEA-4336: the harness options count off the corpus with the harness facet
+  // CLEARED, so an active harness selection does not zero out the others' union
+  // preview. That composition is the list's job now, so spell it out here.
+  const harnessCountRows =
+    filters.harnesses.length === 0
+      ? filteredRows
+      : filterAgentComponentRows(
+          ALL_ROWS,
+          { ...filters, harnesses: [] },
+          false
+        );
+  const groups = facetGroupsFor(
     filteredRows,
     ALL_ROWS,
     filters,
-    () => {
-      // onChange is not exercised by these count assertions.
-    },
+    harnessCountRows,
     // ISS-5009 Source-provenance honesty off — these cases are about the harness
     // facet, and the flag must not change them.
     false
@@ -102,9 +140,7 @@ describe("agentComponentFilterFacetGroups — harness self-exclusion (whitlockk,
   });
 });
 
-// ---------------------------------------------------------------------------
 // ISS-5009 — the Source facet is gated as ONE unit
-// ---------------------------------------------------------------------------
 
 /** A user-scoped row whose legacy `source` is its own identity-key echo. */
 const SCOPE_USER_ECHO = "skill::python";
@@ -140,13 +176,11 @@ const HONEST_ROWS: AgentComponent[] = [
 ];
 
 function sourceOptionIds(honestSourceEnabled: boolean): string[] {
-  const groups = agentComponentFilterFacetGroups(
+  const groups = facetGroupsFor(
     HONEST_ROWS,
     HONEST_ROWS,
     DEFAULT_AGENT_COMPONENT_FILTERS,
-    () => {
-      // onChange is not exercised by these option assertions.
-    },
+    HONEST_ROWS,
     honestSourceEnabled
   );
   return (groups.find((g) => g.id === "source")?.options ?? []).map((option) =>
@@ -182,13 +216,11 @@ describe("agentComponentFilterFacetGroups — Source facet honesty (ISS-5009)", 
   });
 
   it("counts the honest option over exactly the rows it selects", () => {
-    const groups = agentComponentFilterFacetGroups(
+    const groups = facetGroupsFor(
       HONEST_ROWS,
       HONEST_ROWS,
       DEFAULT_AGENT_COMPONENT_FILTERS,
-      () => {
-        // onChange is not exercised here.
-      },
+      HONEST_ROWS,
       true
     );
     const option = groups

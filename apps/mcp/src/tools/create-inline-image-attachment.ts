@@ -10,12 +10,13 @@ import {
 } from "@repo/api/src/types/attachment.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
+import { operationReceiptOutputShape } from "../tool-call-receipts.js";
 import {
   asRecord,
-  describeIdOrSlug,
   encodePathSegment,
   readNumber,
   readString,
+  requiredIdOrSlug,
   withErrorHandling,
 } from "./tool-utils.js";
 
@@ -66,6 +67,7 @@ const inlineImageAttachmentOutputSchema = {
     .describe("Attachment reference using the attachment:// scheme"),
   markdownImage: z.string(),
   attachment: inlineImageAttachmentMetadataOutputSchema,
+  ...operationReceiptOutputShape,
 };
 
 /**
@@ -83,11 +85,11 @@ export function registerCreateInlineImageAttachment(
       description:
         "Create an inline image attachment for an existing document from base64 image bytes. Returns an attachment:// ref and Markdown image snippet; never returns the submitted bytes or storage key. Pass the user's document slug verbatim for entityId.",
       inputSchema: {
-        entityId: z
-          .string()
-          .describe(
-            describeIdOrSlug("Document", ["PRD-7", "PLN-12", "FEA-42"])
-          ),
+        entityId: requiredIdOrSlug(
+          "Document",
+          ["PRD-7", "PLN-12", "FEA-42"],
+          "Use list-documents to find one."
+        ),
         filename: z.string().min(1).describe("Image filename to store"),
         mimeType: z
           .enum(IMAGE_MIME_TYPES)

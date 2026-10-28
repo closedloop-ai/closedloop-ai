@@ -27,6 +27,7 @@ import {
   buildSlugCounterMock,
   buildSyncedSession,
   installDb,
+  persistedSessionDetail,
 } from "@/__tests__/support/agent-sessions/service.test-harness";
 
 vi.mock("@repo/database", async () => {
@@ -57,7 +58,9 @@ const CONTEXT = {
  * per-session lane — if the guard held, it never ran.
  */
 function installBatch(target: { id: string } | null) {
-  const upsert = vi.fn().mockResolvedValue({ artifactId: "artifact-1" });
+  const upsert = vi
+    .fn()
+    .mockResolvedValue(persistedSessionDetail("artifact-1"));
   const findFirst = vi.fn().mockResolvedValue(target);
   installDb({
     computeTarget: { findFirst },

@@ -68,7 +68,7 @@ export const KIND_SUPPORTED_HARNESSES: Record<
 // "unsupported" for that target rather than defaulting to "not installed" (which
 // would invite an install that can't land). Absence of a harness on a target is a
 // missing runtime, not a missing install.
-export type TargetHarnesses = Partial<Record<Harness, boolean>>;
+type TargetHarnesses = Partial<Record<Harness, boolean>>;
 
 // Per-cell install state. Exactly one of these renders in each cell. `unsupported`
 // is derived from the component kind, not stored per target; the others are the
@@ -222,7 +222,7 @@ export const cellStateFor = (
 // A cell "has an installation" when the component is present, whether current or
 // behind. Update-available means installed-but-stale, so it counts as installed
 // for the rollup; it also needs action, so it is counted there too.
-export const isInstalledState = (state: CellState): boolean =>
+const isInstalledState = (state: CellState): boolean =>
   state === CellState.Installed || state === CellState.Updatable;
 
 // A cell needs a user action when it can hold an install but isn't current:

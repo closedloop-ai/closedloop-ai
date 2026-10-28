@@ -8,9 +8,10 @@
  * Pure and surface-agnostic (no React, no auth): the hook layer
  * (`use-session-transcript`) owns descriptor fetching, caching, and gating.
  */
-import { parseClaudeTranscript } from "@repo/lib/harness/claude/parse-claude-core";
+import { parseClaudeTranscript } from "@repo/lib/harness/claude/parse-claude";
 import { parseCodexRollout } from "@repo/lib/harness/codex/parse-codex";
 import { parseOpenCodeTranscript } from "@repo/lib/harness/opencode/parse-opencode";
+import { isRecord } from "@repo/lib/harness/type-guards";
 import {
   Harness,
   type NormalizedApiError,
@@ -391,15 +392,16 @@ function redactUnknownStrings(value: unknown): unknown {
 function redactRecordStrings(
   value: Record<string, unknown>
 ): Record<string, unknown> {
-  const redacted: Record<string, unknown> = {};
+  // ISS-8565: null-prototype container so a key literally named `__proto__`
+  // becomes an own property instead of hitting the inherited `__proto__`
+  // setter, which creates no own key and silently drops the entry.
+  const redacted: Record<string, unknown> = Object.create(null);
   for (const [key, entry] of Object.entries(value)) {
     redacted[key] = redactUnknownStrings(entry);
   }
-  return redacted;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object";
+  // Spread restores a normal prototype for downstream consumers (object
+  // spread defines rather than assigns, so an own `__proto__` key survives).
+  return { ...redacted };
 }
 
 /**

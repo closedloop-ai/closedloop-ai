@@ -7,6 +7,49 @@ import type { FeedItem, FeedItemKind } from "../feed-item";
 export const ACTIVITY_SOURCE_ID = "activity";
 
 /**
+ * The kind of artifact a row belongs to. Only Sessions store a status of
+ * their own vocabulary (active / inactive / error), so a Session's status rows
+ * are labelled with the Session words rather than the Document ones. Branches
+ * store no status rows; they read like a Document's for every other field.
+ *
+ * Lives here, beside the row type, so the pure formatter
+ * (`activity-formatting.ts`) can read it without importing a component.
+ * `activity-card.tsx` re-exports it for its existing importers.
+ */
+export const ActivityArtifactKind = {
+  Document: "document",
+  Session: "session",
+  Branch: "branch",
+} as const;
+export type ActivityArtifactKind =
+  (typeof ActivityArtifactKind)[keyof typeof ActivityArtifactKind];
+
+/**
+ * How far an org directory lookup has got (ISS-5007). Declared here rather
+ * than in `activity-directory.ts` (which owns the query hooks) so the pure
+ * formatter can classify a lookup without importing React Query.
+ */
+export const ActivityDirectoryStatus = {
+  /** Still reading. Renderers reserve space; they must not name anyone. */
+  Pending: "pending",
+  /** Read succeeded and has records. An id that misses is genuinely absent. */
+  Ready: "ready",
+  /**
+   * We cannot name anyone: the read failed, or it returned nothing at all (a
+   * restricted viewer sees an empty directory). Renderers must fall back to
+   * copy that claims nothing, never to "Unknown user" — we do not know that.
+   */
+  Unavailable: "unavailable",
+} as const;
+export type ActivityDirectoryStatus =
+  (typeof ActivityDirectoryStatus)[keyof typeof ActivityDirectoryStatus];
+
+export type ActivityDirectory<TRecord> = {
+  status: ActivityDirectoryStatus;
+  find: (id: string) => TRecord | null;
+};
+
+/**
  * One normalized activity-timeline row, projected into the feed-item shape the
  * merged stream sorts on. The underlying `ArtifactActivityFeedItem` (from the
  * `GET /documents/[id]/activity` aggregate) is carried verbatim on `event` so

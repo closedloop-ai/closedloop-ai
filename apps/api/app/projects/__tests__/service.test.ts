@@ -3,15 +3,12 @@
  *
  * Tests the limit parameter functionality and multi-tenant security checks.
  */
-import {
-  DocumentStatus,
-  DocumentType,
-  IssueStatus,
-} from "@repo/api/src/types/document";
+import { DocumentStatus } from "@repo/api/src/types/document";
 import {
   PROJECT_COMPLETION_ARTIFACT_TYPE,
   ProjectStatus,
 } from "@repo/api/src/types/project";
+import { Result } from "@repo/api/src/types/result";
 import {
   afterEach,
   beforeEach,
@@ -33,7 +30,7 @@ vi.mock("@repo/database", () => ({
 vi.mock("@vercel/functions", () => ({ waitUntil }));
 
 vi.mock("@/lib/slug-generator", () => ({
-  generateSlug: vi.fn().mockResolvedValue("PRO-1"),
+  generateSlug: vi.fn(async () => "PRO-1"),
 }));
 
 vi.mock("@/app/search/search-index-service", async () => {
@@ -46,11 +43,16 @@ vi.mock("@/app/search/search-index-service", async () => {
   };
 });
 
+import {
+  MAX_PROJECT_TEAMS,
+  PROJECT_TEAM_CAP_MESSAGE,
+} from "@repo/api/src/types/project";
 // Import after mocking
 import { withDb } from "@repo/database";
+import { createHostileOrderedFindMany } from "@/__tests__/utils/hostile-order-planner.test-helpers";
 import {
   InvalidProjectTeamsError,
-  MAX_PROJECT_TEAMS,
+  InvalidProjectTeamsReason,
   projectsService,
 } from "../service";
 
@@ -92,7 +94,7 @@ describe("projectsService.findByTeam", () => {
   it("calls Prisma with take: 3 and sortOrder/updatedAt ordering when limit is provided", async () => {
     const mockFindMany = vi.fn().mockResolvedValue([MOCK_PROJECT]);
 
-    mockWithDb.mockImplementation((callback: any) => {
+    mockWithDb.mockImplementation((callback: (client: unknown) => unknown) => {
       const mockDb = {
         project: {
           findMany: mockFindMany,
@@ -111,7 +113,7 @@ describe("projectsService.findByTeam", () => {
         },
       },
       include: expect.any(Object),
-      orderBy: [{ sortOrder: "asc" }, { updatedAt: "desc" }],
+      orderBy: [{ sortOrder: "asc" }, { updatedAt: "desc" }, { id: "asc" }],
       take: 3,
     });
   });
@@ -119,7 +121,7 @@ describe("projectsService.findByTeam", () => {
   it("calls Prisma without take and with sortOrder/updatedAt ordering when no limit provided", async () => {
     const mockFindMany = vi.fn().mockResolvedValue([MOCK_PROJECT]);
 
-    mockWithDb.mockImplementation((callback: any) => {
+    mockWithDb.mockImplementation((callback: (client: unknown) => unknown) => {
       const mockDb = {
         project: {
           findMany: mockFindMany,
@@ -140,7 +142,7 @@ describe("projectsService.findByTeam", () => {
         },
       },
       include: expect.any(Object),
-      orderBy: [{ sortOrder: "asc" }, { updatedAt: "desc" }],
+      orderBy: [{ sortOrder: "asc" }, { updatedAt: "desc" }, { id: "asc" }],
     });
 
     // Explicitly verify take is not present
@@ -150,7 +152,7 @@ describe("projectsService.findByTeam", () => {
   it("always includes multi-tenant WHERE clause with organizationId and teamId regardless of limit", async () => {
     const mockFindMany = vi.fn().mockResolvedValue([MOCK_PROJECT]);
 
-    mockWithDb.mockImplementation((callback: any) => {
+    mockWithDb.mockImplementation((callback: (client: unknown) => unknown) => {
       const mockDb = {
         project: {
           findMany: mockFindMany,
@@ -189,7 +191,7 @@ describe("projectsService.findByTeam", () => {
   it("applies status inclusion filters when provided", async () => {
     const mockFindMany = vi.fn().mockResolvedValue([MOCK_PROJECT]);
 
-    mockWithDb.mockImplementation((callback: any) => {
+    mockWithDb.mockImplementation((callback: (client: unknown) => unknown) => {
       const mockDb = {
         project: {
           findMany: mockFindMany,
@@ -214,7 +216,7 @@ describe("projectsService.findByTeam", () => {
   it("applies status exclusion filters when provided", async () => {
     const mockFindMany = vi.fn().mockResolvedValue([MOCK_PROJECT]);
 
-    mockWithDb.mockImplementation((callback: any) => {
+    mockWithDb.mockImplementation((callback: (client: unknown) => unknown) => {
       const mockDb = {
         project: {
           findMany: mockFindMany,
@@ -242,7 +244,7 @@ describe("projectsService.findByTeam", () => {
   it("selects only the completion population's artifacts for completionPercentage", async () => {
     const mockFindMany = vi.fn().mockResolvedValue([MOCK_PROJECT]);
 
-    mockWithDb.mockImplementation((callback: any) => {
+    mockWithDb.mockImplementation((callback: (client: unknown) => unknown) => {
       const mockDb = {
         project: {
           findMany: mockFindMany,
@@ -272,7 +274,7 @@ describe("projectsService.findByTeam", () => {
       .fn()
       .mockResolvedValue([{ ...MOCK_PROJECT, artifacts: [] }]);
 
-    mockWithDb.mockImplementation((callback: any) => {
+    mockWithDb.mockImplementation((callback: (client: unknown) => unknown) => {
       const mockDb = { project: { findMany: mockFindMany } };
       return callback(mockDb);
     });
@@ -294,7 +296,7 @@ describe("projectsService.findByTeam", () => {
       },
     ]);
 
-    mockWithDb.mockImplementation((callback: any) => {
+    mockWithDb.mockImplementation((callback: (client: unknown) => unknown) => {
       const mockDb = { project: { findMany: mockFindMany } };
       return callback(mockDb);
     });
@@ -311,78 +313,6 @@ describe("projectsService.findByTeam", () => {
   });
 });
 
-describe("projectsService.calculateStatus", () => {
-  it("returns null for an empty population (no documents/issues to complete)", () => {
-    // ISS-4679: an empty population has no percentage; `null` distinguishes it
-    // from a real 0-of-N so the ring can render an empty-state track.
-    expect(projectsService.calculateStatus([])).toBeNull();
-  });
-
-  it("returns 0 (not null) when all document artifacts have non-terminal statuses", () => {
-    const artifacts = [
-      { status: DocumentStatus.Draft, subtype: DocumentType.Prd },
-      { status: DocumentStatus.InReview, subtype: DocumentType.Prd },
-      { status: DocumentStatus.ChangesRequested, subtype: DocumentType.Prd },
-    ];
-    expect(projectsService.calculateStatus(artifacts)).toBe(0);
-  });
-
-  it("returns 100 when all documents are in a terminal status (Approved/Executed/Obsolete)", () => {
-    const artifacts = [
-      { status: DocumentStatus.Approved, subtype: DocumentType.Prd },
-      {
-        status: DocumentStatus.Executed,
-        subtype: DocumentType.ImplementationPlan,
-      },
-      { status: DocumentStatus.Obsolete, subtype: DocumentType.Prd },
-    ];
-    expect(projectsService.calculateStatus(artifacts)).toBe(100);
-  });
-
-  it("returns 100 when all features are terminal (Done/Canceled)", () => {
-    const artifacts = [
-      { status: IssueStatus.Done, subtype: DocumentType.Feature },
-      { status: IssueStatus.Canceled, subtype: DocumentType.Feature },
-    ];
-    expect(projectsService.calculateStatus(artifacts)).toBe(100);
-  });
-
-  it("returns 50 for a mix of 2-of-4 terminal across documents and features", () => {
-    const artifacts = [
-      { status: DocumentStatus.Approved, subtype: DocumentType.Prd },
-      { status: IssueStatus.Done, subtype: DocumentType.Feature },
-      { status: DocumentStatus.Draft, subtype: DocumentType.Prd },
-      { status: IssueStatus.Backlog, subtype: DocumentType.Feature },
-    ];
-    expect(projectsService.calculateStatus(artifacts)).toBe(50);
-  });
-
-  it("treats per-subtype terminal sets independently: a feature Approved-string is not terminal", () => {
-    // APPROVED is terminal for documents but not part of the feature vocabulary,
-    // so a feature carrying it counts as non-terminal.
-    const artifacts = [
-      { status: DocumentStatus.Approved, subtype: DocumentType.Feature },
-      { status: IssueStatus.Done, subtype: DocumentType.Feature },
-      { status: IssueStatus.Triage, subtype: DocumentType.Feature },
-      { status: IssueStatus.InProgress, subtype: DocumentType.Feature },
-    ];
-    expect(projectsService.calculateStatus(artifacts)).toBe(25);
-  });
-
-  it("regression: document EXECUTED and APPROVED are both terminal post-PRD-495", () => {
-    const artifacts = [
-      {
-        status: DocumentStatus.Executed,
-        subtype: DocumentType.ImplementationPlan,
-      },
-      { status: DocumentStatus.Approved, subtype: DocumentType.Prd },
-      { status: DocumentStatus.Draft, subtype: DocumentType.Prd },
-      { status: DocumentStatus.InReview, subtype: DocumentType.Prd },
-    ];
-    expect(projectsService.calculateStatus(artifacts)).toBe(50);
-  });
-});
-
 // ISS-6561: `teamIds` is the ProjectTeam relation, not a Project column. It
 // must never reach `project.update`'s `data` — Prisma rejects the unknown
 // argument and the whole PUT /projects/:id fails with a generic 500 before the
@@ -392,6 +322,7 @@ describe("projectsService.update", () => {
   const ORG_ID = "org-456";
   const TEAM_A = "team-a";
   const TEAM_B = "team-b";
+  const TEAM_C = "team-c";
   // A real team, owned by a different organization than the caller's.
   const FOREIGN_TEAM = "team-in-another-org";
 
@@ -407,15 +338,51 @@ describe("projectsService.update", () => {
     updatedAt: new Date("2026-08-14T00:00:00.000Z"),
   };
 
+  /**
+   * The row as it stood BEFORE the write. Deliberately different from
+   * `UPDATED_PROJECT` on both audited fields: if the service ever returned the
+   * post-write row as `previous`, every assertion below would still pass
+   * against an identical pair.
+   */
+  const PREVIOUS_FIELDS = {
+    status: ProjectStatus.NotStarted,
+    priority: "LOW",
+  };
+
   let projectUpdate: Mock;
   let projectTeamDeleteMany: Mock;
   let projectTeamCreateMany: Mock;
   let teamFindMany: Mock;
+  /**
+   * The project's ProjectTeam rows, seeded with the two it already belongs to.
+   *
+   * Asserting the createMany ARGUMENTS alone cannot see a wipe: the service
+   * deletes every row and recreates the set, so "createMany was called with
+   * three rows" stays true even if the delete runs after it and the project ends
+   * up with none — which is exactly ISS-6559's bug. Two seeded teams are what
+   * make the net effect readable; with one, a targeted update and a
+   * wipe-and-replace produce the same membership.
+   */
+  let projectTeamRows: Set<string>;
+  /** The `FOR UPDATE` before-image read the audit receipt is diffed from. */
+  let lockedBeforeImage: Mock;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockWithDb.mockImplementation((callback: (client: unknown) => unknown) =>
+      callback({
+        projectTeam: {
+          findFirst: vi.fn(async () => ({ teamId: TEAM_C })),
+        },
+      })
+    );
     projectUpdate = vi.fn().mockResolvedValue(UPDATED_PROJECT);
-    projectTeamDeleteMany = vi.fn().mockResolvedValue({ count: 1 });
+    projectTeamRows = new Set([TEAM_A, TEAM_B]);
+    projectTeamDeleteMany = vi.fn().mockImplementation(() => {
+      const count = projectTeamRows.size;
+      projectTeamRows.clear();
+      return Promise.resolve({ count });
+    });
     // Stands in for the (projectId, teamId) unique constraint: a payload that
     // repeats a pair is a write error, which is how a duplicated teamId used to
     // surface as a generic 500.
@@ -430,6 +397,9 @@ describe("projectsService.update", () => {
             )
           );
         }
+        for (const row of data) {
+          projectTeamRows.add(row.teamId);
+        }
         return Promise.resolve({ count: data.length });
       });
     // Default: every requested team resolves inside the caller's own org.
@@ -438,8 +408,10 @@ describe("projectsService.update", () => {
       .mockImplementation(({ where }: { where: { id: { in: string[] } } }) =>
         Promise.resolve(where.id.in.map((id) => ({ id })))
       );
-    mockWithDbTx.mockImplementation((callback: any) =>
+    lockedBeforeImage = vi.fn().mockResolvedValue([PREVIOUS_FIELDS]);
+    mockWithDbTx.mockImplementation((callback: (client: unknown) => unknown) =>
       callback({
+        $queryRaw: lockedBeforeImage,
         project: { update: projectUpdate },
         team: { findMany: teamFindMany },
         projectTeam: {
@@ -476,9 +448,67 @@ describe("projectsService.update", () => {
     );
   });
 
+  // The update REPLACES memberships (deleteMany then createMany), so a caller
+  // that names one team when the project has two silently drops the other. The
+  // MCP tool therefore forwards the caller's whole set; this pins that every id
+  // in that set reaches the write, and that the project is left holding all
+  // three. Fails against a one-id shape, which can only ever deliver a single
+  // row here, and against a delete that outlives the create.
+  it("attaches a third team without dropping the two the project already had", async () => {
+    teamFindMany.mockResolvedValue([
+      { id: TEAM_A },
+      { id: TEAM_B },
+      { id: TEAM_C },
+    ]);
+
+    await projectsService.update(PROJECT_ID, ORG_ID, {
+      teamIds: [TEAM_A, TEAM_B, TEAM_C],
+    });
+
+    expect(projectTeamCreateMany).toHaveBeenCalledWith({
+      data: [
+        { projectId: PROJECT_ID, teamId: TEAM_A },
+        { projectId: PROJECT_ID, teamId: TEAM_B },
+        { projectId: PROJECT_ID, teamId: TEAM_C },
+      ],
+      skipDuplicates: true,
+    });
+    expect([...projectTeamRows].sort()).toEqual([TEAM_A, TEAM_B, TEAM_C]);
+  });
+
+  // The positive case above is only evidence that the widening works if this one
+  // proves the same assertion can still see a REFUSAL: taking an array must not
+  // become a way to reach past the org boundary. Two organizations are what make
+  // that distinguishable — against an unscoped resolve both cases would pass.
+  it("refuses the whole three-team attach when one team belongs to another organization", async () => {
+    // Org-scoped resolve returns only the caller's own two.
+    teamFindMany.mockResolvedValue([{ id: TEAM_A }, { id: TEAM_B }]);
+
+    const error = await settledValue(() =>
+      projectsService.update(PROJECT_ID, ORG_ID, {
+        teamIds: [TEAM_A, TEAM_B, FOREIGN_TEAM],
+      })
+    );
+
+    expect(error).toBeInstanceOf(InvalidProjectTeamsError);
+    expect(teamFindMany).toHaveBeenCalledWith({
+      where: {
+        id: { in: [TEAM_A, TEAM_B, FOREIGN_TEAM] },
+        organizationId: ORG_ID,
+      },
+      select: { id: true },
+    });
+    // Nothing partially applied: the two in-org teams are not written either,
+    // and the memberships the project already had survive the refusal.
+    expect(projectTeamDeleteMany).not.toHaveBeenCalled();
+    expect(projectTeamCreateMany).not.toHaveBeenCalled();
+    expect(indexAfterCommit).not.toHaveBeenCalled();
+    expect([...projectTeamRows].sort()).toEqual([TEAM_A, TEAM_B]);
+  });
+
   it("leaves the team rows alone and re-reads the projected team when teamIds is absent", async () => {
     const findFirst = vi.fn().mockResolvedValue({ teamId: TEAM_B });
-    mockWithDb.mockImplementation((callback: any) =>
+    mockWithDb.mockImplementation((callback: (client: unknown) => unknown) =>
       callback({ projectTeam: { findFirst } })
     );
 
@@ -508,11 +538,15 @@ describe("projectsService.update", () => {
     // org-scoped resolve returns only the in-org one.
     teamFindMany.mockResolvedValue([{ id: TEAM_A }]);
 
-    await expect(
+    const error = await settledValue(() =>
       projectsService.update(PROJECT_ID, ORG_ID, {
         teamIds: [TEAM_A, FOREIGN_TEAM],
       })
-    ).rejects.toThrow(InvalidProjectTeamsError);
+    );
+    expect(error).toBeInstanceOf(InvalidProjectTeamsError);
+    expect((error as InvalidProjectTeamsError).reason).toBe(
+      InvalidProjectTeamsReason.Unresolved
+    );
 
     // The resolve ran inside the transaction, scoped to the caller's org.
     expect(teamFindMany).toHaveBeenCalledWith({
@@ -529,9 +563,13 @@ describe("projectsService.update", () => {
   it("does not resolve or attach any team when every requested team is foreign", async () => {
     teamFindMany.mockResolvedValue([]);
 
-    await expect(
+    const error = await settledValue(() =>
       projectsService.update(PROJECT_ID, ORG_ID, { teamIds: [FOREIGN_TEAM] })
-    ).rejects.toThrow(InvalidProjectTeamsError);
+    );
+    expect(error).toBeInstanceOf(InvalidProjectTeamsError);
+    expect((error as InvalidProjectTeamsError).reason).toBe(
+      InvalidProjectTeamsReason.Unresolved
+    );
 
     expect(projectTeamCreateMany).not.toHaveBeenCalled();
     expect(indexAfterCommit).not.toHaveBeenCalled();
@@ -545,7 +583,9 @@ describe("projectsService.update", () => {
       projectsService.update(PROJECT_ID, ORG_ID, {
         teamIds: [TEAM_A, TEAM_A],
       })
-    ).resolves.toEqual(UPDATED_PROJECT);
+    ).resolves.toEqual(
+      Result.ok({ project: UPDATED_PROJECT, previous: PREVIOUS_FIELDS })
+    );
 
     expect(projectTeamCreateMany).toHaveBeenCalledWith({
       data: [{ projectId: PROJECT_ID, teamId: TEAM_A }],
@@ -562,9 +602,13 @@ describe("projectsService.update", () => {
       (_, i) => `team-${i}`
     );
 
-    await expect(
+    const error = await settledValue(() =>
       projectsService.update(PROJECT_ID, ORG_ID, { teamIds: overCap })
-    ).rejects.toThrow(InvalidProjectTeamsError);
+    );
+    expect(error).toBeInstanceOf(InvalidProjectTeamsError);
+    expect((error as InvalidProjectTeamsError).reason).toBe(
+      InvalidProjectTeamsReason.OverCap
+    );
 
     expect(teamFindMany).not.toHaveBeenCalled();
     expect(projectTeamDeleteMany).not.toHaveBeenCalled();
@@ -578,7 +622,7 @@ describe("projectsService.update", () => {
     const projectCreate = vi.fn().mockResolvedValue(UPDATED_PROJECT);
     const createTeamFindMany = vi.fn().mockResolvedValue([]);
     const createTeamRows = vi.fn().mockResolvedValue({ count: 1 });
-    mockWithDbTx.mockImplementation((callback: any) =>
+    mockWithDbTx.mockImplementation((callback: (client: unknown) => unknown) =>
       callback({
         project: { create: projectCreate },
         team: { findMany: createTeamFindMany },
@@ -586,12 +630,16 @@ describe("projectsService.update", () => {
       })
     );
 
-    await expect(
+    const error = await settledValue(() =>
       projectsService.create(ORG_ID, "user-1", {
         name: "New",
         teamIds: [FOREIGN_TEAM],
       })
-    ).rejects.toThrow(InvalidProjectTeamsError);
+    );
+    expect(error).toBeInstanceOf(InvalidProjectTeamsError);
+    expect((error as InvalidProjectTeamsError).reason).toBe(
+      InvalidProjectTeamsReason.Unresolved
+    );
 
     expect(createTeamFindMany).toHaveBeenCalledWith({
       where: { id: { in: [FOREIGN_TEAM] }, organizationId: ORG_ID },
@@ -599,6 +647,84 @@ describe("projectsService.update", () => {
     });
     expect(createTeamRows).not.toHaveBeenCalled();
     expect(indexAfterCommit).not.toHaveBeenCalled();
+  });
+
+  // The route decides whether to hand the caller a corrective team roster off
+  // this `reason` alone, so both producing paths must pin which one they emit.
+  // Asserting only the class leaves a swap of the two throw sites fully green.
+  it("rejects create over the cap with the over-cap reason and no team lookup", async () => {
+    const projectCreate = vi.fn().mockResolvedValue(UPDATED_PROJECT);
+    const createTeamFindMany = vi.fn().mockResolvedValue([]);
+    const createTeamRows = vi.fn().mockResolvedValue({ count: 1 });
+    mockWithDbTx.mockImplementation((callback: (client: unknown) => unknown) =>
+      callback({
+        project: { create: projectCreate },
+        team: { findMany: createTeamFindMany },
+        projectTeam: { createMany: createTeamRows },
+      })
+    );
+    const overCap = Array.from(
+      { length: MAX_PROJECT_TEAMS + 1 },
+      (_, i) => `team-${i}`
+    );
+
+    const error = await settledValue(() =>
+      projectsService.create(ORG_ID, "user-1", {
+        name: "New",
+        teamIds: overCap,
+      })
+    );
+
+    expect(error).toBeInstanceOf(InvalidProjectTeamsError);
+    expect((error as InvalidProjectTeamsError).reason).toBe(
+      InvalidProjectTeamsReason.OverCap
+    );
+    expect((error as InvalidProjectTeamsError).message).toBe(
+      PROJECT_TEAM_CAP_MESSAGE
+    );
+    expect(createTeamFindMany).not.toHaveBeenCalled();
+    expect(createTeamRows).not.toHaveBeenCalled();
+  });
+
+  // ISS-9688 (#7225 review, whitlockk and codex). The audit ledger is hashed and
+  // append-only, so a receipt built from a before-image another writer could
+  // have moved is a permanent wrong row. The route cannot close that on its own
+  // — it holds no lock — so the pair has to come from inside this transaction.
+  it("returns a before-image read under FOR UPDATE in the same transaction as the write", async () => {
+    const result = await projectsService.update(PROJECT_ID, ORG_ID, {
+      status: ProjectStatus.InProgress,
+    });
+
+    // The pre-image is the LOCKED read's row, not a re-read of the written one.
+    expect(result).toEqual(
+      Result.ok({ project: UPDATED_PROJECT, previous: PREVIOUS_FIELDS })
+    );
+
+    // `FOR UPDATE` is the load-bearing token: an unlocked read still lets a
+    // concurrent writer commit between it and the update under READ COMMITTED,
+    // which is the lost-update this exists to serialize. Asserting only that
+    // some read happened leaves dropping the lock fully green.
+    expect(lockedBeforeImage).toHaveBeenCalledTimes(1);
+    const sql = lockedBeforeImage.mock.calls[0][0].join("");
+    expect(sql).toContain("FOR UPDATE");
+    expect(sql).toContain("projects");
+
+    // ...and it ran BEFORE the write, or it is not a before-image at all.
+    expect(lockedBeforeImage.mock.invocationCallOrder[0]).toBeLessThan(
+      projectUpdate.mock.invocationCallOrder[0]
+    );
+  });
+
+  it("reports no before-image when the locked row does not exist", async () => {
+    // The route folds this into its 404: no row to lock is the same answer as
+    // no project, and it must never be mistaken for "nothing changed".
+    lockedBeforeImage.mockResolvedValue([]);
+
+    const result = await projectsService.update(PROJECT_ID, ORG_ID, {
+      status: ProjectStatus.InProgress,
+    });
+
+    expect(result).toMatchObject({ ok: true, value: { previous: null } });
   });
 
   it("clears every team row without a createMany for an empty teamIds", async () => {
@@ -614,6 +740,139 @@ describe("projectsService.update", () => {
     expect(projectTeamCreateMany).not.toHaveBeenCalled();
     expect(indexAfterCommit).toHaveBeenCalledWith(
       expect.objectContaining({ entityId: PROJECT_ID, teamId: null })
+    );
+  });
+});
+
+/**
+ * Return whatever the call settled with — the rejection reason, or the resolved
+ * value if it did not reject. Assertions stay in the test body so a call that
+ * unexpectedly resolves fails an assertion rather than skipping one.
+ */
+function settledValue(call: () => Promise<unknown>): Promise<unknown> {
+  return call().then(
+    (value) => value,
+    (caught: unknown) => caught
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ISS-9780 — the project lists lead on `sortOrder`, which is the most tie-prone
+// column in the schema: every project a user has never reordered shares one
+// value. The recency column behind it is not unique either, so before the
+// terminal key these reads had no defined answer for their tied rows — the
+// board could reshuffle between two identical loads.
+//
+// The fake applies the requested ordering and permutes tied rows between calls,
+// so this observes the ORDER SERVED. Drop `{ id: "asc" }` and the sequences
+// diverge.
+// ---------------------------------------------------------------------------
+describe("projectsService list ordering is total (ISS-9780)", () => {
+  const ORG_ID = "org-456";
+  const TIED_AT = new Date("2026-09-01T00:00:00.000Z");
+
+  function tiedProjects() {
+    return ["project-d", "project-b", "project-a", "project-c"].map((id) => ({
+      id,
+      name: `Project ${id}`,
+      organizationId: ORG_ID,
+      // Every row tied on BOTH ordering columns the service names ahead of the
+      // terminal key — the population the defect actually reaches.
+      sortOrder: 0,
+      createdAt: TIED_AT,
+      updatedAt: TIED_AT,
+      artifacts: [],
+      teams: [],
+      owner: null,
+    }));
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("serves findByOrganization in the same order twice when every row is tied", async () => {
+    const findMany = createHostileOrderedFindMany(tiedProjects());
+    mockWithDb.mockImplementation((callback: (client: unknown) => unknown) =>
+      callback({ project: { findMany } })
+    );
+
+    const first = await projectsService.findByOrganization(ORG_ID);
+    const second = await projectsService.findByOrganization(ORG_ID);
+
+    expect(first.map((project) => project.id)).toEqual(
+      second.map((project) => project.id)
+    );
+    expect(first).toHaveLength(4);
+  });
+
+  it("serves findByTeam in the same order twice when every row is tied", async () => {
+    const findMany = createHostileOrderedFindMany(tiedProjects());
+    mockWithDb.mockImplementation((callback: (client: unknown) => unknown) =>
+      callback({ project: { findMany } })
+    );
+
+    const first = await projectsService.findByTeam("team-123", ORG_ID);
+    const second = await projectsService.findByTeam("team-123", ORG_ID);
+
+    expect(first.map((project) => project.id)).toEqual(
+      second.map((project) => project.id)
+    );
+    expect(first).toHaveLength(4);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ISS-9441 — create with no priority
+// ---------------------------------------------------------------------------
+
+describe("projectsService.create priority", () => {
+  const ORG_ID = "org-9441";
+  const TEAM_ID = "team-9441";
+
+  /**
+   * Since the ISS-9441 migration dropped the column's DEFAULT, "no priority" is
+   * expressed by the key being ABSENT from the write and the column resolving to
+   * NULL — so the created row, and the projection built from it, both carry null.
+   */
+  const CREATED_PROJECT = {
+    id: "project-9441",
+    organizationId: ORG_ID,
+    name: "Unprioritized",
+    slug: "PRO-9441",
+    description: null,
+    assigneeId: null,
+    status: ProjectStatus.NotStarted,
+    priority: null,
+    updatedAt: new Date("2026-09-17T00:00:00.000Z"),
+  };
+
+  it("writes no priority column and projects null when the caller omits one", async () => {
+    const projectCreate = vi.fn().mockResolvedValue(CREATED_PROJECT);
+    mockWithDbTx.mockImplementation((callback: (client: unknown) => unknown) =>
+      callback({
+        project: { create: projectCreate },
+        team: { findMany: vi.fn().mockResolvedValue([{ id: TEAM_ID }]) },
+        projectTeam: { createMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      })
+    );
+
+    await projectsService.create(ORG_ID, "user-1", {
+      name: "Unprioritized",
+      teamIds: [TEAM_ID],
+    });
+
+    const { data } = projectCreate.mock.calls[0][0] as {
+      data: Record<string, unknown>;
+    };
+    // A `priority: undefined` in the payload would read identically at the
+    // column but is a different write for Prisma to reason about, so the key's
+    // absence is what is pinned.
+    expect("priority" in data).toBe(false);
+    // The projection mirrors the stored value, so an unprioritized project has
+    // to reach `:priority=NONE` rather than the MEDIUM the old default supplied.
+    expect(indexAfterCommit).toHaveBeenCalledWith(
+      expect.objectContaining({ entityId: CREATED_PROJECT.id, priority: null })
     );
   });
 });

@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, test } from "node:test";
 import { AgentComponentInvocationKind } from "@repo/api/src/types/agent-component-invocation";
-import { DATA_REVISION } from "../src/main/collectors/engine/data-revision.js";
+import { describe, test } from "vitest";
+import { effectiveDataRevision } from "../src/main/collectors/engine/effective-data-revision.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 import { staleRebuildFromStoredRows } from "./helpers/stored-rebuild.js";
 import { makeSession } from "./normalized-session-test-utils.js";
@@ -249,7 +249,7 @@ describe("ISS-4811 stored-row rebuild skill/command shadow suppression", () => {
       // Import stamps the CURRENT revision, so the session is already fresh.
       const rebuild = await db.rebuildComponentInvocationsFromStoredRows(
         sessionId,
-        DATA_REVISION
+        effectiveDataRevision()
       );
       assert.equal(rebuild.rebuilt, false);
       assert.equal(rebuild.activeRace, false);

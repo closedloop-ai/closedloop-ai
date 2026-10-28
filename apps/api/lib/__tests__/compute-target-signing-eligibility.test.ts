@@ -318,26 +318,26 @@ describe("compute target signing eligibility", () => {
       overrides: { apiKeyGatewayId: "gateway-other" },
       expectedReason: "no_active_managed_key",
     },
-  ])("rejects direct desktop auth for $name", async ({
-    overrides,
-    expectedReason,
-  }) => {
-    await expect(
-      isDirectDesktopAuthSigningEligible({
-        organizationId: ORG_ID,
-        userId: USER_ID,
-        clerkUserId: CLERK_USER_ID,
-        apiKeySource: ApiKeySource.DESKTOP_MANAGED,
-        apiKeyGatewayId: GATEWAY_ID,
-        apiKeyBoundPublicKey: BOUND_PUBLIC_KEY,
-        targetGatewayId: GATEWAY_ID,
-        ...overrides,
-      })
-    ).resolves.toEqual({
-      status: CommandSigningEligibilityStatus.Ineligible,
-      reason: expectedReason,
-    });
-  });
+  ])(
+    "rejects direct desktop auth for $name",
+    async ({ overrides, expectedReason }) => {
+      await expect(
+        isDirectDesktopAuthSigningEligible({
+          organizationId: ORG_ID,
+          userId: USER_ID,
+          clerkUserId: CLERK_USER_ID,
+          apiKeySource: ApiKeySource.DESKTOP_MANAGED,
+          apiKeyGatewayId: GATEWAY_ID,
+          apiKeyBoundPublicKey: BOUND_PUBLIC_KEY,
+          targetGatewayId: GATEWAY_ID,
+          ...overrides,
+        })
+      ).resolves.toEqual({
+        status: CommandSigningEligibilityStatus.Ineligible,
+        reason: expectedReason,
+      });
+    }
+  );
 
   it("rejects direct desktop auth when the owning organization is inactive", async () => {
     installDb({ owner: { active: true, organization: { active: false } } });

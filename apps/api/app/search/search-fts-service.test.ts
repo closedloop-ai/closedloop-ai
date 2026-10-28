@@ -26,225 +26,18 @@ vi.mock("@repo/database", () => ({
   },
 }));
 
-import { withDb } from "@repo/database";
+import {
+  baseParams,
+  candidate,
+  EXACT_ID_PREDICATE,
+  installDb,
+  sqlText,
+} from "@/__tests__/support/search/search-fts-service.test-fixtures";
 import {
   clampSearchLimit,
   decodeCursor,
-  reauthorizeHits,
   searchFtsService,
-  type UnifiedSearchParams,
 } from "./search-fts-service";
-
-const mockWithDb = withDb as unknown as Mock;
-const ORG = "11111111-1111-1111-1111-111111111111";
-/** The `entity_id = …` equality predicate only the EXACT id/slug lane emits. */
-const EXACT_ID_PREDICATE = /entity_id"?\s*=/;
-
-type Candidate = {
-  entity_type: string;
-  entity_id: string;
-  title: string;
-  snippet: string;
-  rank: number;
-  updated_at: Date;
-  slug: string | null;
-  entity_subtype: string | null;
-  team_id: string | null;
-  anchor_entity_id: string | null;
-};
-
-/**
- * Install a fake `withDb` whose db exposes `$queryRaw` (returns the given
- * candidates) and `artifact/project/loop.findMany` (returns only the ids present
- * in `visible[type]`) — the source-of-truth re-auth mock. Records the ids each
- * source table was queried with so a test can assert re-auth is set-based.
- */
-/**
- * Flatten a mocked Prisma.sql fragment tree to raw SQL text so the `$queryRaw`
- * fake can tell the EXACT id/slug lane (`entity_id = …::uuid` / `lower("slug")`)
- * apart from the FTS candidate scan.
- */
-function sqlText(node: unknown): string {
-  if (node === null || node === undefined) {
-    return "";
-  }
-  if (typeof node === "string") {
-    return node;
-  }
-  if (typeof node === "object") {
-    const n = node as {
-      strings?: string[];
-      values?: unknown[];
-      join?: unknown[];
-    };
-    if (Array.isArray(n.join)) {
-      return n.join.map(sqlText).join(" ");
-    }
-    if (Array.isArray(n.strings)) {
-      return n.strings.join(" ") + (n.values ?? []).map(sqlText).join(" ");
-    }
-  }
-  return "";
-}
-
-function installDb(options: {
-  candidates: Candidate[];
-  visible: Partial<Record<string, string[]>>;
-  onFind?: (type: string, ids: string[]) => void;
-  /** Org's `searchIncludeTranscripts` value returned by organization.findUnique. */
-  transcriptGateOn?: boolean;
-  /** Rows the EXACT id/slug lookup lane returns (defaults to none). */
-  exactCandidates?: Candidate[];
-  /** Users the `@owner` resolver returns (defaults to none). */
-  ownerUserIds?: string[];
-  /** Projects the `:project` resolver returns (defaults to none). */
-  projectRows?: Array<{ id: string }>;
-}) {
-  const findFor = (type: string) =>
-    vi.fn(
-      (args: { where: { id: { in: string[] }; [key: string]: unknown } }) => {
-        const requested = args.where.id.in;
-        options.onFind?.(type, requested);
-        const allowed = new Set(options.visible[type] ?? []);
-        return Promise.resolve(
-          requested.filter((id) => allowed.has(id)).map((id) => ({ id }))
-        );
-      }
-    );
-
-  // agent_session re-auth queries SessionDetail by `artifactId` and returns
-  // `{ artifactId }` rows, so it needs its own shaped fake.
-  const sessionFindMany = vi.fn(
-    (args: { where: { artifactId: { in: string[] } } }) => {
-      const requested = args.where.artifactId.in;
-      options.onFind?.(SearchEntityType.AgentSession, requested);
-      const allowed = new Set(
-        options.visible[SearchEntityType.AgentSession] ?? []
-      );
-      return Promise.resolve(
-        requested
-          .filter((id) => allowed.has(id))
-          .map((id) => ({ artifactId: id }))
-      );
-    }
-  );
-
-  // Comment re-auth queries `comment.findMany` scoped through the owning thread
-  // (`thread.is.organizationId`) + `deletedAt: null`, returning `{ id }` rows.
-  const commentFindMany = vi.fn(
-    (args: { where: { id: { in: string[] }; [key: string]: unknown } }) => {
-      const requested = args.where.id.in;
-      options.onFind?.(SearchEntityType.Comment, requested);
-      const allowed = new Set(options.visible[SearchEntityType.Comment] ?? []);
-      return Promise.resolve(
-        requested.filter((id) => allowed.has(id)).map((id) => ({ id }))
-      );
-    }
-  );
-
-  // Branch re-auth queries `branchDetail.findMany` by `artifactId`, returning
-  // `{ artifactId }` rows.
-  const branchFindMany = vi.fn(
-    (args: { where: { artifactId: { in: string[] } } }) => {
-      const requested = args.where.artifactId.in;
-      options.onFind?.(SearchEntityType.Branch, requested);
-      const allowed = new Set(options.visible[SearchEntityType.Branch] ?? []);
-      return Promise.resolve(
-        requested
-          .filter((id) => allowed.has(id))
-          .map((id) => ({ artifactId: id }))
-      );
-    }
-  );
-
-  // The EXACT id/slug lane and the FTS candidate scan both hit `$queryRaw`; route
-  // by SQL shape (the exact lane carries `entity_id = …::uuid` / `lower("slug")`
-  // and never a `tsv @@` match).
-  const queryRaw = vi.fn((node: unknown) => {
-    const text = sqlText(node);
-    const isExactLane =
-      text.includes("lower(") || EXACT_ID_PREDICATE.test(text);
-    return Promise.resolve(
-      isExactLane ? (options.exactCandidates ?? []) : options.candidates
-    );
-  });
-
-  const projectFindMany = vi.fn(
-    (args: { where: { id?: { in: string[] }; organizationId?: string } }) => {
-      // `:project` resolver (id-less where) vs the project re-auth lane (id.in).
-      if (args.where.id?.in) {
-        const requested = args.where.id.in;
-        options.onFind?.(SearchEntityType.Project, requested);
-        const allowed = new Set(
-          options.visible[SearchEntityType.Project] ?? []
-        );
-        return Promise.resolve(
-          requested.filter((id) => allowed.has(id)).map((id) => ({ id }))
-        );
-      }
-      return Promise.resolve(options.projectRows ?? []);
-    }
-  );
-
-  const db = {
-    $queryRaw: queryRaw,
-    artifact: { findMany: findFor(SearchEntityType.Document) },
-    project: { findMany: projectFindMany },
-    loop: { findMany: findFor(SearchEntityType.Loop) },
-    user: {
-      findMany: vi.fn(() =>
-        Promise.resolve((options.ownerUserIds ?? []).map((id) => ({ id })))
-      ),
-    },
-    sessionDetail: { findMany: sessionFindMany },
-    comment: { findMany: commentFindMany },
-    pullRequestDetail: { findMany: findFor(SearchEntityType.PullRequest) },
-    branchDetail: { findMany: branchFindMany },
-    // agent_component re-auth (FEA-4011 Slice A) queries `agentComponent.findMany`
-    // by `id` scoped to the org, returning `{ id }` rows — same shape as findFor.
-    agentComponent: { findMany: findFor(SearchEntityType.AgentComponent) },
-    organization: {
-      findUnique: vi.fn().mockResolvedValue({
-        searchIncludeTranscripts: options.transcriptGateOn ?? false,
-      }),
-    },
-  };
-  mockWithDb.mockImplementation((cb: (d: unknown) => unknown) => cb(db));
-  return db;
-}
-
-function baseParams(
-  over: Partial<UnifiedSearchParams> = {}
-): UnifiedSearchParams {
-  return {
-    organizationId: ORG,
-    query: "acme",
-    mode: SearchMode.Fulltext,
-    types: [],
-    since: null,
-    until: null,
-    limit: 25,
-    cursor: null,
-    filters: {},
-    ...over,
-  };
-}
-
-function candidate(over: Partial<Candidate> = {}): Candidate {
-  return {
-    entity_type: SearchEntityType.Document,
-    entity_id: "aaaaaaaa-0000-0000-0000-000000000001",
-    title: "Acme",
-    snippet: "<b>Acme</b>",
-    rank: 0.5,
-    updated_at: new Date("2026-01-01"),
-    slug: null,
-    entity_subtype: null,
-    team_id: null,
-    anchor_entity_id: null,
-    ...over,
-  };
-}
 
 describe("searchFtsService.searchUnified — per-hit re-authorization (redaction)", () => {
   beforeEach(() => {
@@ -276,11 +69,11 @@ describe("searchFtsService.searchUnified — per-hit re-authorization (redaction
       candidates: [
         candidate({ entity_type: SearchEntityType.Document, entity_id: "d1" }),
         candidate({ entity_type: SearchEntityType.Document, entity_id: "d2" }),
-        candidate({ entity_type: SearchEntityType.Loop, entity_id: "l1" }),
+        candidate({ entity_type: SearchEntityType.Project, entity_id: "p1" }),
       ],
       visible: {
         [SearchEntityType.Document]: ["d1", "d2"],
-        [SearchEntityType.Loop]: ["l1"],
+        [SearchEntityType.Project]: ["p1"],
       },
       onFind: (type, ids) => calls.push({ type, count: ids.length }),
     });
@@ -289,9 +82,11 @@ describe("searchFtsService.searchUnified — per-hit re-authorization (redaction
 
     // Exactly one re-auth query per distinct type present in the candidates.
     const docCalls = calls.filter((c) => c.type === SearchEntityType.Document);
-    const loopCalls = calls.filter((c) => c.type === SearchEntityType.Loop);
+    const projectCalls = calls.filter(
+      (c) => c.type === SearchEntityType.Project
+    );
     expect(docCalls).toHaveLength(1);
-    expect(loopCalls).toHaveLength(1);
+    expect(projectCalls).toHaveLength(1);
     // The single doc query batched both ids (set-based, not per-row).
     expect(docCalls[0].count).toBe(2);
   });
@@ -419,14 +214,14 @@ describe("searchFtsService.searchUnified — per-hit re-authorization (redaction
     installDb({
       candidates: [
         candidate({
-          entity_type: SearchEntityType.Loop,
-          entity_id: "l1",
+          entity_type: SearchEntityType.Project,
+          entity_id: "p1",
           slug: null,
           entity_subtype: null,
           team_id: null,
         }),
       ],
-      visible: { [SearchEntityType.Loop]: ["l1"] },
+      visible: { [SearchEntityType.Project]: ["p1"] },
     });
 
     const hit = (await searchFtsService.searchUnified(baseParams())).results[0];
@@ -462,21 +257,24 @@ describe("searchFtsService.searchUnified — exact ID/slug lookup (FEA-3930)", (
     ["PRD-4", SearchEntityType.Document],
     ["PLN-77", SearchEntityType.Document],
     ["PRO-9", SearchEntityType.Project],
-  ] as const)("slug-only query %s returns the exact row (case-insensitive)", async (slug, entityType) => {
-    const exactId = `${slug}-row`;
-    installDb({
-      candidates: [],
-      exactCandidates: [
-        candidate({ entity_type: entityType, entity_id: exactId }),
-      ],
-      visible: { [entityType]: [exactId] },
-    });
-    const res = await searchFtsService.searchUnified(
-      baseParams({ query: "", idLookup: { slug: slug.toLowerCase() } })
-    );
-    expect(res.results).toHaveLength(1);
-    expect(res.results[0].entityId).toBe(exactId);
-  });
+  ] as const)(
+    "slug-only query %s returns the exact row (case-insensitive)",
+    async (slug, entityType) => {
+      const exactId = `${slug}-row`;
+      installDb({
+        candidates: [],
+        exactCandidates: [
+          candidate({ entity_type: entityType, entity_id: exactId }),
+        ],
+        visible: { [entityType]: [exactId] },
+      });
+      const res = await searchFtsService.searchUnified(
+        baseParams({ query: "", idLookup: { slug: slug.toLowerCase() } })
+      );
+      expect(res.results).toHaveLength(1);
+      expect(res.results[0].entityId).toBe(exactId);
+    }
+  );
 
   it("cross-org id returns nothing (source-of-truth re-auth drops it)", async () => {
     const db = installDb({
@@ -664,280 +462,6 @@ describe("searchFtsService.searchUnified — exact ID/slug lookup (FEA-3930)", (
     expect(res.nextCursor).not.toBeNull();
     const decoded = decodeCursor(res.nextCursor as string);
     expect(decoded?.ftsStart).toBe(true);
-  });
-});
-
-describe("reauthorizeHits", () => {
-  beforeEach(() => vi.clearAllMocks());
-
-  it("never authorizes an unmapped/unknown entity type (fail-closed default)", async () => {
-    installDb({ candidates: [], visible: {} });
-    const authorized = await reauthorizeHits(ORG, [
-      candidate({ entity_type: "not-a-real-type", entity_id: "x1" }),
-    ]);
-    expect(authorized.size).toBe(0);
-  });
-
-  it("drops a document whose source artifact is not org-visible (stale/deleted projection)", async () => {
-    installDb({
-      candidates: [],
-      // The projection still carries d-stale, but the source artifact is not
-      // under this org (moved orgs / hard-deleted): re-auth must drop it.
-      visible: { [SearchEntityType.Document]: ["d-live"] },
-    });
-    const authorized = await reauthorizeHits(ORG, [
-      candidate({
-        entity_type: SearchEntityType.Document,
-        entity_id: "d-live",
-      }),
-      candidate({
-        entity_type: SearchEntityType.Document,
-        entity_id: "d-stale",
-      }),
-    ]);
-    expect(authorized.has(`${SearchEntityType.Document}:d-live`)).toBe(true);
-    expect(authorized.has(`${SearchEntityType.Document}:d-stale`)).toBe(false);
-  });
-
-  it("drops a project whose source is not org-visible (stale/deleted/cross-org)", async () => {
-    installDb({
-      candidates: [],
-      visible: { [SearchEntityType.Project]: ["p-live"] },
-    });
-    const authorized = await reauthorizeHits(ORG, [
-      candidate({ entity_type: SearchEntityType.Project, entity_id: "p-live" }),
-      candidate({
-        entity_type: SearchEntityType.Project,
-        entity_id: "p-stale",
-      }),
-    ]);
-    expect(authorized.has(`${SearchEntityType.Project}:p-live`)).toBe(true);
-    expect(authorized.has(`${SearchEntityType.Project}:p-stale`)).toBe(false);
-  });
-
-  it("drops a loop whose source is not org-visible (stale/deleted/cross-org)", async () => {
-    installDb({
-      candidates: [],
-      visible: { [SearchEntityType.Loop]: ["l-live"] },
-    });
-    const authorized = await reauthorizeHits(ORG, [
-      candidate({ entity_type: SearchEntityType.Loop, entity_id: "l-live" }),
-      candidate({ entity_type: SearchEntityType.Loop, entity_id: "l-stale" }),
-    ]);
-    expect(authorized.has(`${SearchEntityType.Loop}:l-live`)).toBe(true);
-    expect(authorized.has(`${SearchEntityType.Loop}:l-stale`)).toBe(false);
-  });
-
-  it("authorizes a comment whose thread is in-org and drops a cross-org one (FEA-3930)", async () => {
-    installDb({
-      candidates: [],
-      // Only c-in-org exists under this org (via its thread); c-other-org does
-      // not — a cross-org/stale projection row must not leak.
-      visible: { [SearchEntityType.Comment]: ["c-in-org"] },
-    });
-    const authorized = await reauthorizeHits(ORG, [
-      candidate({
-        entity_type: SearchEntityType.Comment,
-        entity_id: "c-in-org",
-      }),
-      candidate({
-        entity_type: SearchEntityType.Comment,
-        entity_id: "c-other-org",
-      }),
-    ]);
-    expect(authorized.has(`${SearchEntityType.Comment}:c-in-org`)).toBe(true);
-    expect(authorized.has(`${SearchEntityType.Comment}:c-other-org`)).toBe(
-      false
-    );
-  });
-
-  it("authorizes a pull_request in-org and drops a cross-org one (FEA-3930)", async () => {
-    installDb({
-      candidates: [],
-      visible: { [SearchEntityType.PullRequest]: ["pr-in-org"] },
-    });
-    const authorized = await reauthorizeHits(ORG, [
-      candidate({
-        entity_type: SearchEntityType.PullRequest,
-        entity_id: "pr-in-org",
-      }),
-      candidate({
-        entity_type: SearchEntityType.PullRequest,
-        entity_id: "pr-other-org",
-      }),
-    ]);
-    expect(authorized.has(`${SearchEntityType.PullRequest}:pr-in-org`)).toBe(
-      true
-    );
-    expect(authorized.has(`${SearchEntityType.PullRequest}:pr-other-org`)).toBe(
-      false
-    );
-  });
-
-  it("gates a pull_request on its owning branch being live (not soft-deleted)", async () => {
-    const db = installDb({
-      candidates: [],
-      visible: { [SearchEntityType.PullRequest]: ["pr1"] },
-    });
-    await reauthorizeHits(ORG, [
-      candidate({
-        entity_type: SearchEntityType.PullRequest,
-        entity_id: "pr1",
-      }),
-    ]);
-    // The PR reauth query must require the owning branch to be un-deleted, so a
-    // PR on a soft-deleted branch never resolves to a dead `/branches/…` route.
-    const call = (db.pullRequestDetail.findMany as Mock).mock.calls[0][0] as {
-      where: {
-        branchArtifact: { is: { branch: { is: { deletedAt: unknown } } } };
-      };
-    };
-    expect(call.where.branchArtifact.is.branch.is.deletedAt).toBeNull();
-  });
-
-  it("gates a comment against a soft-deleted branch anchor", async () => {
-    const db = installDb({
-      candidates: [],
-      visible: { [SearchEntityType.Comment]: ["c1"] },
-    });
-    await reauthorizeHits(ORG, [
-      candidate({ entity_type: SearchEntityType.Comment, entity_id: "c1" }),
-    ]);
-    // A branch-anchored comment must be excluded when its anchor branch is
-    // soft-deleted (it would otherwise link to a dead branch route); session
-    // anchors are unaffected because the branch relation is absent.
-    const call = (db.comment.findMany as Mock).mock.calls[0][0] as {
-      where: {
-        NOT: {
-          thread: {
-            is: {
-              artifact: { is: { branch: { is: { deletedAt: unknown } } } };
-            };
-          };
-        };
-      };
-    };
-    expect(call.where.NOT.thread.is.artifact.is.branch.is.deletedAt).toEqual({
-      not: null,
-    });
-  });
-
-  it("authorizes a branch in-org and drops a cross-org one (FEA-3930)", async () => {
-    installDb({
-      candidates: [],
-      visible: { [SearchEntityType.Branch]: ["b-in-org"] },
-    });
-    const authorized = await reauthorizeHits(ORG, [
-      candidate({
-        entity_type: SearchEntityType.Branch,
-        entity_id: "b-in-org",
-      }),
-      candidate({
-        entity_type: SearchEntityType.Branch,
-        entity_id: "b-other-org",
-      }),
-    ]);
-    expect(authorized.has(`${SearchEntityType.Branch}:b-in-org`)).toBe(true);
-    expect(authorized.has(`${SearchEntityType.Branch}:b-other-org`)).toBe(
-      false
-    );
-  });
-
-  it("authorizes an agent_component in-org and drops a cross-org one (FEA-4011 Slice A)", async () => {
-    installDb({
-      candidates: [],
-      // Only ac-in-org exists under this org; ac-other-org does not — a
-      // cross-org/stale projection row must not leak.
-      visible: { [SearchEntityType.AgentComponent]: ["ac-in-org"] },
-    });
-    const authorized = await reauthorizeHits(ORG, [
-      candidate({
-        entity_type: SearchEntityType.AgentComponent,
-        entity_id: "ac-in-org",
-      }),
-      candidate({
-        entity_type: SearchEntityType.AgentComponent,
-        entity_id: "ac-other-org",
-      }),
-    ]);
-    expect(authorized.has(`${SearchEntityType.AgentComponent}:ac-in-org`)).toBe(
-      true
-    );
-    expect(
-      authorized.has(`${SearchEntityType.AgentComponent}:ac-other-org`)
-    ).toBe(false);
-  });
-
-  it("gates an agent_component on it not being uninstalled (FEA-4011 Slice A)", async () => {
-    const db = installDb({
-      candidates: [],
-      visible: { [SearchEntityType.AgentComponent]: ["ac1"] },
-    });
-    await reauthorizeHits(ORG, [
-      candidate({
-        entity_type: SearchEntityType.AgentComponent,
-        entity_id: "ac1",
-      }),
-    ]);
-    // A since-uninstalled component must be excluded so a raced/missed
-    // projection removal cannot keep it searchable (parity with the
-    // branch/PR soft-delete gate).
-    const call = (db.agentComponent.findMany as Mock).mock.calls[0][0] as {
-      where: { uninstalledAt: unknown };
-    };
-    expect(call.where.uninstalledAt).toBeNull();
-  });
-
-  it("authorizes an agent_session hit only when the org transcript gate is ON", async () => {
-    installDb({
-      candidates: [],
-      visible: { [SearchEntityType.AgentSession]: ["sess-1"] },
-      transcriptGateOn: true,
-    });
-    const authorized = await reauthorizeHits(ORG, [
-      candidate({
-        entity_type: SearchEntityType.AgentSession,
-        entity_id: "sess-1",
-      }),
-    ]);
-    expect(authorized.has(`${SearchEntityType.AgentSession}:sess-1`)).toBe(
-      true
-    );
-  });
-
-  it("drops an agent_session hit when the org transcript gate is OFF (defense-in-depth)", async () => {
-    // Even though the SessionDetail source row exists and belongs to the org,
-    // the gate being off must hide it — a stale projection row from when it was
-    // on cannot leak.
-    installDb({
-      candidates: [],
-      visible: { [SearchEntityType.AgentSession]: ["sess-1"] },
-      transcriptGateOn: false,
-    });
-    const authorized = await reauthorizeHits(ORG, [
-      candidate({
-        entity_type: SearchEntityType.AgentSession,
-        entity_id: "sess-1",
-      }),
-    ]);
-    expect(authorized.size).toBe(0);
-  });
-
-  it("drops an agent_session hit whose SessionDetail is not in the org even when the gate is ON", async () => {
-    // Gate on, but the source row is not visible under this org (cross-org /
-    // stale projection): still dropped.
-    installDb({
-      candidates: [],
-      visible: { [SearchEntityType.AgentSession]: [] },
-      transcriptGateOn: true,
-    });
-    const authorized = await reauthorizeHits(ORG, [
-      candidate({
-        entity_type: SearchEntityType.AgentSession,
-        entity_id: "other-org-sess",
-      }),
-    ]);
-    expect(authorized.size).toBe(0);
   });
 });
 

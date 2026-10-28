@@ -23,8 +23,7 @@ import {
   SESSION_STATUS,
   type SessionStatus,
 } from "@repo/api/src/types/session-status";
-import { getProjectsDir as getClaudeProjectsDir } from "../collectors/claude/claude-home.js";
-import { DATA_REVISION } from "../collectors/engine/data-revision.js";
+import { effectiveDataRevision } from "../collectors/engine/effective-data-revision.js";
 import { isImportableSourcePath } from "../collectors/engine/source-admission.js";
 import { coldReadGate } from "../collectors/parsing/cold-read-gate.js";
 import { scanSubagentTranscriptStream } from "../collectors/parsing/subagent-scanner.js";
@@ -33,6 +32,8 @@ import type {
   HookData,
   HookHarness,
 } from "../dashboard/agent-dashboard-db-types.js";
+import { reportCollectorRecordsDropped } from "../telemetry/collector-records-dropped-telemetry.js";
+import { CollectorRecordsDroppedReason } from "../telemetry/telemetry-protocol.js";
 import {
   CLAUDE_NATIVE_SUBAGENT_STEM_PATTERN,
   COMPACTION_RE,
@@ -44,6 +45,9 @@ import { safe, safeJsonParse, strOf } from "./db-helpers.js";
 import { deterministicEventId } from "./deterministic-event-id.js";
 import type { Prisma } from "./generated/client.js";
 import { importEventData } from "./import-metadata-builders.js";
+import { closeNonTerminalAgents } from "./live-hook-agent-close.js";
+import { claudeProjectsRoots, forkSkipFor } from "./live-hook-fork-lineage.js";
+import { reconcileLiveHookSidecarEvents } from "./live-hook-sidecar-events.js";
 import type { DesktopPrisma } from "./prisma-client.js";
 import type { createSqliteTokenUsageStore } from "./read-stores.js";
 import {
@@ -60,7 +64,11 @@ import {
   appendTokenEvents,
   type PersistedTokenEventRecord,
 } from "./token-event-contract.js";
-import { createTranscriptCache, type TranscriptExtract } from "./transcript.js";
+import {
+  createTranscriptCache,
+  type TranscriptExtract,
+  type TranscriptForkSkip,
+} from "./transcript.js";
 import { recomputeSessionLastActivityAt } from "./write-core.js";
 import { mainAgentId } from "./write-core-main-agent-spine.js";
 
@@ -79,7 +87,10 @@ export function createSqliteLifecycle(
      * Notification; never fires for backfill/import (those bypass this lifecycle).
      */
     onSessionTerminal?: (notice: { sessionId: string; status: string }) => void;
-    extractTranscript?: (path: string) => TranscriptExtract | null;
+    extractTranscript?: (
+      path: string,
+      forkSkip?: TranscriptForkSkip
+    ) => TranscriptExtract | null;
     getUserIdentity?: SessionIdentityProvider;
     log: (message: string) => void;
     now: () => string;
@@ -109,8 +120,12 @@ export function createSqliteLifecycle(
           // (readFileSync + split). The size-admission gate inside the extractor
           // bounds any single file; routing through the shared coldReadGate also
           // caps how many cold reads run at once so concurrent extractions can't
-          // stack their peak buffers in the one db-host heap.
-          transcript = await coldReadGate.run(() => extract(transcriptPath));
+          // stack their peak buffers in the one db-host heap. The fork-lineage
+          // scan (ISS-12552) reads sibling transcripts, so it shares the slot,
+          // and runs only under the attribution policy (PRD-800).
+          transcript = await coldReadGate.run(async () =>
+            extract(transcriptPath, await forkSkipFor(transcriptPath, deps.log))
+          );
         } catch (error) {
           if (error instanceof InvalidTokenCountError) {
             deps.log(
@@ -129,6 +144,11 @@ export function createSqliteLifecycle(
       // callback writes is still readable as a number afterwards (a
       // closure-assigned `let` narrows to its initializer for the reader).
       const staleSweep = { heldBack: 0 };
+      const unplaceable: {
+        count: number;
+        agentId: string;
+        transcriptPath: string;
+      }[] = [];
       // prisma.write serializes through the shared write queue and owns the
       // $transaction; no outer queue.run — nesting a queued op inside another
       // would deadlock the single-slot queue.
@@ -148,6 +168,9 @@ export function createSqliteLifecycle(
               getUserIdentity: deps.getUserIdentity,
               onStaleSweep: (result) => {
                 staleSweep.heldBack = result.heldBack;
+              },
+              onUnplaceableToolUses: (report) => {
+                unplaceable.push(report);
               },
             });
           })
@@ -171,6 +194,36 @@ export function createSqliteLifecycle(
             `live sweep: held back ${staleSweep.heldBack} stale session(s) whose stored timestamps are not canonical UTC; they stay active until that text is repaired`
           );
         }
+        // ISS-6417: the corrupt-input signal for a stamp no `Date` could
+        // represent, in two halves. The LOCAL half is one line per sidecar, not
+        // per record — a corrupt file can hold many — and carries the detail
+        // only an operator on this machine can act on: which session, which
+        // agent row, which file to open.
+        let droppedToolUses = 0;
+        for (const report of unplaceable) {
+          droppedToolUses += report.count;
+          deps.log(
+            `live subagent scan: dropped ${report.count} tool-use record(s) with an unreadable timestamp; session=${sessionId} agent=${report.agentId} transcript=${report.transcriptPath}`
+          );
+        }
+        // The MONITORED half: a bounded reason and the total, carrying none of
+        // the above. One event per hook rather than per sidecar, so a session
+        // that fans out to many subagents cannot turn one corrupt harness write
+        // into a burst. `reportCollectorRecordsDropped` is a no-op at zero, so
+        // this never claims a drop that did not happen.
+        //
+        // ISS-7109: "monitored" is a claim about a process, not just a call.
+        // This module runs in the FEA-2038 DB-host child, where
+        // `Observability.init` never ran — so for the life of ISS-6417 the emit
+        // below reached a null transport and every one of these events was
+        // discarded. It leaves the machine now because the child installs a
+        // telemetry relay (`telemetry/telemetry-relay-sink.ts`) that posts each
+        // event to main, which emits it on this process's behalf. If that relay
+        // is ever removed, this comment becomes a lie again.
+        reportCollectorRecordsDropped({
+          reason: CollectorRecordsDroppedReason.UnreadableTimestamp,
+          count: droppedToolUses,
+        });
         try {
           deps.emit?.(sessionId);
         } catch {
@@ -212,6 +265,18 @@ async function handleHook(
      * a later failing statement then rolls back.
      */
     onStaleSweep: (result: StaleSessionSweepResult) => void;
+    /**
+     * ISS-6417: same post-commit contract as `onStaleSweep`. A sidecar tool-use
+     * record whose stamp no `Date` could represent is read but not insertable —
+     * an event needs a time — so it is dropped, and a drop caused by corrupt
+     * input is reported rather than silent. Handed back so the caller reports
+     * it AFTER the commit that actually left it out.
+     */
+    onUnplaceableToolUses: (report: {
+      count: number;
+      agentId: string;
+      transcriptPath: string;
+    }) => void;
   }
 ): Promise<{ sessionId: string; status: string } | null> {
   const { data, hookType, harness, now, sessionId } = options;
@@ -306,6 +371,17 @@ async function handleHook(
         // the non-terminal -> error flip (replayed Stop events never re-notify).
         const wasTerminal = TERMINAL_STATUS_SET.has(session.status);
         await setAgentStatus(tx, main, DESKTOP_AGENT_STATUS.ERROR, now);
+        // ISS-6902: the session is terminal from here and `sweepStaleActiveSessions`
+        // selects only `active` rows, so an agent this hook leaves non-terminal is
+        // outside every later sweep — stranded at `working` locally and on the wire.
+        // The shared close puts the run's `error` on the main spine (already
+        // written, unguarded, by the line above) and `completed` on its subagents.
+        await closeNonTerminalAgents(
+          tx,
+          sessionId,
+          DESKTOP_AGENT_STATUS.ERROR,
+          now
+        );
         await setSessionStatus(tx, sessionId, SESSION_STATUS.ERROR, now, 1);
         await clearAwaitingInput(tx, sessionId, now);
         if (!wasTerminal) {
@@ -330,39 +406,30 @@ async function handleHook(
           data.transcript_path
         );
         if (subPath) {
-          try {
-            const subagentResult = await scanSubagentTranscriptStream(
-              subPath,
-              sessionId,
-              agentId
-            );
-            for (const tu of subagentResult.toolUses) {
-              if (tu.toolName && tu.timestamp) {
-                let input: unknown | undefined;
-                if (tu.input) {
-                  try {
-                    input = JSON.parse(tu.input);
-                  } catch {
-                    input = undefined;
-                  }
-                }
-                await insertEvent(
-                  tx,
-                  sessionId,
-                  agentId,
-                  "PostToolUse",
-                  {
-                    tool_name: tu.toolName,
-                    tool_use_id: tu.toolUseId ?? undefined,
-                    input,
-                  } as HookData,
-                  tu.timestamp,
-                  tu.toolName
-                );
-              }
+          const subagentResult = await scanSubagentTranscriptStream(
+            subPath,
+            sessionId,
+            agentId
+          ).catch(() => null);
+          if (subagentResult) {
+            // ISS-6417: a record the scanner read but could not place in time.
+            // The guard below drops it — correctly, an event needs a time — but
+            // a drop caused by corrupt input is reported rather than silent.
+            // Counted, then reported once per sidecar: a corrupt file can hold
+            // many, and one line per record would be unbounded log volume.
+            const { unplaceableToolUses } =
+              await reconcileLiveHookSidecarEvents(tx, {
+                sessionId,
+                agentId,
+                scan: subagentResult,
+              });
+            if (unplaceableToolUses > 0) {
+              options.onUnplaceableToolUses({
+                count: unplaceableToolUses,
+                agentId,
+                transcriptPath: subPath,
+              });
             }
-          } catch {
-            // Non-fatal — subagent transcript may not exist or may be partial.
           }
         }
       }
@@ -420,13 +487,17 @@ async function handleHook(
       if (!wasTerminal) {
         terminalNotice = { sessionId, status: finalStatus };
       }
-      await tx.$executeRawUnsafe(
-        `UPDATE agents SET status = $1, ended_at = $2, updated_at = $2 WHERE session_id = $3 AND status NOT IN ('${DESKTOP_AGENT_STATUS.COMPLETED}', '${DESKTOP_AGENT_STATUS.ERROR}')`,
+      // ISS-7658: the run's outcome is the MAIN agent's, and only the main
+      // agent's. This arm used to hand `error` to the shared close, which
+      // applied it to the session's in-flight subagents too — the exact shape
+      // ISS-6902 removed from `Stop(error)`, left in place here.
+      await closeNonTerminalAgents(
+        tx,
+        sessionId,
         finalStatus === SESSION_STATUS.ERROR
           ? DESKTOP_AGENT_STATUS.ERROR
           : DESKTOP_AGENT_STATUS.COMPLETED,
-        now,
-        sessionId
+        now
       );
       await setSessionStatus(
         tx,
@@ -547,7 +618,7 @@ async function ensureSession(
     now,
     harness,
     billingMode,
-    DATA_REVISION,
+    effectiveDataRevision(),
     ...identity.values
   );
   await tx.$executeRawUnsafe(
@@ -776,38 +847,57 @@ async function matchSubagent(
   sessionId: string,
   data: HookData
 ): Promise<string | null> {
+  const nativeSubagentId = extractNativeSubagentId(data);
   const candidates = await tx.agent.findMany({
-    where: { sessionId, type: "subagent", status: "working" },
-    select: { id: true, name: true, subagentType: true, task: true },
+    where: {
+      sessionId,
+      type: "subagent",
+      status: {
+        in: [DESKTOP_AGENT_STATUS.WORKING, DESKTOP_AGENT_STATUS.COMPLETED],
+      },
+    },
+    select: {
+      id: true,
+      metadata: true,
+      name: true,
+      status: true,
+      subagentType: true,
+      task: true,
+    },
     orderBy: { startedAt: "desc" },
   });
   if (candidates.length === 0) {
     return null;
   }
-  const prefix =
-    strOf(data.description) ??
-    strOf(data.agent_type) ??
-    strOf(data.subagent_type);
-  if (prefix) {
-    const byName = candidates.find((a) => a.name?.startsWith(prefix));
-    if (byName) {
-      return byName.id;
-    }
+  if (nativeSubagentId) {
+    return (
+      candidates.find((candidate) => {
+        const metadata = candidate.metadata
+          ? safeJsonParse(candidate.metadata)
+          : null;
+        return metadata?.nativeSubagentId === nativeSubagentId;
+      })?.id ?? null
+    );
   }
-  if (data.agent_type) {
-    const byType = candidates.find((a) => a.subagentType === data.agent_type);
-    if (byType) {
-      return byType.id;
-    }
+  // ISS-6902: a terminal hook closes a session's still-running subagents at
+  // `completed`, so by the time a late `SubagentStop` arrives there may be no
+  // `working` row left to match. Identify against the closed rows too — the set
+  // the native-id path above has always searched — rather than returning null
+  // and dropping both the event's attribution and its sidecar ingest.
+  // `working` rows are searched FIRST so a live subagent always outranks a
+  // finished namesake, and the blind positional last resort below stays
+  // `working`-only: picking an arbitrary CLOSED subagent is a misattribution,
+  // not a fallback.
+  const working = candidates.filter(
+    (candidate) => candidate.status === DESKTOP_AGENT_STATUS.WORKING
+  );
+  const identified =
+    matchSubagentByIdentifier(working, data) ??
+    matchSubagentByIdentifier(candidates, data);
+  if (identified) {
+    return identified;
   }
-  if (data.prompt) {
-    const task = String(data.prompt).slice(0, 500);
-    const byTask = candidates.find((a) => a.task === task);
-    if (byTask) {
-      return byTask.id;
-    }
-  }
-  return candidates[0].id;
+  return working[0]?.id ?? null;
 }
 
 async function resolveNativeSubagentTranscriptPath(
@@ -838,9 +928,7 @@ async function resolveNativeSubagentTranscriptPath(
   if (parentPath.includes(`${path.sep}subagents${path.sep}`)) {
     return null;
   }
-  const roots = [getClaudeProjectsDir()].filter(
-    (root): root is string => typeof root === "string" && root.length > 0
-  );
+  const roots = claudeProjectsRoots();
   if (!isImportableSourcePath(parentPath, roots)) {
     return null;
   }
@@ -903,4 +991,49 @@ function normalizeNativeSubagentId(value: unknown): string | null {
   }
   const stem = value.endsWith(".jsonl") ? value.slice(0, -6) : value;
   return CLAUDE_NATIVE_SUBAGENT_STEM_PATTERN.test(stem) ? stem : null;
+}
+
+type SubagentMatchCandidate = {
+  id: string;
+  name: string | null;
+  subagentType: string | null;
+  task: string | null;
+};
+
+/**
+ * The first candidate `data` POSITIVELY identifies — by name prefix, then
+ * subagent type, then task.
+ *
+ * Null means "nothing here matches", never "take the newest": the caller
+ * decides whether an unidentified stop may fall back to a positional guess,
+ * and that is only ever sound over still-`working` rows.
+ */
+function matchSubagentByIdentifier(
+  candidates: SubagentMatchCandidate[],
+  data: HookData
+): string | null {
+  const prefix =
+    strOf(data.description) ??
+    strOf(data.agent_type) ??
+    strOf(data.subagent_type);
+  if (prefix) {
+    const byName = candidates.find((a) => a.name?.startsWith(prefix));
+    if (byName) {
+      return byName.id;
+    }
+  }
+  if (data.agent_type) {
+    const byType = candidates.find((a) => a.subagentType === data.agent_type);
+    if (byType) {
+      return byType.id;
+    }
+  }
+  if (data.prompt) {
+    const task = String(data.prompt).slice(0, 500);
+    const byTask = candidates.find((a) => a.task === task);
+    if (byTask) {
+      return byTask.id;
+    }
+  }
+  return null;
 }

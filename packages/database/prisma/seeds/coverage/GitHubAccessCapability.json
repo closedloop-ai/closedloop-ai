@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Cached GitHub access verdict per connection and target (PLN-1525); read only by GitHub permission checks."
+}

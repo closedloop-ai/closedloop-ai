@@ -1,8 +1,8 @@
 /**
  * @file collector-manager-source-parse.ts
  * @description Parsing ONE source for an import pass, and classifying what came
- * back. Extracted from collector-manager.ts (grandfathered shrink-only under the
- * root AGENTS.md line-count contract) so the bounded-parse machinery and its
+ * back. Extracted from collector-manager.ts (under the root AGENTS.md
+ * line-count contract) so the bounded-parse machinery and its
  * three non-session outcomes live in a module that can own its own contract.
  *
  * The manager's import loop is then left with the decisions only it can make —
@@ -20,10 +20,11 @@
  * The store is now charged by the import bound too, and this step cannot see the
  * import outcome — so a source whose parse succeeded every pass while its import
  * timed out every pass had its tally wiped before it could ever converge. The
- * clear moved to `settleSourceQuarantine`, which runs once the pass knows whether
- * ANY deadline was burned on the source. The condition it applies is the same one
- * this step meant ("no attempts accrete across passes that went fine"), just
- * evaluated late enough to be true.
+ * clear moved to `settleSourceQuarantine`, which runs once the pass knows what it
+ * did with the source — since ISS-12036, whether it LANDED it, not only whether a
+ * deadline was burned. The condition it applies is the same one this step meant
+ * ("no attempts accrete across passes that went fine"), just evaluated late
+ * enough to be true.
  *
  * ISS-5028: the two terminal-without-sessions outcomes each report whether they
  * were DURABLE — whether a later `collectPendingSources` can still return this
@@ -38,6 +39,7 @@
  *     the orphan self-heal will readmit it (`willSourceBeRescanned`), which is
  *     why this module reports `markedSeen` rather than claiming durability.
  */
+import { ImportIngestFailure } from "@closedloop-ai/telemetry-contract/app";
 import { SourceTimeoutStage } from "../../../shared/ingest-quarantine-contract.js";
 import { InvalidTokenCountError } from "../../cost/token-counts.js";
 import type { HarnessCollector, NormalizedSession } from "../types.js";
@@ -46,11 +48,13 @@ import {
   parseSourceBounded,
 } from "./bounded-parse.js";
 import type { CatchupCache } from "./catchup-cache.js";
+import { reportIngestFailure } from "./collector-ingest-failure.js";
 import {
   type PendingSource,
   recordSourceTimeout,
 } from "./collector-pending-sources.js";
 import type { ParseQuarantine } from "./parse-quarantine.js";
+import { reportUnrecognizedEntrypoints } from "./unrecognized-entrypoint-log.js";
 
 /** What one source's parse produced for the pass. */
 export type PassParseOutcome =
@@ -85,6 +89,12 @@ export type PassParseOptions = {
   isImportActive: () => boolean;
   abortInFlightParse: () => void;
   log: (message: string) => void;
+  /**
+   * ISS-6336: best-effort ingest-failure sink. Optional — omitted by every test
+   * harness and by any host with no telemetry runtime, in which case the two
+   * failing outcomes stay exactly as invisible as they were before.
+   */
+  onIngestFailure?: (reason: ImportIngestFailure) => void;
 };
 
 /**
@@ -101,15 +111,41 @@ export async function parseSourceForPass(
   try {
     const outcome = await runParse(options);
     if (outcome !== null) {
+      reportOutcomeEntrypoints(outcome, options.log);
       return { outcome, parseMs: elapsed() };
     }
   } catch (error) {
+    // ISS-6336: generation-gated, exactly as the timeout path below is.
+    // `historicalParseRunner.stop()` REJECTS every in-flight and queued parse,
+    // and `restartCollectors` stops the collectors without disposing the
+    // import-health tracker — so a mid-backfill hooks toggle unwinds through
+    // this catch once per queued source. Counting those would report an ingest
+    // failure per source on a routine user action, which is worse than no
+    // counter at all because it looks like data. The `threw` OUTCOME still
+    // stands; only the report is suppressed.
+    if (options.isImportActive()) {
+      reportIngestFailure(
+        options.onIngestFailure,
+        ImportIngestFailure.SourceParseThrew
+      );
+    }
     return {
       outcome: { kind: "threw", markedSeen: markSeenOnThrow(options, error) },
       parseMs: elapsed(),
     };
   }
-  return { outcome: recordTimeout(options), parseMs: elapsed() };
+  const outcome = recordTimeout(options);
+  // Reported off the RESOLVED outcome, not off reaching this line: the bound
+  // elapsing and the pass being superseded arrive here identically, and only the
+  // first is a source that failed to parse. A stop()/restart that raced the
+  // ~90s bound is not an ingest failure and must not read as one.
+  if (outcome.kind === "timedOut") {
+    reportIngestFailure(
+      options.onIngestFailure,
+      ImportIngestFailure.SourceParseTimedOut
+    );
+  }
+  return { outcome, parseMs: elapsed() };
 }
 
 /**
@@ -182,4 +218,29 @@ function markSeenOnThrow(options: PassParseOptions, error: unknown): boolean {
   }
   cache.markSeenWith(source, stat, extraMtime);
   return true;
+}
+
+/**
+ * ISS-7260: report every session entrypoint the headless classifier does not
+ * recognise, once per distinct value for the life of this process.
+ *
+ * Reported at PARSE rather than at the rollup that consumes the classification,
+ * so the line names the value while the source that produced it is still in
+ * hand, and reported here rather than in Claude's own drift detector because
+ * that one covers only Claude's transcripts while the value that matters is as
+ * likely to come from Codex or OpenCode.
+ *
+ * This is the IMPORT pass's half only. The DATA_REVISION rebuild parses through
+ * `data-revision-rebuild.ts` without ever reaching this step, so it reports for
+ * itself; both call the shared `unrecognized-entrypoint-log`, which owns the one
+ * reporter whose dedupe and cap span the two.
+ */
+function reportOutcomeEntrypoints(
+  outcome: PassParseOutcome,
+  log: (message: string) => void
+): void {
+  if (outcome.kind !== "sessions") {
+    return;
+  }
+  reportUnrecognizedEntrypoints(outcome.sessions, log);
 }

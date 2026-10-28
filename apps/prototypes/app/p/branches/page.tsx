@@ -1,5 +1,20 @@
 "use client";
 
+import { createDefaultBranchesListSurfaceV2PreviewState } from "@repo/app/branches/components/branches-list-surface-v2-demo";
+import {
+  BranchDetailTab,
+  type BranchDetailTab as BranchDetailTabValue,
+  BranchDetailView,
+} from "@repo/app/branches/components/prototype-preview/components/branch-detail";
+import { branchPrototypeReviewFixture } from "@repo/app/branches/components/prototype-preview/components/branch-list-fixtures";
+import { BranchesList } from "@repo/app/branches/components/prototype-preview/components/branches-list";
+import { useMetricPresentationState } from "@repo/app/branches/components/prototype-preview/components/use-metric-presentation-state";
+import { usePrototypeCommentsControl } from "@repo/app/branches/components/prototype-preview/components/use-prototype-comments-control";
+import {
+  BranchDataState,
+  type BranchRow,
+} from "@repo/app/branches/components/prototype-preview/mock";
+import { buildBranchDetail } from "@repo/app/branches/components/prototype-preview/mock-detail";
 import { Button } from "@repo/design-system/components/ui/button";
 import { EmptyState } from "@repo/design-system/components/ui/empty-state";
 import {
@@ -9,26 +24,12 @@ import {
 import { Tabs } from "@repo/design-system/components/ui/tabs";
 import { GitBranchIcon, PanelRightIcon } from "lucide-react";
 import { type ReactNode, Suspense, useState } from "react";
+import { PrototypeNavigationProvider } from "@/lib/navigation/next-prototype-adapter";
 import { AppShell } from "./components/app-shell";
-import {
-  BranchDetailTab,
-  type BranchDetailTab as BranchDetailTabValue,
-  BranchDetailView,
-} from "./components/branch-detail";
-import { branchPrototypeReviewFixture } from "./components/branch-list-fixtures";
-import { createDefaultBranchListViewState } from "./components/branch-list-state";
-import { BranchesList } from "./components/branches-list";
-import { TOGGLEABLE_COLUMNS } from "./components/branches-toolbar";
-import { useMetricPresentationState } from "./components/use-metric-presentation-state";
-import { usePrototypeCommentsControl } from "./components/use-prototype-comments-control";
-import { BranchDataState, type BranchRow } from "./mock";
-import { buildBranchDetail } from "./mock-detail";
 
 const BranchesPrototypePageContent = () => {
   const [listState, setListState] = useState(() =>
-    createDefaultBranchListViewState(
-      TOGGLEABLE_COLUMNS.map((column) => column.id)
-    )
+    createDefaultBranchesListSurfaceV2PreviewState()
   );
   const [selected, setSelected] = useState<BranchRow | null>(null);
   const [activeTab, setActiveTab] = useState<BranchDetailTabValue>(
@@ -115,7 +116,9 @@ const BranchesPrototypePageContent = () => {
 
 const BranchesPrototypePage = () => (
   <Suspense fallback={null}>
-    <BranchesPrototypePageContent />
+    <PrototypeNavigationProvider>
+      <BranchesPrototypePageContent />
+    </PrototypeNavigationProvider>
   </Suspense>
 );
 

@@ -21,7 +21,7 @@ import {
   type SyncedAgentSession,
 } from "@repo/api/src/types/agent-session";
 import {
-  DISPLAYED_SESSION_STATUS,
+  LEGACY_WAITING_WIRE_STATUS,
   SESSION_STATUS,
 } from "@repo/api/src/types/session-status";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -30,6 +30,7 @@ import {
   buildSlugCounterMock,
   buildSyncedSession,
   installDb,
+  persistedSessionDetail,
   SESSION_STARTED_AT,
   SESSION_UPDATED_AT,
 } from "@/__tests__/support/agent-sessions/service.test-harness";
@@ -99,7 +100,7 @@ async function upsertAndReadStatuses(
 ): Promise<{ create: unknown; update: unknown }> {
   const upsert = vi
     .fn()
-    .mockResolvedValue({ artifactId: PERSISTED_ARTIFACT_ID });
+    .mockResolvedValue(persistedSessionDetail(PERSISTED_ARTIFACT_ID));
 
   installDb({
     slugCounter: buildSlugCounterMock(),
@@ -150,7 +151,9 @@ async function upsertBatch(
     slugCounter: buildSlugCounterMock(),
     sessionDetail: {
       findUnique: vi.fn().mockResolvedValue(null),
-      upsert: vi.fn().mockResolvedValue({ artifactId: PERSISTED_ARTIFACT_ID }),
+      upsert: vi
+        .fn()
+        .mockResolvedValue(persistedSessionDetail(PERSISTED_ARTIFACT_ID)),
       update: vi.fn().mockResolvedValue({}),
     },
     agentSessionEvent: buildDefaultAgentSessionEventMocks(),
@@ -215,7 +218,7 @@ describe("upsertSessions — ISS-5981 persist fold", () => {
   it("folds an incoming `waiting` to ACTIVE instead of storing the word", async () => {
     const statuses = await upsertAndReadStatuses(
       null,
-      DISPLAYED_SESSION_STATUS.WAITING
+      LEGACY_WAITING_WIRE_STATUS
     );
 
     expect(statuses.create).toBe(SESSION_STATUS.ACTIVE);
@@ -271,7 +274,7 @@ describe("upsertSessions — ISS-5981 unmodelled-status telemetry", () => {
 
   it.each([
     ["a canonical status", SESSION_STATUS.ACTIVE],
-    ["the waiting display spelling", DISPLAYED_SESSION_STATUS.WAITING],
+    ["the waiting display spelling", LEGACY_WAITING_WIRE_STATUS],
   ])("stays silent for %s", async (_, status) => {
     await upsertAndReadStatuses(null, status);
 
@@ -290,20 +293,23 @@ describe("upsertSessions — ISS-5981 unmodelled-status telemetry", () => {
     // is now visible on the same counter instead of being silently accepted.
     "running",
     "failed",
-  ])("counts the unmodelled spelling %s now that nothing folds it", async (retired) => {
-    // ISS-5592 removed the retired fold AND its `RetiredStatusFolded` drain
-    // metric. This is what replaces that signal: the spelling is unrecognized,
-    // so it takes the fail-open branch and is counted here WITH its raw text in
-    // the samples — a straggler producer stays visible, under one metric.
-    await upsertAndReadStatuses(null, retired);
+  ])(
+    "counts the unmodelled spelling %s now that nothing folds it",
+    async (retired) => {
+      // ISS-5592 removed the retired fold AND its `RetiredStatusFolded` drain
+      // metric. This is what replaces that signal: the spelling is unrecognized,
+      // so it takes the fail-open branch and is counted here WITH its raw text in
+      // the samples — a straggler producer stays visible, under one metric.
+      await upsertAndReadStatuses(null, retired);
 
-    expect(mocks.emitTelemetryMetric).toHaveBeenCalledWith(
-      expect.objectContaining({
-        metric: SessionSyncMetric.UnmodelledStatusFolded,
-        unmodelledStatusSamples: [retired],
-      })
-    );
-  });
+      expect(mocks.emitTelemetryMetric).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metric: SessionSyncMetric.UnmodelledStatusFolded,
+          unmodelledStatusSamples: [retired],
+        })
+      );
+    }
+  );
 
   it("carries the raw spellings so the documented fix is actionable", async () => {
     // whitlockk (#5047): the counter alone says skew is happening but not WHICH

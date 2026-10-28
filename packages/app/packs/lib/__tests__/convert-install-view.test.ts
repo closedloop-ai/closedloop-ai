@@ -16,7 +16,7 @@ import {
   ConversionSupport,
   resolveConversionCapability,
 } from "@repo/api/src/types/harness-conversion";
-import { HarnessName } from "@repo/crewd/model";
+import { HarnessName } from "@repo/api/src/types/harness-name";
 import { describe, expect, it } from "vitest";
 import {
   ConvertInstallPhase,

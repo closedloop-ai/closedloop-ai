@@ -5,9 +5,10 @@ import {
   desktopContractSuccess,
 } from "@/app/desktop/contract";
 import { resolveSessionUser } from "@/lib/auth/session-user";
+import { withRequestCompleted } from "@/lib/observability/with-request-completed";
 import { desktopDeviceOnboardingService } from "../service";
 
-export async function GET(request: Request) {
+async function handleGet(request: Request) {
   const session = await resolveSessionUser().catch(() => null);
   if (!session) {
     return desktopContractError(401, "SESSION_REQUIRED", false);
@@ -45,3 +46,5 @@ export async function GET(request: Request) {
     expiresAt: row.expiresAt.toISOString(),
   });
 }
+
+export const GET = withRequestCompleted(handleGet);

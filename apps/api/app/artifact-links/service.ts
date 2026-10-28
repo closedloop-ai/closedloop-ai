@@ -1,56 +1,144 @@
+import {
+  type AgentSessionFieldMutationError,
+  staleSessionFieldsConflict,
+} from "@repo/api/src/types/agent-session-field-mutation";
 import type {
   ArtifactLink,
-  ArtifactLinkEndpoint,
-  ArtifactLinkWithEndpoints,
+  ArtifactLinkPage,
   ArtifactParentProjection,
   BatchMoveArtifactsInput,
   BatchMoveArtifactsResult,
   CreateArtifactLinkInput,
 } from "@repo/api/src/types/artifact";
 import {
+  type ArtifactType,
   LinkDirection,
   LinkType,
-  normalizeArtifactSubtype,
 } from "@repo/api/src/types/artifact";
-import type {
-  ChecksStatus,
-  ReviewDecision,
-} from "@repo/api/src/types/branch-view";
-import type { JsonObject } from "@repo/api/src/types/common";
-import type { GitHubPRState } from "@repo/api/src/types/github";
-import { Result, Status } from "@repo/api/src/types/result";
-import {
-  Prisma,
-  type Artifact as PrismaArtifact,
-  type ArtifactLink as PrismaArtifactLink,
-  withDb,
-} from "@repo/database";
+import { isStaleExpectation } from "@repo/api/src/types/optimistic-write-guard";
+import { Result, Status, type StatusCode } from "@repo/api/src/types/result";
+import { Prisma, type TransactionClient, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
-
-export type AnnotatedLink = { link: ArtifactLink; fromArtifactId: string };
+import { branchProductEligibilityService } from "@/app/branches/branch-product-eligibility-service";
+import { lockProjectRank } from "@/app/documents/document-sort-order";
+import type { BatchProjectChange } from "@/lib/artifact-activity-capture";
+import { isAttributionEvidenceEnabledForOrganization } from "@/lib/attribution-evidence-policy-feature";
+import { getPrismaErrorCode, matchesPrismaP2002Target } from "@/lib/db-utils";
+import {
+  type RecordWriteInTransaction,
+  writeInShape,
+} from "@/lib/record-write-in-transaction";
+import {
+  deletedLinkImplementationBranchId,
+  derivedImplementationBranchId,
+  linkWriteRecord,
+  refreshBranchImplementationEvidence,
+} from "./link-implementation-evidence";
+import {
+  ARTIFACT_LINK_SELECT,
+  artifactLinkInclude,
+  collectBranchEndpointIds,
+  hydrateLinksWithEndpoints,
+  toArtifactLink,
+  toArtifactLinkEndpoint,
+  toArtifactLinkWithEndpoints,
+} from "./link-projections";
+import { reportOversizeLinkTree } from "./link-tree-oversize-log";
+import {
+  readLinkTreePage,
+  saveLinkTreePages,
+  sweepExpiredLinkTreePages,
+} from "./link-tree-pages";
+import { type AnnotatedLink, traverseLinkTree } from "./link-tree-traversal";
+import {
+  type ProducesLinkRefusal,
+  refuseProducesLinkCycle,
+  refuseProducesLinkDepth,
+} from "./produces-link-admission";
+import { nextProducesLinkSortOrder } from "./produces-link-sort-order";
+import { attachSessionLinkEvidence } from "./resolved-link-evidence";
+import { type ResolvedLinkWindow, splitPeekedPage } from "./resolved-page";
 
 export const artifactLinksService = {
+  sweepExpiredTreePages: sweepExpiredLinkTreePages,
+  /**
+   * Both endpoints must already be resolved artifact ids.
+   *
+   * The two failures a route maps to a 4xx are returned as values: a self-link
+   * (`Status.BadRequest`) and a repeat of an existing
+   * `@@unique([sourceId, targetId, linkType])` row (`Status.Conflict`).
+   * `assertArtifactInOrg` still throws — that path is unchanged by ISS-7536.
+   *
+   * **A `Conflict` returned inside an ambient `withDb.tx` is terminal for that
+   * transaction.** The value is recoverable to the CALLER, not to Postgres: the
+   * constraint violation has already put the transaction in aborted state, so
+   * every later statement on it fails with 25P02. A caller that handles
+   * `Conflict` and keeps querying in the same transaction must open a new one —
+   * see `decompose-handler.ts`, which rethrows for exactly this reason.
+   */
   async createLink(
     organizationId: string,
-    input: CreateArtifactLinkInput
-  ): Promise<ArtifactLink> {
-    await Promise.all([
-      assertArtifactInOrg(organizationId, input.sourceId),
-      assertArtifactInOrg(organizationId, input.targetId),
-    ]);
+    input: CreateArtifactLinkInput,
+    recordCreated?: RecordWriteInTransaction<ArtifactLink>
+  ): Promise<Result<ArtifactLink, CreateArtifactLinkFailure>> {
+    // Ahead of the endpoint reads: the two ids are identical, so rejecting here
+    // discloses nothing the caller did not already send.
+    if (input.sourceId === input.targetId) {
+      return Result.err(Status.BadRequest);
+    }
 
-    const link = await withDb((db) =>
-      db.artifactLink.create({
-        data: {
-          organizationId,
-          sourceId: input.sourceId,
-          targetId: input.targetId,
-          linkType: input.linkType,
-          metadata: input.metadata ?? Prisma.DbNull,
-        },
-      })
+    // ISS-12552 (PRD-800 "Rollout"): read before the link transaction
+    // opens. With the flag off, or a link that changes no branch's
+    // implementation, nothing is derived; with no receipt either, the link is
+    // written exactly as on main (flag-off parity).
+    const recordLink = linkWriteRecord(
+      organizationId,
+      await derivedImplementationBranchId(organizationId, input),
+      recordCreated
     );
-    return toArtifactLink(link);
+    try {
+      return await writeInShape(recordLink, {
+        unrecorded: async () => {
+          const link =
+            input.linkType === LinkType.Produces
+              ? await createProducesLinkUnderPlacementLocks(
+                  organizationId,
+                  input
+                )
+              : await createOrdinaryLink(organizationId, input);
+          if ("refusal" in link) {
+            return Result.err(link.refusal);
+          }
+          return Result.ok(toArtifactLink(link));
+        },
+        recorded: async (record) => {
+          const outcome = await withDb.tx(async (tx) => {
+            const created =
+              input.linkType === LinkType.Produces
+                ? await createProducesLinkUnderPlacementLocks(
+                    organizationId,
+                    input
+                  )
+                : await createOrdinaryLink(organizationId, input);
+            if ("refusal" in created) {
+              return created;
+            }
+            const link = toArtifactLink(created);
+            await record(tx, link);
+            return { link };
+          });
+          if ("refusal" in outcome) {
+            return Result.err(outcome.refusal);
+          }
+          return Result.ok(outcome.link);
+        },
+      });
+    } catch (error) {
+      if (isDuplicateArtifactLinkViolation(error)) {
+        return Result.err(Status.Conflict);
+      }
+      throw error;
+    }
   },
 
   /**
@@ -71,6 +159,7 @@ export const artifactLinksService = {
           ],
         },
         orderBy: { createdAt: "desc" },
+        select: ARTIFACT_LINK_SELECT,
       })
     ).then((links) => links.map(toArtifactLink));
   },
@@ -92,6 +181,7 @@ export const artifactLinksService = {
           ...(linkType ? { linkType } : {}),
         },
         orderBy: { createdAt: "desc" },
+        select: ARTIFACT_LINK_SELECT,
       })
     ).then((links) => links.map(toArtifactLink));
   },
@@ -113,6 +203,7 @@ export const artifactLinksService = {
           ...(linkType ? { linkType } : {}),
         },
         orderBy: { createdAt: "desc" },
+        select: ARTIFACT_LINK_SELECT,
       })
     ).then((links) => links.map(toArtifactLink));
   },
@@ -144,16 +235,23 @@ export const artifactLinksService = {
   },
 
   /**
-   * Return links along with a resolved source/target endpoint object for each.
+   * One page of links, each with a resolved source/target endpoint object.
    * Pairs with the `/artifact-links/resolved` route.
+   *
+   * ISS-10102: reads `window` rows, never the whole match set. `createdAt desc`
+   * alone is a PARTIAL order — two links written in the same millisecond can
+   * swap places between two reads, which for an offset cursor means a row
+   * served twice and another never served at all — so `id desc` breaks the tie
+   * and makes the order total.
    */
-  async findResolvedLinks(
+  async findResolvedLinksPage(
     organizationId: string,
     artifactId: string,
     direction: LinkDirection,
+    window: ResolvedLinkWindow,
     linkType?: LinkType
-  ): Promise<ArtifactLinkWithEndpoints[]> {
-    const links = await withDb((db) =>
+  ): Promise<ArtifactLinkPage> {
+    const peeked = await withDb((db) =>
       db.artifactLink.findMany({
         where: {
           organizationId,
@@ -161,11 +259,29 @@ export const artifactLinksService = {
           ...(linkType ? { linkType } : {}),
         },
         include: artifactLinkInclude,
-        orderBy: { createdAt: "desc" },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        skip: window.skip,
+        take: window.take,
       })
     );
+    const { pageLinks, nextCursor } = splitPeekedPage(peeked, window);
 
-    return links.map(toArtifactLinkWithEndpoints);
+    const eligibilityById = await branchProductEligibilityService.findByIds(
+      organizationId,
+      collectBranchEndpointIds(pageLinks)
+    );
+    const links = pageLinks.map((link) =>
+      toArtifactLinkWithEndpoints(link, eligibilityById)
+    );
+    // ISS-12552 (Daveth Oakhurst, 2026-10-19): with
+    // attribution-evidence-policy off for the organization (PRD-800),
+    // SESSION rows carry no sessionEvidence.
+    const items = (await isAttributionEvidenceEnabledForOrganization(
+      organizationId
+    ))
+      ? await attachSessionLinkEvidence(organizationId, links)
+      : links;
+    return nextCursor === undefined ? { items } : { items, nextCursor };
   },
 
   /**
@@ -204,6 +320,10 @@ export const artifactLinksService = {
         orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       })
     );
+    const eligibilityById = await branchProductEligibilityService.findByIds(
+      organizationId,
+      collectBranchEndpointIds(rows)
+    );
 
     for (const row of rows) {
       const projection = projectionsByTargetId.get(row.targetId);
@@ -213,7 +333,10 @@ export const artifactLinksService = {
       projection.linkId = row.id;
       projection.linkType = row.linkType;
       projection.linkCreatedAt = row.createdAt;
-      projection.parentArtifact = toArtifactLinkEndpoint(row.source);
+      projection.parentArtifact = toArtifactLinkEndpoint(
+        row.source,
+        eligibilityById
+      );
     }
 
     return targetIds.map((targetId) => ({
@@ -227,20 +350,33 @@ export const artifactLinksService = {
     }));
   },
 
-  /**
-   * Tree-mode sibling to `findResolvedLinks`: traverse the link graph via
-   * `findLinkTree` then hydrate every collected link with source/target
-   * endpoint objects. Used by the `/artifact-links/resolved?mode=tree` route
-   * so consumers like BranchesSection / PreviewSection still see transitive
-   * edges (feature → plan → PR → deployment).
-   */
-  async findResolvedLinkTree(
+  async findResolvedLinkTreePage(
     organizationId: string,
     artifactId: string,
     direction: LinkDirection,
     maxDepth: number,
+    window: ResolvedLinkWindow,
     linkType?: LinkType
-  ): Promise<ArtifactLinkWithEndpoints[]> {
+  ): Promise<ArtifactLinkPage> {
+    // ISS-12552 (Daveth Oakhurst, 2026-10-19): with
+    // attribution-evidence-policy off for the organization (PRD-800),
+    // SESSION rows carry no sessionEvidence, on the cached page and the
+    // freshly traversed one alike.
+    const sessionEvidenceEnabled =
+      await isAttributionEvidenceEnabledForOrganization(organizationId);
+    const scope = { organizationId, artifactId, direction, maxDepth, linkType };
+    const cached = await readLinkTreePage(scope, window);
+    if (cached) {
+      const { pageLinks, ...continuation } = cached;
+      const hydrated = await hydrateLinksWithEndpoints(
+        organizationId,
+        pageLinks
+      );
+      const items = sessionEvidenceEnabled
+        ? await attachSessionLinkEvidence(organizationId, hydrated)
+        : hydrated;
+      return { items, ...continuation };
+    }
     const annotated = await artifactLinksService.findLinkTree(
       organizationId,
       artifactId,
@@ -249,70 +385,54 @@ export const artifactLinksService = {
       linkType
     );
     if (annotated.length === 0) {
-      return [];
+      return { items: [] };
     }
 
-    const linkIds = annotated.map((a) => a.link.id);
-    const rows = await withDb((db) =>
-      db.artifactLink.findMany({
-        where: { id: { in: linkIds }, organizationId },
-        include: artifactLinkInclude,
-      })
+    const links = annotated.map((entry) => entry.link);
+    reportOversizeLinkTree({
+      organizationId,
+      artifactId,
+      direction,
+      maxDepth,
+      linkType,
+      links,
+    });
+
+    const { pageLinks, nextCursor } = splitPeekedPage(
+      links.slice(window.skip, window.skip + window.take),
+      window
     );
-
-    const byId = new Map<string, ArtifactLinkWithEndpoints>();
-    for (const row of rows) {
-      byId.set(row.id, toArtifactLinkWithEndpoints(row));
-    }
-
-    // Preserve traversal order from findLinkTree.
-    const out: ArtifactLinkWithEndpoints[] = [];
-    for (const { link } of annotated) {
-      const hydrated = byId.get(link.id);
-      if (hydrated) {
-        out.push(hydrated);
-      }
-    }
-    return out;
+    const snapshotId = await saveLinkTreePages(scope, links, window);
+    const hydrated = await hydrateLinksWithEndpoints(organizationId, pageLinks);
+    const items = sessionEvidenceEnabled
+      ? await attachSessionLinkEvidence(organizationId, hydrated)
+      : hydrated;
+    return nextCursor === undefined
+      ? { items }
+      : { items, nextCursor, ...(snapshotId ? { snapshotId } : {}) };
   },
 
   /**
-   * Traverse the link graph via BFS starting from `artifactId`.
+   * Traverse the link graph breadth-first from `artifactId`.
+   *
+   * Delegates to {@link traverseLinkTree}, which reads one statement per depth
+   * level rather than one per node. Kept on the service because `service.ts`
+   * stays the only export a route consumes.
    */
-  async findLinkTree(
+  findLinkTree(
     organizationId: string,
     artifactId: string,
     direction: LinkDirection,
     maxDepth: number,
     linkType?: LinkType
   ): Promise<AnnotatedLink[]> {
-    const visited = new Set<string>([artifactId]);
-    const collectedIds = new Set<string>();
-    const collected: AnnotatedLink[] = [];
-    const queue: QueueEntry[] = [{ id: artifactId, depth: 0 }];
-
-    while (queue.length > 0) {
-      const current = queue.shift();
-      if (!current || current.depth >= maxDepth) {
-        continue;
-      }
-      const links = await artifactLinksService.findLinksByDirection(
-        organizationId,
-        current.id,
-        direction,
-        linkType
-      );
-
-      for (const link of links) {
-        if (collectedIds.has(link.id)) {
-          continue;
-        }
-        collectedIds.add(link.id);
-        collected.push({ link, fromArtifactId: current.id });
-        enqueueNeighbors(link, current, visited, queue);
-      }
-    }
-    return collected;
+    return traverseLinkTree(
+      organizationId,
+      artifactId,
+      direction,
+      maxDepth,
+      linkType
+    );
   },
 
   /**
@@ -346,28 +466,42 @@ export const artifactLinksService = {
   async batchMoveArtifacts(
     organizationId: string,
     input: BatchMoveArtifactsInput
-  ): Promise<Result<BatchMoveArtifactsResult>> {
+  ): Promise<
+    Result<
+      BatchMoveArtifactsServiceResult,
+      StatusCode | AgentSessionFieldMutationError
+    >
+  > {
     // Validation + graph traversal + write run inside a single transaction
     // so the downstream set and target project are read from the same
     // snapshot as the updateMany. Prevents TOCTOU where a concurrent caller
     // deletes the source artifact or reparents a downstream link between
     // our validation and our write.
     const result = await withDb.tx(
-      async (tx): Promise<Result<BatchMoveArtifactsResult>> => {
+      async (
+        tx
+      ): Promise<
+        Result<
+          BatchMoveArtifactsServiceResult,
+          StatusCode | AgentSessionFieldMutationError
+        >
+      > => {
         const [source, targetProject] = await Promise.all([
           tx.artifact.findFirst({
             where: { id: input.artifactId, organizationId },
             select: { id: true, type: true },
           }),
-          tx.project.findUnique({
-            where: { id: input.targetProjectId, organizationId },
-            select: { id: true },
-          }),
+          input.targetProjectId === null
+            ? Promise.resolve(null)
+            : tx.project.findUnique({
+                where: { id: input.targetProjectId, organizationId },
+                select: { id: true },
+              }),
         ]);
         if (!source) {
           return Result.err(Status.NotFound);
         }
-        if (!targetProject) {
+        if (input.targetProjectId !== null && !targetProject) {
           return Result.err(Status.BadRequest);
         }
 
@@ -384,10 +518,15 @@ export const artifactLinksService = {
           idsToMove.push(...downstream);
         }
 
-        const rows = await tx.artifact.findMany({
-          where: { id: { in: idsToMove }, organizationId },
-          select: { id: true, type: true },
-        });
+        const rows = await lockArtifactRowsForMove(
+          tx,
+          idsToMove,
+          organizationId
+        );
+        const conflict = staleMoveConflict(input, rows);
+        if (conflict) {
+          return Result.err(conflict);
+        }
         await tx.artifact.updateMany({
           where: { id: { in: idsToMove }, organizationId },
           data: { projectId: input.targetProjectId },
@@ -401,7 +540,14 @@ export const artifactLinksService = {
           return Result.err(Status.NotFound);
         }
 
-        return Result.ok({ movedArtifacts: moved });
+        return Result.ok({
+          movedArtifacts: moved,
+          projectChanges: rows.map((r) => ({
+            artifactId: r.id,
+            before: r.projectId,
+            after: input.targetProjectId,
+          })),
+        });
       }
     );
 
@@ -416,127 +562,57 @@ export const artifactLinksService = {
     return result;
   },
 
-  async deleteLink(id: string, organizationId: string): Promise<void> {
-    await withDb((db) =>
-      db.artifactLink.deleteMany({ where: { id, organizationId } })
-    );
-  },
-
   /**
-   * Delete all links referencing an artifact (as source or target).
+   * Delete one link, and report the dependents whose blocker set just shrank.
+   *
+   * ISS-9632 counts a blocker as resolved when its source went terminal OR the
+   * `BLOCKS` edge no longer exists, so removing the last live edge has to wake
+   * the unblock resolver exactly as terminalizing the last live blocker does.
+   * The caller passes `unblockCandidateIds` to `resolveBlocksForRemovedEdges`;
+   * without it a dependent whose remaining blockers were already terminal stays
+   * `BLOCKED` with nothing holding it.
+   *
+   * Empty for a non-`BLOCKS` link, and empty when the delete matched no row — a
+   * link outside the caller's org must not name one of its artifacts.
    */
-  async deleteAllLinks(
+  async deleteLink(
+    id: string,
     organizationId: string,
-    artifactId: string
-  ): Promise<void> {
-    await withDb((db) =>
-      db.artifactLink.deleteMany({
-        where: {
-          organizationId,
-          OR: [{ sourceId: artifactId }, { targetId: artifactId }],
-        },
-      })
+    recordDeleted?: RecordWriteInTransaction<{ deleted: boolean }>
+  ): Promise<{ unblockCandidateIds: string[]; deleted: boolean }> {
+    // ISS-12552 (PRD-800 "Rollout"): read before the delete transaction
+    // opens, and the link only while the flag is on, so with it off the
+    // delete reads exactly what it did on main (flag-off parity).
+    const derivedBranchId = await deletedLinkImplementationBranchId(
+      id,
+      organizationId
     );
+    return await withDb.tx(async (tx) => {
+      const link = await tx.artifactLink.findFirst({
+        where: { id, organizationId },
+        select: { targetId: true, linkType: true },
+      });
+      const { count } = await tx.artifactLink.deleteMany({
+        where: { id, organizationId },
+      });
+      // ISS-12552: `deleted` lets the operation receipt tell a real delete
+      // from one that matched no row (already gone, or another org's link).
+      const deleted = count > 0;
+      if (deleted && derivedBranchId) {
+        await refreshBranchImplementationEvidence(
+          tx,
+          organizationId,
+          derivedBranchId
+        );
+      }
+      await recordDeleted?.(tx, { deleted });
+      if (!deleted || link?.linkType !== LinkType.Blocks) {
+        return { unblockCandidateIds: [], deleted };
+      }
+      return { unblockCandidateIds: [link.targetId], deleted };
+    });
   },
 };
-
-type PrismaArtifactLinkWithArtifacts = PrismaArtifactLink & {
-  source: PrismaArtifactWithEndpointDetail;
-  target: PrismaArtifactWithEndpointDetail;
-};
-
-type PrismaArtifactWithEndpointDetail = PrismaArtifact & {
-  branch?: {
-    branchName: string;
-    baseBranch: string | null;
-    headSha: string | null;
-    checksStatus: ChecksStatus | null;
-    currentPullRequestDetail: {
-      id: string;
-      branchArtifactId: string | null;
-      // Nullable for desktop-produced PRs in non-App repos (FEA-2732).
-      repositoryId: string | null;
-      githubId: string | null;
-      number: number;
-      title: string | null;
-      htmlUrl: string | null;
-      body: string | null;
-      prState: GitHubPRState;
-      isDraft: boolean;
-      reviewDecision: ReviewDecision | null;
-      closedAt: Date | null;
-      mergedAt: Date | null;
-      mergeCommitSha: string | null;
-      lastVerifiedAt: Date | null;
-      lastRefreshAttemptAt: Date | null;
-      isCurrent: boolean;
-    } | null;
-  } | null;
-};
-
-function toArtifactLink(link: PrismaArtifactLink): ArtifactLink {
-  return {
-    id: link.id,
-    organizationId: link.organizationId,
-    sourceId: link.sourceId,
-    targetId: link.targetId,
-    linkType: link.linkType,
-    metadata: link.metadata as JsonObject | null,
-    createdAt: link.createdAt,
-  };
-}
-
-function toArtifactLinkWithEndpoints(
-  link: PrismaArtifactLinkWithArtifacts
-): ArtifactLinkWithEndpoints {
-  return {
-    ...toArtifactLink(link),
-    source: toArtifactLinkEndpoint(link.source),
-    target: toArtifactLinkEndpoint(link.target),
-  };
-}
-
-const branchEndpointInclude = {
-  branch: {
-    include: {
-      currentPullRequestDetail: true,
-    },
-  },
-} as const;
-
-const artifactLinkInclude = {
-  source: { include: branchEndpointInclude },
-  target: { include: branchEndpointInclude },
-} as const;
-
-function toArtifactLinkEndpoint(
-  artifact: PrismaArtifactWithEndpointDetail
-): ArtifactLinkEndpoint {
-  return {
-    ...artifact,
-    // FEA-3956: normalize the persisted subtype to the canonical API set. Rows
-    // never store the canonical `ISSUE` (map-in-code, PRD-560 dec. 2), but the
-    // generated Prisma enum now includes it; mapping keeps a skewed value
-    // resolving to `FEATURE` instead of leaking `ISSUE` into the link contract.
-    subtype: artifact.subtype
-      ? normalizeArtifactSubtype(artifact.subtype)
-      : null,
-    branch: artifact.branch
-      ? {
-          branchName: artifact.branch.branchName,
-          currentPullRequest: artifact.branch.currentPullRequestDetail
-            ? {
-                ...artifact.branch.currentPullRequestDetail,
-                headBranch: artifact.branch.branchName,
-                baseBranch: artifact.branch.baseBranch ?? "",
-                headSha: artifact.branch.headSha,
-                checksStatus: artifact.branch.checksStatus,
-              }
-            : null,
-        }
-      : null,
-  };
-}
 
 async function assertArtifactInOrg(
   organizationId: string,
@@ -553,7 +629,103 @@ async function assertArtifactInOrg(
   }
 }
 
-type QueueEntry = { id: string; depth: number };
+async function createOrdinaryLink(
+  organizationId: string,
+  input: CreateArtifactLinkInput
+) {
+  await Promise.all([
+    assertArtifactInOrg(organizationId, input.sourceId),
+    assertArtifactInOrg(organizationId, input.targetId),
+  ]);
+  return withDb((db) =>
+    db.artifactLink.create({
+      data: {
+        organizationId,
+        sourceId: input.sourceId,
+        targetId: input.targetId,
+        linkType: input.linkType,
+        metadata: input.metadata ?? Prisma.DbNull,
+      },
+    })
+  );
+}
+
+function createProducesLinkUnderPlacementLocks(
+  organizationId: string,
+  input: CreateArtifactLinkInput
+) {
+  return withDb.tx(async (tx) => {
+    const endpoints = await readLinkEndpoints(tx, organizationId, input);
+    for (const projectId of [
+      ...new Set(
+        endpoints.flatMap((endpoint) =>
+          endpoint.projectId ? [endpoint.projectId] : []
+        )
+      ),
+    ].sort()) {
+      await lockProjectRank(tx, projectId);
+    }
+    const lockedEndpoints = await readLinkEndpoints(tx, organizationId, input);
+    assertLinkEndpointsPresent(lockedEndpoints, input);
+    const sortOrder = await nextProducesLinkSortOrder(
+      tx,
+      organizationId,
+      input.sourceId
+    );
+    const refusal =
+      (await refuseProducesLinkCycle(
+        tx,
+        organizationId,
+        input.sourceId,
+        input.targetId
+      )) ??
+      (await refuseProducesLinkDepth(
+        tx,
+        organizationId,
+        input,
+        lockedEndpoints
+      ));
+    if (refusal) {
+      return { refusal };
+    }
+    return tx.artifactLink.create({
+      data: {
+        organizationId,
+        sourceId: input.sourceId,
+        targetId: input.targetId,
+        linkType: input.linkType,
+        sortOrder,
+        metadata: input.metadata ?? Prisma.DbNull,
+      },
+    });
+  });
+}
+
+function readLinkEndpoints(
+  tx: TransactionClient,
+  organizationId: string,
+  input: CreateArtifactLinkInput
+) {
+  return tx.artifact.findMany({
+    where: {
+      organizationId,
+      id: { in: [input.sourceId, input.targetId] },
+    },
+    select: { id: true, projectId: true },
+  });
+}
+
+function assertLinkEndpointsPresent(
+  endpoints: { id: string }[],
+  input: CreateArtifactLinkInput
+): void {
+  const endpointIds = new Set(endpoints.map((endpoint) => endpoint.id));
+  for (const artifactId of [input.sourceId, input.targetId]) {
+    if (!endpointIds.has(artifactId)) {
+      throw new Error(`Artifact ${artifactId} not found in organization`);
+    }
+  }
+}
 
 function buildDirectionFilter(
   artifactId: string,
@@ -572,15 +744,152 @@ function getOtherSide(link: ArtifactLink, fromArtifactId: string): string {
   return link.sourceId === fromArtifactId ? link.targetId : link.sourceId;
 }
 
-function enqueueNeighbors(
-  link: ArtifactLink,
-  current: QueueEntry,
-  visited: Set<string>,
-  queue: QueueEntry[]
-): void {
-  const otherId = link.sourceId === current.id ? link.targetId : link.sourceId;
-  if (!visited.has(otherId)) {
-    visited.add(otherId);
-    queue.push({ id: otherId, depth: current.depth + 1 });
+/**
+ * The only failures `createLink` reports as values. Narrower than `StatusCode`
+ * on purpose: it makes the route's mapper exhaustive, so a third failure added
+ * later fails typecheck instead of falling through to a 500 at runtime.
+ */
+export type CreateArtifactLinkFailure =
+  | typeof Status.BadRequest
+  | typeof Status.Conflict
+  | ProducesLinkRefusal;
+
+/**
+ * The `@@unique([sourceId, targetId, linkType])` index from
+ * `20260422180000_artifact_parent_additive`. Adapters disagree on what they put
+ * in `meta.target` — some the index name, some the model fields, some the
+ * columns — so every shape apps/api/AGENTS.md requires handling is listed, and
+ * the real-database case is pinned by the integration suite.
+ */
+const ARTIFACT_LINK_UNIQUE_INDEX =
+  "artifact_links_source_id_target_id_link_type_key";
+
+const ARTIFACT_LINK_UNIQUE_COLUMNS = ["source_id", "target_id", "link_type"];
+const ARTIFACT_LINK_UNIQUE_FIELDS = ["sourceId", "targetId", "linkType"];
+
+/**
+ * A P2002 whose target is NOT this index is a different constraint failing and
+ * is re-thrown: reporting it as "this link already exists" would tell the
+ * caller to stop retrying a write that never conflicted on the link itself.
+ */
+function isDuplicateArtifactLinkViolation(error: unknown): boolean {
+  if (getPrismaErrorCode(error) !== "P2002") {
+    return false;
   }
+  return matchesPrismaP2002Target(error, matchesArtifactLinkUniqueTarget);
+}
+
+function matchesArtifactLinkUniqueTarget(target: unknown): boolean {
+  if (typeof target === "string") {
+    return target === ARTIFACT_LINK_UNIQUE_INDEX;
+  }
+  if (!Array.isArray(target)) {
+    return false;
+  }
+  // The WHOLE field set, not any one member. Matching on a single field would
+  // classify a future `@@unique([organizationId, sourceId, linkType])` — which
+  // reports `["organization_id", "source_id", "link_type"]` — as this index and
+  // report an unrelated conflict to the caller as a duplicate link.
+  return (
+    target.includes(ARTIFACT_LINK_UNIQUE_INDEX) ||
+    coversEveryColumn(target, ARTIFACT_LINK_UNIQUE_COLUMNS) ||
+    coversEveryColumn(target, ARTIFACT_LINK_UNIQUE_FIELDS)
+  );
+}
+
+function coversEveryColumn(target: unknown[], required: string[]): boolean {
+  return (
+    target.length === required.length &&
+    required.every((column) => target.includes(column))
+  );
+}
+
+/**
+ * `batchMoveArtifacts`'s internal answer: the wire `movedArtifacts` plus the
+ * per-row project transition read in the same transaction as the write
+ * (ISS-9158). The route feeds `projectChanges` to `captureBatchProjectChange`
+ * and serializes only the declared {@link BatchMoveArtifactsResult}.
+ */
+export type BatchMoveArtifactsServiceResult = BatchMoveArtifactsResult & {
+  projectChanges: BatchProjectChange[];
+};
+
+type LockedMoveRow = {
+  id: string;
+  type: ArtifactType;
+  projectId: string | null;
+};
+
+/**
+ * The before-`projectId` read is authoritative only if the row cannot move
+ * between it and the `updateMany`: under READ COMMITTED an unlocked read lets
+ * two concurrent moves both see project A and then record A→B and A→C, the
+ * second of which never happened. Same `FOR NO KEY UPDATE`, same
+ * `ORDER BY "id" ASC`, as the status and priority batches take on this table,
+ * so none of them can deadlock against another (ISS-9440). No type filter: this
+ * route moves any artifact type.
+ */
+/**
+ * Refuse the move when the caller's `expectedProjectId` disagrees with the
+ * project the SOURCE artifact actually holds, or `null` when no guard was sent.
+ *
+ * Decided against the LOCKED row, inside the same transaction as the
+ * `updateMany`: a comparison against a value read before
+ * {@link lockArtifactRowsForMove} would be a second read-then-write, the exact
+ * defect ISS-10995 removed from `upsertBranchArtifact`. Only the artifact the
+ * caller NAMED is guarded — a downstream row it never saw carries no
+ * expectation.
+ *
+ * The conflict envelope is `PATCH /agent-sessions/{id}`'s, reused whole
+ * (`stale_project_id`, `details.staleProjectIds`), so a client already parsing
+ * that route's refusal parses this one (Cosimo Corrigan, 2026-10-12).
+ */
+function staleMoveConflict(
+  input: BatchMoveArtifactsInput,
+  rows: readonly LockedMoveRow[]
+): AgentSessionFieldMutationError | null {
+  const { expectedProjectId } = input;
+  const source = rows.find((row) => row.id === input.artifactId);
+  // `isStaleExpectation` owns both exemptions — an ABSENT expectation
+  // (unguarded, which the bulk Move dialog and the documents batch path rely
+  // on) and a write already at the requested value, so a retry cannot 409
+  // against its own earlier success. The `undefined` arm here is not a second
+  // copy of the first: it NARROWS for the conflict's `string | null` field
+  // below, which cannot carry "no expectation".
+  if (
+    expectedProjectId === undefined ||
+    !source ||
+    !isStaleExpectation(
+      source.projectId,
+      input.targetProjectId,
+      expectedProjectId
+    )
+  ) {
+    return null;
+  }
+  return staleSessionFieldsConflict({
+    projectId: {
+      documentId: input.artifactId,
+      currentProjectId: source.projectId,
+      expectedProjectId,
+    },
+  });
+}
+
+function lockArtifactRowsForMove(
+  tx: TransactionClient,
+  artifactIds: string[],
+  organizationId: string
+): Promise<LockedMoveRow[]> {
+  const artifactIdSql = Prisma.join(
+    artifactIds.map((artifactId) => Prisma.sql`${artifactId}::uuid`)
+  );
+  return tx.$queryRaw<LockedMoveRow[]>(Prisma.sql`
+    SELECT "id", "type", "project_id" AS "projectId"
+    FROM "artifacts"
+    WHERE "id" IN (${artifactIdSql})
+      AND "organization_id" = ${organizationId}::uuid
+    ORDER BY "id" ASC
+    FOR NO KEY UPDATE
+  `);
 }

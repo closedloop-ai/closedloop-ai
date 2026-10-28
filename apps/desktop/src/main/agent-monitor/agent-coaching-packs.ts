@@ -463,8 +463,8 @@ export function installCoachingPackFromDistribution(
 }
 
 /**
- * Locate the bundled coaching-packs directory across packaged and dev layouts
- * (mirrors the command-pack resolver). Returns null when not found.
+ * Locate the bundled coaching-packs directory across packaged and dev layouts.
+ * Returns null when not found.
  */
 export function resolveBundledCoachingPacksDir(): string | null {
   const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string })

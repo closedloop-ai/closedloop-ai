@@ -366,6 +366,48 @@ describe("resolveExternalGitHubAuthor", () => {
     });
   });
 
+  it("preserves stored provider profile fields when a producer omits them", async () => {
+    const existingUser = makeShadowUser("123", "octocat");
+    const existingAuthor = makeExternalAuthor({
+      userId: existingUser.id,
+      user: existingUser,
+    });
+    const db = makeMockDb();
+    db.externalCommentAuthor.findUnique.mockResolvedValue(existingAuthor);
+    db.externalCommentAuthor.upsert.mockResolvedValue(existingAuthor);
+    installDb(db);
+
+    await resolveExternalGitHubAuthor({
+      organizationId: ORGANIZATION_ID,
+      author: {
+        id: 123,
+        actorType: GitHubActorType.User,
+      },
+      source: SOURCE,
+    });
+
+    const upsert = db.externalCommentAuthor.upsert.mock.calls[0]?.[0];
+    if (!upsert) {
+      throw new Error("external author upsert was not called");
+    }
+    expect(upsert.update).toEqual(
+      expect.objectContaining({
+        organizationId: ORGANIZATION_ID,
+        provider: ExternalCommentProvider.GITHUB,
+        providerUserId: "123",
+        userId: existingUser.id,
+        providerDetail: { actorType: GitHubActorType.User },
+        lastSeenAt: expect.any(Date),
+      })
+    );
+    expect(upsert.update).not.toHaveProperty("providerNodeId");
+    expect(upsert.update).not.toHaveProperty("providerLogin");
+    expect(upsert.update).not.toHaveProperty("normalizedProviderLogin");
+    expect(upsert.update).not.toHaveProperty("displayName");
+    expect(upsert.update).not.toHaveProperty("avatarUrl");
+    expect(upsert.update).not.toHaveProperty("profileUrl");
+  });
+
   it("matches node fallback authors against OAuth githubNodeId", async () => {
     const linkedUser = makeUser({ id: "linked-user", active: true });
     const db = makeMockDb();

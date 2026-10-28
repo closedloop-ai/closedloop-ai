@@ -14,9 +14,11 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import {
   customFieldKeys,
   useCreateCustomField,
+  useCustomFieldReferenceTargetSearch,
   useDeleteCustomField,
   useUpdateCustomField,
   useUpdateCustomFieldValue,
+  useUpdateCustomFieldValueForEntityType,
 } from "../use-custom-fields";
 
 // Mock useApiClient
@@ -31,9 +33,7 @@ vi.mock("@repo/app/shared/api/use-api-client", () => ({
   useApiClient: () => mockApiClient,
 }));
 
-// ---------------------------------------------------------------------------
 // customFieldKeys
-// ---------------------------------------------------------------------------
 
 describe("customFieldKeys", () => {
   test("all returns stable base key", () => {
@@ -89,9 +89,7 @@ describe("customFieldKeys", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // useDeleteCustomField
-// ---------------------------------------------------------------------------
 
 describe("useDeleteCustomField", () => {
   beforeEach(() => {
@@ -149,9 +147,7 @@ describe("useDeleteCustomField", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // useUpdateCustomField
-// ---------------------------------------------------------------------------
 
 describe("useUpdateCustomField", () => {
   beforeEach(() => {
@@ -207,9 +203,7 @@ describe("useUpdateCustomField", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // useUpdateCustomFieldValue — entity detail key invalidation
-// ---------------------------------------------------------------------------
 
 describe("useUpdateCustomFieldValue", () => {
   beforeEach(() => {
@@ -315,9 +309,162 @@ describe("useUpdateCustomFieldValue", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
+// useUpdateCustomFieldValue — which write shape each entity type gets
+//
+// The server mounts exactly ONE of the two per entity type: Projects and
+// Documents take their values in their own entity PUT body, Sessions and
+// Branches have no mutable entity representation and take them through the
+// `custom-field-values` sub-resource (ISS-7209). Sending one through the other
+// is a 405 at runtime, not a compile error, so each type's route is pinned here
+// — the Project and Document arms are pinned in the block above.
+
+describe("useUpdateCustomFieldValue sub-resource routing", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  test.each([
+    {
+      entityType: CustomFieldEntityType.Session,
+      entityId: "sess-1",
+      // Not `/sessions/…` — the route segment is deliberately a table lookup.
+      expectedPath: "/agent-sessions/sess-1/custom-field-values/field-1",
+    },
+    {
+      entityType: CustomFieldEntityType.Branch,
+      entityId: "branch-1",
+      expectedPath: "/branches/branch-1/custom-field-values/field-1",
+    },
+  ])(
+    "writes a $entityType value through the custom-field-values sub-resource",
+    async ({ entityType, entityId, expectedPath }) => {
+      mockApiClient.put.mockResolvedValueOnce({});
+
+      const { result } = renderHook(
+        () => useUpdateCustomFieldValue(entityType, entityId),
+        { wrapper: createWrapper() }
+      );
+
+      result.current.mutate({ fieldId: "field-1", value: 191_000 });
+
+      await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+      // One PUT, to the sub-resource, carrying the bare value — asserting the
+      // call count is what stops the entity-PUT body shape passing too.
+      expect(mockApiClient.put).toHaveBeenCalledTimes(1);
+      expect(mockApiClient.put).toHaveBeenCalledWith(expectedPath, {
+        value: 191_000,
+      });
+    }
+  );
+
+  test.each([
+    { entityType: CustomFieldEntityType.Session, entityId: "sess-1" },
+    { entityType: CustomFieldEntityType.Branch, entityId: "branch-1" },
+  ])(
+    "invalidates the $entityType values cache and no entity detail cache",
+    async ({ entityType, entityId }) => {
+      mockApiClient.put.mockResolvedValueOnce({});
+
+      const queryClient = createTestQueryClient();
+      const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+      const { result } = renderHook(
+        () => useUpdateCustomFieldValue(entityType, entityId),
+        { wrapper: createWrapperWithClient(queryClient) }
+      );
+
+      result.current.mutate({ fieldId: "field-1", value: 191_000 });
+
+      await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+      expect(invalidateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          queryKey: customFieldKeys.values(entityType, entityId),
+        })
+      );
+      // Neither detail response embeds `customFields`, so evicting a documents
+      // key here would drop an unrelated document and still miss the real one.
+      expect(invalidateSpy).not.toHaveBeenCalledWith(
+        expect.objectContaining({ queryKey: documentKeys.detail(entityId) })
+      );
+      expect(invalidateSpy).not.toHaveBeenCalledWith(
+        expect.objectContaining({ queryKey: projectKeys.detail(entityId) })
+      );
+    }
+  );
+});
+
+describe("useUpdateCustomFieldValueForEntityType", () => {
+  test("takes the entity id per write for a reusable Session table controller", async () => {
+    mockApiClient.put.mockResolvedValueOnce({});
+    const { result } = renderHook(
+      () =>
+        useUpdateCustomFieldValueForEntityType(CustomFieldEntityType.Session),
+      { wrapper: createWrapper() }
+    );
+
+    result.current.mutate({
+      entityId: "session-2",
+      fieldId: "field-1",
+      value: "blocked",
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(mockApiClient.put).toHaveBeenCalledWith(
+      "/agent-sessions/session-2/custom-field-values/field-1",
+      { value: "blocked" }
+    );
+  });
+
+  // ISS-12600: a custom-field-scoped Documents card keeps its key across a
+  // value write, so a Document write refetches the card reads and a Session
+  // write does not.
+  test.each([
+    [CustomFieldEntityType.Document, true],
+    [CustomFieldEntityType.Session, false],
+  ])(
+    "a %s value write refetches the Documents card reads: %s",
+    async (entityType, refetches) => {
+      mockApiClient.put.mockResolvedValueOnce({});
+      const queryClient = createTestQueryClient();
+      const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+      const { result } = renderHook(
+        () => useUpdateCustomFieldValueForEntityType(entityType),
+        { wrapper: createWrapperWithClient(queryClient) }
+      );
+
+      result.current.mutate({
+        entityId: "entity-1",
+        fieldId: "field-1",
+        value: "x",
+      });
+
+      await waitFor(() => expect(result.current.isSuccess).toBe(true));
+      const summaries = invalidate.mock.calls.some(
+        ([filters]) =>
+          JSON.stringify(filters?.queryKey) ===
+          JSON.stringify(documentKeys.summaries())
+      );
+      expect(summaries).toBe(refetches);
+    }
+  );
+});
+
+describe("useCustomFieldReferenceTargetSearch", () => {
+  test("scopes an on-demand reference search away from the edited row", async () => {
+    mockApiClient.get.mockResolvedValueOnce({ targets: [], hasMore: false });
+    const { result } = renderHook(() => useCustomFieldReferenceTargetSearch());
+
+    await result.current("field-1", "PRD 12", "session-2");
+
+    expect(mockApiClient.get).toHaveBeenCalledWith(
+      "/custom-fields/field-1/reference-targets?query=PRD+12&excludeEntityId=session-2"
+    );
+  });
+});
+
 // useCreateCustomField — error state
-// ---------------------------------------------------------------------------
 
 describe("useCreateCustomField", () => {
   beforeEach(() => {

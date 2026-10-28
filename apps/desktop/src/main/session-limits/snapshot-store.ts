@@ -3,17 +3,16 @@
  * @description In-memory store + reconciliation for subscription session-limit
  * snapshots (PRD-539, FEA-3493).
  *
- * Three sources push point-in-time snapshots into the store:
+ * Two sources push point-in-time snapshots into the store:
  *  - `usage_api` — AUTHORITATIVE, the owned `/api/oauth/usage` endpoint
  *    (PRD-538 R5; see {@link file://./usage-api-client.ts});
- *  - `statusline` — RICH, continuous per-window percentages;
- *  - `rate_limit_event` — COARSE, status/reset/type only.
+ *  - `statusline` — RICH, continuous per-window percentages.
  * (See {@link file://./mappers.ts} for the local source→snapshot mappers.)
  *
  * The store keeps only the freshest snapshot per source and reconciles them into
  * a single latest {@link SessionLimitsSnapshot} for the renderer via
  * {@link resolveSessionLimits}. The resolver prefers a fresh AUTHORITATIVE
- * sample, then a fresh RICH one, then a fresh COARSE one, and — when every
+ * sample, then a fresh RICH one, and — when every
  * sample is stale — returns null so
  * the renderer hides the UI rather than showing stale bars as current. The
  * renderer reads `fetchedAt`/`source` off the resolved snapshot for the detail
@@ -35,8 +34,6 @@ export const SessionLimitSnapshotSource = {
   UsageApi: "usage_api",
   /** Interactive statusline `rate_limits` — RICH continuous percentages. */
   Statusline: "statusline",
-  /** Non-interactive `rate_limit_event` (`SDKRateLimitInfo`) — COARSE. */
-  RateLimitEvent: "rate_limit_event",
 } as const satisfies Record<string, SessionLimitSource>;
 export type SessionLimitSnapshotSource = SessionLimitSource;
 
@@ -80,10 +77,9 @@ function freshestFromSource(
  * Preference order:
  *  1. the freshest AUTHORITATIVE (`usage_api`) sample, when it is not stale —
  *     the owned `/usage` endpoint computes every window server-side, so it
- *     outranks both local producers (PRD-538 R5);
+ *     outranks the local statusline (PRD-538 R5);
  *  2. else the freshest RICH (statusline) sample, when it is not stale;
- *  3. else the freshest COARSE (`rate_limit_event`) sample, when not stale;
- *  4. else null — every sample is stale.
+ *  3. else null — every sample is stale.
  *
  * When everything is stale we return null (the renderer then hides the UI)
  * rather than surfacing a last-known snapshot as if it were current: a stale
@@ -111,9 +107,8 @@ export function resolveSessionLimits(
     nowMs - snapshot.fetchedAtMs <= staleAfterMs;
 
   // PRD-538 R5: the owned `/usage` endpoint is the server's own computation of
-  // every window, so a fresh sample from it outranks both local producers — the
-  // statusline only reports the windows the harness happened to print, and the
-  // rate_limit_event carries no continuous percentage at all.
+  // every window, so a fresh sample from it outranks the statusline, which only
+  // reports the windows the harness happened to print.
   const authoritative = freshestFromSource(
     snapshots,
     SessionLimitSnapshotSource.UsageApi
@@ -127,13 +122,6 @@ export function resolveSessionLimits(
   );
   if (rich && isFresh(rich)) {
     return stampSource(rich);
-  }
-  const coarse = freshestFromSource(
-    snapshots,
-    SessionLimitSnapshotSource.RateLimitEvent
-  );
-  if (coarse && isFresh(coarse)) {
-    return stampSource(coarse);
   }
   // Everything is stale → hide the UI until the renderer can display staleness.
   return null;
@@ -149,7 +137,7 @@ function stampSource(
 /**
  * Holds the latest snapshot per source and reconciles them on demand. A single
  * shared instance ({@link sessionLimitsSnapshotStore}) is read by the IPC
- * handler and written by the statusline / rate_limit_event producers.
+ * handler and written by the usage API and statusline producers.
  */
 export class SessionLimitsSnapshotStore {
   readonly #bySource = new Map<

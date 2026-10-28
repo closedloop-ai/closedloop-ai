@@ -14,36 +14,25 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { AGENT_COMPONENT_INVOCATION_SYNC_SOURCE_KEY } from "../src/main/agent-sync/agent-component-invocation-sync-constants.js";
+import type {
+  DesktopPrisma,
+  DesktopPrismaReadClient,
+  DesktopPrismaReader,
+} from "../src/main/database/prisma-client.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
+import { createSyncBurndownReaders } from "../src/main/database/sync-burndown-store.js";
 import { OutboxStatus } from "../src/shared/sync-lane-contract.js";
-import { TraceCommentSyncStatus } from "../src/shared/trace-comment-sync-status-contract.js";
 import { TranscriptSyncStatus } from "../src/shared/transcript-sync-status-contract.js";
-
-const COMPUTE_TARGET_ID = "ct-1";
-const SESSION_SOURCE_KEY = "agent_sessions:ct-1";
-const DELIVERY_SOURCE_KEY = `${AGENT_COMPONENT_INVOCATION_SYNC_SOURCE_KEY}:ct-1`;
-const COMPONENT_SOURCE_KEY = "agent_components:v3:ct-1";
-/**
- * ISS-5973: the instant every sample is taken at. Pinned rather than read from
- * the wall clock, because `readyPending` is a deadline COMPARISON and a test
- * that straddles the boundary by real time is a flake waiting to happen.
- */
-const SAMPLE_NOW = "2026-08-06T12:00:00.000Z";
-
-type DbRun = { run(sql: string, ...params: unknown[]): Promise<void> };
-
-function burndownQuery(nowIso: string = SAMPLE_NOW) {
-  return {
-    sessionSourceKey: SESSION_SOURCE_KEY,
-    invocationSourceKey: DELIVERY_SOURCE_KEY,
-    invocationTemplateSourceKey: AGENT_COMPONENT_INVOCATION_SYNC_SOURCE_KEY,
-    componentSourceKey: COMPONENT_SOURCE_KEY,
-    transcriptComputeTargetId: COMPUTE_TARGET_ID,
-    nowIso,
-  };
-}
+import {
+  burndownQuery,
+  COMPONENT_SOURCE_KEY,
+  type DbRun,
+  DELIVERY_SOURCE_KEY,
+  SAMPLE_NOW,
+  SESSION_SOURCE_KEY,
+} from "./support/sync-burndown-fixtures.js";
 
 async function seedSessionOutboxRow(
   db: DbRun,
@@ -58,12 +47,13 @@ async function seedSessionOutboxRow(
   await db.run(
     `INSERT INTO agent_session_sync_outbox
        (source_key, external_session_id, status, sync_class, attempt_count,
-        next_attempt_at, last_error, created_at, updated_at)
-     VALUES (?, ?, ?, 'backfill', 0, ?, NULL, ?, ?)`,
+        next_attempt_at, last_error, pending_since, created_at, updated_at)
+     VALUES (?, ?, ?, 'backfill', 0, ?, NULL, ?, ?, ?)`,
     SESSION_SOURCE_KEY,
     input.id,
     input.status,
     input.nextAttemptAt ?? null,
+    input.createdAt,
     input.createdAt,
     input.createdAt
   );
@@ -85,8 +75,8 @@ async function seedInvocationOutboxRow(
        (source_key, external_session_id, external_generation_id, part_index,
         part_count, part_hash, source_updated_at, data_revision, source_sequence,
         payload, status, attempt_count, next_attempt_at, last_error,
-        created_at, updated_at)
-     VALUES (?, ?, ?, ?, 4, ?, ?, 1, 1, ?, ?, 0, NULL, NULL, ?, ?)`,
+        pending_since, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 4, ?, ?, 1, 1, ?, ?, 0, NULL, NULL, ?, ?, ?)`,
     input.sourceKey,
     input.sessionId,
     `${input.sessionId}-gen`,
@@ -95,6 +85,7 @@ async function seedInvocationOutboxRow(
     input.createdAt,
     input.payload,
     input.status,
+    input.createdAt,
     input.createdAt,
     input.createdAt
   );
@@ -144,31 +135,6 @@ async function seedComponentRow(
     `ext-${input.id}`,
     input.lastSeenAt,
     input.lastSeenAt
-  );
-}
-
-async function seedTraceCommentRow(
-  db: DbRun,
-  input: {
-    id: string;
-    syncStatus: string;
-    createdAt: string;
-    replies?: readonly { id: string; syncStatus: string }[];
-  }
-): Promise<void> {
-  await db.run(
-    `INSERT INTO trace_comments
-       (id, thread_id, target_type, target_id, artifact_id, surface, status,
-        anchor, body, author_id, mentions, replies, comment_kind, sync_status,
-        created_at, updated_at)
-     VALUES (?, ?, 'session', 'target-1', 'artifact-1', 'timeline', 'OPEN',
-             '{}', 'body', 'desktop-local', '[]', ?, 'comment', ?, ?, ?)`,
-    input.id,
-    `thread-${input.id}`,
-    JSON.stringify(input.replies ?? []),
-    input.syncStatus,
-    input.createdAt,
-    input.createdAt
   );
 }
 
@@ -279,7 +245,7 @@ test("ISS-5387: outbox depths, dead-letters, and oldest-pending reconcile with t
       assert.equal(sample.sessionOutbox.pending, pendingSessions.length);
       assert.equal(sample.sessionOutbox.deadLettered, 1);
       assert.equal(
-        sample.sessionOutbox.oldestPendingEnqueuedAtIso,
+        sample.sessionOutbox.oldestPendingSinceIso,
         "2026-08-04T00:00:00.000Z",
         "oldest-pending must be the oldest PENDING row, not the older dead-lettered one"
       );
@@ -489,6 +455,7 @@ test("ISS-5387: with no compute target the burn-down reports no identity rather 
         invocationTemplateSourceKey: AGENT_COMPONENT_INVOCATION_SYNC_SOURCE_KEY,
         componentSourceKey: null,
         transcriptComputeTargetId: null,
+        identity: null,
         nowIso: SAMPLE_NOW,
       });
 
@@ -539,6 +506,56 @@ test("ISS-5387: an unclassifiable status is counted, not silently dropped to zer
         sample.sessionOutbox.unmeasuredRows,
         1,
         "an unreadable status is carried as unaccounted, not rounded away"
+      );
+    } finally {
+      await db.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ISS-7246: a withheld row is counted on its own, never as owed and never as unaccounted", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "iss7246-withheld-"));
+  try {
+    const db = await openSqliteAgentDatabase({
+      dataDir: path.join(dir, "agent-dashboard.pgdata"),
+      detectBillingMode: () => "metered_api",
+      now: () => "2026-08-19T12:00:00.000Z",
+    });
+    try {
+      await seedSessionOutboxRow(db, {
+        id: "phantom",
+        status: OutboxStatus.Withheld,
+        createdAt: "2026-08-19T00:00:00.000Z",
+      });
+      await seedSessionOutboxRow(db, {
+        id: "owed",
+        status: OutboxStatus.Pending,
+        createdAt: "2026-08-19T01:00:00.000Z",
+      });
+
+      const readSyncBurndown = db.syncSource.readSyncBurndown;
+      assert.ok(readSyncBurndown, "the sync source exposes the burn-down read");
+      const sample = await readSyncBurndown(burndownQuery());
+
+      assert.equal(
+        sample.sessionOutbox.pending,
+        1,
+        "a withheld row is not owed — only the pending one holds the lane open"
+      );
+      assert.equal(sample.sessionOutbox.readyPending, 1);
+      assert.equal(sample.sessionOutbox.withheld, 1);
+      assert.equal(sample.sessionOutbox.deadLettered, 0);
+      assert.equal(
+        sample.sessionOutbox.unmeasuredRows,
+        0,
+        "this build classifies `withheld` exactly, so it must not land in the unaccounted bucket"
+      );
+      assert.equal(
+        sample.sessionOutbox.oldestPendingSinceIso,
+        "2026-08-19T01:00:00.000Z",
+        "the oldest-pending age comes from owed work only — an older withheld row must not age the lane"
       );
     } finally {
       await db.close();
@@ -612,8 +629,8 @@ test("ISS-5387: the inventory sweep reports rows past its cursor, not a bare nul
   }
 });
 
-test("ISS-5387: pending trace comments are counted as work owed to the cloud", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "iss5387-comments-"));
+test("ISS-11327: the inventory remainder counts with the SAME predicate the lane drains with", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "iss11327-parity-"));
   try {
     const db = await openSqliteAgentDatabase({
       dataDir: path.join(dir, "agent-dashboard.pgdata"),
@@ -621,41 +638,181 @@ test("ISS-5387: pending trace comments are counted as work owed to the cloud", a
       now: () => "2026-08-06T12:00:00.000Z",
     });
     try {
-      await seedTraceCommentRow(db, {
-        id: "tc1",
-        syncStatus: TraceCommentSyncStatus.LocalPending,
-        createdAt: "2026-08-05T09:00:00.000Z",
+      // The fixture premise: this row's stored text sorts BELOW the cursor while its
+      // INSTANT (14:00Z) is above it, so a byte-wise remainder count misses it and a
+      // ranked one does not. Asserted rather than assumed.
+      const cursorPosition = "2026-08-02T10:30:00.000Z";
+      const owedOffsetSpelling = "2026-08-02T09:00:00-05:00";
+      assert.ok(
+        owedOffsetSpelling < cursorPosition,
+        "fixture must keep the owed row BELOW the cursor in byte order"
+      );
+      assert.ok(
+        Date.parse(owedOffsetSpelling) > Date.parse(cursorPosition),
+        "fixture must keep the owed row's INSTANT above the cursor"
+      );
+
+      await seedComponentRow(db, {
+        id: "c-drained",
+        lastSeenAt: cursorPosition,
       });
-      await seedTraceCommentRow(db, {
-        id: "tc2",
-        syncStatus: TraceCommentSyncStatus.SyncFailedUpdate,
-        createdAt: "2026-08-05T10:00:00.000Z",
+      await seedComponentRow(db, {
+        id: "c-owed",
+        lastSeenAt: owedOffsetSpelling,
       });
-      await seedTraceCommentRow(db, {
-        id: "tc3",
-        syncStatus: TraceCommentSyncStatus.Synced,
-        createdAt: "2026-08-05T11:00:00.000Z",
-      });
-      await seedTraceCommentRow(db, {
-        id: "tc4",
-        syncStatus: TraceCommentSyncStatus.Synced,
-        createdAt: "2026-08-05T12:00:00.000Z",
-        replies: [{ id: "r1", syncStatus: "local_pending_reply" }],
-      });
+
+      await db.run(
+        `INSERT INTO sync_state
+           (source_key, observed_top_updated_at, observed_ids_at_top_updated_at,
+            dead_lettered_ids, data_revision, updated_at)
+         VALUES (?, ?, ?, ?, 1, ?)`,
+        COMPONENT_SOURCE_KEY,
+        cursorPosition,
+        JSON.stringify(["c-drained"]),
+        JSON.stringify([]),
+        "2026-08-06T11:00:00.000Z"
+      );
+
+      // What the LANE itself still owes from that exact persisted position, read
+      // through the very method the lane is wired to rather than a copy of its SQL.
+      const listComponentCursorRows = db.syncSource.listComponentCursorRows;
+      assert.ok(
+        listComponentCursorRows,
+        "the sync source exposes the lane's cursor read"
+      );
+      const laneOwes = await listComponentCursorRows(
+        cursorPosition,
+        "c-drained",
+        50
+      );
+      assert.deepEqual(
+        laneOwes.map((row) => row.id),
+        ["c-owed"],
+        "the lane must still owe the offset-spelled row"
+      );
 
       const readSyncBurndown = db.syncSource.readSyncBurndown;
       assert.ok(readSyncBurndown, "the sync source exposes the burn-down read");
       const sample = await readSyncBurndown(burndownQuery());
 
-      assert.equal(sample.traceComments.pendingComments, 2);
       assert.equal(
-        sample.traceComments.pendingReplyComments,
-        1,
-        "a synced comment carrying an undelivered REPLY still owes the cloud"
+        sample.componentInventory.rowsRemaining,
+        laneOwes.length,
+        "the remainder must equal what the lane's own keyset read still returns; a byte-wise count here reports 0 and the lane reads as caught up while it still owes a row"
+      );
+      assert.equal(sample.componentInventory.rowsRemaining, 1);
+    } finally {
+      await db.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ISS-7096: parked-partition rows are counted separately and never as pending", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "iss7096-parked-"));
+  try {
+    const db = await openSqliteAgentDatabase({
+      dataDir: path.join(dir, "agent-dashboard.pgdata"),
+      detectBillingMode: () => "metered_api",
+      now: () => SAMPLE_NOW,
+    });
+    try {
+      await seedSessionOutboxRow(db, {
+        id: "s-owed",
+        status: OutboxStatus.Pending,
+        createdAt: "2026-08-05T00:00:00.000Z",
+      });
+      // Two rows parked under this lane's parked partitions (two different
+      // owning orgs), plus one PARKED-but-dead-lettered row that must count
+      // toward neither bucket.
+      for (const [key, id, status] of [
+        ["agent_sessions:parked:org-a", "s-parked-a", OutboxStatus.Pending],
+        ["agent_sessions:parked:org-b", "s-parked-b", OutboxStatus.Pending],
+        [
+          "agent_sessions:parked:org-a",
+          "s-parked-dead",
+          OutboxStatus.DeadLettered,
+        ],
+      ] as const) {
+        await db.run(
+          `INSERT INTO agent_session_sync_outbox
+             (source_key, external_session_id, status, sync_class, attempt_count,
+              next_attempt_at, last_error, created_at, updated_at)
+           VALUES (?, ?, ?, 'backfill', 0,
+                   NULL, NULL, '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')`,
+          key,
+          id,
+          status
+        );
+      }
+
+      const readSyncBurndown = db.syncSource.readSyncBurndown;
+      assert.ok(readSyncBurndown, "the sync source exposes the burn-down read");
+      const sample = await readSyncBurndown(burndownQuery());
+
+      assert.equal(sample.sessionOutbox.pending, 1, "parked is never pending");
+      assert.equal(sample.sessionOutbox.parkedPending, 2);
+      assert.equal(sample.sessionOutbox.deadLettered, 0);
+    } finally {
+      await db.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ISS-7980: non-array cursor id JSON currently reads as empty lists and zero dead letters", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "iss7980-cursor-json-"));
+  try {
+    const db = await openSqliteAgentDatabase({
+      dataDir: path.join(dir, "agent-dashboard.pgdata"),
+      detectBillingMode: () => "metered_api",
+      now: () => SAMPLE_NOW,
+    });
+    try {
+      await db.run(
+        `INSERT INTO sync_state
+         (source_key, observed_top_updated_at, observed_ids_at_top_updated_at,
+            dead_lettered_ids, data_revision, updated_at)
+         VALUES (?, NULL, '"not-json"', '{"id":"dead"}', 1, ?)`,
+        SESSION_SOURCE_KEY,
+        SAMPLE_NOW
+      );
+      await db.run(
+        `INSERT INTO sync_state
+         (source_key, observed_top_updated_at, observed_ids_at_top_updated_at,
+            dead_lettered_ids, data_revision, updated_at)
+         VALUES (?, NULL, '{"id":"cursor"}', '"not-json"', 1, ?)`,
+        COMPONENT_SOURCE_KEY,
+        SAMPLE_NOW
+      );
+
+      const readSyncBurndown = db.syncSource.readSyncBurndown;
+      assert.ok(readSyncBurndown, "the sync source exposes the burn-down read");
+      const sample = await readSyncBurndown(burndownQuery());
+
+      assert.deepEqual(
+        sample.cursorsBySourceKey[SESSION_SOURCE_KEY]
+          ?.observedIdsAtTopUpdatedAt,
+        [],
+        "a parsed non-array string is currently treated as an empty cursor id list"
+      );
+      assert.deepEqual(
+        sample.cursorsBySourceKey[SESSION_SOURCE_KEY]?.deadLetteredIds,
+        [],
+        "a parsed non-array object is currently treated as no dead letters"
+      );
+      assert.deepEqual(
+        sample.cursorsBySourceKey[COMPONENT_SOURCE_KEY]
+          ?.observedIdsAtTopUpdatedAt,
+        [],
+        "a parsed non-array object is currently treated as an empty cursor id list"
       );
       assert.equal(
-        sample.traceComments.oldestPendingCreatedAtIso,
-        "2026-08-05T09:00:00.000Z"
+        sample.componentInventory.deadLetteredCount,
+        0,
+        "a parsed non-array string currently becomes a confident zero"
       );
     } finally {
       await db.close();
@@ -664,3 +821,176 @@ test("ISS-5387: pending trace comments are counted as work owed to the cloud", a
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("ISS-7980: syntactically invalid cursor JSON rejects before the fallback parser", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "iss7980-invalid-json-"));
+  try {
+    const db = await openSqliteAgentDatabase({
+      dataDir: path.join(dir, "agent-dashboard.pgdata"),
+      detectBillingMode: () => "metered_api",
+      now: () => SAMPLE_NOW,
+    });
+    try {
+      await db.run(
+        `INSERT INTO sync_state
+         (source_key, observed_top_updated_at, observed_ids_at_top_updated_at,
+            dead_lettered_ids, data_revision, updated_at)
+         VALUES (?, NULL, 'not-json', '[]', 1, ?)`,
+        SESSION_SOURCE_KEY,
+        SAMPLE_NOW
+      );
+
+      const readSyncBurndown = db.syncSource.readSyncBurndown;
+      assert.ok(readSyncBurndown, "the sync source exposes the burn-down read");
+      await assert.rejects(
+        readSyncBurndown(burndownQuery()),
+        { name: "SyntaxError" },
+        "Prisma rejects invalid JSON before parseIdArray can return an empty list"
+      );
+    } finally {
+      await db.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ISS-7980: invocation payload burden currently uses SQLite character length", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "iss7980-unicode-burden-"));
+  try {
+    const db = await openSqliteAgentDatabase({
+      dataDir: path.join(dir, "agent-dashboard.pgdata"),
+      detectBillingMode: () => "metered_api",
+      now: () => SAMPLE_NOW,
+    });
+    try {
+      const payload = "é🚀";
+      await seedInvocationOutboxRow(db, {
+        sourceKey: DELIVERY_SOURCE_KEY,
+        sessionId: "unicode-payload",
+        partIndex: 0,
+        status: OutboxStatus.Pending,
+        payload,
+        createdAt: SAMPLE_NOW,
+      });
+
+      const readSyncBurndown = db.syncSource.readSyncBurndown;
+      assert.ok(readSyncBurndown, "the sync source exposes the burn-down read");
+      const sample = await readSyncBurndown(burndownQuery());
+
+      assert.equal(sample.invocationOutbox.pendingPayloadBytes, 2);
+      assert.notEqual(
+        sample.invocationOutbox.pendingPayloadBytes,
+        Buffer.byteLength(payload, "utf8"),
+        "the current burden is Unicode code points, not encoded wire bytes"
+      );
+    } finally {
+      await db.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ISS-7980: public burn-down reads preserve current aggregate coercion", async () => {
+  const unsafeInteger = Number.MAX_SAFE_INTEGER + 1;
+  const sample = await createSyncBurndownReaders(
+    scriptedBurndownPrisma([
+      {
+        status: OutboxStatus.Pending,
+        n: 3.75,
+        ready: 1.75,
+        oldest: SAMPLE_NOW,
+      },
+      {
+        status: OutboxStatus.DeadLettered,
+        n: -1,
+        ready: null,
+        oldest: null,
+      },
+      {
+        status: OutboxStatus.Withheld,
+        n: Number.POSITIVE_INFINITY,
+        ready: null,
+        oldest: null,
+      },
+      {
+        status: "future_status",
+        n: unsafeInteger,
+        ready: null,
+        oldest: null,
+      },
+    ])
+  ).readSyncBurndown({
+    ...burndownQuery(),
+    invocationSourceKey: null,
+    componentSourceKey: null,
+  });
+
+  assert.equal(sample.sessionOutbox.pending, 3);
+  assert.equal(sample.sessionOutbox.readyPending, 1);
+  assert.equal(sample.sessionOutbox.deadLettered, 0);
+  assert.equal(sample.sessionOutbox.withheld, 0);
+  assert.equal(
+    sample.sessionOutbox.unmeasuredRows,
+    unsafeInteger,
+    "the current coercion accepts an unsafe finite integer unchanged"
+  );
+});
+
+function scriptedBurndownPrisma(
+  sessionGroups: readonly Record<string, unknown>[]
+): DesktopPrisma {
+  const scriptedRows = (sql: string): unknown[] => {
+    if (
+      sql.includes("FROM agent_session_sync_outbox") &&
+      sql.includes("GROUP BY status")
+    ) {
+      return [...sessionGroups];
+    }
+    if (sql.includes("FROM agent_session_sync_outbox")) {
+      return [{ n: 0 }];
+    }
+    if (
+      sql.includes("FROM transcript_sync_state") &&
+      sql.includes("GROUP BY status")
+    ) {
+      return [];
+    }
+    if (sql.includes("FROM transcript_sync_state")) {
+      return [{ bytes: 0 }];
+    }
+    if (sql.includes("FROM sync_state")) {
+      return [];
+    }
+    // ISS-8768: two new reads reach this scripted reader on the null-delivery-key
+    // path — the never-promoted existence probe, and (only when that reports the
+    // machine never promoted) the pending-template probe.
+    if (
+      sql.includes("FROM agent_component_invocation_sync_cursors") &&
+      sql.includes("source_key = $1") &&
+      !sql.includes("template")
+    ) {
+      return [];
+    }
+    if (sql.includes("FROM agent_component_invocation_sync_cursors template")) {
+      return [];
+    }
+    throw new Error(`unexpected burn-down query: ${sql}`);
+  };
+  let reader: DesktopPrismaReadClient;
+  reader = {
+    $queryRawUnsafe: (sql: string) => Promise.resolve(scriptedRows(sql)),
+    $transaction: <T>(
+      run: (tx: DesktopPrismaReader) => Promise<T>
+    ): Promise<T> => run(reader),
+    transcriptSyncState: {
+      count: () => Promise.resolve(0),
+    },
+  } as unknown as DesktopPrismaReadClient;
+  return {
+    read: <T>(
+      run: (client: DesktopPrismaReadClient) => Promise<T>
+    ): Promise<T> => run(reader),
+  } as unknown as DesktopPrisma;
+}

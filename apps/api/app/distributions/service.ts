@@ -15,11 +15,18 @@ import {
   DistributionTargetStatusValue,
 } from "@repo/api/src/types/distribution";
 import { Result, Status, type StatusCode } from "@repo/api/src/types/result";
-import { getCatalogAssetDownloadUrl } from "@repo/aws";
+import { getCatalogAssetDownloadUrl } from "@repo/aws/catalog-assets";
 import { Prisma, type TransactionClient, withDb } from "@repo/database";
 import { v7 as uuidv7 } from "uuid";
 import { computeTargetsService } from "@/app/compute-targets/service";
-import { isOrgAdmin } from "@/lib/auth/org-admin";
+import { getOrgAdminStatus } from "@/lib/auth/org-admin";
+import { orgAdminDenialStatus } from "@/lib/auth/org-admin-denial";
+import type { OrganizationWriteOutcome } from "@/lib/organization-write-receipt";
+import {
+  type RecordWriteInTransaction,
+  writeInShape,
+  writeRecorded,
+} from "@/lib/record-write-in-transaction";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -503,11 +510,12 @@ export const distributionsService = {
     userId: string,
     clerkOrgId: string,
     clerkUserId: string,
-    body: CreateDistributionRequest
+    body: CreateDistributionRequest,
+    recordWrite?: RecordWriteInTransaction<OrganizationWriteOutcome>
   ): Promise<Result<DistributionDto, StatusCode>> {
-    const admin = await isOrgAdmin(clerkOrgId, clerkUserId);
-    if (!admin) {
-      return Result.err(Status.Forbidden);
+    const adminStatus = await getOrgAdminStatus(clerkOrgId, clerkUserId);
+    if (!adminStatus.isAdmin) {
+      return Result.err(orgAdminDenialStatus(adminStatus.reason));
     }
 
     const catalogItem = await withDb((db) =>
@@ -524,34 +532,39 @@ export const distributionsService = {
       return Result.err(Status.BadRequest);
     }
 
-    const distribution = await withDb((db) =>
-      db.distribution.create({
-        data: {
-          organizationId,
-          catalogItemId: body.catalogItemId,
-          mode: body.mode,
-          targetingType: body.targetingType,
-          desiredEnabled: body.desiredEnabled ?? true,
-          createdById: userId,
-          ...(body.targetingType === DistributionTargetingType.Specific && {
-            targetingEntries: {
-              create: [
-                ...(body.targetComputeTargetIds ?? []).map(
-                  (computeTargetId) => ({
-                    computeTargetId,
-                    userId: null,
-                  })
-                ),
-                ...(body.targetUserIds ?? []).map((targetUserId) => ({
-                  computeTargetId: null,
-                  userId: targetUserId,
-                })),
-              ],
+    const distribution = await writeRecorded(
+      recordWrite,
+      () =>
+        withDb((db) =>
+          db.distribution.create({
+            data: {
+              organizationId,
+              catalogItemId: body.catalogItemId,
+              mode: body.mode,
+              targetingType: body.targetingType,
+              desiredEnabled: body.desiredEnabled ?? true,
+              createdById: userId,
+              ...(body.targetingType === DistributionTargetingType.Specific && {
+                targetingEntries: {
+                  create: [
+                    ...(body.targetComputeTargetIds ?? []).map(
+                      (computeTargetId) => ({
+                        computeTargetId,
+                        userId: null,
+                      })
+                    ),
+                    ...(body.targetUserIds ?? []).map((targetUserId) => ({
+                      computeTargetId: null,
+                      userId: targetUserId,
+                    })),
+                  ],
+                },
+              }),
             },
-          }),
-        },
-        select: distributionSelect,
-      })
+            select: distributionSelect,
+          })
+        ),
+      () => ({ changed: true })
     );
 
     return Result.ok(toDistributionDto(distribution));
@@ -565,11 +578,12 @@ export const distributionsService = {
     distributionId: string,
     clerkOrgId: string,
     clerkUserId: string,
-    body: UpdateDistributionRequest
+    body: UpdateDistributionRequest,
+    recordWrite?: RecordWriteInTransaction<OrganizationWriteOutcome>
   ): Promise<Result<DistributionDto, StatusCode>> {
-    const admin = await isOrgAdmin(clerkOrgId, clerkUserId);
-    if (!admin) {
-      return Result.err(Status.Forbidden);
+    const adminStatus = await getOrgAdminStatus(clerkOrgId, clerkUserId);
+    if (!adminStatus.isAdmin) {
+      return Result.err(orgAdminDenialStatus(adminStatus.reason));
     }
 
     // ISS-5123: a withdrawn distribution is not editable. Two admins can race —
@@ -655,18 +669,34 @@ export const distributionsService = {
             await tx.distributionTargetingEntry.createMany({ data: entries });
           }
         }
+        await recordWrite?.(tx, { changed: true });
         return true;
       });
       if (!rebuilt) {
         return Result.err(Status.NotFound);
       }
     } else {
-      const { count } = await withDb((db) =>
-        db.distribution.updateMany({
-          where: liveDistribution,
-          data: scalarEdits,
-        })
-      );
+      const updateLive = () =>
+        withDb((db) =>
+          db.distribution.updateMany({
+            where: liveDistribution,
+            data: scalarEdits,
+          })
+        );
+      const { count } = await writeInShape(recordWrite, {
+        unrecorded: updateLive,
+        recorded: (record) =>
+          withDb.tx(async (tx) => {
+            const updated = await updateLive();
+            if (updated.count > 0) {
+              // A body with no edits matched the live row and changed nothing.
+              await record(tx, {
+                changed: Object.keys(scalarEdits).length > 0,
+              });
+            }
+            return updated;
+          }),
+      });
       if (count === 0) {
         return Result.err(Status.NotFound);
       }
@@ -720,19 +750,36 @@ export const distributionsService = {
     distributionId: string,
     userId: string,
     clerkOrgId: string,
-    clerkUserId: string
+    clerkUserId: string,
+    /**
+     * Called only when this request stamped the withdrawal (ISS-12552); an
+     * already-withdrawn or missing distribution opens no receipt here.
+     */
+    recordWrite?: RecordWriteInTransaction<OrganizationWriteOutcome>
   ): Promise<Result<DistributionDto, StatusCode>> {
-    const admin = await isOrgAdmin(clerkOrgId, clerkUserId);
-    if (!admin) {
-      return Result.err(Status.Forbidden);
+    const adminStatus = await getOrgAdminStatus(clerkOrgId, clerkUserId);
+    if (!adminStatus.isAdmin) {
+      return Result.err(orgAdminDenialStatus(adminStatus.reason));
     }
 
-    await withDb((db) =>
-      db.distribution.updateMany({
-        where: { id: distributionId, organizationId, withdrawnAt: null },
-        data: { withdrawnAt: new Date(), withdrawnById: userId },
-      })
-    );
+    const stampWithdrawal = () =>
+      withDb((db) =>
+        db.distribution.updateMany({
+          where: { id: distributionId, organizationId, withdrawnAt: null },
+          data: { withdrawnAt: new Date(), withdrawnById: userId },
+        })
+      );
+    await writeInShape(recordWrite, {
+      unrecorded: stampWithdrawal,
+      recorded: (record) =>
+        withDb.tx(async (tx) => {
+          const stamped = await stampWithdrawal();
+          if (stamped.count > 0) {
+            await record(tx, { changed: true });
+          }
+          return stamped;
+        }),
+    });
 
     // Re-read unconditionally rather than branching on the update count: the
     // already-withdrawn case and the just-withdrawn case must return the same
@@ -840,7 +887,8 @@ export const distributionsService = {
     computeTargetId: string,
     userId: string,
     clerkUserId: string | null,
-    reports: DistributionStatusReport[]
+    reports: DistributionStatusReport[],
+    recordWrite?: RecordWriteInTransaction<number>
   ): Promise<Result<number, StatusCode | "forbidden">> {
     // Verify compute target ownership
     const target = await computeTargetsService.findOwnedById(
@@ -870,11 +918,11 @@ export const distributionsService = {
 
     const now = new Date();
     // The distribution_target_status table has a partial unique index on
-    // (distribution_id, compute_target_id WHERE compute_target_id IS NOT NULL)
-    // maintained via raw migration. Prisma cannot express partial indexes, so
-    // each report is applied with an atomic raw INSERT ... ON CONFLICT DO UPDATE
-    // (see upsertOneStatusReport) — concurrent reports for the same target can't
-    // race the index into a P2002 and roll back the whole batch.
+    // (distribution_id, compute_target_id) WHERE compute_target_id IS NOT NULL.
+    // Each report is applied with an atomic raw INSERT ... ON CONFLICT DO UPDATE
+    // whose arbiter is INFERRED from that same column list and predicate (see
+    // upsertOneStatusReport) — concurrent reports for the same target can't race
+    // the index into a P2002 and roll back the whole batch.
     //
     // Process reports in a deterministic distributionId order (FEA-2994) so that
     // two concurrent batches for the same compute target acquire the per-report
@@ -890,6 +938,7 @@ export const distributionsService = {
         for (const report of orderedReports) {
           await upsertOneStatusReport(tx, report, computeTargetId, userId, now);
         }
+        await recordWrite?.(tx, orderedReports.length);
       },
       {
         maxWait: STATUS_REPORT_TRANSACTION_MAX_WAIT_MS,

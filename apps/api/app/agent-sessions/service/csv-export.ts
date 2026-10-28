@@ -27,15 +27,14 @@ export type AgentSessionCsvExportRow = {
 export function toCsvExportRows(
   record: AgentSessionExportRecord
 ): AgentSessionCsvExportRow[] {
-  const teamNames = (record.user?.teamMemberships ?? [])
+  const creator = record.artifact.createdBy;
+  const teamNames = (creator?.teamMemberships ?? [])
     .map((membership) => membership.team.name)
     .filter(Boolean)
     .join(", ");
   const baseRow = {
     date: toLocalDateOnly(record.sessionStartedAt, record.deviceTimeZone),
-    user: record.user
-      ? displayUserName(toBasicUser(record.user))
-      : "Unattributed",
+    user: creator ? displayUserName(toBasicUser(creator)) : "Unattributed",
     team: teamNames || "Unattributed",
     project: record.artifact.project?.name ?? "Unattributed",
     harnessType: record.harness,
@@ -77,7 +76,7 @@ function aggregateCsvExportRow(
   aggregated: Map<string, AgentSessionCsvExportRow>,
   session: AgentSessionExportRecord
 ): void {
-  const userKey = session.user?.id ?? "unattributed";
+  const userKey = session.artifact.createdBy?.id ?? "unattributed";
   for (const row of toCsvExportRows(session)) {
     const key = [
       row.date,

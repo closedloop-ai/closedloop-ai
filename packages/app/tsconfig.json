@@ -10,12 +10,18 @@
     // packages/lib, the desktop renderer) to resolve those imports.
     "allowImportingTsExtensions": true,
     "paths": {
+      "@closedloop-ai/design-system": [
+        "../../packages/design-system/index.tsx"
+      ],
+      "@closedloop-ai/design-system/*": ["../../packages/design-system/*"],
       // Resolve workspace packages from source (same mechanism as apps/app
-      // and @repo/typescript-config/nextjs.json): @closedloop-ai/design-system's
+      // and @repo/typescript-config/nextjs.json): @repo/design-system's
       // exports map points at dist/, which is not built in CI typecheck.
       // FEA-1512 (design system as live workspace dependency) supersedes this.
-      "@closedloop-ai/loops-api/*": ["../../packages/loops-api/src/*"],
       "@repo/loops-api/*": ["../../packages/loops-api/src/*"],
+      "@closedloop-ai/loops-api/*": ["../../packages/loops-api/src/*"],
+      "@repo/realtime-client/*": ["../../packages/realtime-client/src/*"],
+      "@repo/realtime-contract/*": ["../../packages/realtime-contract/src/*"],
       "@repo/*": ["../../packages/*"]
     }
   },

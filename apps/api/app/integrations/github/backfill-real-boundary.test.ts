@@ -5,6 +5,7 @@ import {
 } from "@repo/api/src/types/branch-checks";
 import {
   GitHubBackfillStatus,
+  GitHubCredentialKind,
   GitHubPRState,
 } from "@repo/api/src/types/github";
 import {
@@ -13,6 +14,7 @@ import {
 } from "@repo/api/src/types/github-read-model";
 import { GitHubInstallationStatus } from "@repo/database";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type * as ReconcileModule from "@/app/comments/service/github/github-comment-reconcile";
 
 const getBranchesMock = vi.fn();
 const getPullRequestsMock = vi.fn();
@@ -20,18 +22,20 @@ const queryBundledPullRequestsMock = vi.fn();
 const listIssueCommentsMock = vi.fn();
 const listReviewCommentsMock = vi.fn();
 const listReviewsMock = vi.fn();
+const reconcilePullRequestCommentsMock = vi.fn();
 const queryStatusCheckRollupMock = vi.fn();
-const getInstallationOctokitMock = vi.fn();
+const getGitHubSyncClientMock = vi.fn();
 // Marker object the mocked resolver mints; provider read functions receive it
 // as their first argument (PLN-1525: resolve once per operation, thread down).
 const installationOctokit = { kind: "installation-octokit" };
 
-vi.mock("@repo/database", () => ({
+vi.mock("@/app/branches/branch-detail-signal", () => ({
+  emitBranchDetailChanged: vi.fn(),
+}));
+
+vi.mock("@repo/database", async () => ({
+  ...(await vi.importActual<object>("@repo/database/generated/enums")),
   ArtifactType: { BRANCH: "BRANCH", SESSION: "SESSION" },
-  GitHubCommentThreadKind: {
-    ISSUE_COMMENT: "ISSUE_COMMENT",
-    REVIEW_THREAD: "REVIEW_THREAD",
-  },
   GitHubInstallationStatus: {
     ACTIVE: "ACTIVE",
   },
@@ -51,7 +55,11 @@ vi.mock("@repo/database", () => ({
     GITHUB: "GITHUB",
   },
   Prisma: {
+    TransactionIsolationLevel: {
+      RepeatableRead: "RepeatableRead",
+    },
     join: (values: unknown[]) => values,
+    raw: (value: string) => value,
     sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
       strings,
       values,
@@ -92,15 +100,31 @@ vi.mock("@repo/github", () => ({
     ProviderUnavailable: "provider_unavailable",
   },
   getSinglePullRequestWithProviderResult: vi.fn(),
-  listPullRequestIssueCommentsWithProviderResult: listIssueCommentsMock,
-  listPullRequestReviewCommentsWithProviderResult: listReviewCommentsMock,
-  listPullRequestReviewsWithProviderResult: listReviewsMock,
   queryBundledPullRequestsWithProviderResult: queryBundledPullRequestsMock,
   queryStatusCheckRollupWithProviderResult: queryStatusCheckRollupMock,
 }));
 
-vi.mock("@repo/github/installation-auth", () => ({
-  getInstallationOctokit: getInstallationOctokitMock,
+// ISS-7721: the sweep draws through the sync pool. Tier 1 resolves the org's
+// covering installation first, so an App-installed org gets the same octokit it
+// always did — which is what this boundary run exercises.
+// PLN-2122: the sweep reads complete comment and review lists.
+vi.mock("@repo/github/pull-request-comment-lists", () => ({
+  listAllPullRequestIssueComments: listIssueCommentsMock,
+  listAllPullRequestReviewComments: listReviewCommentsMock,
+  listAllPullRequestReviews: listReviewsMock,
+}));
+
+vi.mock(
+  "@/app/comments/service/github/github-comment-reconcile",
+  async (importOriginal) => ({
+    ...(await importOriginal<typeof ReconcileModule>()),
+    GitHubCommentReconcileTrigger: { Backfill: "backfill" },
+    reconcilePullRequestComments: reconcilePullRequestCommentsMock,
+  })
+);
+
+vi.mock("@/lib/github/github-sync-client-pool", () => ({
+  getGitHubSyncClient: getGitHubSyncClientMock,
 }));
 
 vi.mock("@/lib/github/github-branch-view-read-client", () => ({
@@ -146,6 +170,9 @@ const { branchCommentsService } = await import(
   "@/app/branches/branch-comments-service"
 );
 const { githubBackfillService } = await import("./backfill-service");
+const { GitHubCommentReconcileStatus } = await import(
+  "@/app/comments/service/github/github-comment-reconcile"
+);
 
 const branchArtifactId = "11111111-1111-4111-8111-111111111111";
 const organizationId = "org-1";
@@ -168,7 +195,6 @@ const state = {
     checksDetailTotalCount: 0,
     currentPullRequestDetailId: null as string | null,
     currentPullRequestDetail: null as StoredPullRequest | null,
-    fileChanges: [] as { additions: number; deletions: number; path: string }[],
   },
   organizationSettings: {} as Record<string, unknown>,
   pullRequest: null as StoredPullRequest | null,
@@ -194,6 +220,12 @@ const db = {
     update: vi.fn(),
     updateMany: vi.fn(),
   },
+  // ISS-10298: the branch row's LOC totals arrive from their own grouped
+  // statement, not from a `fileChanges` relation on the selected row, so the
+  // double owes the read this shape rather than an array on `state.branch`.
+  branchFileChange: {
+    groupBy: vi.fn(),
+  },
   branchStatusCheck: {
     deleteMany: vi.fn(),
     findMany: vi.fn(),
@@ -201,9 +233,11 @@ const db = {
   gitHubInstallationRepository: {
     findMany: vi.fn(),
   },
+  // No `update`: ISS-7111 moved every `settings` write to `$executeRaw`, so a
+  // regression back to a read-modify-write fails loudly here instead of being
+  // absorbed by a double that quietly accepts the call.
   organization: {
     findUnique: vi.fn(),
-    update: vi.fn(),
   },
   pullRequestDetail: {
     findFirst: vi.fn(),
@@ -248,22 +282,34 @@ describe("GitHub backfill real boundary", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetState();
-    getInstallationOctokitMock.mockResolvedValue(installationOctokit);
+    reconcilePullRequestCommentsMock.mockResolvedValue({
+      status: GitHubCommentReconcileStatus.Reconciled,
+    });
+    getGitHubSyncClientMock.mockResolvedValue({
+      ok: true,
+      value: {
+        octokit: installationOctokit,
+        kind: GitHubCredentialKind.Installation,
+        actingAs: { installationId: "123" },
+        credentialOwnerId: null,
+        rateLimitTier: null,
+        recordRateLimit: vi.fn(),
+        recordRepoAccess: vi.fn(),
+      },
+    });
     db.gitHubInstallationRepository.findMany.mockResolvedValue([
       {
         id: repositoryId,
-        fullName: "closedloop-ai/example-repo",
+        fullName: "closedloop-ai/closedloop-ai",
         owner: "closedloop-ai",
-        name: "example-repo",
-        installation: { installationId: "123" },
+        name: "closedloop-ai",
       },
     ]);
+    // ISS-7111: only the run-gate CLAIM still reads `settings`. All three
+    // settings writes are now single `jsonb_set` statements, so the write-back
+    // double this used to carry simulated a call production no longer makes.
     db.organization.findUnique.mockResolvedValue({
       settings: state.organizationSettings,
-    });
-    db.organization.update.mockImplementation(({ data }) => {
-      state.organizationSettings = data.settings;
-      return {};
     });
     db.branchDetail.findFirst.mockImplementation(async () => state.branch);
     db.branchDetail.findMany.mockImplementation(async () => [state.branch]);
@@ -275,6 +321,7 @@ describe("GitHub backfill real boundary", () => {
       Object.assign(state.branch, data);
       return { count: 1 };
     });
+    db.branchFileChange.groupBy.mockResolvedValue([]);
     db.branchStatusCheck.deleteMany.mockResolvedValue({ count: 0 });
     db.branchStatusCheck.findMany.mockResolvedValue([]);
     db.pullRequestDetail.findMany.mockImplementation(async () =>
@@ -285,17 +332,30 @@ describe("GitHub backfill real boundary", () => {
     );
     // FEA-3212: adopt now selects the single repo-less (githubId=null) row via
     // findFirst before the githubId-keyed upsert.
-    db.pullRequestDetail.findFirst.mockImplementation(async () =>
-      state.pullRequest && state.pullRequest.githubId == null
+    db.pullRequestDetail.findFirst.mockImplementation(({ where }) => {
+      if (!state.pullRequest) {
+        return null;
+      }
+      if (where.id) {
+        return where.id === state.pullRequest.id
+          ? {
+              id: state.pullRequest.id,
+              branchArtifactId,
+              githubUpdatedAt: null,
+              headRefName: "feature/backfill",
+            }
+          : null;
+      }
+      return state.pullRequest.githubId == null
         ? { id: state.pullRequest.id ?? "pr-detail-1" }
-        : null
-    );
+        : null;
+    });
     db.pullRequestDetail.update.mockImplementation(({ data }) => {
       state.pullRequest = { ...state.pullRequest!, ...data };
       state.branch.currentPullRequestDetail = state.pullRequest;
       return state.pullRequest;
     });
-    db.pullRequestDetail.updateMany.mockResolvedValue({ count: 0 });
+    db.pullRequestDetail.updateMany.mockResolvedValue({ count: 1 });
     db.pullRequestDetail.upsert.mockImplementation(({ create, update }) => {
       const pullRequest = {
         id: "pr-detail-1",
@@ -512,15 +572,15 @@ describe("GitHub backfill real boundary", () => {
     });
     listIssueCommentsMock.mockResolvedValue({
       status: "success",
-      value: [providerIssueComment()],
+      value: { items: [providerIssueComment()], complete: true },
     });
     listReviewCommentsMock.mockResolvedValue({
       status: "success",
-      value: [providerReviewComment()],
+      value: { items: [providerReviewComment()], complete: true },
     });
     listReviewsMock.mockResolvedValue({
       status: "success",
-      value: [providerReview()],
+      value: { items: [providerReview()], complete: true },
     });
     queryStatusCheckRollupMock.mockResolvedValue({
       status: "success",
@@ -545,10 +605,14 @@ describe("GitHub backfill real boundary", () => {
       repositoryLimit: 1,
       approvedForVisibleWrites: true,
     });
-    // One mint per repository per backfill run (dry run + write run), before
-    // the read surfaces below execute (PLN-1525: resolve once, thread down).
-    expect(getInstallationOctokitMock).toHaveBeenCalledTimes(2);
-    expect(getInstallationOctokitMock).toHaveBeenCalledWith("123");
+    // One credential draw per repository per backfill run (dry run + write
+    // run), before the read surfaces below execute (PLN-1525: resolve once,
+    // thread down).
+    expect(getGitHubSyncClientMock).toHaveBeenCalledTimes(2);
+    expect(getGitHubSyncClientMock).toHaveBeenCalledWith({
+      organizationId,
+      target: { owner: "closedloop-ai", repo: "closedloop-ai" },
+    });
     const list = await branchReadService.listBranches(organizationId, {
       limit: 50,
       offset: 0,
@@ -635,8 +699,8 @@ function branchArtifactRow() {
       deletedAt: null,
       repository: {
         id: repositoryId,
-        fullName: "closedloop-ai/example-repo",
-        name: "example-repo",
+        fullName: "closedloop-ai/closedloop-ai",
+        name: "closedloop-ai",
         owner: "closedloop-ai",
         removedAt: null,
         installation: {
@@ -654,7 +718,7 @@ function providerPullRequest() {
     githubId: "4242",
     number: 42,
     title: "Backfilled PR",
-    htmlUrl: "https://github.com/closedloop-ai/example-repo/pull/42",
+    htmlUrl: "https://github.com/closedloop-ai/closedloop-ai/pull/42",
     headBranch: "feature/backfill",
     baseBranch: "main",
     headSha: "abc123",
@@ -691,7 +755,7 @@ function providerIssueComment() {
     created_at: now.toISOString(),
     updated_at: now.toISOString(),
     html_url:
-      "https://github.com/closedloop-ai/example-repo/pull/42#issuecomment-1001",
+      "https://github.com/closedloop-ai/closedloop-ai/pull/42#issuecomment-1001",
     deleted_at: null,
     is_deleted: false,
     is_updated: false,
@@ -720,7 +784,7 @@ function providerReviewComment() {
     created_at: now.toISOString(),
     updated_at: now.toISOString(),
     html_url:
-      "https://github.com/closedloop-ai/example-repo/pull/42#discussion_r2001",
+      "https://github.com/closedloop-ai/closedloop-ai/pull/42#discussion_r2001",
     commit_id: "abc123",
     pull_request_review_id: 3001,
     review_thread_node_id: "thread-node-2001",
@@ -743,7 +807,7 @@ function providerReview() {
     body: "Approved",
     submitted_at: now.toISOString(),
     html_url:
-      "https://github.com/closedloop-ai/example-repo/pull/42#pullrequestreview-3001",
+      "https://github.com/closedloop-ai/closedloop-ai/pull/42#pullrequestreview-3001",
   };
 }
 

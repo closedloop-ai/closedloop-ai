@@ -4,10 +4,12 @@ import { meta as agentsMeta } from "@/app/p/agents/prototype.meta";
 import { meta as branchTraceUnavailableMeta } from "@/app/p/branch-trace-unavailable/prototype.meta";
 import { meta as branchesMeta } from "@/app/p/branches/prototype.meta";
 import { meta as convertInstallFlowMeta } from "@/app/p/convert-install-flow/prototype.meta";
+import { meta as dataControlsMeta } from "@/app/p/data-controls/prototype.meta";
+import { meta as dataControlsAddDirectoryMeta } from "@/app/p/data-controls-add-directory/prototype.meta";
+import { meta as dataControlsDevicePolicyWebMeta } from "@/app/p/data-controls-device-policy-web/prototype.meta";
+import { meta as dataControlsOnboardingDirectoriesMeta } from "@/app/p/data-controls-onboarding-directories/prototype.meta";
+import { meta as dataControlsUnsetPolicyMeta } from "@/app/p/data-controls-unset-policy/prototype.meta";
 import { meta as desktopDataSyncLevelMeta } from "@/app/p/desktop-data-sync-level/prototype.meta";
-import { meta as desktopImportSplashMeta } from "@/app/p/desktop-import-splash/prototype.meta";
-import { meta as desktopOnboardingMeta } from "@/app/p/desktop-onboarding/prototype.meta";
-import { meta as desktopOnboardingLandingMeta } from "@/app/p/desktop-onboarding-landing/prototype.meta";
 import { meta as desktopStartupReadinessMeta } from "@/app/p/desktop-startup-readiness/prototype.meta";
 import { meta as desktopSyncSettingsMeta } from "@/app/p/desktop-sync-settings/prototype.meta";
 import { meta as desktopUiKitMeta } from "@/app/p/desktop-ui-kit/prototype.meta";
@@ -20,20 +22,24 @@ import { meta as myMachinesMeta } from "@/app/p/my-machines/prototype.meta";
 import { meta as packsMeta } from "@/app/p/packs/prototype.meta";
 import { meta as packsPageMeta } from "@/app/p/packs-page/prototype.meta";
 import { meta as phaseBreakdownMeta } from "@/app/p/phase-breakdown/prototype.meta";
-import { meta as postAuthDesktopOnboardingMeta } from "@/app/p/post-auth-desktop-onboarding/prototype.meta";
-import { meta as preAuthDesktopOnboardingMeta } from "@/app/p/pre-auth-desktop-onboarding/prototype.meta";
+import { meta as pointerHoverContractMeta } from "@/app/p/pointer-hover-contract/prototype.meta";
 import { meta as prototypesMeta } from "@/app/p/prototypes/prototype.meta";
 import { meta as searchResultsMeta } from "@/app/p/search-results/prototype.meta";
 import { meta as sessionBranchCommentsMeta } from "@/app/p/session-branch-comments/prototype.meta";
 import { meta as sessionSubagentTranscriptsMeta } from "@/app/p/session-subagent-transcripts/prototype.meta";
+import { meta as sessionTraceTabMeta } from "@/app/p/session-trace-tab/prototype.meta";
 import { meta as sessionsMeta } from "@/app/p/sessions/prototype.meta";
 import { meta as sessionsActiveFiltersMeta } from "@/app/p/sessions-active-filters/prototype.meta";
+import { meta as sessionsCostBreakdownMeta } from "@/app/p/sessions-cost-breakdown/prototype.meta";
 import { meta as signInMeta } from "@/app/p/sign-in/prototype.meta";
 import { meta as tokenopsWasteMeta } from "@/app/p/tokenops-waste/prototype.meta";
 import { meta as userProfilePageMeta } from "@/app/p/user-profile-page/prototype.meta";
+import { meta as web404Meta } from "@/app/p/web-404/prototype.meta";
+import { meta as webContactFormMeta } from "@/app/p/web-contact-form/prototype.meta";
 import { meta as webMasterMeta } from "@/app/p/web-master/prototype.meta";
 import { meta as webOnboardingFlowMeta } from "@/app/p/web-onboarding-flow/prototype.meta";
 import { meta as webUiKitMeta } from "@/app/p/web-ui-kit/prototype.meta";
+import { meta as webUtilityRoutesMeta } from "@/app/p/web-utility-routes/prototype.meta";
 import type { PrototypeMeta } from "@/lib/registry";
 
 export const prototypes: readonly PrototypeMeta[] = [
@@ -41,10 +47,12 @@ export const prototypes: readonly PrototypeMeta[] = [
   branchTraceUnavailableMeta,
   branchesMeta,
   convertInstallFlowMeta,
+  dataControlsMeta,
+  dataControlsAddDirectoryMeta,
+  dataControlsDevicePolicyWebMeta,
+  dataControlsOnboardingDirectoriesMeta,
+  dataControlsUnsetPolicyMeta,
   desktopDataSyncLevelMeta,
-  desktopImportSplashMeta,
-  desktopOnboardingMeta,
-  desktopOnboardingLandingMeta,
   desktopStartupReadinessMeta,
   desktopSyncSettingsMeta,
   desktopUiKitMeta,
@@ -57,18 +65,22 @@ export const prototypes: readonly PrototypeMeta[] = [
   packsMeta,
   packsPageMeta,
   phaseBreakdownMeta,
-  postAuthDesktopOnboardingMeta,
-  preAuthDesktopOnboardingMeta,
+  pointerHoverContractMeta,
   prototypesMeta,
   searchResultsMeta,
   sessionBranchCommentsMeta,
   sessionSubagentTranscriptsMeta,
+  sessionTraceTabMeta,
   sessionsMeta,
   sessionsActiveFiltersMeta,
+  sessionsCostBreakdownMeta,
   signInMeta,
   tokenopsWasteMeta,
   userProfilePageMeta,
+  web404Meta,
+  webContactFormMeta,
   webMasterMeta,
   webOnboardingFlowMeta,
   webUiKitMeta,
+  webUtilityRoutesMeta,
 ];

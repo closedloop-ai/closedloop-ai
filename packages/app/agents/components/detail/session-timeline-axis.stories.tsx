@@ -28,9 +28,9 @@ function TimelineAxisFrame({ children }: Readonly<{ children: ReactNode }>) {
 }
 
 const meta = {
-  title: "App Core/Agents/Session Timeline Axis",
+  title: "Composites v1.0/Agents/Detail/Session Timeline Axis",
   component: SessionTimelineAxis,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   decorators: [
     (Story) => (

@@ -1,4 +1,3 @@
-import type { BranchRow } from "@repo/api/src/types/branch";
 import {
   type ArtifactStatus,
   DOCUMENT_LIST_DEFAULT_RECENCY_DAYS,
@@ -10,6 +9,7 @@ import {
   type FindDocumentsOptions,
   IssueStatus,
 } from "@repo/api/src/types/document";
+import { PRIORITY_UNSET_VALUE } from "@repo/api/src/types/search-query";
 import type { DocumentRowItem } from "@repo/app/documents/components/table/document-row";
 import { isDocumentRowItem } from "@repo/app/documents/components/table/row-type-registry";
 import type { DocumentRowData } from "@repo/app/documents/lib/artifact-row-adapter";
@@ -81,14 +81,15 @@ export const DISPLAY_GROUPS: {
  *
  * The two views want different windows and that is deliberate:
  * - the card board renders one card per row, so it takes one screen-sized page;
- * - the list view merges the documents stream with branch/session rows in the
+ * - the list view merges the documents stream with the tree rows in the
  *   browser, so it needs the widest window the endpoint will serve
  *   ({@link DOCUMENT_LIST_MAX_LIMIT}) and reports the residue honestly through
  *   the envelope's `hasMore`.
  *
  * `offset` is clamped to [0, {@link DOCUMENT_LIST_MAX_OFFSET}] and `limit` to
- * [1, {@link DOCUMENT_LIST_MAX_LIMIT}] — the same window the route validator
- * accepts. `Math.min` alone would let a negative page produce a window the
+ * [1, {@link DOCUMENT_LIST_MAX_LIMIT}] — the window every deployed route
+ * validator accepts (one older than ISS-11161 rejects a deeper offset).
+ * `Math.min` alone would let a negative page produce a window the
  * server rejects; capping the offset ceiling keeps a card page past the API's
  * offset limit from being sent as a 400-triggering request (the card bounds
  * hook stops advertising those pages, but this floor makes the contract
@@ -123,29 +124,6 @@ export function buildArtifactListParams(
 }
 
 /**
- * My Tasks trees need every project where the user has assigned artifacts or
- * wrote branches. Branch project IDs come from the server-scoped Branches read,
- * so the page avoids an unbounded all-project tree fanout.
- */
-export function collectMyTasksTreeProjectIds(
-  assignedArtifacts: readonly Pick<DocumentWithProject, "projectId">[],
-  contributedBranches: readonly Pick<BranchRow, "projectId">[]
-): string[] {
-  const ids = new Set<string>();
-  for (const artifact of assignedArtifacts) {
-    if (artifact.projectId) {
-      ids.add(artifact.projectId);
-    }
-  }
-  for (const branch of contributedBranches) {
-    if (branch.projectId) {
-      ids.add(branch.projectId);
-    }
-  }
-  return Array.from(ids);
-}
-
-/**
  * Apply all selected filters client-side.
  */
 export function applyClientFilters(
@@ -165,9 +143,11 @@ export function applyClientFilters(
     ) {
       return false;
     }
+    // ISS-9665: an artifact with NO priority is matched explicitly against the
+    // unset facet value rather than being dropped by every priority filter.
     if (
       filters.priorities.length > 0 &&
-      !filters.priorities.includes(artifact.priority)
+      !filters.priorities.includes(artifact.priority ?? PRIORITY_UNSET_VALUE)
     ) {
       return false;
     }

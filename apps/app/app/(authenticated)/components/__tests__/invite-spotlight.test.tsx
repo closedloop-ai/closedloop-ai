@@ -5,8 +5,6 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  enabledFlags: new Set<string>(),
-  flagReady: true,
   status: null as unknown,
   currentUser: { id: "user-1" } as { id: string } | undefined,
   orgId: "org_acme" as string | undefined,
@@ -19,12 +17,6 @@ vi.mock("@repo/auth/client", () => ({
   }),
 }));
 
-vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
-  useFeatureFlagGate: (key: string) => ({
-    enabled: mocks.enabledFlags.has(key),
-    isReady: mocks.flagReady,
-  }),
-}));
 vi.mock("@repo/app/onboarding/hooks/use-onboarding", () => ({
   useOnboardingStatus: () => ({ data: mocks.status }),
 }));
@@ -36,9 +28,9 @@ vi.mock("@repo/app/organizations/components/invite-team-dialog", () => ({
     open ? <div data-testid="invite-dialog" /> : null,
 }));
 
+import { WebFeatureFlagProvider } from "@/__tests__/helpers/web-feature-flag-provider";
 import { InviteSpotlightHost } from "../invite-spotlight-host";
 
-const SPOTLIGHT_FLAG = "invite-spotlight";
 const SPOTLIGHT_LABEL = "Invite your team";
 const MAYBE_LATER = /maybe later/i;
 const INVITE_BUTTON = /^invite$/i;
@@ -92,9 +84,6 @@ function setStatus(
 
 describe("InviteSpotlightHost", () => {
   beforeEach(() => {
-    mocks.enabledFlags.clear();
-    mocks.enabledFlags.add(SPOTLIGHT_FLAG);
-    mocks.flagReady = true;
     mocks.currentUser = { id: "user-1" };
     mocks.orgId = "org_acme";
     mocks.resizeObserved = [];
@@ -116,23 +105,15 @@ describe("InviteSpotlightHost", () => {
   });
 
   it("nudges toward the invite row when there is something to nudge toward", () => {
-    render(<InviteSpotlightHost />);
+    render(<InviteSpotlightHost />, { wrapper: WebFeatureFlagProvider });
 
     expect(screen.getByLabelText(SPOTLIGHT_LABEL)).toBeTruthy();
-  });
-
-  it("stays closed while the flag is off", () => {
-    mocks.enabledFlags.clear();
-
-    render(<InviteSpotlightHost />);
-
-    expect(screen.queryByLabelText(SPOTLIGHT_LABEL)).toBeNull();
   });
 
   it("does not fire once the user has already invited someone", () => {
     setStatus({ inviteCompleted: true });
 
-    render(<InviteSpotlightHost />);
+    render(<InviteSpotlightHost />, { wrapper: WebFeatureFlagProvider });
 
     expect(screen.queryByLabelText(SPOTLIGHT_LABEL)).toBeNull();
   });
@@ -140,21 +121,26 @@ describe("InviteSpotlightHost", () => {
   it("does not fire when the checklist that carries its anchor is dismissed", () => {
     setStatus({ checklistDismissed: true });
 
-    render(<InviteSpotlightHost />);
+    render(<InviteSpotlightHost />, { wrapper: WebFeatureFlagProvider });
 
     expect(screen.queryByLabelText(SPOTLIGHT_LABEL)).toBeNull();
   });
 
+  // Also the first-paint guard now that the flag's isReady deadline is gone
+  // (ISS-7089 F2): before the checklist mounts there is no anchor, so neither
+  // the card nor the scrim can flash.
   it("renders nothing when the anchor is absent instead of pinning a loose card", () => {
     document.body.replaceChildren();
 
-    render(<InviteSpotlightHost />);
+    render(<InviteSpotlightHost />, { wrapper: WebFeatureFlagProvider });
 
     expect(screen.queryByLabelText(SPOTLIGHT_LABEL)).toBeNull();
   });
 
   it("suppresses per user on Maybe later, and stays suppressed on remount", () => {
-    const { unmount } = render(<InviteSpotlightHost />);
+    const { unmount } = render(<InviteSpotlightHost />, {
+      wrapper: WebFeatureFlagProvider,
+    });
 
     fireEvent.click(screen.getByRole("button", { name: MAYBE_LATER }));
     expect(screen.queryByLabelText(SPOTLIGHT_LABEL)).toBeNull();
@@ -163,7 +149,7 @@ describe("InviteSpotlightHost", () => {
     unmount();
     document.body.replaceChildren();
     mountAnchor();
-    render(<InviteSpotlightHost />);
+    render(<InviteSpotlightHost />, { wrapper: WebFeatureFlagProvider });
     expect(screen.queryByLabelText(SPOTLIGHT_LABEL)).toBeNull();
   });
 
@@ -171,7 +157,7 @@ describe("InviteSpotlightHost", () => {
     localStorage.setItem(SUPPRESSION_KEY, new Date().toISOString());
     mocks.currentUser = { id: "user-2" };
 
-    render(<InviteSpotlightHost />);
+    render(<InviteSpotlightHost />, { wrapper: WebFeatureFlagProvider });
 
     expect(screen.getByLabelText(SPOTLIGHT_LABEL)).toBeTruthy();
   });
@@ -183,13 +169,13 @@ describe("InviteSpotlightHost", () => {
     localStorage.setItem(SUPPRESSION_KEY, new Date().toISOString());
     mocks.orgId = "org_other";
 
-    render(<InviteSpotlightHost />);
+    render(<InviteSpotlightHost />, { wrapper: WebFeatureFlagProvider });
 
     expect(screen.getByLabelText(SPOTLIGHT_LABEL)).toBeTruthy();
   });
 
   it("opens the invite dialog and retires the nudge behind it", () => {
-    render(<InviteSpotlightHost />);
+    render(<InviteSpotlightHost />, { wrapper: WebFeatureFlagProvider });
 
     fireEvent.click(screen.getByRole("button", { name: INVITE_BUTTON }));
 
@@ -199,7 +185,7 @@ describe("InviteSpotlightHost", () => {
   });
 
   it("dismisses on Escape", () => {
-    render(<InviteSpotlightHost />);
+    render(<InviteSpotlightHost />, { wrapper: WebFeatureFlagProvider });
 
     fireEvent.keyDown(window, { key: "Escape" });
 
@@ -224,7 +210,7 @@ describe("InviteSpotlightHost", () => {
     }
     vi.stubGlobal("ResizeObserver", StubResizeObserver);
 
-    render(<InviteSpotlightHost />);
+    render(<InviteSpotlightHost />, { wrapper: WebFeatureFlagProvider });
 
     const anchor = document.querySelector(ANCHOR_SELECTOR);
     // The LIST is the element whose height an inserted sibling changes. The row
@@ -239,22 +225,18 @@ describe("InviteSpotlightHost", () => {
   });
 
   it("leaves the page clickable — the dim never swallows a click", () => {
-    const { container } = render(<InviteSpotlightHost />);
+    const { container } = render(<InviteSpotlightHost />, {
+      wrapper: WebFeatureFlagProvider,
+    });
 
     const dim = container.querySelector("[aria-hidden='true']");
     expect(dim?.className).toContain("pointer-events-none");
   });
 
-  it("does not pop in before the flag resolves", () => {
-    mocks.flagReady = false;
-
-    render(<InviteSpotlightHost />);
-
-    expect(screen.queryByLabelText(SPOTLIGHT_LABEL)).toBeNull();
-  });
-
   it("dims with a fixed scrim, not one that inverts with the theme", () => {
-    const { container } = render(<InviteSpotlightHost />);
+    const { container } = render(<InviteSpotlightHost />, {
+      wrapper: WebFeatureFlagProvider,
+    });
 
     // `var(--foreground)` is near-black in light mode and near-WHITE in dark, so
     // the original dim washed the whole app out on a dark OS.
@@ -274,7 +256,7 @@ describe("InviteSpotlightHost", () => {
         ({ top: 700, left: 40, width: 300, height: 40 }) as DOMRect;
     }
 
-    render(<InviteSpotlightHost />);
+    render(<InviteSpotlightHost />, { wrapper: WebFeatureFlagProvider });
 
     const card = screen.getByLabelText(SPOTLIGHT_LABEL) as HTMLElement;
     const top = Number.parseFloat(card.style.top);

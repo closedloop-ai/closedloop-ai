@@ -2,7 +2,7 @@ import { AgentComponentKind } from "@repo/api/src/types/agent-component";
 import type { ConvertInstallOutcome } from "@repo/api/src/types/convert-install";
 import { ConvertInstallState } from "@repo/api/src/types/convert-install";
 import { ConversionSupport } from "@repo/api/src/types/harness-conversion";
-import { HarnessName } from "@repo/crewd/model";
+import { HarnessName } from "@repo/api/src/types/harness-name";
 import type { Meta, StoryObj } from "@storybook/react";
 import {
   ConvertInstallSheet,
@@ -61,8 +61,9 @@ const resolveInstalled = (): Promise<ConvertInstallOutcome> =>
   Promise.resolve(installedOutcome);
 
 const meta = {
-  title: "App Core/Packs/Convert Install Sheet",
+  title: "Composites v1.0/Packs/Convert Install Sheet",
   component: ConvertInstallSheet,
+  tags: ["deprecated", "autodocs"],
   parameters: {
     layout: "fullscreen",
   },

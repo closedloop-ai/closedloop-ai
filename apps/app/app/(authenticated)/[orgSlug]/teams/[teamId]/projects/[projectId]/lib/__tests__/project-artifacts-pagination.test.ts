@@ -1,16 +1,19 @@
 import type { ProjectTreeResponse } from "@repo/api/src/types/project-tree";
 import {
   PROJECT_TREE_MAX_ROOT_LIMIT,
+  ProjectTreeCategory,
   TreeTruncationReason,
 } from "@repo/api/src/types/project-tree";
 import type { FilterCategory } from "@repo/app/documents/components/table/filter-category";
 import { describe, expect, it } from "vitest";
 import {
+  buildProjectTreeCategoryReadOptions,
   buildProjectTreeReadOptions,
   isProjectArtifactTreeLoading,
   resolveProjectArtifactsEmptyTruncationNote,
   resolveProjectArtifactsPageNoun,
   resolveProjectArtifactsTruncationNote,
+  toProjectTreeCategory,
 } from "../project-artifacts-pagination";
 
 const PROJECT_ID = "11111111-1111-7111-8111-111111111111";
@@ -69,26 +72,36 @@ describe("resolveProjectArtifactsTruncationNote (ISS-5307)", () => {
   it("returns null for a complete read so no caveat is shown", () => {
     // An untruncated response omits `truncation` entirely — that absence is
     // the contract's claim of completeness, not an unknown.
-    expect(resolveProjectArtifactsTruncationNote({})).toBeNull();
-    expect(resolveProjectArtifactsTruncationNote(undefined)).toBeNull();
-    expect(resolveProjectArtifactsTruncationNote(null)).toBeNull();
+    expect(
+      resolveProjectArtifactsTruncationNote({}, "top-level artifacts")
+    ).toBeNull();
+    expect(
+      resolveProjectArtifactsTruncationNote(undefined, "top-level artifacts")
+    ).toBeNull();
+    expect(
+      resolveProjectArtifactsTruncationNote(null, "top-level artifacts")
+    ).toBeNull();
   });
 
   it("returns null when a truncation carries no reasons", () => {
     expect(
-      resolveProjectArtifactsTruncationNote({
-        truncation: {
-          anchorsIncluded: 10,
-          anchorsMatchedAtLeast: 10,
-          reasons: [],
+      resolveProjectArtifactsTruncationNote(
+        {
+          truncation: {
+            anchorsIncluded: 10,
+            anchorsMatchedAtLeast: 10,
+            reasons: [],
+          },
         },
-      })
+        "top-level artifacts"
+      )
     ).toBeNull();
   });
 
   it("says what the count was counted from when the server bounded the read", () => {
     const note = resolveProjectArtifactsTruncationNote(
-      truncatedTree(500, 1284)
+      truncatedTree(500, 1284),
+      "top-level artifacts"
     );
 
     expect(note).toBe(
@@ -97,7 +110,10 @@ describe("resolveProjectArtifactsTruncationNote (ISS-5307)", () => {
   });
 
   it("states ONE number and never asserts a project size", () => {
-    const note = resolveProjectArtifactsTruncationNote(truncatedTree(500, 900));
+    const note = resolveProjectArtifactsTruncationNote(
+      truncatedTree(500, 900),
+      "top-level artifacts"
+    );
 
     // The readout above already carries three numbers; a caveat that adds two
     // more stops being read (ISS-4682). And `anchorsMatchedAtLeast` is a FLOOR
@@ -170,7 +186,8 @@ describe("isProjectArtifactTreeLoading — the flag gate is part of loading", ()
 describe("resolveProjectArtifactsEmptyTruncationNote — the caveat survives an empty tab", () => {
   it("explains the absence rather than a count that is not on screen", () => {
     const note = resolveProjectArtifactsEmptyTruncationNote(
-      truncatedTree(500, 900)
+      truncatedTree(500, 900),
+      "top-level artifacts"
     );
 
     expect(note).toContain("No matches in the first 500");
@@ -184,13 +201,18 @@ describe("resolveProjectArtifactsEmptyTruncationNote — the caveat survives an 
 
     // Two wordings, one source: they must never disagree about how much was
     // read.
-    expect(resolveProjectArtifactsEmptyTruncationNote(tree)).toContain("500");
-    expect(resolveProjectArtifactsTruncationNote(tree)).toContain("500");
+    expect(
+      resolveProjectArtifactsEmptyTruncationNote(tree, "top-level artifacts")
+    ).toContain("500");
+    expect(
+      resolveProjectArtifactsTruncationNote(tree, "top-level artifacts")
+    ).toContain("500");
   });
 
   it("never asserts a project size it did not measure", () => {
     const note = resolveProjectArtifactsEmptyTruncationNote(
-      truncatedTree(500, 900)
+      truncatedTree(500, 900),
+      "top-level artifacts"
     );
 
     expect(note).not.toMatch(MATCHED_TOTAL_PATTERN);
@@ -199,7 +221,99 @@ describe("resolveProjectArtifactsEmptyTruncationNote — the caveat survives an 
   it("says nothing on a complete read", () => {
     // An empty tab on a COMPLETE read really does mean "nothing matches", and a
     // caveat there would train people to ignore it.
-    expect(resolveProjectArtifactsEmptyTruncationNote({})).toBeNull();
-    expect(resolveProjectArtifactsEmptyTruncationNote(null)).toBeNull();
+    expect(resolveProjectArtifactsEmptyTruncationNote({}, "PRDs")).toBeNull();
+    expect(resolveProjectArtifactsEmptyTruncationNote(null, "PRDs")).toBeNull();
+  });
+});
+
+describe("toProjectTreeCategory — each filtered tab names its server population", () => {
+  it("maps every filtered tab to the category the server filters by", () => {
+    expect(toProjectTreeCategory("documents")).toBe(ProjectTreeCategory.Prds);
+    expect(toProjectTreeCategory("features")).toBe(
+      ProjectTreeCategory.Features
+    );
+    expect(toProjectTreeCategory("plans")).toBe(ProjectTreeCategory.Plans);
+    expect(toProjectTreeCategory("branches")).toBe(
+      ProjectTreeCategory.Branches
+    );
+  });
+
+  it("maps the All tab to null — that tab renders the whole tree", () => {
+    expect(toProjectTreeCategory("all")).toBeNull();
+  });
+});
+
+/**
+ * The category read is the fix for filter-after-paginate: without it the
+ * unfiltered read's `?limit=` counts MIXED roots, so a filtered tab
+ * under-fills its pages and misses every match past the bound.
+ */
+describe("buildProjectTreeCategoryReadOptions — filter before bound", () => {
+  it("sends category AND limit together so the server bounds the filtered population", () => {
+    const options = buildProjectTreeCategoryReadOptions(
+      true,
+      true,
+      PROJECT_ID,
+      ProjectTreeCategory.Prds
+    );
+
+    expect(options?.enabled).toBe(true);
+    expect(options?.filters).toEqual({
+      category: ProjectTreeCategory.Prds,
+      limit: PROJECT_TREE_MAX_ROOT_LIMIT,
+    });
+  });
+
+  it("stays disabled on the All tab, whose corpus is the base read", () => {
+    const options = buildProjectTreeCategoryReadOptions(
+      true,
+      true,
+      PROJECT_ID,
+      null
+    );
+
+    expect(options?.enabled).toBe(false);
+    expect(options).not.toHaveProperty("filters");
+  });
+
+  it("stays disabled while the flag is off — the unbounded base read already holds every row", () => {
+    const options = buildProjectTreeCategoryReadOptions(
+      false,
+      true,
+      PROJECT_ID,
+      ProjectTreeCategory.Features
+    );
+
+    expect(options?.enabled).toBe(false);
+    expect(options).not.toHaveProperty("filters");
+  });
+
+  it("holds the read until the flag has resolved", () => {
+    const options = buildProjectTreeCategoryReadOptions(
+      true,
+      false,
+      PROJECT_ID,
+      ProjectTreeCategory.Branches
+    );
+
+    expect(options?.enabled).toBe(false);
+  });
+});
+
+describe("truncation notes speak in the active tab's unit", () => {
+  it("describes a category-scoped floor in the category's own noun", () => {
+    // A PRDs-tab read bounds PRDs, not mixed top-level artifacts — wording it
+    // in the project-wide unit would misstate what was counted.
+    expect(
+      resolveProjectArtifactsTruncationNote(truncatedTree(500, 900), "PRDs")
+    ).toBe("Counted from the first 500 PRDs in this project.");
+    expect(
+      resolveProjectArtifactsEmptyTruncationNote(
+        truncatedTree(500, 900),
+        "issues"
+      )
+    ).toBe(
+      "No matches in the first 500 issues in this project. The rest were not loaded."
+    );
   });
 });

@@ -12,8 +12,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { afterAll, describe, test } from "vitest";
 import {
   buildMigrationEntries,
   generateMigrationsManifest,
@@ -135,7 +135,7 @@ function runEntrypoint(): {
   };
 }
 
-after(() => {
+afterAll(() => {
   for (const root of tempRoots) {
     rmSync(root, { recursive: true, force: true });
   }

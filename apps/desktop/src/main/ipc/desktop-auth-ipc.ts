@@ -1,9 +1,19 @@
-import { DesktopSignInProvider } from "@repo/api/src/types/desktop-authorize-url";
+import {
+  DESKTOP_EMAIL_HINT_MAX_LENGTH,
+  DesktopSignInFraming,
+  DesktopSignInMethod,
+} from "@repo/api/src/types/desktop-authorize-url";
+import { desktopBootstrapOrganizationRequestSchema } from "@repo/api/src/types/desktop-bootstrap";
 import { z } from "zod";
 import type {
   DesktopAuthState,
+  DesktopBootstrapOrganizationInput,
+  DesktopBootstrapOrganizationResult,
   DesktopBrowserSignInResult,
-} from "../session/desktop-session-manager.js";
+} from "../../shared/contracts.js";
+import { DesktopAuthIpcChannel } from "../../shared/desktop-auth-ipc-channel.js";
+import { DesktopRendererEventChannel } from "../../shared/desktop-renderer-event-channel.js";
+import type { DesktopSignInConfirmation } from "../session/desktop-sign-in-confirmation.js";
 
 /**
  * IPC surface for first-party desktop auth (FEA-1514 / FEA-2219). The renderer
@@ -21,17 +31,8 @@ import type {
  */
 
 /** Push channel: main → renderer whenever the auth state machine transitions. */
-export const DESKTOP_AUTH_STATE_CHANGED_CHANNEL = "desktop:auth-state-changed";
-
-export const DesktopAuthIpcChannel = {
-  GetState: "desktop:get-desktop-auth-state",
-  BeginSignIn: "desktop:begin-desktop-sign-in",
-  CancelSignIn: "desktop:cancel-desktop-sign-in",
-  SignOut: "desktop:sign-out-desktop",
-} as const;
-
-export type DesktopAuthIpcChannel =
-  (typeof DesktopAuthIpcChannel)[keyof typeof DesktopAuthIpcChannel];
+export const DESKTOP_AUTH_STATE_CHANGED_CHANNEL =
+  DesktopRendererEventChannel.AuthStateChanged;
 
 export const DESKTOP_AUTH_IPC_CHANNELS = Object.values(DesktopAuthIpcChannel);
 
@@ -42,34 +43,36 @@ export const DESKTOP_AUTH_IPC_CHANNELS = Object.values(DesktopAuthIpcChannel);
 export type DesktopAuthManagerPort = {
   getState: () => DesktopAuthState;
   beginBrowserSignIn: (
-    provider?: DesktopSignInProvider
+    method?: DesktopSignInMethod,
+    emailHint?: string,
+    framing?: DesktopSignInFraming,
+    confirmation?: DesktopSignInConfirmation
   ) => Promise<DesktopBrowserSignInResult>;
   cancelSignIn: () => void;
+  confirmPendingSignIn: () => void;
+  createBootstrapOrganization?: (
+    input: DesktopBootstrapOrganizationInput
+  ) => Promise<DesktopBootstrapOrganizationResult>;
   signOut: () => Promise<void>;
 };
 
 export type DesktopAuthIpcDeps = {
   /** Reject IPC events whose sender is not the trusted renderer window. */
   isTrustedSender: (sender: unknown) => boolean;
-  /**
-   * Version-skew compatibility shim (FEA-4133 / FEA-2687). First-party desktop
-   * auth graduated to always-on, so this repo's own wiring no longer passes a
-   * gate. The field is kept as an **optional** backward-compatibility alias so a
-   * version-skewed caller still on the pre-graduation wiring — an older bundled
-   * `app.ts` that hands us `isFirstPartyAuthEnabled` — degrades safely instead
-   * of silently ignoring a gate it believes is still enforced:
-   *
-   * - absent (the new, graduated wiring) → always-on; sign-in delegates.
-   * - present and returns `true` → always-on; sign-in delegates.
-   * - present and returns `false` → the old off-behavior is honored: report the
-   *   capability as `unavailable` rather than starting the flow, exactly as the
-   *   retired gate did.
-   *
-   * Per the repo cross-repo/compat rules this alias must not be removed without
-   * explicit human approval, even though nothing in-repo sets it anymore.
-   */
-  isFirstPartyAuthEnabled?: () => boolean;
   manager: DesktopAuthManagerPort;
+  /** Refuses a new auth run while durable sign-out cleanup still owns state. */
+  isSignInAllowed?: () => boolean;
+  /** Application-owned cleanup layered after synchronous auth invalidation. */
+  signOut?: () => Promise<void>;
+  /**
+   * ISS-10412: show and focus the window that started the sign-in, once the
+   * browser leg has authorized.
+   *
+   * A port rather than a direct window reference so these handlers stay
+   * loadable without Electron. Optional because a caller that owns no window
+   * (the wiring tests) has nothing to bring forward.
+   */
+  bringWindowToFront?: () => void;
 };
 
 type IpcMainLike = {
@@ -109,25 +112,52 @@ export function registerDesktopAuthIpcHandlers(
 
   ipcMain.handle(
     DesktopAuthIpcChannel.BeginSignIn,
-    (event, provider: unknown): Promise<DesktopBrowserSignInResult> => {
+    (
+      event,
+      method: unknown,
+      emailHint: unknown,
+      framing: unknown,
+      options: unknown
+    ): Promise<DesktopBrowserSignInResult> => {
       assertTrustedSender(deps, event);
-      // Compat: honor the retired gate only when a version-skewed caller still
-      // supplies it and it is off. Absent (graduated wiring) → always-on.
-      if (deps.isFirstPartyAuthEnabled?.() === false) {
-        return Promise.resolve<DesktopBrowserSignInResult>({
-          ok: false,
-          reason: "unavailable",
-        });
+      if (deps.isSignInAllowed?.() === false) {
+        return Promise.resolve({ ok: false, reason: "cancelled" });
       }
       // The renderer is trusted (assertTrustedSender above) but the payload is
       // still parsed rather than cast: this is a process boundary, and a
-      // version-skewed renderer may send nothing, or a provider this build does
-      // not know. Both degrade to "no hint" — the web page then shows its normal
-      // chooser, which is exactly the pre-ISS-5112 behavior.
-      const parsed = desktopAuthProviderArgSchema.safeParse(provider);
-      return deps.manager.beginBrowserSignIn(
-        parsed.success ? parsed.data : undefined
-      );
+      // version-skewed renderer may send nothing, or a method this build does
+      // not know. Both degrade to "no hint" — the web page then runs its GitHub
+      // default, which is exactly the pre-ISS-5112 behavior. The M5 email hint
+      // degrades the same way: an unparseable value is dropped, never an error.
+      const parsed = desktopAuthMethodArgSchema.safeParse(method);
+      const parsedHint = desktopAuthEmailHintArgSchema.safeParse(emailHint);
+      const parsedFraming = desktopAuthFramingArgSchema.safeParse(framing);
+      const parsedOptions = desktopSignInOptionsArgSchema.safeParse(options);
+      // ISS-11345: while the account awaits confirmation the user is still in
+      // the browser, so the window has to come forward THEN, not on `ok`.
+      const confirmation: DesktopSignInConfirmation | undefined =
+        parsedOptions.success && parsedOptions.data?.confirmAccount
+          ? { onAwaitingConfirmation: deps.bringWindowToFront }
+          : undefined;
+      return deps.manager
+        .beginBrowserSignIn(
+          parsed.success ? parsed.data : undefined,
+          parsedHint.success ? parsedHint.data : undefined,
+          parsedFraming.success ? parsedFraming.data : undefined,
+          confirmation
+        )
+        .then((result) => {
+          // ISS-10412: this is the one place that knows the authorization
+          // landed AND runs in the process that owns the window, so it is where
+          // the handback the browser page promises actually happens. Chained
+          // rather than awaited in an `async` handler so `assertTrustedSender`
+          // above keeps throwing SYNCHRONOUSLY — an untrusted sender must be
+          // refused, not handed a rejected promise.
+          if (result.ok) {
+            deps.bringWindowToFront?.();
+          }
+          return result;
+        });
     }
   );
 
@@ -138,17 +168,68 @@ export function registerDesktopAuthIpcHandlers(
 
   ipcMain.handle(DesktopAuthIpcChannel.SignOut, (event): Promise<void> => {
     assertTrustedSender(deps, event);
-    return deps.manager.signOut();
+    return deps.signOut?.() ?? deps.manager.signOut();
   });
+
+  ipcMain.handle(DesktopAuthIpcChannel.ConfirmSignIn, (event): void => {
+    assertTrustedSender(deps, event);
+    deps.manager.confirmPendingSignIn();
+  });
+
+  ipcMain.handle(
+    DesktopAuthIpcChannel.CreateBootstrapOrganization,
+    (event, input: unknown): Promise<DesktopBootstrapOrganizationResult> => {
+      assertTrustedSender(deps, event);
+      const parsed = desktopBootstrapOrganizationSchema.safeParse(input);
+      if (!parsed.success) {
+        return Promise.resolve({ ok: false, error: "invalid_request" });
+      }
+      return (
+        deps.manager.createBootstrapOrganization?.(parsed.data) ??
+        Promise.resolve({ ok: false, error: "bootstrap_unavailable" })
+      );
+    }
+  );
 }
 
+const desktopBootstrapOrganizationSchema =
+  desktopBootstrapOrganizationRequestSchema;
+
 /**
- * ISS-5112 — the optional social-provider hint carried on `BeginSignIn`.
+ * ISS-5112 / ISS-5954 — the optional sign-in-method hint carried on
+ * `BeginSignIn`.
  *
  * `.optional()` is the load-bearing part: an older renderer invokes this channel
  * with no argument at all, and that MUST stay valid rather than becoming a
  * rejected payload. An unrecognized string fails the parse and the caller
- * substitutes `undefined`, so a newer renderer naming a provider this build has
- * never heard of degrades to the chooser instead of failing the sign-in.
+ * substitutes `undefined`, so a newer renderer naming a method this build has
+ * never heard of degrades to the GitHub default instead of failing the sign-in.
  */
-const desktopAuthProviderArgSchema = z.enum(DesktopSignInProvider).optional();
+const desktopAuthMethodArgSchema = z.enum(DesktopSignInMethod).optional();
+
+/**
+ * ISS-5954 M5 — the optional typed-address hint. Bounded by the shared
+ * {@link DESKTOP_EMAIL_HINT_MAX_LENGTH} ceiling — one number, not a second
+ * hand-picked one. The plausibility narrowing and base64url encoding live in
+ * the shared contract's `encodeDesktopEmailHint`, which the URL builder
+ * applies; a failed parse here degrades to "no hint", never a failed sign-in.
+ */
+const desktopAuthEmailHintArgSchema = z
+  .string()
+  .max(DESKTOP_EMAIL_HINT_MAX_LENGTH)
+  .optional();
+
+/**
+ * ISS-5954 — the optional door framing, consumed by the web email landing
+ * branch. Same degrade posture as the method arg: absent or unrecognized
+ * becomes `undefined`, which the web page resolves to the sign-up embed.
+ */
+const desktopAuthFramingArgSchema = z.enum(DesktopSignInFraming).optional();
+
+/**
+ * ISS-11345 — the optional per-call sign-in options. Absent or malformed means
+ * no confirmation step: the same sign-in every existing caller gets.
+ */
+const desktopSignInOptionsArgSchema = z
+  .object({ confirmAccount: z.boolean().optional() })
+  .optional();

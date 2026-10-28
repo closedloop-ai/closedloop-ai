@@ -21,7 +21,7 @@
  * no wall-clock waits — per the test:node determinism rules.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   handleBuildStepExit,
   handleElectronExit,

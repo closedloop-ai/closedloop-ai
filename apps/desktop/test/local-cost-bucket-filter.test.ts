@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import {
   SESSION_UNKNOWN_COST_BUCKET_ID,
   type SessionSubstantiveCounts,
 } from "@repo/api/src/agent-session-filters";
+import { describe, test } from "vitest";
 import { matchesLocalCostBucketFilter } from "../src/main/session/local-cost-bucket-filter.js";
 
 // A session that clearly did measurable work (a turn) — the common case, so the

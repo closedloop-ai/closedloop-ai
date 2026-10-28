@@ -3,15 +3,19 @@
 import { Button } from "@repo/design-system/components/ui/button";
 import { useResponsiveModal } from "@repo/design-system/hooks/use-responsive-modal";
 import { Loader2Icon } from "lucide-react";
+import type { ReactNode } from "react";
 
 type ConfirmationDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title: string;
+  titleId?: string;
   description: string;
+  details?: ReactNode;
   confirmLabel?: string;
   cancelLabel?: string;
   onConfirm: () => Promise<void> | void;
+  confirmDisabled?: boolean;
   isPending?: boolean;
   variant?: "default" | "destructive";
 };
@@ -20,10 +24,13 @@ export function ConfirmationDialog({
   open,
   onOpenChange,
   title,
+  titleId,
   description,
+  details,
   confirmLabel = "Confirm",
   cancelLabel = "Cancel",
   onConfirm,
+  confirmDisabled = false,
   isPending = false,
   variant = "default",
 }: Readonly<ConfirmationDialogProps>) {
@@ -48,7 +55,8 @@ export function ConfirmationDialog({
     <Root onOpenChange={onOpenChange} open={open}>
       <Content>
         <Header>
-          <Title>{title}</Title>
+          <Title>{titleId ? <span id={titleId}>{title}</span> : title}</Title>
+          {details}
           <Description>{description}</Description>
         </Header>
         <Footer>
@@ -60,7 +68,7 @@ export function ConfirmationDialog({
             {cancelLabel}
           </Button>
           <Button
-            disabled={isPending}
+            disabled={isPending || confirmDisabled}
             onClick={handleConfirm}
             variant={variant}
           >

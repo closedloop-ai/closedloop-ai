@@ -1,41 +1,51 @@
 "use client";
-import { costFilterIncludesUnknown } from "@repo/api/src/agent-session-filters";
-import type { SessionLinkedArtifact } from "@repo/api/src/types/agent-session";
+import type {
+  AgentSessionListItem,
+  SessionLinkedArtifact,
+} from "@repo/api/src/types/agent-session";
+import { SESSION_LIST_MAX_OFFSET } from "@repo/api/src/types/agent-session-list-limits";
 import { AgentSessionComparisonMode } from "@repo/api/src/types/agent-session-usage-comparison";
-import { SessionsEmptyState } from "@repo/app/agents/components/sessions/sessions-empty-state";
+import { OnboardingAnalyticsPageName } from "@repo/api/src/types/onboarding-analytics";
+import {
+  resolveCappedTotalPages,
+  resolveMaxPageIndex,
+} from "@repo/api/src/utils/math";
+import { resolveSessionsNonWindowFiltersActive } from "@repo/app/agents/components/sessions/sessions-list-surface-model";
 import { SessionsRecoveryAction } from "@repo/app/agents/components/sessions/sessions-recovery-action";
-import { SessionsSummaryCards } from "@repo/app/agents/components/sessions/sessions-summary-cards";
-import { SessionsToolbar } from "@repo/app/agents/components/sessions/sessions-toolbar";
 import {
   useAgentSessions,
   useAgentSessionUsage,
 } from "@repo/app/agents/hooks/use-agent-sessions";
 import { useHasConnectedAgent } from "@repo/app/agents/hooks/use-has-connected-agent";
+import { useSessionsCustomDateWindow } from "@repo/app/agents/hooks/use-sessions-custom-date-window";
+import { useSessionsReplacePage } from "@repo/app/agents/hooks/use-sessions-list-url-writers";
+import { useSessionsOutsideWindow } from "@repo/app/agents/hooks/use-sessions-outside-window";
+import { useSessionsViewState } from "@repo/app/agents/hooks/use-sessions-view-state";
+import { resolveSessionDateWindow } from "@repo/app/agents/lib/session-custom-date-window";
 import {
-  DEFAULT_SESSIONS_DATE_RANGE,
-  useSessionsViewState,
-} from "@repo/app/agents/hooks/use-sessions-view-state";
-import {
-  parseSessionDateRangeParam,
-  SESSION_DATE_RANGE_PARAM,
-} from "@repo/app/agents/lib/session-date-range-param";
-import {
-  DEFAULT_SESSION_FACET_FILTERS,
-  hasAnyActiveSessionFacet,
   parseSessionFacetFilterParams,
   type SessionFacetFilters,
   writeSessionFacetFilterParams,
 } from "@repo/app/agents/lib/session-filter-adapter";
-import type {
-  SessionSortDir,
-  SessionSortKey,
+import {
+  clampSessionsPageIndex,
+  writeSessionsPageParam,
+} from "@repo/app/agents/lib/session-pagination";
+import type { SessionSortDir } from "@repo/app/agents/lib/session-sort-group";
+import {
+  type SessionSortKey,
+  toSessionSortRuleParams,
 } from "@repo/app/agents/lib/session-sort-group";
 import {
-  buildSessionSummaryDeltas,
-  shouldSuppressSessionComparison,
-} from "@repo/app/agents/lib/session-summary-deltas";
+  SESSIONS_SEARCH_PARAM,
+  SESSIONS_SELECTED_USER_PARAM,
+} from "@repo/app/agents/lib/session-url-scope-params";
 import { buildSessionSummaryUsageFilters } from "@repo/app/agents/lib/session-usage-filters";
-import { sessionsRangeReadout } from "@repo/app/agents/lib/sessions-range-readout";
+import {
+  resolveSessionsActiveRefetchInterval,
+  SESSIONS_SUMMARY_ACTIVE_REFETCH_INTERVAL_MS,
+} from "@repo/app/agents/lib/sessions-active-refetch";
+import { resolveSessionsListReadModel } from "@repo/app/agents/lib/sessions-list-read-state";
 import {
   getDocumentTypeRoute,
   withOrgSlug,
@@ -43,51 +53,47 @@ import {
 import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import { useDocumentTitle } from "@repo/app/shared/hooks/use-document-title";
 import { useReplaceListParams } from "@repo/app/shared/hooks/use-replace-list-params";
+import { useSharedTimezoneMode } from "@repo/app/shared/hooks/use-shared-timezone-mode";
+import { useTablePageSizeOptions } from "@repo/app/shared/hooks/use-table-page-size-options";
 import { initialFacetParamsSource } from "@repo/app/shared/lib/facet-filter-params";
 import {
-  GRID_TABLE_V2_FEATURE_FLAG_KEY,
+  GRIDVIEW_ADOPTION_FEATURE_FLAG_KEY,
+  SESSIONS_ACTIVE_ROW_REFETCH_FEATURE_FLAG_KEY,
   SESSIONS_BRANCHES_TAB_TITLES_FEATURE_FLAG_KEY,
-  SESSIONS_GRID_FOLD_LEGIBILITY_FEATURE_FLAG_KEY,
-  SESSIONS_OWNER_SCOPE_CHIP_FEATURE_FLAG_KEY,
+  SESSIONS_CUSTOM_DATE_WINDOW_FEATURE_FLAG_KEY,
   SESSIONS_PROJECT_FACET_FEATURE_FLAG_KEY,
+  SESSIONS_SUMMARY_HONEST_LOADING_FEATURE_FLAG_KEY,
 } from "@repo/app/shared/lib/feature-flags";
-import {
-  type DateRange,
-  getStableUtcDateWindowForRange,
-} from "@repo/app/shared/lib/format-utils";
+import { getStableDateWindowForRange } from "@repo/app/shared/lib/format-utils";
+import { isSummaryMetricsLoading } from "@repo/app/shared/lib/summary-metrics-loading";
+import { usePageViewedEvent } from "@repo/app/shared/observability/use-page-viewed-event";
+import { gateRestoredRead } from "@repo/app/shared/query/gate-restored-read";
 import { useQueryFreshnessGroup } from "@repo/app/shared/query/use-query-freshness-group";
-import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
-import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import type { SortDirection } from "@repo/design-system/components/ui/sortable-column-header";
-import { DEFAULT_TABLE_PAGE_SIZE } from "@repo/design-system/components/ui/table-page-size-select";
-import { TablePaginationFooter } from "@repo/design-system/components/ui/table-pagination-footer";
-import { cn } from "@repo/design-system/lib/utils";
 import { Link } from "@repo/navigation/link";
+import { usePath } from "@repo/navigation/use-path";
 import { useSearchParamsValue } from "@repo/navigation/use-search-params-value";
 import { keepPreviousData } from "@tanstack/react-query";
-import {
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Header } from "@/app/(authenticated)/components/header";
 import {
-  clampSessionsPageIndex,
+  useSessionsEffectiveDateRange,
   useSessionsHistoryScroll,
   useSessionsPageReset,
   useSessionsUrlPageIndex,
-  writeSessionsPageParam,
 } from "@/app/(authenticated)/sessions-route-state";
-import { SessionsTable } from "@/components/agent-sessions/sessions-table";
 import { useOrgSlug } from "@/hooks/use-org-slug";
-
-// FEA-4199: the pre-v2 fixed page size. Still the DEFAULT under GridTable v2 —
-// the flag adds the 50/100 choices, it does not change what an existing user
-// sees on first render.
-const PAGE_SIZE = DEFAULT_TABLE_PAGE_SIZE;
+import {
+  applyProjectFacetGate,
+  readSessionsScopeUserId,
+  resolveSessionsReadReady,
+  resolveSessionsScopeState,
+} from "./sessions-page-scope";
+import { useSessionsGitHubConnectGate } from "./sessions-summary-cards-with-github-connect";
+import type { SessionsSurfaceInput } from "./sessions-surface-input";
+import { SessionsV2Page } from "./sessions-v2-page";
+import { useSessionsListUrlWriters } from "./use-sessions-list-url-writers";
 
 // Module-local e2e anchors. A Next.js App Router page module may only export the
 // reserved page exports (`default`, `metadata`, …), so these stay non-exported;
@@ -96,13 +102,6 @@ const PAGE_SIZE = DEFAULT_TABLE_PAGE_SIZE;
 // owns the page's single `<main>`), so `getByRole("main")` no longer resolves to
 // it — `e2e/visual-regression.spec.ts` screenshots the scroll container by test
 // id, and the list body is the sessions-list-back / cost-unknown anchor.
-const SCROLL_CONTAINER_TEST_ID = "sessions-scroll-container";
-const HISTORY_LIST_TEST_ID = "sessions-history-list";
-
-// The cross-surface selected-user deep link. URL-owned: the facet writer never
-// emits or clears it, so every code path that has to strip it names it from here
-// (ISS-4728).
-const SELECTED_USER_PARAM = "userId";
 
 export default function SessionsPage() {
   // ISS-5574: name the tab for this surface. Off by default behind the shared
@@ -111,14 +110,25 @@ export default function SessionsPage() {
     SESSIONS_BRANCHES_TAB_TITLES_FEATURE_FLAG_KEY
   );
   useDocumentTitle(tabTitlesEnabled ? "Sessions" : null);
+  usePageViewedEvent(OnboardingAnalyticsPageName.Sessions);
   const orgSlug = useOrgSlug();
   const searchParams = useSearchParamsValue();
-  const selectedUserId = searchParams.get(SELECTED_USER_PARAM);
-  // ISS-4728 (ISS-4779 closed-by-default): fold the selected-user scope into the
-  // active-filter chip row and retire the legacy badge. OFF ⇒ prior badge.
-  const ownerScopeChipEnabled = useFeatureFlagEnabled(
-    SESSIONS_OWNER_SCOPE_CHIP_FEATURE_FLAG_KEY
+  const routePath = usePath();
+  // Read ONCE, and normalised at the read — see `readSessionsScopeUserId` for
+  // why a valueless `?userId=` must not survive this line.
+  const selectedUserId = readSessionsScopeUserId(
+    searchParams.get(SESSIONS_SELECTED_USER_PARAM)
   );
+  // PRD-721: the toolbar's free-text term, owned by the `?search=` param the
+  // desktop shell already reads. Trimmed at the read, as the desktop does.
+  // ISS-13035: the term exists only under `gridview-adoption`; closed, a
+  // `?search=` link narrows nothing, as before the shared toolbar.
+  const searchEnabled = useFeatureFlagEnabled(
+    GRIDVIEW_ADOPTION_FEATURE_FLAG_KEY
+  );
+  const search = searchEnabled
+    ? (searchParams.get(SESSIONS_SEARCH_PARAM) ?? "").trim()
+    : "";
   // FEA-3560: seeded from the list URL (the facet params are mirrored into the
   // URL on every change below), so navigating into a session detail and back —
   // or reloading / opening a shared link — restores the active facet filters
@@ -126,19 +136,24 @@ export default function SessionsPage() {
   const [facetFilters, setFacetFilters] = useState<SessionFacetFilters>(() =>
     // `initialFacetParamsSource` falls back to the browser URL when the App
     // Router snapshot is still reconciling (empty) on a reload/deep link —
-    // mirrors `readSessionsPageIndex`'s page-param fallback.
-    parseSessionFacetFilterParams(initialFacetParamsSource(searchParams))
-  );
-  // FEA-4199 (GridTable v2). Component state, not URL state: the page INDEX is
-  // URL-owned (FEA-3560) because a shared link must land on the same page, but
-  // the page SIZE is a per-user viewing preference and putting it in the URL
-  // would make every shared Sessions link impose the sharer's density on the
-  // recipient.
-  const gridTableV2Enabled = useFeatureFlagEnabled(
-    GRID_TABLE_V2_FEATURE_FLAG_KEY
+    // mirrors `readSessionsPageIndex`'s page-param fallback, which ISS-8187
+    // scopes to this route the same way — so a sibling list's `?owner=`/`?page=`
+    // still in the address bar cannot seed Sessions mid-transition.
+    parseSessionFacetFilterParams(
+      initialFacetParamsSource(searchParams, routePath)
+    )
   );
   const projectFacetEnabled = useFeatureFlagEnabled(
     SESSIONS_PROJECT_FACET_FEATURE_FLAG_KEY
+  );
+  // ISS-7422: the same gate the summary strip reads for its honest-loading
+  // treatment, resolved here because the suppression decision needs the READ
+  // state, which only this host has.
+  const honestLoadingEnabled = useFeatureFlagEnabled(
+    SESSIONS_SUMMARY_HONEST_LOADING_FEATURE_FLAG_KEY
+  );
+  const activeRowRefetchEnabled = useFeatureFlagEnabled(
+    SESSIONS_ACTIVE_ROW_REFETCH_FEATURE_FLAG_KEY
   );
   // FEA-4210: the same resolver the session-detail linked-artifacts row uses, so
   // a `FEA-654` chip in the list and the identical chip on the detail page cannot
@@ -151,6 +166,10 @@ export default function SessionsPage() {
   // chips on every unrelated `SessionsPage` state change (sort, group, date
   // range, refetch poll) — defeating the memo its sibling `qualifiersByRowId`
   // relies on.
+  // ISS-7866: resolved ONCE, for whichever branch renders. The v1 host swaps in
+  // the wrapper component; the v2 strip lives inside the shared surface and
+  // takes the same two props through its `summaryCards` passthrough.
+  const githubConnectGate = useSessionsGitHubConnectGate();
   const buildIssueHref = useCallback(
     (artifact: SessionLinkedArtifact) =>
       withOrgSlug(
@@ -159,18 +178,17 @@ export default function SessionsPage() {
       ),
     [orgSlug]
   );
-  const [pageSize, setPageSize] = useState<number>(PAGE_SIZE);
+  // Stable for the same reason as `buildIssueHref`: both surfaces hand this to
+  // memoized row adapters, and a fresh closure per render would re-derive every
+  // row on any unrelated page state change.
+  const getSessionHref = useCallback(
+    (item: AgentSessionListItem) => `/${orgSlug}/sessions/${item.id}`,
+    [orgSlug]
+  );
   const [scrollContainer, setScrollContainer] = useState<HTMLElement | null>(
     null
   );
-  // ISS-4901: gates the horizontal scroll affordance on the list's scroll
-  // region. One key with the rest of the Sessions fold legibility pass — the
-  // affordance only earns its keep once the fold is flush (ISS-4889/4906), and
-  // shipping the flush fold without it is strictly worse than either alone.
-  const foldLegibilityEnabled = useFeatureFlagEnabled(
-    SESSIONS_GRID_FOLD_LEGIBILITY_FEATURE_FLAG_KEY
-  );
-  const urlPageIndex = useSessionsUrlPageIndex(searchParams);
+  const urlPageIndex = useSessionsUrlPageIndex(searchParams, routePath);
   const { effectivePageIndex, markPageOverride, markPageReset } =
     useSessionsPageReset({
       urlPageIndex,
@@ -178,28 +196,58 @@ export default function SessionsPage() {
   const {
     sortKey,
     sortDir,
+    secondarySorts,
+    setSecondarySorts,
     dateRange: savedDateRange,
+    isViewReady,
     visibleColumns,
     columnOrder,
     setColumnOrder,
+    columnWidths,
+    setColumnWidth,
+    pageSize: savedPageSize,
+    setPageSize,
     setSort,
     setDateRange,
     toggleColumn,
     resetView,
     groupBy,
     setGroupBy,
+    hiddenSummaryCards,
+    toggleSummaryCard,
   } = useSessionsViewState("sessions:web");
+  // ISS-9692: the rows-per-page now comes from the SAME saved view the sort and
+  // columns do, so it survives a reload and a navigate-away-and-back. Resolved
+  // against the ladder in force before it reaches the query, so a 500 stored
+  // while `table-page-size-ladder` was on becomes the largest legal rung — never
+  // a `limit` the API rejects — the moment it goes back off.
+  //
+  // ISS-9692 (whitlockk review): `isPageSizeReady` is the flag's UNRESOLVED state,
+  // which is not the same answer as "off" — it feeds the read gate below so the
+  // first fetch already carries the remembered size instead of one 100-row page
+  // followed by a refetch at 500.
+  const { isReady: isPageSizeReady, pageSize } =
+    useTablePageSizeOptions(savedPageSize);
+  const maxPageIndex = resolveMaxPageIndex(SESSION_LIST_MAX_OFFSET, pageSize);
+  const safePageIndex = Math.min(effectivePageIndex, maxPageIndex);
 
-  // ISS-5355: an inbound link may name the window it was counted over
-  // (`?range=`), which the viewer's saved range must not silently override —
-  // that is what let the project-detail strip's count and the listing it opens
-  // disagree. Derived during render (no Effect, no state mirror): the param wins
-  // while it is in the URL, and the range picker strips it, so touching the
-  // control hands control straight back to the saved preference.
-  const urlDateRange = parseSessionDateRangeParam(
-    searchParams.get(SESSION_DATE_RANGE_PARAM)
-  );
-  const dateRange = urlDateRange ?? savedDateRange;
+  // ISS-10301: the Autonomy sort is unconditional now that the v2 surface is the
+  // only surface. ISS-8190 made these two values wait on `grid-table-v2` because
+  // the v1 controls could not name an Autonomy sort, so sending one would have
+  // read against a vocabulary the surface could not change back; with v1 gone
+  // there is no second vocabulary and nothing to wait for.
+  const querySortKey = sortKey;
+  const querySecondarySorts = secondarySorts;
+
+  // The window this view actually reads over: an inbound `?range=` when the URL
+  // carries one, otherwise the viewer's saved range (ISS-5355). The hook also
+  // owns the RUM range tag (ISS-7250), so the tag cannot come to name a window
+  // other than the one in effect.
+  const dateRange = useSessionsEffectiveDateRange({
+    isViewReady,
+    savedRange: savedDateRange,
+    searchParams,
+  });
 
   // ISS-5355 (ISS-4779 closed-by-default): with the Project facet flag off the
   // Project dimension does not exist on this surface, so an inbound `project=`
@@ -212,9 +260,50 @@ export default function SessionsPage() {
     [facetFilters, projectFacetEnabled]
   );
 
+  // FEA-4201: the explicit `?from=`/`?to=` window, when the URL carries a valid
+  // pair AND this viewer has the gate. Behind the gate the params are inert, so
+  // a link written by a build that has it on cannot narrow a listing whose
+  // viewer has no control to see or clear the window.
+  const {
+    customDateWindow,
+    gateCustomDateWindowChange,
+    isCustomDateWindowReady,
+  } = useSessionsCustomDateWindow(
+    SESSIONS_CUSTOM_DATE_WINDOW_FEATURE_FLAG_KEY,
+    searchParams,
+    routePath
+  );
+  // FEA-4201 (whitlockk review): the same ISS-6382 reasoning the restore gate already
+  // encodes, for the flag rather than the saved view. PostHog reports an
+  // unresolved flag as `false`, so a flagged `?from=`/`?to=` link read the PRESET
+  // window first — rows AND summary figures for a window nobody asked for — and
+  // refetched once the flag answered. Only a URL that names a window waits, and
+  // the flag's own deadline bounds that wait.
+  // ISS-9619: the reader's day boundary, read ONCE here. Shut, it is UTC with no
+  // setter, so the toolbar renders no control and this window is unchanged.
+  const { timezoneMode, setTimezoneMode, isTimezoneModeReady } =
+    useSharedTimezoneMode("sessions:web");
+  // ISS-9619 (whitlockk + codex review): and the day boundary joins that wait, for
+  // the same reason the custom window does. An unresolved assignment reads as
+  // UTC, so a reader whose stored mode is `local` would otherwise fetch rows AND
+  // cards for the UTC window first and refetch the Local one once PostHog
+  // answered. Both reads below are gated on this single signal, so the two
+  // halves of the surface cannot settle on different windows.
+  const isSessionsReadReady =
+    resolveSessionsReadReady(
+      isViewReady,
+      isCustomDateWindowReady,
+      isPageSizeReady
+    ) && isTimezoneModeReady;
+
   // UTC-day quantization keeps the query identity stable across remounts. The
   // next render after a UTC rollover advances it; no timer forces a render.
-  const { startDate, endDate } = getStableUtcDateWindowForRange(dateRange);
+  // Both the list read and the summary-card read below take these two values, so
+  // a boundary change re-windows the rows and the cards together.
+  const { startDate, endDate } = resolveSessionDateWindow(
+    customDateWindow,
+    getStableDateWindowForRange(dateRange, timezoneMode)
+  );
 
   // FEA-4177 — stable summary cache identity + no-facet dedupe. The summary cards
   // aggregate the whole (faceted) set, so their usage read is keyed by the summary
@@ -272,20 +361,39 @@ export default function SessionsPage() {
       prAssociation: facetFilters.prAssociation,
       projectIds: effectiveFacetFilters.projectIds,
       userId: selectedUserId ?? undefined,
-      ...(sortKey ? { sortBy: sortKey, sortDir } : {}),
+      ...(search === "" ? {} : { listSearch: search }),
+      ...(querySortKey ? { sortBy: querySortKey, sortDir } : {}),
+      // ISS-8335: the multi-rule spelling of the SAME axis, sent only when a
+      // second rule exists so an ordinary one-rule view keeps the exact query it
+      // has always sent. `sortBy`/`sortDir` still ride along as the back-compat
+      // echo of the lead rule; the server reads `sorts` when it is present.
+      //
+      // Gated on `sortKey` for the same reason `sortBy` is: with no primary
+      // there is no rule list, and a secondary rule cannot lead — the saved view
+      // has one lead slot and it is `sortKey`.
+      ...(querySortKey && querySecondarySorts.length > 0
+        ? {
+            sorts: toSessionSortRuleParams([
+              { direction: sortDir, fieldId: querySortKey },
+              ...querySecondarySorts,
+            ]),
+          }
+        : {}),
       limit: pageSize,
-      offset: effectivePageIndex * pageSize,
+      offset: safePageIndex * pageSize,
     }),
     [
       startDate,
       endDate,
       facetFilters,
       effectiveFacetFilters,
+      search,
       selectedUserId,
-      sortKey,
+      querySortKey,
       sortDir,
-      effectivePageIndex,
+      querySecondarySorts,
       pageSize,
+      safePageIndex,
     ]
   );
 
@@ -294,34 +402,113 @@ export default function SessionsPage() {
   // the list, so this adds no reads), so a summary-read failure degrades ONLY the
   // cards and never blanks the table (and vice-versa). `keepPreviousData` keeps
   // the last-good page on screen while a filter/page/sort change loads.
+  //
+  // ISS-6382: both reads hold until the persisted view has restored. The window
+  // AND the sort are in these query keys, so a mount that fetched first
+  // paginated the corpus under the defaults and then again under the restored
+  // view, with the first run unrecoverable. Fails OPEN on a stalled auth
+  // hydration (`VIEW_RESTORE_AUTH_DEADLINE_MS`), so the worst case is the
+  // pre-gate double read, never a permanent skeleton.
   const sessionsQuery = useAgentSessions(listFilters, {
+    enabled: isSessionsReadReady,
     placeholderData: keepPreviousData,
+    // FEA-4203: the poll is decided from the query's OWN latest response, so
+    // each fetch re-decides whether the next one happens and the timer stops
+    // itself on the response in which the last running row goes terminal (or
+    // merely silent — the gate reads the DISPLAYED status, so a Stale row does
+    // not hold it open). Flag off, this is `false` for every input.
+    //
+    // `status` is passed so a FAILING read backs the cadence off instead of
+    // retrying every 30s (packages/app/AGENTS.md). It backs off rather than stops
+    // because the error card below is gated on `isLoadingError`, so a refetch
+    // that fails over a good page shows the reader nothing — a stopped poll
+    // would leave that page frozen and live-looking with nothing to re-arm it.
+    refetchInterval: (query) =>
+      resolveSessionsActiveRefetchInterval({
+        enabled: activeRowRefetchEnabled,
+        items: query.state.data?.items,
+        status: query.state.status,
+      }),
+    // A backgrounded tab has nobody watching the rows move, so the poll pauses
+    // with it. Stated rather than left to the TanStack default: this is the half
+    // of the gate a reader would otherwise have to know by heart.
+    refetchIntervalInBackground: false,
   });
+  // ISS-12286 — operator ruling (Marisol Ashgrove, 2026-10-08, PRD-792 open
+  // question 1, updated the same day): the summary polls every 2 minutes and
+  // refetches on filter change (its query key); Active rows keep the list's
+  // 30s refresh. The poll runs under the same running-row gate as the list,
+  // derived from the list's ROWS because the usage payload carries none, but
+  // from the summary's OWN `status`: the two reads are independent failure
+  // domains (FEA-4177), so a failing summary backs its own cadence off.
   const summaryUsageQuery = useAgentSessionUsage(summaryUsageFilters, {
+    enabled: isSessionsReadReady,
     placeholderData: keepPreviousData,
+    refetchInterval: (query) =>
+      resolveSessionsActiveRefetchInterval({
+        enabled: activeRowRefetchEnabled,
+        intervalMs: SESSIONS_SUMMARY_ACTIVE_REFETCH_INTERVAL_MS,
+        items: sessionsQuery.data?.items,
+        status: query.state.status,
+      }),
+    refetchIntervalInBackground: false,
   });
-  const summaryDeltas = buildSessionSummaryDeltas({
-    // FEA-4202 (Grid Parity): the cadence captions (WoW/MoM/QoQ) and the
-    // `PRs Shipped` chip ride the SAME shared flag the rest of this tagged pass
-    // uses, resolved here because the shared component has mount sites with no
-    // flag provider. OFF ⇒ the ISS-5315 strip, unchanged.
-    comparisonV2Enabled: gridTableV2Enabled,
-    current: summaryUsageQuery.data,
-    dateRange,
-    // ISS-5809: the comparison now rides the SAME response as the figures it
-    // grades, so there is no second query to keep in step — the #4480 hazard of
-    // grading a landed response against another query's cached generation cannot
-    // arise. The gate remains because a placeholder/stale/errored read still
-    // means the figures ON SCREEN are not the ones the comparison describes.
-    suppressed: shouldSuppressSessionComparison(summaryUsageQuery),
+  // ISS-6382 (whitlockk review): `enabled` stops the FETCH; it does not make a warm
+  // observer pending. The gate-closed commit still subscribes to the DEFAULT
+  // view's cache key, so on any revisit both observers resolve to `success` from
+  // cache with `isPending` already false — pre-restore rows, pre-restore cards,
+  // and a `total` the page clamp would act on, every one of them describing the
+  // view the restore is about to replace. So the readiness signal is read
+  // DIRECTLY here rather than inferred from query state, and everything below
+  // derives from these.
+  const { data: listData, isPending: isListPending } = gateRestoredRead(
+    isSessionsReadReady,
+    sessionsQuery
+  );
+  const { data: summaryUsage, isPending: isSummaryPending } = gateRestoredRead(
+    isSessionsReadReady,
+    summaryUsageQuery
+  );
+  // ISS-6382: the GATED pending flag, not the query's own. A held-closed read on
+  // a warm cache trips none of the comparison helpers' other four flags, so both
+  // of them would otherwise read a scope this mount never read.
+  const gatedSummaryRead = {
+    ...summaryUsageQuery,
+    isPending: isSummaryPending,
+  };
+  // ISS-9897: the metric row behaves like the Sessions listing — a read this
+  // scope has not settled is the skeleton, never another scope's figures.
+  // `isPlaceholderData` is what says the payload in hand belongs to the PREVIOUS
+  // cache key (`keepPreviousData` above), so it skeletons alongside `isPending`;
+  // an exact-key hit is neither, and paints from cache without a refetch.
+  // ISS-9887: expressed through the one predicate the Branches summary row now
+  // reads too — behavior here is unchanged; naming the fold is what stops the
+  // other row answering the same question differently again.
+  const isSummaryLoading = isSummaryMetricsLoading({
+    isPending: isSummaryPending,
+    isServingPreviousScope: summaryUsageQuery.isPlaceholderData,
   });
-  const knownTotal = sessionsQuery.data?.total;
-  const total = knownTotal ?? 0;
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
   // #4480: read the rows BEFORE the footer is built — the range readout's upper
   // bound is the rows actually on screen, not `(page + 1) * pageSize`, so it
   // needs this on the same render that decides the footer.
-  const items = sessionsQuery.data?.items ?? [];
+  const items = listData?.items ?? [];
+  const listReadModel = resolveSessionsListReadModel({
+    canRead: isSessionsReadReady,
+    hasData: listData !== undefined,
+    isError: sessionsQuery.isError,
+    isLoading: isListPending || sessionsQuery.isLoading,
+    isLoadingError: sessionsQuery.isLoadingError,
+    isPlaceholderData: sessionsQuery.isPlaceholderData,
+    knownTotal: listData?.total,
+    rowCount: items.length,
+  });
+  const knownTotal = listReadModel.totalRows;
+  const total = knownTotal ?? 0;
+  const totalPages = resolveCappedTotalPages(
+    total,
+    pageSize,
+    SESSION_LIST_MAX_OFFSET
+  );
   // FEA-3560: one shared writer for every list-URL write. It re-asserts the
   // facet params on each call (from the filters argument), so a pagination or
   // sort click landing while a facet replace is still reconciling into the
@@ -330,10 +517,7 @@ export default function SessionsPage() {
     writeSessionFacetFilterParams,
     writeSessionsPageParam
   );
-  const replacePage = useCallback(
-    (nextPage: number) => replaceListParams(facetFilters, nextPage),
-    [replaceListParams, facetFilters]
-  );
+  const replacePage = useSessionsReplacePage(replaceListParams, facetFilters);
   // FEA-4199: growing/shrinking the page size RESETS to page 0. Keeping the
   // index would silently move the user: at 25/page, page 3 starts at row 76;
   // switching to 100/page with index 3 would jump them to row 301, a place they
@@ -353,35 +537,19 @@ export default function SessionsPage() {
       setPageSize(nextPageSize);
       replacePage(0);
     },
-    [markPageReset, replacePage]
+    [markPageReset, replacePage, setPageSize]
   );
-  // FEA-4199: with GridTable v2 on, the footer also carries the rows-per-page
-  // select and an honest range readout, and renders whenever there are rows
-  // (not only past page one) so the control stays reachable on a single-page
-  // list. Flag off → the exact pre-v2 strip, guarded on `totalPages > 1` with
-  // no readout. Built here rather than inline so neither branch needs a nested
-  // ternary in the JSX.
-  const paginationFooter = buildSessionsPaginationFooter({
-    gridTableV2Enabled,
-    isPlaceholderPage: sessionsQuery.isPlaceholderData,
-    onPageChange: replacePage,
-    onPageSizeChange: handlePageSizeChange,
-    pageIndex: effectivePageIndex,
-    pageSize,
-    rowsOnPage: items.length,
-    total,
-    totalPages,
-  });
   useEffect(() => {
     if (knownTotal === undefined) {
       return;
     }
 
-    const clampedPageIndex = clampSessionsPageIndex({
-      pageIndex: effectivePageIndex,
+    const clampedPageIndex = clampSessionsPageIndex(
+      effectivePageIndex,
+      knownTotal,
       pageSize,
-      total: knownTotal,
-    });
+      SESSION_LIST_MAX_OFFSET
+    );
     if (clampedPageIndex === effectivePageIndex) {
       return;
     }
@@ -393,37 +561,38 @@ export default function SessionsPage() {
     // page index rather than leaving the user on a page past the end.
   }, [effectivePageIndex, knownTotal, markPageOverride, replacePage, pageSize]);
 
-  // ISS-5975: the header's manual Refresh control and its `handleRefresh`
-  // callback are gone. The property that callback existed to guarantee — both
-  // halves of this page re-reading TOGETHER — is preserved here instead.
+  // ISS-12286: a focus or reconnect re-reads only the stale half.
   //
-  // ISS-5976's focus/reconnect defaults alone do NOT preserve it (whitlockk review).
-  // They revalidate each query against its OWN `dataUpdatedAt`, and these two
-  // fetches resolve at different instants, so their 60-second windows are
-  // offset: a focus event landing between the two boundaries refetches the rows
-  // and leaves the cards and facet counts describing the previous population.
-  // Grouping them makes either one going stale re-read both, and lands their
-  // clocks together so the offset cannot grow.
-  useQueryFreshnessGroup([sessionsQuery, summaryUsageQuery]);
+  // ISS-6382: EMPTY while the restore gate holds. A query with no data is stale,
+  // and `refetch()` ignores `enabled` — so a focus or reconnect event landing
+  // inside the restore window would force exactly the default-view read the gate
+  // exists to prevent. An empty group is inert (`some` over nothing is false).
+  useQueryFreshnessGroup(
+    isSessionsReadReady ? [sessionsQuery, summaryUsageQuery] : []
+  );
   const handleSort = (column: string, direction: SortDirection) => {
     markPageReset();
     setSort(column as SessionSortKey, direction as SessionSortDir);
     replacePage(0);
   };
-  const handleFiltersChange = (next: SessionFacetFilters) => {
-    markPageReset();
-    setFacetFilters(next);
-    replaceListParams(next, 0);
-  };
-  const handleDateRangeChange = (next: DateRange) => {
-    markPageReset();
-    setDateRange(next);
-    // ISS-5355: strip an inbound `?range=` in the SAME write as the page reset.
-    // Two writes would both copy the pre-click params snapshot and the second
-    // would restore what the first removed (the ISS-4728 trap), leaving the
-    // link's window overriding the range the user just picked.
-    replaceListParams(facetFilters, 0, [SESSION_DATE_RANGE_PARAM]);
-  };
+  // Every write this page makes to its own list URL — see the module for why
+  // they are ONE unit and why each performs exactly one `replaceListParams`.
+  const {
+    handleClearFilters,
+    handleCustomDateWindowChange,
+    handleDateRangeChange,
+    handleFiltersChange,
+    handleRemoveSelectedUser,
+    handleScopeChange,
+  } = useSessionsListUrlWriters({
+    facetFilters,
+    markPageReset,
+    projectFacetEnabled,
+    replaceListParams,
+    selectedUserParam: SESSIONS_SELECTED_USER_PARAM,
+    setDateRange,
+    setFacetFilters,
+  });
 
   // #4480: the banded column's removal used to live HERE, which is exactly why
   // desktop printed the grouped value twice — it never ran this. The shared
@@ -431,119 +600,174 @@ export default function SessionsPage() {
   // this page hands it the user's real column set and both shells behave the
   // same.
   useSessionsHistoryScroll({
-    scrollKey: `org:${orgSlug}:sessions:page:${effectivePageIndex}`,
+    scrollKey: `org:${orgSlug}:sessions:page:${safePageIndex}`,
     container: scrollContainer,
-    restoreWhen: !sessionsQuery.isLoading,
+    // ISS-6382: the same signal the table body uses — a read held closed by the
+    // restore gate is not "loaded", and starting the scroll restore against an
+    // unpopulated container burns its bounded retry budget before the rows
+    // exist. `isPlaceholderData` is in there for the same reason (whitlockk review):
+    // `keepPreviousData` puts the OUTGOING page's rows in the container while
+    // the incoming one loads, so restoring against them measures the wrong
+    // content height and lands the scroll somewhere the user never was.
+    restoreWhen: !(isListPending || sessionsQuery.isPlaceholderData),
   });
 
-  // FEA-4181 (review cid 3653717604): is any filter narrowing the list? A
-  // non-default time window, any active facet, or a cross-surface `userId` param.
-  // Drives the filtered-vs-genuinely-empty split in the honest empty state below
-  // (measured against the shared Sessions defaults, not a hardcoded literal).
-  const hasActiveSessionFilters =
-    dateRange !== DEFAULT_SESSIONS_DATE_RANGE ||
-    hasAnyActiveSessionFacet(effectiveFacetFilters) ||
-    Boolean(selectedUserId);
+  // Is anything narrowing the list, and would a Clear move either read's query
+  // key? Both questions are answered from one place so the empty state's
+  // filtered-vs-genuinely-empty split and the recovery control's refetch
+  // decision cannot drift apart — see `resolveSessionsScopeState`.
+  const { hasActiveFilters, isListScopeDefault, isUsageScopeDefault } =
+    resolveSessionsScopeState({
+      customDateWindow,
+      dateRange,
+      effectivePageIndex: safePageIndex,
+      facetFilters: effectiveFacetFilters,
+      search,
+      selectedUserId,
+    });
   // PRD-536 §5: only probe "has any agent ever connected?" when the list has
   // resolved to zero rows — a populated list never pays for the extra request,
   // and `undefined` while it loads keeps the neutral filters message.
   const hasConnectedAgentQuery = useHasConnectedAgent({
-    enabled: sessionsQuery.isSuccess && knownTotal === 0,
+    enabled:
+      sessionsQuery.isSuccess &&
+      listReadModel.hasKnownTotal &&
+      knownTotal === 0,
   });
-  const handleClearFilters = useCallback(() => {
-    markPageReset();
-    setDateRange(DEFAULT_SESSIONS_DATE_RANGE);
-    setFacetFilters(DEFAULT_SESSION_FACET_FILTERS);
-    // Reset the facets + page in the URL and strip the URL-owned `userId`
-    // narrower the facet writer doesn't manage (FEA-4181), so the clear can't
-    // re-run the same narrowed empty result.
-    // ISS-5355 adds `?range=` to that set: it is URL-owned too, and leaving it
-    // would keep the inbound window narrowing a view the user just cleared.
-    replaceListParams(DEFAULT_SESSION_FACET_FILTERS, 0, [
-      SELECTED_USER_PARAM,
-      SESSION_DATE_RANGE_PARAM,
-    ]);
-  }, [markPageReset, replaceListParams, setDateRange]);
+  // ISS-11913: gated on HELD current data rather than `isSuccess`, so a refetch
+  // that fails over an empty page keeps the answer that page already has.
+  const outsideWindowProbe = useSessionsOutsideWindow({
+    customWindowActive: customDateWindow !== null,
+    dateRange,
+    isListSettledEmpty:
+      listData !== undefined &&
+      !sessionsQuery.isPlaceholderData &&
+      listReadModel.hasKnownTotal &&
+      knownTotal === 0,
+    otherFiltersActive: resolveSessionsNonWindowFiltersActive({
+      facets: effectiveFacetFilters,
+      isServerDriven: true,
+      scopeUserId: selectedUserId,
+      search,
+    }),
+  });
+  const refetchSessions = sessionsQuery.refetch;
+  const refetchSummaryUsage = summaryUsageQuery.refetch;
+  const handleClearFiltersAndReload = useCallback(() => {
+    handleClearFilters();
+    // Self-catching, both: the Link ignores the result, and a rejected re-read
+    // must not surface as an unhandled rejection — the errored card already
+    // renders.
+    if (isListScopeDefault) {
+      refetchSessions().catch(() => undefined);
+    }
+    if (isUsageScopeDefault) {
+      refetchSummaryUsage().catch(() => undefined);
+    }
+  }, [
+    handleClearFilters,
+    isListScopeDefault,
+    isUsageScopeDefault,
+    refetchSessions,
+    refetchSummaryUsage,
+  ]);
 
-  // ISS-4728: remove the selected-user scope, leaving the date window and every
-  // facet the chip row did not fold in where they are. `?userId=` is URL-owned —
-  // the facet writer never emits it — so clearing it is a param strip, not a
-  // facet toggle. Page resets to 0 because the row set widens under it and page
-  // N of the narrowed list is not page N of the wider one.
-  //
-  // `nextFilters` comes from the chip row and is the ONLY facet state this write
-  // may use: when the scoped user is also a selected Owner facet value the two
-  // chips collapse into one, so removing it has to drop BOTH narrowers — and it
-  // has to do so in this SINGLE `replaceListParams` call. Splitting it into a
-  // param strip plus a separate `handleFiltersChange` is the bug this replaced
-  // (review cid 3701353686): both writers copy the same pre-click search-params
-  // snapshot, React batches them inside one click with no re-render between, and
-  // the second `replace` wins — putting `userId` straight back while clearing
-  // the facet, so the chip reappeared over a still-narrowed list.
-  const handleRemoveSelectedUser = useCallback(
-    (nextFilters: SessionFacetFilters) => {
-      markPageReset();
-      setFacetFilters(nextFilters);
-      replaceListParams(nextFilters, 0, [SELECTED_USER_PARAM]);
-    },
-    [markPageReset, replaceListParams]
+  // Both branches offer the SAME two actions, so they are built once. Two
+  // copies drifted apart is how the v2 mount lost props the v1 one kept.
+  const onboardingAction = (
+    <Button asChild size="sm">
+      <Link href={`/${orgSlug}/settings`}>Connect a compute target</Link>
+    </Button>
+  );
+  // ISS-4534: the errored card is never a dead end. Its single primary action is
+  // "Clear filters and reload" — clearing the active filters (which re-issues
+  // the read via the query-key change) escapes a read wedged by a stale
+  // filter/search URL, and its `href` still opens a working list in a new tab on
+  // a modified click. This is a superset of a bare Retry, so the card carries
+  // this one honest action instead of two. ISS-7414: the RELOAD half is
+  // `handleClearFiltersAndReload`, so the control still re-reads from an
+  // already-clean scope, where the reset alone moves no query key and would
+  // otherwise do nothing.
+  const errorRecoveryAction = (
+    <SessionsRecoveryAction
+      href={`/${orgSlug}/sessions`}
+      onClearFilters={handleClearFiltersAndReload}
+    />
   );
 
-  let tableContent: ReactNode;
-  if (sessionsQuery.isLoading) {
-    tableContent = <Skeleton className="h-[320px] w-full" />;
-  } else if (items.length === 0) {
-    // FEA-4181 (review cid 3653717604): the canonical org-scoped route now runs
-    // the same honest empty state the desktop and legacy `/sessions` surfaces
-    // use — an initial errored read renders "Couldn't load sessions" + Retry
-    // (not the old "No sessions found" that lied when the read failed), a
-    // filtered-away scope offers Clear filters, and a genuinely-empty org shows
-    // the connect-a-compute-target onboarding CTA. `SessionsEmptyState` derives
-    // which of the three from the signals; a refetch that still holds cached rows
-    // keeps rendering the table (this branch is items.length === 0 only).
-    tableContent = (
-      <SessionsEmptyState
-        // ISS-4534: the errored card is never a dead end. Its single primary
-        // action is "Clear filters and reload" — clearing the active filters
-        // (which re-issues the read via the query-key change) escapes a read
-        // wedged by a stale filter/search URL, and its `href` still opens a
-        // working list in a new tab on a modified click. This is a superset of a
-        // bare Retry, so the card carries this one honest action instead of two.
-        errorRecoveryAction={
-          <SessionsRecoveryAction
-            href={`/${orgSlug}/sessions`}
-            onClearFilters={handleClearFilters}
-          />
-        }
-        hasConnectedAgent={hasConnectedAgentQuery.data}
-        onboardingAction={
-          <Button asChild size="sm">
-            <Link href={`/${orgSlug}/settings`}>Connect a compute target</Link>
-          </Button>
-        }
-        onClearFilters={handleClearFilters}
-        signals={{
-          isUnavailable: sessionsQuery.isError,
-          hasActiveFilters: hasActiveSessionFilters,
-        }}
-      />
-    );
-  } else {
-    tableContent = (
-      <SessionsTable
-        columnOrder={columnOrder}
-        getIssueHref={buildIssueHref}
-        getSessionHref={(item) => `/${orgSlug}/sessions/${item.id}`}
-        groupBy={groupBy}
-        items={items}
-        onColumnOrderChange={setColumnOrder}
-        onSort={handleSort}
-        sortBy={sortKey}
-        sortDir={sortDir}
-        visibleColumns={visibleColumns}
-      />
-    );
-  }
+  // ISS-8221: every value the listing needs, assembled ONCE and handed to
+  // whichever surface the branch below picks. Neither surface receives the
+  // `grid-table-v2` key, which is what keeps the flag's whole reach the single
+  // read above this object.
+  const surfaceInput: SessionsSurfaceInput = {
+    columnOrder,
+    columnWidths,
+    customDateWindow,
+    dateRange,
+    effectiveFacetFilters,
+    effectivePageIndex: safePageIndex,
+    errorRecoveryAction,
+    facetFilters,
+    getIssueHref: buildIssueHref,
+    getSessionHref,
+    githubConnectGate,
+    groupBy,
+    handleClearFilters,
+    handleCustomDateWindowChange: gateCustomDateWindowChange(
+      handleCustomDateWindowChange
+    ),
+    handleDateRangeChange,
+    handleFiltersChange,
+    handleRemoveSelectedUser,
+    handleScopeChange,
+    handleSort,
+    handleTimezoneModeChange: setTimezoneMode,
+    timezoneMode,
+    hasActiveFilters,
+    hasConnectedAgent: hasConnectedAgentQuery.data,
+    hasSessionsOutsideWindow: outsideWindowProbe.hasSessionsOutsideWindow,
+    hiddenSummaryCards,
+    honestLoadingEnabled,
+    // ISS-11913: an empty list has not said whether sessions exist until the
+    // outside-window probe lands, so the surface keeps its loading treatment.
+    isListPending: isListPending || outsideWindowProbe.isPending,
+    isListUnavailable: sessionsQuery.isLoadingError,
+    isPlaceholderPage: sessionsQuery.isPlaceholderData,
+    isSessionsReadReady,
+    isSummaryLoading,
+    isSummaryLoadingError: summaryUsageQuery.isLoadingError,
+    items,
+    listReadState: listReadModel.state,
+    listFilters,
+    markPageReset,
+    onboardingAction,
+    onPageSizeChange: handlePageSizeChange,
+    pageSize,
+    // ISS-9555: forwarded straight off the read. The surface reads the served
+    // page from here instead of the host re-deriving it from `total`.
+    pageInfo: listData?.pageInfo,
+    projectFacetEnabled,
+    replacePage,
+    resetView,
+    search,
+    selectedUserId,
+    setColumnOrder,
+    setColumnWidth,
+    setGroupBy,
+    setScrollContainer,
+    secondarySorts,
+    setSecondarySorts,
+    setSort,
+    sortDir,
+    sortKey,
+    summaryComparisonRead: gatedSummaryRead,
+    summaryUsage,
+    toggleColumn,
+    toggleSummaryCard,
+    total,
+    totalPages,
+    visibleColumns,
+  };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -553,235 +777,8 @@ export default function SessionsPage() {
           alone. The Sessions DETAIL page keeps its own refresh path; this
           ticket is the listing page only. */}
       <Header breadcrumbs={[{ label: "Sessions" }]} />
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        {/* Filter/View toolbar — pinned above the scroll area, left-aligned. The
-            table header sticks to the top of the scroll container right beneath
-            it. */}
-        <div className="border-b px-4 py-3">
-          <SessionsToolbar
-            dateRange={dateRange}
-            filters={effectiveFacetFilters}
-            groupBy={groupBy}
-            // ISS-5355 (ISS-4779 closed-by-default): the Project facet ships
-            // behind its own flag, default off. Web-only, so no Labs twin — a
-            // session's project comes from its cloud artifact, which the
-            // desktop local producer cannot resolve. OFF ⇒ no facet, no chip,
-            // and `projectIds` stays empty so no filter is applied.
-            // FEA-4209 / FEA-4210: this surface renders the linked-entity
-            // columns, so their View-menu entries belong in this menu. The
-            // shared `grid-table-v2` key still gates them inside the toolbar.
-            includeLinkedEntityColumns
-            includeProjectFilter={projectFacetEnabled}
-            onClearFilters={handleClearFilters}
-            onDateRangeChange={handleDateRangeChange}
-            onFiltersChange={handleFiltersChange}
-            onGroupByChange={setGroupBy}
-            onRemoveScopeUser={
-              ownerScopeChipEnabled ? handleRemoveSelectedUser : undefined
-            }
-            onResetView={resetView}
-            onToggleColumn={toggleColumn}
-            scopeUserId={ownerScopeChipEnabled ? selectedUserId : undefined}
-            // ISS-5283 (whitlockk review): the toolbar reads the ACTIVE-FILTER usage
-            // response. It used to read a separate date-only request that dropped
-            // every facet, so selecting an Owner left the Harness counts global —
-            // the server's new self-excluding facet predicates never reached the
-            // surface that operates the facets. `/agent-sessions/usage` now scopes
-            // each facet's counts to every OTHER active filter while excluding the
-            // facet's own dimension, which is exactly what a facet list needs: the
-            // options the user can widen to, counted under the rest of the view.
-            // (With no facet active `buildSessionSummaryUsageFilters` normalizes to
-            // the same bounded `{ startDate, endDate, userId }` scope the old read
-            // used, so this is
-            // one query where there used to be two.)
-            usage={summaryUsageQuery.data}
-            visibleColumns={visibleColumns}
-          />
-        </div>
-
-        {/* Cards + table share one scroll container, so they scroll together.
-            The toolbar above stays pinned.
-            plain <div>, not <main>: the shell's SidebarInset owns the page's single main landmark (no-nested-main-landmark gate). */}
-        <div
-          className={cn(
-            "min-h-0 flex-1 overflow-auto",
-            // ISS-4901: now that the fold lands flush on a column boundary
-            // (ISS-4889), the half-cut column that used to say "scroll me" is
-            // gone — and on macOS default settings this region scrolls with an
-            // overlay scrollbar that is invisible at rest, so 7 of 15 columns
-            // show and nothing on screen says the other 8 exist. The
-            // `scrollbar-overlay` utility is the cue the rest of the product
-            // already uses for exactly this (the app sidebar, and this same
-            // table's other host `synced-sessions-table.tsx`): a persistent thin
-            // thumb whose LENGTH also reports how much more there is, which an
-            // edge gradient cannot. It replaces the fold's lost cue without
-            // laying anything over a value.
-            foldLegibilityEnabled && "scrollbar-overlay"
-          )}
-          data-testid={SCROLL_CONTAINER_TEST_ID}
-          ref={setScrollContainer}
-        >
-          <div className="sticky left-0 flex flex-col gap-4 px-4 pt-3 pb-4">
-            {/* ISS-4728: the legacy selected-user badge. It named a filter it
-                gave no way to remove, and sat inside the scroll area — a second
-                visual language for the job the pinned chip row already does. When
-                the flag is ON the scope is an Owner chip in that row instead. */}
-            {!ownerScopeChipEnabled && selectedUserId ? (
-              <div className="flex items-center gap-2">
-                <Badge variant="secondary">User filtered</Badge>
-                <span className="text-muted-foreground text-sm">
-                  Showing sessions for the selected user.
-                </span>
-              </div>
-            ) : null}
-
-            <SessionsSummaryCards
-              // ISS-4481: when the active Cost facet is Unknown, every row shows
-              // "—", so the Cost tile drops to its honest-empty state instead of
-              // summing the all-unknown cohort to a fabricated "$0" (stage review).
-              costUnknownActive={costFilterIncludesUnknown(
-                facetFilters.costBuckets
-              )}
-              deltas={summaryDeltas}
-              // isLoadingError (not raw isError): a refetch failure that still
-              // has cached data keeps rendering the last-good values instead of
-              // dashing every card. FEA-3865: opt into the mobile wrap so the
-              // strip wraps with the table beneath it below `md`.
-              isError={summaryUsageQuery.isLoadingError}
-              // whitlockk review (FEA-4177): treat `isPlaceholderData` as loading
-              // too. The summary and list queries settle independently, and
-              // `keepPreviousData` on the summary means a filter-scope change
-              // can leave the OLD scope's totals on screen next to the NEW
-              // scope's rows until the summary refetch lands. Gating on
-              // `isPlaceholderData` skeletons the cards during that window so
-              // the numbers never disagree with the table. Pagination and sort
-              // do NOT participate in the summary key, so they don't trip this.
-              isLoading={
-                summaryUsageQuery.isLoading ||
-                summaryUsageQuery.isPlaceholderData
-              }
-              usage={summaryUsageQuery.data}
-              wrapBelow
-            />
-          </div>
-
-          {/* data-testid: stable anchor for the sessions-list-back e2e; see that spec. */}
-          <div data-testid={HISTORY_LIST_TEST_ID}>{tableContent}</div>
-        </div>
-
-        {/* ISS-4681 shipped this footer without a readout, on the grounds that
-            this list "has no settled total it could state honestly". ISS-5315
-            revisits that: `total` IS the figure `totalPages` is already derived
-            from, so stating it is strictly more honest than deriving a page
-            count from it in silence — and the prototype's footer states it. The
-            two branches (FEA-4199's v2 strip with the rows-per-page select, and
-            the pre-v2 strip behind the flag) are assembled above so neither
-            needs a nested ternary here. */}
-        {paginationFooter}
-      </div>
+      {/* ISS-8221: the surface below owns its own render derivations. */}
+      <SessionsV2Page input={surfaceInput} />
     </div>
   );
-}
-
-/**
- * ISS-5355's flag-off Project drop, lifted out of `SessionsPage`. Behavior is
- * unchanged — with the facet enabled the filters pass through untouched; with it
- * off `projectIds` is reset to the default so an inbound `project=` param cannot
- * narrow a list behind a facet and chip this viewer can neither see nor remove.
- * It lives here rather than inline because ISS-5315's Group-by branch
- * and this one landed in the same component, which put `SessionsPage` one point
- * over the cognitive-complexity ceiling; scoring this branch against its own
- * helper keeps both features whole.
- */
-type SessionsPaginationFooterInput = {
-  gridTableV2Enabled: boolean;
-  isPlaceholderPage: boolean;
-  onPageChange: (pageIndex: number) => void;
-  onPageSizeChange: (size: number) => void;
-  pageIndex: number;
-  pageSize: number;
-  rowsOnPage: number;
-  total: number;
-  totalPages: number;
-};
-
-/**
- * FEA-4199: with GridTable v2 on, the footer also carries the rows-per-page
- * select and an honest range readout, and renders whenever there are rows (not
- * only past page one) so the control stays reachable on a single-page list.
- * Flag off → the exact pre-v2 strip, guarded on `totalPages > 1` with no
- * readout. Built here rather than inline so neither branch needs a nested
- * ternary in the JSX, and lifted out of `SessionsPage` because ISS-5315's
- * Group-by work and ISS-5355's Project facet landed in that one
- * component and pushed it past the cognitive-complexity ceiling.
- *
- * stage review: `total` comes from `sessionsQuery.data?.total` under
- * `keepPreviousData`, so mid-filter-change it is the PRE-change population. The
- * summary cards on this page already treat `isPlaceholderData` as loading
- * precisely so they never state a placeholder number as fact; the readout has to
- * hold the same line, or the two halves of one strip disagree about whether the
- * number is known yet. Omitted (not frozen) while placeholder —
- * `TablePaginationFooter` renders no readout when it gets none, and the
- * rows-per-page select beside it stays put.
- *
- * #4480: the placeholder gate is the HELPER's, not this caller's. Both shells
- * hold the list with `keepPreviousData`, so both would otherwise have to
- * remember the same discipline; `sessionsRangeReadout` takes `isPlaceholderPage`
- * as a required input and returns `null` itself, which is also what keeps this
- * page and the desktop `SessionsView` phrasing one sentence rather than two.
- */
-function buildSessionsPaginationFooter({
-  gridTableV2Enabled,
-  isPlaceholderPage,
-  onPageChange,
-  onPageSizeChange,
-  pageIndex,
-  pageSize,
-  rowsOnPage,
-  total,
-  totalPages,
-}: SessionsPaginationFooterInput): ReactNode {
-  if (gridTableV2Enabled && total > 0) {
-    return (
-      <TablePaginationFooter
-        className="sm:px-6"
-        onPageChange={onPageChange}
-        onPageSizeChange={onPageSizeChange}
-        page={pageIndex}
-        pageSize={pageSize}
-        readout={sessionsRangeReadout({
-          isPlaceholderPage,
-          pageIndex,
-          pageSize,
-          rowsOnPage,
-          total,
-        })}
-        totalPages={totalPages}
-      />
-    );
-  }
-  if (!gridTableV2Enabled && totalPages > 1) {
-    return (
-      <TablePaginationFooter
-        className="sm:px-6"
-        onPageChange={onPageChange}
-        page={pageIndex}
-        totalPages={totalPages}
-      />
-    );
-  }
-  return null;
-}
-
-function applyProjectFacetGate(
-  filters: SessionFacetFilters,
-  projectFacetEnabled: boolean
-): SessionFacetFilters {
-  if (projectFacetEnabled) {
-    return filters;
-  }
-  return {
-    ...filters,
-    projectIds: DEFAULT_SESSION_FACET_FILTERS.projectIds,
-  };
 }

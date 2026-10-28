@@ -1,28 +1,18 @@
 import { app } from "electron";
-import pkg from "electron-updater";
+import type pkg from "electron-updater";
+import { UpdateIpcChannel } from "../../shared/update-ipc-channel.js";
 import { gatewayLog } from "../logging/gateway-logger.js";
 import { Observability } from "../telemetry/observability.js";
-import {
-  isFakeUpdateFeedActive,
-  isPackagedUpdateFlowActive,
-} from "../update/fake-update-feed.js";
+import { isPackagedUpdateFlowActive } from "../update/fake-update-feed.js";
 import {
   assertPackagedUpdateReadyToInstall,
+  isUpdateInFlight,
   PACKAGED_UPDATE_NOT_DOWNLOADED_MESSAGE,
   type PackagedUpdateState,
   type PackagedUpdateStatusPayload,
 } from "../update/packaged-update-state.js";
+import type { DesktopUpdateLifecycleReporter } from "../update/update-lifecycle-telemetry.js";
 import { assertTrustedIpcSender } from "./ipc-trusted-sender.js";
-
-const { autoUpdater } = pkg;
-
-export const UpdateIpcChannel = {
-  CheckForUpdate: "desktop:check-for-update",
-  ApplyUpdate: "desktop:apply-update",
-} as const;
-
-export type UpdateIpcChannel =
-  (typeof UpdateIpcChannel)[keyof typeof UpdateIpcChannel];
 
 /** The `desktop:check-for-update` result for the unpackaged (git) update path. */
 type UnpackagedUpdateCheckResult = {
@@ -44,44 +34,55 @@ type UpdateIpcDeps = {
   getPackagedUpdateState: () => PackagedUpdateState;
   setPackagedUpdateState: (patch: Partial<PackagedUpdateState>) => void;
   getPackagedUpdateStatusPayload: () => PackagedUpdateStatusPayload;
+  /**
+   * The packaged feed probe. Injected rather than reached for at module scope:
+   * `electron-updater` is CJS inside `node_modules`, so a module-scoped
+   * value import of it survives no module mock, and its macOS `MacUpdater` does
+   * `require("electron").autoUpdater.on("error")` at construction. That is what
+   * left this module unloadable outside a real Electron process, and therefore
+   * its IPC contract untested (ISS-4514).
+   */
+  checkForUpdates: () => ReturnType<typeof pkg.autoUpdater.checkForUpdates>;
   guardUpdateDownload: (
-    result: Awaited<ReturnType<typeof autoUpdater.checkForUpdates>>
+    result: Awaited<ReturnType<typeof pkg.autoUpdater.checkForUpdates>>
   ) => void;
   checkForUpdate: () => Promise<UnpackagedUpdateCheckResult>;
   notifyPackagedUpdateStatus: () => void;
   setApplyingDownloadedUpdate: (value: boolean) => void;
   applyUpdate: () => Promise<void>;
+  /** ISS-7247 release-health reporter; see `DesktopUpdateWiringDeps`. */
+  updateTelemetry: DesktopUpdateLifecycleReporter;
 };
 
-/** Packaged (auto-updater) manual check: probe the feed and promote to available. */
+/**
+ * Packaged (auto-updater) manual check: probe the feed and report the state its
+ * events recorded. electron-updater emits `update-available` or
+ * `update-not-available` before `checkForUpdates()` resolves, and the lane's
+ * state machine is installed before this handler is registered (ISS-10291), so
+ * the state machine is the only writer.
+ */
 async function runPackagedUpdateCheck(
   deps: UpdateIpcDeps
 ): Promise<PackagedUpdateStatusPayload> {
-  const result = await autoUpdater.checkForUpdates();
-  deps.guardUpdateDownload(result);
-  const remoteVersion = result?.updateInfo?.version;
-  if (
-    remoteVersion != null &&
-    remoteVersion !== app.getVersion() &&
-    deps.getPackagedUpdateState().status === "idle"
-  ) {
-    deps.setPackagedUpdateState({
-      status: "available",
-      available: true,
-      downloaded: false,
-      version: remoteVersion,
-    });
-  }
+  deps.guardUpdateDownload(await deps.checkForUpdates());
   return deps.getPackagedUpdateStatusPayload();
 }
 
-/** Surface a check failure: packaged builds record the error state; else report it. */
+/**
+ * Surface a check failure: packaged builds record the error state, unless an
+ * update is already in flight (ISS-11447, see `isUpdateInFlight`); else report it.
+ * A packaged failure's telemetry is the updater `error` listener's, which
+ * electron-updater fires before it rejects (AppUpdater.js:271).
+ */
 function handleUpdateCheckError(
   deps: UpdateIpcDeps,
   error: unknown
 ): PackagedUpdateStatusPayload | { updateAvailable: false; error: string } {
   const message = error instanceof Error ? error.message : "unknown error";
   if (app.isPackaged) {
+    if (isUpdateInFlight(deps.getPackagedUpdateState())) {
+      return deps.getPackagedUpdateStatusPayload();
+    }
     deps.setPackagedUpdateState({
       status: "error",
       available: false,
@@ -89,15 +90,6 @@ function handleUpdateCheckError(
       error: message,
     });
     deps.notifyPackagedUpdateStatus();
-    const state = deps.getPackagedUpdateState();
-    Observability.electronUpdateFailed({
-      trigger: "manual-check",
-      status: state.status,
-      version: state.version,
-      error: message,
-      downloaded: state.downloaded,
-      readyToInstall: state.downloaded,
-    });
     return deps.getPackagedUpdateStatusPayload();
   }
   return {
@@ -134,6 +126,7 @@ function applyPackagedUpdate(deps: UpdateIpcDeps): void {
   }
 
   deps.setApplyingDownloadedUpdate(true);
+  deps.updateTelemetry.installStarted(state.version);
   Observability.electronUpdateInitiated({
     trigger: "renderer-apply-update",
     status: state.status,
@@ -160,13 +153,9 @@ export function registerUpdateIpcHandlers(
   ipcMainLike.handle(UpdateIpcChannel.CheckForUpdate, async (event) => {
     assertTrustedIpcSender(deps.isTrustedSender, event);
     try {
-      // FEA-2099 fake-feed e2e: boot already ran the real check and promoted
-      // packagedUpdateState to downloaded; just surface that status payload so
-      // the test can observe readyToInstall without re-fetching the fixture.
-      if (isFakeUpdateFeedActive(app.isPackaged)) {
-        return deps.getPackagedUpdateStatusPayload();
-      }
-      if (app.isPackaged) {
+      // True for packaged builds and for the FEA-2099 fake-feed e2e seam, so a
+      // launched-app spec can drive a real renderer check (ISS-10291).
+      if (isPackagedUpdateFlowActive(app.isPackaged)) {
         return await runPackagedUpdateCheck(deps);
       }
       return await deps.checkForUpdate();

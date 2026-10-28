@@ -17,6 +17,7 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { isTccProtectedPath } from "../../shared/sandbox-policy.js";
 import { resolveClaudeHome } from "./claude-home.js";
 
 // ---------------------------------------------------------------------------
@@ -71,7 +72,8 @@ export const RESERVED_PLUGIN_PACK_IDS: ReadonlySet<string> = new Set([
  * Read and parse `~/.claude/plugins/installed_plugins.json` into flat
  * install-scope entries. Returns `{ status: "ok", entries }` when the file is
  * absent (genuine empty) or successfully parsed, and `{ status: "unreadable" }`
- * when the file exists but a read/parse failure means the contents are unknown.
+ * when the file exists but a read/parse failure means the contents are unknown,
+ * or when it is inside a TCC-protected folder and is not read (ISS-11914).
  */
 export function readClaudeInstalledPluginRegistry(): ClaudePluginRegistryRead {
   const registryPath = path.join(
@@ -79,6 +81,10 @@ export function readClaudeInstalledPluginRegistry(): ClaudePluginRegistryRead {
     "plugins",
     "installed_plugins.json"
   );
+
+  if (isTccProtectedPath(registryPath)) {
+    return { status: "unreadable" };
+  }
 
   let raw: string;
   try {

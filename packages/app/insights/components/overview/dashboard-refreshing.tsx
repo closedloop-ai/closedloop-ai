@@ -16,6 +16,22 @@ import { useEffect, useRef, useState } from "react";
 // numbers arrive; nothing reflows, no widget remounts, and no chart/toggle state
 // is reset.
 //
+// ISS-10414 KEPT THAT INDICATOR AND ADDED A SECOND, NARROWER ONE — read the
+// paragraph above as "one indicator for the dashboard-wide FACT", not as "no
+// row may ever speak for itself". FEA-4020 assumed the sections land together,
+// which is what makes nine indicators nine spellings of one fact. They do not:
+// Delivery answers in a beat and Utilization/Agents can trail it by minutes, so
+// a reader watching the global word sees the new range's Cost and merged PRs
+// beside the previous range's Sessions KPI, Event Activity, model cost and
+// autonomy — with nothing on screen saying which half is which. The global
+// indicator answers "is anything still in flight"; {@link
+// DashboardRowUpdatingNotice} answers "is what I am reading RIGHT HERE the
+// selection I just made", which the global one cannot. It is shown only on the
+// widgets whose sections are genuinely still serving the previous key, so it
+// clears row by row as they land rather than painting every row at once — and
+// it is rendered INSIDE each widget's own card, so it travels with the widget
+// into the fullscreen expand dialog instead of being left behind in the grid.
+//
 // The affordance is gated on the user-driven inputs (the applied range/scope),
 // NOT on raw `isFetching`: a background poll or a db-change invalidation
 // refetches the same range and must not flash the indicator (the desktop
@@ -61,10 +77,6 @@ export function useDashboardRefreshing({
   // The request key we last observed as fully settled. A fetch is
   // "user-requested" only while the live key differs from this.
   const settledKeyRef = useRef<string | null>(null);
-  const [visible, setVisible] = useState(false);
-  const onsetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const minVisibleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const shownAtRef = useRef<number | null>(null);
 
   // Record the key as settled once nothing is fetching, so the next fetch at a
   // *new* key is recognized as user-requested (and a fetch at the same key is
@@ -79,6 +91,27 @@ export function useDashboardRefreshing({
     settledKeyRef.current !== null &&
     settledKeyRef.current !== requestKey;
 
+  return useDebouncedVisibility(userRequested);
+}
+
+/**
+ * Onset + minimum-visible debounce for an in-flight disclosure.
+ *
+ * Shared by the header indicator and {@link DashboardRowUpdatingNotice} so the
+ * two cannot drift: a sub-perceptual refetch paints neither, and a refetch that
+ * lands just after the onset cannot stutter either one off a frame later.
+ * Review thread 2026-09-17: the row notice flipped the instant
+ * `isPlaceholderData` did, so every section keyed on `period:scope` chipped
+ * itself on the first frames after every range click — ten copies of one
+ * sentence, the shape FEA-4020 was written to reject. Only the genuinely
+ * lagging sections reach the onset.
+ */
+export function useDebouncedVisibility(active: boolean): boolean {
+  const [visible, setVisible] = useState(false);
+  const onsetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const minVisibleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const shownAtRef = useRef<number | null>(null);
+
   useEffect(() => {
     const clearOnset = () => {
       if (onsetTimerRef.current) {
@@ -87,7 +120,7 @@ export function useDashboardRefreshing({
       }
     };
 
-    if (userRequested) {
+    if (active) {
       // Schedule the onset unless we're already showing (or already scheduled).
       if (!(visible || onsetTimerRef.current)) {
         onsetTimerRef.current = setTimeout(() => {
@@ -118,7 +151,7 @@ export function useDashboardRefreshing({
         minVisibleTimerRef.current = null;
       }
     };
-  }, [userRequested, visible]);
+  }, [active, visible]);
 
   return visible;
 }
@@ -143,10 +176,10 @@ export function DashboardRefreshingIndicator({
   refreshing: boolean;
   className?: string;
 }) {
+  // The live region is always mounted so a screen reader picks up the
+  // transition into and out of "Refreshing"; the visible Chip is present only
+  // while refreshing.
   return (
-    // The live region is always mounted so a screen reader picks up the
-    // transition into and out of "Refreshing"; the visible Chip is present only
-    // while refreshing.
     <div aria-live="polite" className={cn("min-w-0", className)} role="status">
       {refreshing ? (
         <Chip size="sm" variant="muted">
@@ -158,4 +191,116 @@ export function DashboardRefreshingIndicator({
   );
 }
 
-export { REFRESHING_LABEL, REFRESHING_MIN_VISIBLE_MS, REFRESHING_ONSET_MS };
+/**
+ * ISS-10414: the per-row half of the disclosure. Shown on a dashboard row whose
+ * insights section is still serving the PREVIOUS range/scope's payload, so the
+ * numbers and axes under it are not the selection the reader just made.
+ *
+ * The visible word is short because it sits in a widget's own card, not in a
+ * page header. The sentence a reader actually needs — WHICH data they are
+ * looking at — reaches assistive tech through the sr-only live region below and
+ * sighted readers through the chip's `title`. It is NOT an `aria-label` on the
+ * chip: `Chip` renders a bare `<span>`, which maps to `role=generic`, and
+ * accname prohibits naming there — so the sentence most likely never reached AT
+ * at all, and neither test layer could see it because RTL `getByLabelText` and
+ * Playwright `getByLabel` both read the attribute off the DOM rather than the
+ * accessibility tree (review thread, 2026-09-17).
+ *
+ * The live region is ALWAYS mounted, for the reason
+ * {@link DashboardRefreshingIndicator} carries the same note: a region inserted
+ * into the DOM with its content already inside it is routinely not announced,
+ * and a region that unmounts never announces the clearance. It is `sr-only`,
+ * which is absolutely positioned and therefore out of flow, so a settled card
+ * pays no gap for it — the VISIBLE half is what mounts and unmounts.
+ *
+ * Built from the same `Chip` + `RefreshCwIcon` as
+ * {@link DashboardRefreshingIndicator} so the two read as one family rather
+ * than two inventions.
+ *
+ * A pure renderer: the onset debounce lives at the OWNER, which also swaps the
+ * period and delta captions, so the chip and the captions can never appear a
+ * frame apart. See {@link useDebouncedVisibility}.
+ */
+export function DashboardRowUpdatingNotice({
+  stale,
+  className,
+  description = ROW_UPDATING_DESCRIPTION,
+}: {
+  stale: boolean;
+  className?: string;
+  /**
+   * The sentence naming WHICH selection the content belongs to. Defaults to the
+   * whole-row claim; a widget whose metrics span BOTH selections overrides it,
+   * because telling the reader everything on it is the previous range is a
+   * different wrong claim in the same family (review thread, 2026-09-17).
+   */
+  description?: string;
+}) {
+  return (
+    <>
+      <span aria-live="polite" className="sr-only" role="status">
+        {stale ? description : ""}
+      </span>
+      {stale ? (
+        <div className={cn("min-w-0", className)}>
+          <Chip size="sm" title={description} variant="muted">
+            <RefreshCwIcon aria-hidden="true" className="animate-spin" />
+            {ROW_UPDATING_LABEL}
+          </Chip>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+const ROW_UPDATING_LABEL = "Updating";
+
+const ROW_UPDATING_DESCRIPTION =
+  "Updating — still showing the previous range and scope";
+
+/**
+ * The AI Impact card's counterpart. That card DIVIDES one section by another, so
+ * a half-settled dashboard draws cost and merged PRs from the new selection and
+ * tokens/model share from the old one — and the two ratios span the pair. The
+ * whole-row sentence would assert that all four belong to the previous
+ * selection, which is simply a different false claim (review thread,
+ * 2026-09-17), so this one names the mix instead.
+ */
+const MIXED_SELECTION_DESCRIPTION =
+  "Updating — some figures are still from the previous range and scope, so the ratios combine two selections";
+
+/**
+ * What a range-labelled widget says instead of the SELECTED period while its
+ * section is stale. "Last 7 days" printed over a ninety-day grid is the exact
+ * contradiction ISS-10414 was filed for: the label asserted the selection, the
+ * pixels were the previous one. This asserts neither.
+ *
+ * "Previous selection" and not "Previous range": scope is in the query key too,
+ * and desktop has a live Me/Organization control, so flipping scope with the
+ * range untouched at 7d withdrew a window that was still true and left the
+ * reader unable to tell which seven days they were looking at (review thread,
+ * 2026-09-17). The chip's sentence already names both axes; this now does too.
+ */
+const STALE_PERIOD_LABEL = "Previous selection";
+
+/**
+ * The comparison caption's counterpart to {@link STALE_PERIOD_LABEL}, and the
+ * SECOND range claim a stale row makes. `deltaLabel` ("vs. prior 30 days") is
+ * derived from the picker, not from the payload, so a ninety-day row that has
+ * not refetched yet renders its QoQ delta captioned as the seven-day
+ * comparison the reader just selected — the same contradiction as the period
+ * caption, one widget over (review thread, 2026-09-16). The chip's NUMBER is
+ * still drawn: what is withheld is only the window it claims to compare.
+ */
+const STALE_DELTA_LABEL = "vs. the prior period";
+
+export {
+  MIXED_SELECTION_DESCRIPTION,
+  REFRESHING_LABEL,
+  REFRESHING_MIN_VISIBLE_MS,
+  REFRESHING_ONSET_MS,
+  ROW_UPDATING_DESCRIPTION,
+  ROW_UPDATING_LABEL,
+  STALE_DELTA_LABEL,
+  STALE_PERIOD_LABEL,
+};

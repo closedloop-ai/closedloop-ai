@@ -45,9 +45,9 @@ function cardsOf(count: number): DocumentRowData[] {
 }
 
 const meta = {
-  title: "App Core/My Tasks/Card View",
+  title: "Composites v1.0/My Tasks/My Tasks Card View",
   component: MyTasksCardView,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "fullscreen" },
   args: {
     artifacts: cardsOf(50),

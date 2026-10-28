@@ -1,6 +1,6 @@
 "use client";
 
-import type { GitHubIntegrationStatus } from "@repo/api/src/types/github";
+import { resolveGitHubDataConnected } from "@repo/api/src/types/github-data-connected";
 import type { InsightsGitHubProvenance } from "@repo/api/src/types/insights";
 import {
   INSIGHTS_SECTION_OPTIONS,
@@ -8,25 +8,36 @@ import {
   InsightsScope as InsightsScopeValues,
 } from "@repo/api/src/types/insights";
 import { useGitHubIntegrationStatus } from "@repo/app/github/hooks/use-github-integration";
-import { createHttpInsightsReads } from "@repo/app/insights/data/http-insights-data-source";
+import {
+  GitHubConnectAction,
+  resolveGitHubConnectAction,
+} from "@repo/app/github/lib/github-connect-action";
+import {
+  createHttpInsightsReads,
+  createHttpSessionMeshInsightsRead,
+} from "@repo/app/insights/data/http-insights-data-source";
 import {
   type InsightsDataSource,
   InsightsDataSourceProvider,
 } from "@repo/app/insights/data/insights-data-source";
 import { insightsKeys } from "@repo/app/insights/hooks/use-insights";
 import {
-  GitHubConnectMode,
-  resolveGitHubConnectMode,
-  resolveGitHubDataConnected,
-} from "@repo/app/insights/lib/github-connect-mode";
-import {
   InsightsGitHubConnectionState,
+  resolveInsightsGitHubConnectionState,
   resolveInsightsTileAvailability,
 } from "@repo/app/insights/lib/tile-availability";
 import { useApiClient } from "@repo/app/shared/api/use-api-client";
+import { SESSION_COUNT_SITE } from "@repo/app/shared/counts/session-count-population-reconciliation";
 import { useTeams } from "@repo/app/teams/hooks/use-teams";
 import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useMemo, useRef } from "react";
+
+/**
+ * ISS-10585: The data source is what makes the dashboard's Sessions tile org-scoped; the
+ * shared tile renders whatever it is handed (operator ruling, 2026-09-18).
+ */
+export const DASHBOARD_KPI_TILE_COUNT_SITE =
+  SESSION_COUNT_SITE.DashboardKpiTileOrg;
 
 /**
  * Web shell adapter for the Insights data port: serves the shared page from the
@@ -38,28 +49,50 @@ export function WebInsightsDataSourceProvider({
   children,
   githubAuthorizeHref,
   githubConnectHref,
-  githubInstallHref,
+  teamScopes = false,
 }: {
   children: ReactNode;
   githubAuthorizeHref?: string;
   githubConnectHref?: string;
-  githubInstallHref?: string;
+  /**
+   * Read the org's Teams so the `team` aggregation scope can be advertised.
+   *
+   * ISS-7514: `GET /teams` answers exactly one question — is there a team to
+   * switch to — and only the Insights page renders the scope selector that asks
+   * it. The org dashboard mounts this same provider and reads neither
+   * `availableScopes` nor `availableTeams`, so leaving this off keeps that
+   * request out of its first paint entirely rather than merely later.
+   *
+   * Off ALSO means `availableTeams` stays `undefined` rather than `[]`: a
+   * consumer must be able to tell "nobody asked" from "this org has no teams".
+   */
+  teamScopes?: boolean;
 }) {
   const apiClient = useApiClient();
   const queryClient = useQueryClient();
-  const teamsQuery = useTeams();
+  const teamsQuery = useTeams({ enabled: teamScopes });
   const githubStatusQuery = useGitHubIntegrationStatus();
-  const teams = teamsQuery.data ?? [];
-  const githubConnectionState = resolveGitHubConnectionState(
+  // Undefined until the read resolves — including forever when it was never
+  // enabled. Kept distinct from `[]` all the way to `availableTeams`.
+  const teams = teamsQuery.data;
+  const githubConnectionState = resolveInsightsGitHubConnectionState(
     githubStatusQuery.data
   );
   const githubDataConnected = resolveGitHubDataConnected(
     githubStatusQuery.data
   );
-  const resolvedGitHubConnectHref = resolveGitHubConnectHref({
-    authorizeHref: githubAuthorizeHref ?? githubConnectHref,
-    installHref: githubInstallHref,
+  // ISS-5958 D3 follow-on: a connect CTA always means "authorize my own GitHub
+  // account". Installing the App across an org stays an admin action reached
+  // from Settings, so no status shape can route this href into the install flow
+  // any more.
+  const resolvedGitHubConnectHref = githubAuthorizeHref ?? githubConnectHref;
+  // ISS-5958 D1: this provider only mounts under the web `(authenticated)`
+  // route group, so a session always sits behind it and `SignUp` is not
+  // reachable here. That comes from WHERE this renders, never from whether a
+  // GitHub status happens to be present.
+  const githubConnectAction = resolveGitHubConnectAction({
     status: githubStatusQuery.data,
+    authenticated: true,
   });
   const lastObservedGitHubConnected = useRef(githubDataConnected);
 
@@ -80,10 +113,14 @@ export function WebInsightsDataSourceProvider({
   }, [githubStatusQuery.data, queryClient]);
 
   const reads = useMemo(() => createHttpInsightsReads(apiClient), [apiClient]);
+  const sessionMeshRead = useMemo(
+    () => createHttpSessionMeshInsightsRead(apiClient),
+    [apiClient]
+  );
   const source = useMemo<InsightsDataSource>(
     () => ({
       availableScopes:
-        teams.length > 0
+        teams && teams.length > 0
           ? [
               InsightsScopeValues.Me,
               InsightsScopeValues.Org,
@@ -91,8 +128,17 @@ export function WebInsightsDataSourceProvider({
             ]
           : [InsightsScopeValues.Me, InsightsScopeValues.Org],
       availableSections: INSIGHTS_SECTION_OPTIONS,
-      availableTeams: teams.map((team) => ({ id: team.id, name: team.name })),
-      githubConnectHref: resolvedGitHubConnectHref,
+      availableTeams: teams?.map((team) => ({ id: team.id, name: team.name })),
+      githubConnect: resolvedGitHubConnectHref
+        ? {
+            // A gated tile only renders while the connection is missing, so an
+            // action the resolver reports as `null` (connected, or not known
+            // yet) never reaches a CTA; first-time connect is the honest
+            // fallback if one ever does.
+            action: githubConnectAction ?? GitHubConnectAction.Connect,
+            href: resolvedGitHubConnectHref,
+          }
+        : undefined,
       getTileAvailability: ({
         tileId,
         section,
@@ -111,8 +157,16 @@ export function WebInsightsDataSourceProvider({
           payloadAvailability,
         }),
       ...reads,
+      ...sessionMeshRead,
     }),
-    [reads, teams, resolvedGitHubConnectHref, githubConnectionState]
+    [
+      reads,
+      sessionMeshRead,
+      teams,
+      githubConnectAction,
+      resolvedGitHubConnectHref,
+      githubConnectionState,
+    ]
   );
 
   return (
@@ -120,34 +174,6 @@ export function WebInsightsDataSourceProvider({
       {children}
     </InsightsDataSourceProvider>
   );
-}
-
-function resolveGitHubConnectionState(
-  status: GitHubIntegrationStatus | undefined
-): InsightsGitHubConnectionState {
-  const connected = resolveGitHubDataConnected(status);
-  if (connected === true) {
-    return InsightsGitHubConnectionState.Connected;
-  }
-  if (connected === false) {
-    return InsightsGitHubConnectionState.Disconnected;
-  }
-  return InsightsGitHubConnectionState.Unknown;
-}
-
-function resolveGitHubConnectHref({
-  authorizeHref,
-  installHref,
-  status,
-}: {
-  authorizeHref: string | undefined;
-  installHref: string | undefined;
-  status: GitHubIntegrationStatus | undefined;
-}): string | undefined {
-  if (resolveGitHubConnectMode(status) === GitHubConnectMode.Install) {
-    return installHref ?? authorizeHref;
-  }
-  return authorizeHref ?? installHref;
 }
 
 function resolveCloudGitHubConnectionState({

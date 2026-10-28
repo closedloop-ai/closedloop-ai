@@ -1,10 +1,10 @@
+import {
+  GITHUB_CLERK_LINK_PATH,
+  GitHubConnectReturnSegment,
+} from "@repo/api/src/types/github-clerk-link";
+import { GitHubConnectIpcChannel } from "../../shared/github-connect-opener-ipc-channel.js";
+import type { GitHubConnectReturnWatch } from "../github/github-connect-return-watch.js";
 import { isAllowedDesktopVerificationUrl } from "../settings/external-url-allowlist.js";
-
-export const GitHubConnectIpcChannel = {
-  Open: "desktop:open-github-connect",
-} as const;
-export type GitHubConnectIpcChannel =
-  (typeof GitHubConnectIpcChannel)[keyof typeof GitHubConnectIpcChannel];
 
 export const GitHubConnectOpenFailureReason = {
   UntrustedSender: "untrusted_sender",
@@ -21,12 +21,20 @@ export type GitHubConnectOpenResult =
 export type GitHubConnectOpenRequest = {
   install?: boolean;
   returnTo?: string;
+  /**
+   * Bring Desktop back to the front once the connect lands. Additive: a
+   * renderer that predates it never asks, and a main process that predates it
+   * ignores it, so either side of a skew opens the browser exactly as before.
+   */
+  returnToDesktop?: boolean;
 };
 
 export type GitHubConnectOpenerDeps = {
   isTrustedSender: (sender: unknown) => boolean;
   getWebAppOrigin: () => string;
   openExternal: (url: string) => Promise<unknown>;
+  /** Absent in hosts that cannot read the connection; no watch then. */
+  returnWatch?: GitHubConnectReturnWatch;
 };
 
 type IpcMainLike = {
@@ -37,7 +45,16 @@ type IpcMainLike = {
 };
 
 const BRANCH_DETAIL_RETURN_PATH_PATTERN = /^\/branches\/[^/]+$/;
-const INSIGHTS_RETURN_PATH = "/insights";
+const DEFAULT_RETURN_PATH = "/branches";
+/**
+ * The exact post-connect destinations the desktop may hand the web app, derived
+ * from the one cross-process list so this side and the web app's own validator
+ * cannot drift (ISS-5958). Still an allowlist, never a passthrough: this value
+ * becomes a navigation target in the user's browser after an OAuth round trip.
+ */
+const EXACT_RETURN_PATHS: ReadonlySet<string> = new Set(
+  Object.values(GitHubConnectReturnSegment).map((segment) => `/${segment}`)
+);
 
 /** Register the desktop GitHub App connect opener IPC handler. */
 export function registerGitHubConnectOpenerIpcHandlers(
@@ -70,6 +87,9 @@ async function openGitHubConnectUrl(
   }
   try {
     await deps.openExternal(url);
+    if (request?.returnToDesktop === true) {
+      deps.returnWatch?.start();
+    }
     return { ok: true, url };
   } catch {
     return { ok: false, reason: GitHubConnectOpenFailureReason.OpenFailed };
@@ -80,7 +100,16 @@ function buildGitHubConnectUrl(
   webAppOrigin: string,
   request: GitHubConnectOpenRequest | undefined
 ): string {
-  const url = new URL("/api/integrations/github", webAppOrigin);
+  // PLN-1742 M5: authorize opens land on the web Clerk linking page,
+  // unconditionally (the `github-clerk-credentials` Labs toggle was retired
+  // with the in-house authorize flow). Install-mode opens stay on the app
+  // route — the App-install entry point survives the OAuth-client retirement.
+  const url = new URL(
+    request?.install === true
+      ? "/api/integrations/github"
+      : GITHUB_CLERK_LINK_PATH,
+    webAppOrigin
+  );
   url.searchParams.set(
     "returnTo",
     resolveGitHubConnectReturnTo(request?.returnTo)
@@ -95,27 +124,24 @@ function resolveGitHubConnectReturnTo(
   requestedReturnTo: string | undefined
 ): string {
   if (!requestedReturnTo) {
-    return "/branches";
+    return DEFAULT_RETURN_PATH;
   }
   try {
     const parsed = new URL(requestedReturnTo, "https://return.invalid");
     if (parsed.origin !== "https://return.invalid") {
-      return "/branches";
+      return DEFAULT_RETURN_PATH;
     }
     if (parsed.search || parsed.hash) {
-      return "/branches";
+      return DEFAULT_RETURN_PATH;
     }
-    if (parsed.pathname === "/branches") {
-      return parsed.pathname;
-    }
-    if (parsed.pathname === INSIGHTS_RETURN_PATH) {
+    if (EXACT_RETURN_PATHS.has(parsed.pathname)) {
       return parsed.pathname;
     }
     if (BRANCH_DETAIL_RETURN_PATH_PATTERN.test(parsed.pathname)) {
       return parsed.pathname;
     }
-    return "/branches";
+    return DEFAULT_RETURN_PATH;
   } catch {
-    return "/branches";
+    return DEFAULT_RETURN_PATH;
   }
 }

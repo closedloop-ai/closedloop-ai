@@ -11,6 +11,7 @@ import {
   searchHitRoute,
 } from "@repo/api/src/types/search.js";
 import {
+  OFFERED_SEARCH_ENTITY_TYPES,
   PHASE_1_SEARCH_ENTITY_TYPES,
   type SearchEntityType,
 } from "@repo/api/src/types/search-entity-kind.js";
@@ -24,6 +25,7 @@ import {
   asRecord,
   DOCUMENT_DOC_HELP,
   extractArrayItems,
+  MAX_CURSOR_CHARS,
   type McpUrlBuilder,
   readNumber,
   readString,
@@ -99,7 +101,7 @@ function shapeSearchHit(value: unknown, urls: McpUrlBuilder) {
     snippet: readString(row.snippet),
     rank: readNumber(row.rank),
     updatedAt: readString(row.updatedAt),
-    // Prefer the routable Phase-2 path (type+slug / team-scoped / loop-by-id);
+    // Prefer the routable Phase-2 path (type+slug / team-scoped / id-keyed);
     // fall back to the server `deepLink`, then the shared UUID-only builder.
     webUrl: resolvedRoute === null ? null : urls.withOrgPrefix(resolvedRoute),
   };
@@ -186,7 +188,7 @@ async function runLegacySearch(
 
 /**
  * Run the unified FTS search across the whole Phase-1 corpus
- * (documents/projects/loops) and shape the ranked `UnifiedSearchResponse`.
+ * (documents/projects) and shape the ranked `UnifiedSearchResponse`.
  */
 async function runUnifiedSearch(
   apiClient: ApiClient,
@@ -198,8 +200,15 @@ async function runUnifiedSearch(
   urls: McpUrlBuilder
 ) {
   const query: Record<string, string | readonly string[]> = { q, mode };
-  if (types.length > 0) {
-    query.types = types;
+  // Repeats are legal input — `GET /search` folds `types=document&types=document`
+  // to one predicate (route.ts, first-seen `seenTypes` set) — but each one is
+  // another `types=` pair on a GET request line, and a long enough array
+  // overruns the API server's 16 KB header budget for an opaque 431 (ISS-9177).
+  // Collapsing here in the same first-seen order caps the array at the enum size
+  // without turning any call the route accepts into a tool error.
+  const distinctTypes = [...new Set(types)];
+  if (distinctTypes.length > 0) {
+    query.types = distinctTypes;
   }
   // Forward paging inputs so an agent can raise the page size past the server
   // default and follow a prior page's `nextCursor` (both honored on the route's
@@ -228,7 +237,7 @@ async function runUnifiedSearch(
  * Register the search tool on the given MCP server. Calls `GET /search`.
  *
  * Default (plain-text `q`): the legacy documents + projects response. The
- * unified full-text search over the Phase-1 corpus (documents, projects, loops,
+ * unified full-text search over the Phase-1 corpus (documents, projects,
  * …) — ranked heterogeneous hits — runs when `mode` or `types` is supplied OR
  * when `q` itself carries inline query-language filters (`type:`, `@owner`,
  * `:status`, …), which the shared decoder detects (FEA-4134/FEA-4151).
@@ -241,7 +250,7 @@ export function registerSearch(
   server.registerTool(
     "search",
     {
-      description: `Full-text search across the platform. Default returns documents (by title, slug, type, tag) and projects (by name, slug, description). Pass \`mode\`/\`types\` — or inline query-language filters in \`q\` such as \`type:loop\`, \`@owner\`, or \`status:TODO\` — to run the unified full-text search across documents, projects, and loops with ranked results and highlighted snippets. ${DOCUMENT_DOC_HELP} Returned \`slug\` values are the preferred user-facing handles for follow-up calls.`,
+      description: `Full-text search across the platform. Default returns documents (by title, slug, type, tag) and projects (by name, slug, description). Pass \`mode\`/\`types\` — or inline query-language filters in \`q\` such as \`@owner\` or \`status:TODO\` — to run the unified full-text search across documents and projects with ranked results and highlighted snippets. ${DOCUMENT_DOC_HELP} Returned \`slug\` values are the preferred user-facing handles for follow-up calls.`,
       inputSchema: {
         q: z
           .string()
@@ -260,7 +269,7 @@ export function registerSearch(
           .array(z.enum(PHASE_1_SEARCH_ENTITY_TYPES))
           .optional()
           .describe(
-            `Restrict the unified search to these entity types (${PHASE_1_SEARCH_ENTITY_TYPES.join(", ")}). Omit for all. Supplying this runs the unified corpus search.`
+            `Restrict the unified search to these entity types (${OFFERED_SEARCH_ENTITY_TYPES.join(", ")}). Omit for all. Supplying this runs the unified corpus search.`
           ),
         limit: z
           .number()
@@ -273,6 +282,8 @@ export function registerSearch(
           ),
         cursor: z
           .string()
+          .min(1)
+          .max(MAX_CURSOR_CHARS)
           .optional()
           .describe(
             "Continuation token from a prior response's `nextCursor` to fetch the next page of unified results. Supplying this runs the unified corpus search; re-send the same `q`/`mode`/`types` alongside it."
@@ -285,7 +296,7 @@ export function registerSearch(
         // through the unified corpus search — matching the `GET /search` route,
         // which parses `q` with the same shared decoder and diverts to the
         // unified path when it carries structured filters (FEA-4134/FEA-4151).
-        // Without this, a `q=type:loop` query with no `mode`/`types` param falls
+        // Without this, a `q=type:project` query with no `mode`/`types` param falls
         // to the legacy documents+projects path, whose corpus never matches the
         // inline filter and silently returns an empty payload.
         const parsed = parseSearchQuery(q);
@@ -307,7 +318,7 @@ export function registerSearch(
         // re-extracting the kinds here would double-handle the filters and drop
         // the free-text remainder the route expects to strip. We only decide the
         // RESPONSE SHAPE (unified vs legacy) locally; a `mode` is still sent so a
-        // bare `q=type:loop` (no `mode` param) reaches the unified path
+        // bare `q=type:project` (no `mode` param) reaches the unified path
         // deterministically instead of relying on the route's own divert.
         const payload = useUnified
           ? await runUnifiedSearch(

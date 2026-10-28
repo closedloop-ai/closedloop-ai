@@ -24,7 +24,7 @@ import { normalizeSubagentIdentity } from "./subagent-identity";
 // service.ts, FEA-3982 Slice 2). This module owns HOW the org-level list rows
 // are keyed and merged: the fingerprint-aware identity key, the merge/fold
 // accumulators, and the derived Source label. Keeping it separate shrinks the
-// grandfathered service.ts and gives the identity contract its own test target.
+// service.ts and gives the identity contract its own test target.
 // ---------------------------------------------------------------------------
 
 export type MergedComponent = {
@@ -259,8 +259,7 @@ export type UsageGroupRow = {
 //
 // FEA-3982 (Slice 2): the dedup map is keyed by `fingerprintIdentityKey(slug,
 // fingerprint)` rather than the bare `slug`, so two same-named components with
-// different bytes fold into two distinct entries. `maxOrgInventoryRows` bounds
-// the total working set the same way the caller's inventory read does.
+// different bytes fold into two distinct entries.
 //
 // FEA-3982 (whitlockk decision): usage is NOT folded here anymore. Seeding the
 // version buckets from inventory is a SEPARATE pass from attributing usage,
@@ -407,13 +406,12 @@ export function buildInventorySlugById(
  * no resolvable version hash folds into the name-level bucket (skew-safe). A
  * usage row whose version bucket was never seeded by inventory (its inventory row
  * was tombstoned, or the hash predates the current inventory row) creates the
- * bucket on demand from the usage row alone, subject to `maxOrgInventoryRows`.
+ * bucket on demand from the usage row alone.
  */
 export function foldFkUsageIntoMerged(
   mergedMap: Map<string, MergedComponent>,
   slugById: Map<string, string>,
-  usageByComponentId: Map<string, UsageGroupRow[]>,
-  maxOrgInventoryRows: number
+  usageByComponentId: Map<string, UsageGroupRow[]>
 ): void {
   for (const [componentId, groups] of usageByComponentId) {
     const fkRowSlug = slugById.get(componentId);
@@ -440,17 +438,10 @@ export function foldFkUsageIntoMerged(
         group.componentVersionHash,
         group.definitionHash
       );
-      const merged = resolveUsageBucket(
-        mergedMap,
-        identityKey,
-        slug,
-        group,
-        maxOrgInventoryRows
+      foldUsageGroup(
+        resolveUsageBucket(mergedMap, identityKey, slug, group),
+        group
       );
-      if (!merged) {
-        continue;
-      }
-      foldUsageGroup(merged, group);
     }
   }
 }
@@ -496,23 +487,23 @@ export function familyIdentitySlug(
  * Resolve (or lazily create) the version bucket a usage row attributes to.
  * Returns the existing seeded bucket when the usage row's version was already
  * observed as inventory; otherwise synthesizes a usage-only bucket from the
- * usage row's fields (its inventory row is gone or the hash predates it),
- * respecting the working-set cap. Returns null only when the cap is hit and no
- * bucket exists, so the caller drops that usage rather than growing unbounded.
+ * usage row's fields (its inventory row is gone or the hash predates it).
+ *
+ * ISS-6891: this used to return null past a working-set cap, dropping the usage.
+ * That cap was evaluated against an already-FACETED population, so a `?kinds=`
+ * read — whose map starts far emptier — synthesized buckets that the All read had
+ * no room left for, which is the same "a narrower filter reveals more" defect the
+ * read-side cap caused. Nothing is dropped now.
  */
 function resolveUsageBucket(
   mergedMap: Map<string, MergedComponent>,
   identityKey: string,
   slug: string,
-  group: UsageGroupRow,
-  maxOrgInventoryRows: number
-): MergedComponent | null {
+  group: UsageGroupRow
+): MergedComponent {
   const existing = mergedMap.get(identityKey);
   if (existing) {
     return existing;
-  }
-  if (mergedMap.size >= maxOrgInventoryRows) {
-    return null;
   }
   const { key: normKey } = normalizeSubagentIdentity(
     slugKind(slug),
@@ -615,8 +606,7 @@ function bumpLastInvokedAt(
  * user only USED (never had collected as installed inventory) still surface. The
  * synthetic entry is keyed by the same version identity, so if a real inventory
  * row for that version later appears it MERGES into the same entry rather than
- * duplicating. Synthetic-entry creation respects `maxOrgInventoryRows` so the
- * total working set (inventory + synthetic) stays bounded.
+ * duplicating.
  *
  * FEA-3982 (whitlockk decision): an orphan usage row is NOT version-agnostic — it
  * carries the `componentVersionHash` (and, once the F1 backfill lands, a
@@ -631,8 +621,7 @@ function bumpLastInvokedAt(
  */
 export function foldOrphanUsageIntoMerged(
   mergedMap: Map<string, MergedComponent>,
-  orphanUsages: OrphanUsageRow[],
-  maxOrgInventoryRows: number
+  orphanUsages: OrphanUsageRow[]
 ): void {
   for (const usage of orphanUsages) {
     // Roll up instance-unique subagent usage the same way inventory rows are
@@ -655,11 +644,9 @@ export function foldOrphanUsageIntoMerged(
     let merged = mergedMap.get(identityKey);
     if (!merged) {
       // No inventory row for this identity's version — surface it as a synthetic
-      // usage-only entry seeded from the usage row, subject to the working-set
-      // cap.
-      if (mergedMap.size >= maxOrgInventoryRows) {
-        continue;
-      }
+      // usage-only entry seeded from the usage row. ISS-6891: no working-set cap
+      // gates this any more; a facet-scoped cap here dropped exactly the
+      // usage-only components an All read most needed to show.
       merged = {
         // No canonical inventory row id exists; use the identity key as a stable,
         // deterministic id. Detail lookups re-resolve by slug, not id, so this
@@ -905,7 +892,7 @@ export function resolveMergedSource(entry: MergedComponent): string {
 /**
  * FEA-4374: the detail projection's `{ sourceType, source }` pair, derived
  * together from ONE selected pack id so the two can never disagree. Extracted
- * out of the (grandfathered, shrink-only) `service.ts` detail read so that
+ * out of the `service.ts` detail read so that
  * hot file gets smaller as it accretes the fix.
  *
  * `packId` is unioned across every version `row` of the identity (the

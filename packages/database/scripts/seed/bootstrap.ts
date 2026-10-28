@@ -85,16 +85,27 @@ export type ResolvedBootstrapIdentity = {
  * resolve an authenticated user, bound to the configured Sandbox identity when
  * provisioned and the synthetic fallback otherwise. Returns the deterministic
  * IDs.
+ *
+ * `env` is where the Sandbox identity config is read from. It defaults to the
+ * process environment for the CLI; the in-process caller (ISS-6804) passes the
+ * env it composed for one request rather than reaching for the global.
  */
 export async function ensureBootstrapUser(
-  prisma: PrismaClient
+  prisma: PrismaClient,
+  env: NodeJS.ProcessEnv = process.env
 ): Promise<BootstrapResult> {
   try {
     // Resolve identity (incl. the sandbox config validation) inside the try so a
     // misconfiguration ZodError is wrapped with the Bootstrap setup-failure
     // marker like every other bootstrap failure.
-    const identity = resolveBootstrapIdentity(process.env);
-    const organizationId = resolveBootstrapOrgId(identity.orgClerkId);
+    const identity = resolveBootstrapIdentity(env);
+    const namespace = bootstrapOrgNamespaceSchema.parse(
+      env.SEED_BOOTSTRAP_ORG_NAMESPACE
+    );
+    const organizationId = resolveBootstrapOrgId(
+      identity.orgClerkId,
+      namespace
+    );
     const userId = resolveBootstrapUserId(identity.userClerkId);
     // Key the upserts on the stable business unique keys (clerkId / (clerkId,
     // organizationId)), not the deterministic id, so reruns converge even if the
@@ -245,7 +256,14 @@ function blankToUndefined(value: string | undefined): string | undefined {
  * distinct deterministic id derived from its clerkId so the two never collide on
  * the `id` primary key if they ever share a schema.
  */
-function resolveBootstrapOrgId(orgClerkId: string): string {
+function resolveBootstrapOrgId(orgClerkId: string, namespace?: string): string {
+  if (namespace) {
+    // Ephemeral databases share Clerk credentials but must not share the
+    // organization UUID used in remote Liveblocks room identities.
+    return deterministicUuid(
+      `preview-bootstrap-organization-v1:${orgClerkId}:${namespace}`
+    );
+  }
   return orgClerkId === SYNTHETIC_ORG_CLERK_ID
     ? BOOTSTRAP_ORG_ID
     : deterministicUuid(`preview-bootstrap-organization-v1:${orgClerkId}`);
@@ -256,3 +274,5 @@ function resolveBootstrapUserId(userClerkId: string): string {
     ? BOOTSTRAP_USER_ID
     : deterministicUuid(`preview-bootstrap-user-v1:${userClerkId}`);
 }
+
+const bootstrapOrgNamespaceSchema = z.uuid().optional();

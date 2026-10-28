@@ -2,6 +2,9 @@
 
 import type { BranchPageDetail } from "@repo/api/src/types/branch";
 import type { MergedTraceItem } from "@repo/api/src/types/branch-trace";
+import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { ActorTurnSide } from "@repo/app/shared/lib/actor-color-domain";
+import { BRANCH_DETAIL_METRIC_HONESTY_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { formatDurationMs } from "@repo/app/shared/lib/format-duration-ms";
 import { EmptyState } from "@repo/design-system/components/ui/empty-state";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
@@ -12,7 +15,6 @@ import { memo, useMemo } from "react";
 import {
   actorForSession,
   type BranchActorColorDomain,
-  BranchActorTurnSide,
   buildActorColorDomain,
   deriveActorsFromSessions,
 } from "../lib/branch-actor-domain";
@@ -22,6 +24,7 @@ import {
   type TimeRange,
   timeRange,
 } from "../lib/branch-timeline-range";
+import { formatBranchDurationMs } from "../lib/format-branch-duration-ms";
 
 /**
  * Actor Gantt swimlane (Epic E / E4) — the design handoff's `BQLanes`. One lane
@@ -136,7 +139,7 @@ function buildLanes(
       sessionId: session.sessionId,
       label: domain.labelFor(actor),
       sub: session.name ?? session.slug ?? session.harness,
-      color: domain.colorForTurn(actor, BranchActorTurnSide.Agent),
+      color: domain.colorForTurn(actor, ActorTurnSide.Agent),
       isCi: session.harness === "ci" || meta?.ci === true,
       isResumed:
         meta?.isResumed === true || bursts.some((burst) => burst.isResumption),
@@ -234,6 +237,13 @@ function SwimlaneRow({
   /** FEA-4257: org-relative session-detail href for this lane, or null (non-link). */
   sessionHref?: string | null;
 }) {
+  // ISS-6958 (ISS-4779 closed-by-default): one duration treatment for the whole
+  // Branch detail screen, so a long-running lane does not read in raw minutes
+  // beside a headline card that scales.
+  const honest = useFeatureFlagEnabledOptional(
+    BRANCH_DETAIL_METRIC_HONESTY_FEATURE_FLAG_KEY
+  );
+  const format = honest ? formatBranchDurationMs : formatDurationMs;
   // The lane's static content (its extent band + active-burst buttons) depends
   // only on the lane and the shared axis — never on the playhead. Memoize it so
   // a scrub, which changes only `playheadPercent`, reuses these elements and
@@ -276,7 +286,7 @@ function SwimlaneRow({
                     width: `${Math.max(0.6, right - left)}%`,
                     background: lane.color,
                   }}
-                  title={`Active · ${formatDurationMs(burst.durationMs)}`}
+                  title={`Active · ${format(burst.durationMs)}`}
                   type="button"
                 />
               );
@@ -284,7 +294,7 @@ function SwimlaneRow({
           : null}
       </>
     );
-  }, [lane, axis, onScrubTimestamp]);
+  }, [lane, axis, onScrubTimestamp, format]);
 
   // FEA-4257: the whole identity cluster — the actor icon, the actor name, and
   // the session sub-label — is the single navigation target, so the hit area is
@@ -339,7 +349,7 @@ function SwimlaneRow({
         )}
       </div>
       <div className="bq-lane-meta">
-        <span className="font-mono">{formatDurationMs(lane.activeMs)}</span>
+        <span className="font-mono">{format(lane.activeMs)}</span>
       </div>
     </div>
   );

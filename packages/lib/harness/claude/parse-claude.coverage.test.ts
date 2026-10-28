@@ -9,31 +9,32 @@
  * outcome — no source-text scans.
  */
 import { describe, expect, it } from "vitest";
+import { toIso } from "../parser-utils";
 import type { UsageDedupEntry } from "../usage-dedup";
-import { extractDedupedUsage, isoTs } from "./parse-claude";
+import { extractDedupedUsage } from "./claude-usage";
+import { parseClaudeTranscript } from "./parse-claude";
 import {
   assistantLine,
   BASE_USAGE,
   userLine,
 } from "./parse-claude.test-fixtures";
-import { parseClaudeTranscript } from "./parse-claude-core";
 import { UNATTRIBUTED_SUBAGENT_ID } from "./parse-claude-subagents";
 
 // ---------------------------------------------------------------------------
-// isoTs — number branch
+// toIso — number branch
 // ---------------------------------------------------------------------------
 
-describe("isoTs", () => {
+describe("toIso", () => {
   it("converts an epoch number to an ISO string", () => {
     // typeof ts === "number" → new Date(ts).toISOString()
-    expect(isoTs(0)).toBe("1970-01-01T00:00:00.000Z");
-    expect(isoTs(1_234_567_890_000)).toBe("2009-02-13T23:31:30.000Z");
+    expect(toIso(0)).toBe("1970-01-01T00:00:00.000Z");
+    expect(toIso(1_234_567_890_000)).toBe("2009-02-13T23:31:30.000Z");
   });
 
   it("returns null for null/undefined/object inputs", () => {
-    expect(isoTs(null)).toBeNull();
-    expect(isoTs(undefined)).toBeNull();
-    expect(isoTs({ ts: "2026-01-01" })).toBeNull();
+    expect(toIso(null)).toBeNull();
+    expect(toIso(undefined)).toBeNull();
+    expect(toIso({ ts: "2026-01-01" })).toBeNull();
   });
 });
 

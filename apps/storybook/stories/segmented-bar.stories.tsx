@@ -46,9 +46,9 @@ const SegmentedBarCanvas = () => (
 );
 
 const meta = {
-  title: "Design System/Data Display/Data Visualization/Segmented Bar",
+  title: "Primitives v1.0/Charts/Segmented Bar",
   component: SegmentedBarCanvas,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: {
     layout: "centered",
   },

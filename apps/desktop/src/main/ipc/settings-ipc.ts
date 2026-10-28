@@ -10,6 +10,7 @@ import {
   normalizeScopePath,
   validateSandboxBaseDirectory,
 } from "../../shared/sandbox-policy.js";
+import { SettingsIpcChannel } from "../../shared/settings-ipc-channel.js";
 import { gatewayLog } from "../logging/gateway-logger.js";
 import type { ApiKeyStore } from "../settings/api-key-store.js";
 import {
@@ -19,14 +20,6 @@ import {
 import { seedReposConfig } from "../settings/seed-repos-config.js";
 import type { SettingsStore } from "../settings/settings-store.js";
 import { assertTrustedIpcSender } from "./ipc-trusted-sender.js";
-
-export const SettingsIpcChannel = {
-  GetSettings: "desktop:get-settings",
-  UpdateSettings: "desktop:update-settings",
-} as const;
-
-export type SettingsIpcChannel =
-  (typeof SettingsIpcChannel)[keyof typeof SettingsIpcChannel];
 
 type ApprovalTier = "auto" | "none" | "low" | "medium" | "high";
 
@@ -97,13 +90,24 @@ const COLLECTOR_TOGGLE_KEYS = [
 const DATA_SYNC_LEVEL_DERIVED_CONSENT_KEYS = [
   DESKTOP_TRANSCRIPT_SYNC_FEATURE_FLAG_KEY,
   "syncObservabilityTier",
-] as const;
+] as const satisfies readonly (keyof DesktopSettings)[];
 
 /**
- * Normalize an update payload into the partial that gets persisted: FEA-4103
- * consent-tier derived-key strip (the {@link DATA_SYNC_LEVEL_DERIVED_CONSENT_KEYS}
- * are removed FIRST so the generic path can never set them out of agreement with
- * the canonical `DataSyncLevel`), golden-mode cloud lockout, legacy "auto"
+ * Every key the generic `desktop:update-settings` path refuses to persist: the
+ * FEA-4103 derived consent keys, plus `alwaysAllowRules` (ISS-9175) — its only
+ * sanctioned writers are the approvals IPC handlers, which validate each rule;
+ * this path would persist any shape the renderer sent.
+ */
+const UPDATE_SETTINGS_STRIPPED_KEYS = [
+  ...DATA_SYNC_LEVEL_DERIVED_CONSENT_KEYS,
+  "alwaysAllowRules",
+] as const satisfies readonly (keyof DesktopSettings)[];
+
+/**
+ * Normalize an update payload into the partial that gets persisted: the
+ * {@link UPDATE_SETTINGS_STRIPPED_KEYS} strip (removed FIRST so the generic path
+ * can never set a derived consent key out of agreement with the canonical
+ * `DataSyncLevel`), golden-mode cloud lockout, legacy "auto"
  * approval-tier → "high", and origin validation. Mirrors the original inline
  * sequence (including the redundant boolean re-copies that guard against
  * non-boolean flag values reaching the store).
@@ -124,9 +128,9 @@ function buildNextUpdatePartial(
   // `cloudCommandsPaused`) stay settable here — they are orthogonal live controls
   // owned by the Relay/Gateway tab, and `getDataSyncLevel` reconciles the
   // displayed level against them so it can never lie about connectivity either.
-  for (const derivedConsentKey of DATA_SYNC_LEVEL_DERIVED_CONSENT_KEYS) {
-    if (derivedConsentKey in nextPartial) {
-      delete (nextPartial as Record<string, unknown>)[derivedConsentKey];
+  for (const strippedKey of UPDATE_SETTINGS_STRIPPED_KEYS) {
+    if (strippedKey in nextPartial) {
+      delete (nextPartial as Record<string, unknown>)[strippedKey];
     }
   }
   if (isGoldenMode) {
@@ -153,10 +157,6 @@ function buildNextUpdatePartial(
   }
   if (typeof partial.webAppOrigin === "string") {
     nextPartial.webAppOrigin = normalizeWebAppOrigin(partial.webAppOrigin);
-  }
-  if (typeof partial.commandSigningEnforcementEnabled === "boolean") {
-    nextPartial.commandSigningEnforcementEnabled =
-      partial.commandSigningEnforcementEnabled;
   }
   if (typeof partial.planExtractionEnabled === "boolean") {
     nextPartial.planExtractionEnabled = partial.planExtractionEnabled;

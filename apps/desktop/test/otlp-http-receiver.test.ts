@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import http from "node:http";
-import { test } from "node:test";
+import { test } from "vitest";
 import { AgentHookListener } from "../src/main/agent-monitor/agent-monitor-listener.js";
 import {
   getOtlpRequestType,
@@ -790,3 +790,53 @@ async function waitFor(predicate: () => boolean): Promise<void> {
   }
   throw new Error("condition was not met before timeout");
 }
+
+/**
+ * ISS-8565: `keyValuesToAttributes` is a SECOND, hand-rolled OTLP attribute
+ * decoder in this file — it does not call `decodeOtlpAttributes` — and it built
+ * its record on a plain `{}`. An attribute named `__proto__` off the wire hit
+ * the inherited setter and vanished, so hardening only the shared decoder would
+ * have left this same receiver half-fixed.
+ */
+test("ISS-8565: a __proto__ resource attribute survives decoding", async () => {
+  const claudeExports: NormalizedOtlpExport[] = [];
+  const receiver = new OtlpHttpReceiver({
+    port: 0,
+    log: () => {
+      // intentionally quiet: this case asserts the decoded payload, not logs
+    },
+    onClaudeExport: (payload) => {
+      claudeExports.push(payload);
+    },
+  });
+  const state = await receiver.start();
+  assert.equal(state.available, true);
+
+  try {
+    // Built with `Object.create(null)`, not a literal: a quoted `"__proto__"`
+    // in an object LITERAL is the prototype-setter form and creates no own key,
+    // so `encodeAttributes`' `Object.entries` would never see it and the
+    // fixture would drop the key before the receiver was ever exercised.
+    const attributePairs: Record<string, string> = Object.create(null);
+    attributePairs["service.name"] = "claude-code";
+    // biome-ignore lint/suspicious/noProto: ISS-8565 regression — the hostile key IS the subject under test
+    attributePairs.__proto__ = "sentinel";
+
+    const response = await postOtlp(
+      state.port,
+      "/v1/metrics",
+      encodeMetricsPayload(attributePairs)
+    );
+    assert.equal(response.status, 200);
+    await waitFor(() => claudeExports.length === 1);
+
+    const attributes = claudeExports[0].resourceAttributes[0];
+    assert.ok(Object.keys(attributes).includes("__proto__"));
+    // biome-ignore lint/suspicious/noProto: ISS-8565 regression — the hostile key IS the subject under test
+    assert.equal(attributes.__proto__, "sentinel");
+    assert.equal(attributes["service.name"], "claude-code");
+    assert.equal(Object.getPrototypeOf(attributes), Object.prototype);
+  } finally {
+    await receiver.stop();
+  }
+});

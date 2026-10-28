@@ -1,6 +1,10 @@
-import type { FileAttachment } from "@repo/api/src/types/attachment";
+import {
+  AttachmentPurpose,
+  type FileAttachment,
+} from "@repo/api/src/types/attachment";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { INLINE_ATTACHMENT_BADGE_LABEL } from "../../lib/attachment-visibility";
 import { AttachmentList } from "../attachment-list";
 
 function makeAttachment(
@@ -63,7 +67,7 @@ describe("AttachmentList", () => {
     expect(onDownload).toHaveBeenCalledWith(attachment);
   });
 
-  it("renders an image attachment as a preview link, not a filename button", () => {
+  it("gives an image attachment a working download control beside its thumbnail", () => {
     const onDownload = vi.fn();
     const attachment = makeAttachment({
       id: "attachment-image",
@@ -76,19 +80,52 @@ describe("AttachmentList", () => {
       <AttachmentList attachments={[attachment]} onDownload={onDownload} />
     );
 
-    const previewLink = screen.getByRole("link");
-    expect(previewLink).toHaveAttribute(
+    // The thumbnail is KEPT and still opens the preview — it just never saved
+    // the file, which is why an image needs the button too (ISS-8036).
+    expect(screen.getByRole("link")).toHaveAttribute(
       "href",
       "https://example.com/preview.png"
     );
-    // Image chips do not get a filename button or a download button.
+    fireEvent.click(
+      screen.getByRole("button", { name: `Download ${attachment.filename}` })
+    );
+    expect(onDownload).toHaveBeenCalledWith(attachment);
+    // The filename stays plain text: the thumbnail is already its click target.
     expect(
       screen.queryByRole("button", { name: attachment.filename })
     ).not.toBeInTheDocument();
+  });
+
+  it("marks an inline attachment and still offers its download control", () => {
+    const onDownload = vi.fn();
+    const attachment = makeAttachment({
+      id: "attachment-inline",
+      filename: "pasted-screenshot.png",
+      mimeType: "image/png",
+      previewUrl: "https://example.com/pasted.png",
+      purpose: AttachmentPurpose.Inline,
+    });
+
+    render(
+      <AttachmentList attachments={[attachment]} onDownload={onDownload} />
+    );
+
+    expect(screen.getByText(INLINE_ATTACHMENT_BADGE_LABEL)).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: `Download ${attachment.filename}` })
+    );
+    expect(onDownload).toHaveBeenCalledWith(attachment);
+  });
+
+  it("does not mark a context attachment as inline", () => {
+    render(
+      <AttachmentList
+        attachments={[makeAttachment({ purpose: AttachmentPurpose.Context })]}
+      />
+    );
+
     expect(
-      screen.queryByRole("button", {
-        name: `Download ${attachment.filename}`,
-      })
+      screen.queryByText(INLINE_ATTACHMENT_BADGE_LABEL)
     ).not.toBeInTheDocument();
   });
 
@@ -101,5 +138,16 @@ describe("AttachmentList", () => {
       screen.queryByRole("button", { name: attachment.filename })
     ).not.toBeInTheDocument();
     expect(screen.getByText(attachment.filename)).toBeInTheDocument();
+  });
+
+  it("renders a size that rounds up to a full 1024 KB as megabytes", () => {
+    render(
+      <AttachmentList
+        attachments={[makeAttachment({ sizeBytes: 1_048_575 })]}
+      />
+    );
+
+    expect(screen.getByText("1.0 MB")).toBeInTheDocument();
+    expect(screen.queryByText("1024 KB")).not.toBeInTheDocument();
   });
 });

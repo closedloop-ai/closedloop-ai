@@ -109,7 +109,6 @@ export function resolveSslOption(opts: {
 export function classifyDatabaseTransport(input: {
   databaseUrl?: string | null;
   pgHost?: string | null;
-  pgDatabase?: string | null;
   pgUser?: string | null;
   allowInsecureSsl?: boolean;
 }): DbHealthTransportCheck {
@@ -120,7 +119,13 @@ export function classifyDatabaseTransport(input: {
     );
   }
 
-  if (input.pgHost && input.pgDatabase && input.pgUser) {
+  // Mirrors what the IAM pool actually requires, which is NOT the same triple:
+  // `getPool()` defaults `database: env.PGDATABASE || "app"` (packages/database
+  // /index.ts), so PGHOST + PGUSER with PGDATABASE unset is a configuration it
+  // connects on — and honors ALLOW_INSECURE_SSL on. Demanding PGDATABASE here
+  // reported that live, possibly-unverified connection as `unknown` posture
+  // (ISS-8410). PGDATABASE is not read below; it never described the transport.
+  if (input.pgHost && input.pgUser) {
     const hostType = classifyHostType(input.pgHost);
     const sslMode = classifySslMode({
       hostType,
@@ -143,24 +148,31 @@ export function classifyDatabaseTransport(input: {
  * `opts.connectionTimeoutMillis` bounds the CONNECT itself. pg's default is `0`
  * — wait forever — so a blackholed or unreachable endpoint hangs before any
  * `SET statement_timeout` the caller issues can possibly apply (ISS-5285).
- * Optional, so every existing caller keeps today's behavior; pass it wherever an
- * unbounded connect could hold a build open.
+ * `opts.queryTimeoutMillis` (pg's client-side `query_timeout`) bounds each
+ * query from the client side, which also catches a connection that goes silent
+ * mid-query where a server-side `statement_timeout` never reports back.
+ * Both optional, so every existing caller keeps today's behavior.
  */
 export function createSslClient(
   databaseUrl: string,
-  opts: { connectionTimeoutMillis?: number } = {}
+  opts: SqlClientOptions = {}
 ) {
   const url = new URL(databaseUrl);
   const isLocalhost = isLocalhostUrl(url);
   const sslmode = url.searchParams.get("sslmode");
   url.searchParams.delete("sslmode");
 
-  // Preserve historical behavior of this helper (preview-DB tooling in
+  // Defaults to the historical behavior of this helper (preview-DB tooling in
   // clone-schema.ts / preview-schema.ts / cleanup-preview-schemas.mjs):
-  // unverified TLS against arbitrary RDS endpoints. Callers that want the
-  // safe default should call `resolveSslOption({ allowInsecure: false })`
-  // directly.
-  const ssl = resolveSslOption({ isLocalhost, sslmode, allowInsecure: true });
+  // unverified TLS against arbitrary RDS endpoints. `allowInsecure: false`
+  // opts into the verified path (`VERIFIED_SSL_CA`) — required of any caller
+  // whose URL carries an IAM database token, which must not ride an
+  // unauthenticated chain.
+  const ssl = resolveSslOption({
+    isLocalhost,
+    sslmode,
+    allowInsecure: opts.allowInsecure ?? true,
+  });
 
   return new pg.Client({
     connectionString: url.toString(),
@@ -168,6 +180,9 @@ export function createSslClient(
     ...(opts.connectionTimeoutMillis === undefined
       ? {}
       : { connectionTimeoutMillis: opts.connectionTimeoutMillis }),
+    ...(opts.queryTimeoutMillis === undefined
+      ? {}
+      : { query_timeout: opts.queryTimeoutMillis }),
   });
 }
 
@@ -390,6 +405,12 @@ function getTransportError(
  * a direct assignment — which is why `createSqlClient` below adapts it by
  * explicit delegation rather than casting `createSslClient`'s result.
  */
+export type SqlClientOptions = {
+  connectionTimeoutMillis?: number;
+  queryTimeoutMillis?: number;
+  allowInsecure?: boolean;
+};
+
 export type SqlClient = {
   connect(): Promise<void>;
   query(text: string, values?: unknown[]): Promise<unknown>;
@@ -409,7 +430,7 @@ export type SqlClient = {
  */
 export function createSqlClient(
   databaseUrl: string,
-  opts: { connectionTimeoutMillis?: number } = {}
+  opts: SqlClientOptions = {}
 ): SqlClient {
   const client = createSslClient(databaseUrl, opts);
   return {
@@ -582,4 +603,27 @@ export const MigrationRowSchema = z.object({
  */
 export function migrationChecksum(migrationSql: string): string {
   return createHash("sha256").update(migrationSql, "utf8").digest("hex");
+}
+
+/**
+ * `CONCURRENTLY` and the whitespace before it, every occurrence. Replaced with a
+ * single space so the surrounding tokens stay separated.
+ *
+ * Shared by `preview-plain-index.ts` (one statement at a time, rebuilding a
+ * skipped index plainly) and `preview-sql-replay.ts` (a whole `migration.sql` at
+ * once), for the same reason `CREATE_INDEX_HEAD_REGEX` is shared: two copies of
+ * one rewrite are free to drift, and both callers must neutralize the keyword
+ * identically.
+ *
+ * Safe to apply to a whole file: across every migration on disk the keyword
+ * occurs only in a `CREATE INDEX` or `DROP INDEX` head or in a `--` comment,
+ * never inside a string literal, so a file-wide strip can only reach a
+ * statement or inert prose.
+ * `preview-sql-replay`'s companion test pins that scan so a future migration
+ * cannot quietly break the assumption.
+ */
+const CONCURRENTLY_KEYWORD_GLOBAL_REGEX = /\s+concurrently\b/gi;
+
+export function stripConcurrentlyKeyword(sql: string): string {
+  return sql.replace(CONCURRENTLY_KEYWORD_GLOBAL_REGEX, " ");
 }

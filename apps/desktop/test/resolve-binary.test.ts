@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, test } from "node:test";
+import { afterEach, describe, test } from "vitest";
 import {
   _setKnownBinaryLocationsForResolverTest,
   type BinaryName,
@@ -89,13 +89,7 @@ async function expectParity(
   assert.deepEqual(syncResult, expected);
 }
 
-const ALL_BINARY_NAMES: BinaryName[] = [
-  "claude",
-  "gh",
-  "codex",
-  "python3",
-  "git",
-];
+const ALL_BINARY_NAMES: BinaryName[] = ["claude", "codex", "python3", "git"];
 
 // ---------------------------------------------------------------------------
 // resolveBinaryFromLoginShell (async)
@@ -416,7 +410,7 @@ describe("resolveBinaryFromLoginShell: known-location tier (FEA-3742)", () => {
 // ---------------------------------------------------------------------------
 // BinaryName compile-time type check
 // ---------------------------------------------------------------------------
-// This is intentionally a type-only assertion. All five names are accepted
+// This is intentionally a type-only assertion. These names are accepted
 // as BinaryName at compile time; no runtime assertion is needed.
-const _typeCheck: BinaryName[] = ["claude", "gh", "codex", "python3", "git"];
+const _typeCheck: BinaryName[] = ["claude", "codex", "python3", "git"];
 void _typeCheck;

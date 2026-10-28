@@ -21,7 +21,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { createSqliteTokenUsageStore } from "../src/main/database/read-stores.js";
 import { runRebuildSessionTransaction } from "../src/main/database/rebuild-session-tx.js";
 import {
@@ -32,6 +32,7 @@ import {
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 import { createSqliteImporter } from "../src/main/database/write-core.js";
 import { persistCodexOtelBatch } from "../src/main/otel/codex-otel-writer.js";
+import { effectiveParsePolicy } from "../src/main/parse-policy/effective-parse-policy.js";
 import { makeSession } from "./normalized-session-test-utils.js";
 import { type OpenTestPrisma, openTestPrisma } from "./prisma-test-utils.js";
 
@@ -574,6 +575,7 @@ test("ISS-6168: the DATA_REVISION rebuild's re-INSERT path stamps the signed-in 
         runRebuildSessionTransaction(tx, {
           session,
           harness: "claude",
+          parsePolicy: effectiveParsePolicy(),
           hasRowDigest: false,
           tokenUsage: createSqliteTokenUsageStore(h.prisma),
           detectBillingMode: () => "metered_api",
@@ -589,6 +591,212 @@ test("ISS-6168: the DATA_REVISION rebuild's re-INSERT path stamps the signed-in 
     const row = await readOwner(h, "rebuilt-session");
     assert.equal(row?.user_id, SIGNED_IN.userId);
     assert.equal(row?.organization_id, SIGNED_IN.organizationId);
+  } finally {
+    await h.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ISS-11843 — the guest window on a store that has served two accounts.
+//
+// Operator ruling (Marisol Ashgrove, 2026-10-01): "all guest since last user get
+// stamped with the newly logged in person", and its other half, "I don't want to
+// re-stamp user 1's sessions with user 2 and sync them". The blanket
+// ForeignOwnerPresent bail honored the second and broke the first: a guest
+// session on a two-account machine could never be attributed to anyone.
+// ---------------------------------------------------------------------------
+
+const EARLIER = "2026-08-12T09:00:00.000Z";
+const LATER = "2026-08-12T13:00:00.000Z";
+
+/** Seed a row with an explicit `started_at`, so a test can place it in time. */
+function seedSessionAt(
+  h: OpenTestPrisma,
+  sessionId: string,
+  startedAt: string,
+  userId: string | null = null,
+  organizationId: string | null = null
+): Promise<unknown> {
+  return h.prisma.write((client) =>
+    client.$executeRawUnsafe(
+      `INSERT INTO sessions (id, name, status, cwd, started_at, updated_at, harness, user_id, organization_id)
+       VALUES ($1, $1, 'inactive', '/sandbox/project', $2, $3, 'claude', $4, $5)`,
+      sessionId,
+      startedAt,
+      NOW,
+      userId,
+      organizationId
+    )
+  );
+}
+
+test("ISS-11843: guest sessions recorded after another account's last session are claimed by the account signing in now", async () => {
+  const h = await openTestPrisma();
+  try {
+    await seedSessionAt(h, "user-one-work", EARLIER, "u-someone-else", "org-x");
+    await seedSessionAt(h, "guest-after-user-one", LATER);
+
+    const result = await claimUnownedSessionIdentity(h.prisma, SIGNED_IN);
+    assert.equal(result.claimed, 1);
+    assert.equal(result.skipped, null);
+
+    const guest = await readOwner(h, "guest-after-user-one");
+    assert.equal(guest?.user_id, SIGNED_IN.userId);
+    assert.equal(guest?.organization_id, SIGNED_IN.organizationId);
+  } finally {
+    await h.close();
+  }
+});
+
+// Pins the operator's second requirement on the real scenario. Note what it
+// does NOT prove: the window's `user_id IS NULL` clause is redundant while the
+// boundary is `MAX(started_at)` over owned rows, so deleting that clause leaves
+// this green. The timestamp is what excludes user 1 here. See the predicate's
+// own comment — the clause stays as belt to that brace, unproven by design.
+test("ISS-11843: the other account's own sessions survive a guest-window claim untouched", async () => {
+  const h = await openTestPrisma();
+  try {
+    await seedSessionAt(h, "user-one-work", EARLIER, "u-someone-else", "org-x");
+    await seedSessionAt(h, "guest-after-user-one", LATER);
+
+    await claimUnownedSessionIdentity(h.prisma, SIGNED_IN);
+
+    const userOne = await readOwner(h, "user-one-work");
+    assert.equal(
+      userOne?.user_id,
+      "u-someone-else",
+      "user 1 keeps user 1's stamp — it must never sync under user 2"
+    );
+    assert.equal(userOne?.organization_id, "org-x");
+  } finally {
+    await h.close();
+  }
+});
+
+test("ISS-11843: a guest session recorded BEFORE the other account's last session stays unattributed", async () => {
+  const h = await openTestPrisma();
+  try {
+    // Ambiguous by construction: this guest row could belong to either account,
+    // and the claim must not guess. Only the window AFTER the boundary is proof.
+    await seedSessionAt(h, "guest-before-user-one", EARLIER);
+    await seedSessionAt(h, "user-one-work", LATER, "u-someone-else", "org-x");
+
+    const result = await claimUnownedSessionIdentity(h.prisma, SIGNED_IN);
+    assert.equal(result.claimed, 0);
+    assert.equal(result.skipped, SessionOwnerClaimSkip.ForeignOwnerPresent);
+    assert.equal((await readOwner(h, "guest-before-user-one"))?.user_id, null);
+  } finally {
+    await h.close();
+  }
+});
+
+test("ISS-11843: a guest session with no started_at cannot be placed, so it stays unattributed", async () => {
+  const h = await openTestPrisma();
+  try {
+    await seedSessionAt(h, "user-one-work", EARLIER, "u-someone-else", "org-x");
+    await h.prisma.write((client) =>
+      client.$executeRawUnsafe(
+        `INSERT INTO sessions (id, name, status, cwd, started_at, updated_at, harness, user_id, organization_id)
+         VALUES ('guest-undated', 'guest-undated', 'inactive', '/sandbox/project', NULL, $1, 'claude', NULL, NULL)`,
+        NOW
+      )
+    );
+
+    const result = await claimUnownedSessionIdentity(h.prisma, SIGNED_IN);
+    assert.equal(result.claimed, 0);
+    assert.equal(result.skipped, SessionOwnerClaimSkip.ForeignOwnerPresent);
+    assert.equal((await readOwner(h, "guest-undated"))?.user_id, null);
+  } finally {
+    await h.close();
+  }
+});
+
+// Mixed ISO forms, which is the whole reason the boundary ranks on
+// `canonicalStartedAtRankingKey` rather than the raw column. Byte-wise
+// `…T13:00:00Z` sorts ABOVE `…T13:00:00.500Z` (`Z` 0x5A beats `.` 0x2E) while
+// being the EARLIER instant, so swapping the ranking key back to raw
+// `started_at` claims this guest row — it is chronologically BEFORE the other
+// account's last session and must stay unattributed.
+const OWNED_SUBSECOND = "2026-08-12T13:00:00.500Z";
+const GUEST_WHOLE_SECOND = "2026-08-12T13:00:00Z";
+
+test("ISS-11843: the boundary is chronological, not byte-wise, across mixed timestamp forms", async () => {
+  const h = await openTestPrisma();
+  try {
+    await seedSessionAt(
+      h,
+      "user-one-work",
+      OWNED_SUBSECOND,
+      "u-someone-else",
+      "org-x"
+    );
+    await seedSessionAt(h, "guest-earlier-but-sorts-later", GUEST_WHOLE_SECOND);
+
+    const result = await claimUnownedSessionIdentity(h.prisma, SIGNED_IN);
+    assert.equal(result.claimed, 0);
+    assert.equal(result.skipped, SessionOwnerClaimSkip.ForeignOwnerPresent);
+    assert.equal(
+      (await readOwner(h, "guest-earlier-but-sorts-later"))?.user_id,
+      null,
+      "a guest row that PRECEDES the boundary stays unattributed, whatever its text form sorts like"
+    );
+  } finally {
+    await h.close();
+  }
+});
+
+// The all-or-nothing arm: `MAX` ignores NULL keys, so one unplaceable OWNED row
+// lowers the boundary and opens the window over rows that may predate the other
+// account. Deleting the `owned !== placeable` check claims the guest row here.
+test("ISS-11843: one owned row that cannot be placed in time refuses the whole claim", async () => {
+  const h = await openTestPrisma();
+  try {
+    await h.prisma.write((client) =>
+      client.$executeRawUnsafe(
+        `INSERT INTO sessions (id, name, status, cwd, started_at, updated_at, harness, user_id, organization_id)
+         VALUES ('user-one-undated', 'user-one-undated', 'inactive', '/sandbox/project', NULL, $1, 'claude', 'u-someone-else', 'org-x')`,
+        NOW
+      )
+    );
+    await seedSessionAt(h, "user-one-work", EARLIER, "u-someone-else", "org-x");
+    await seedSessionAt(h, "guest-after-placeable-owned", LATER);
+
+    const result = await claimUnownedSessionIdentity(h.prisma, SIGNED_IN);
+    assert.equal(result.claimed, 0);
+    assert.equal(result.skipped, SessionOwnerClaimSkip.ForeignOwnerPresent);
+    assert.equal(
+      (await readOwner(h, "guest-after-placeable-owned"))?.user_id,
+      null,
+      "an untrustworthy boundary must refuse, not claim against the rows it could place"
+    );
+  } finally {
+    await h.close();
+  }
+});
+
+// The guest arm re-stamps the derived cohort too. Without that call the claimed
+// rows keep the `closedloop_user` their NULL owner implied, and
+// `backfillActivityMetrics` never revisits a current-version row.
+test("ISS-11843: a guest-window claim re-stamps the ClosedLoop-user cohort", async () => {
+  const h = await openTestPrisma();
+  try {
+    await seedSessionAt(h, "user-one-work", EARLIER, "u-someone-else", "org-x");
+    await seedSessionAt(h, "guest-after-user-one", LATER);
+    await seedActivityMetricsRow(h, "guest-after-user-one", 0);
+    assert.equal(
+      await readClosedloopUser(h, "guest-after-user-one"),
+      0,
+      "the row starts classified as an external user, as the NULL owner implied"
+    );
+
+    const result = await claimUnownedSessionIdentity(h.prisma, SIGNED_IN);
+    assert.equal(result.claimed, 1);
+
+    assert.equal(
+      await readClosedloopUser(h, "guest-after-user-one"),
+      1,
+      "the guest arm must reclassify the cohort the owner it just wrote derives"
+    );
   } finally {
     await h.close();
   }

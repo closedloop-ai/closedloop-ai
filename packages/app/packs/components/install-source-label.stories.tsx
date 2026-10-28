@@ -3,9 +3,9 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { InstallSourceLabel } from "./install-source-label";
 
 const meta = {
-  title: "App Core/Packs/Install Source Label",
+  title: "Composites v1.0/Packs/Install Source Label",
   component: InstallSourceLabel,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   args: {
     source: InstallSource.Pushed,
   },
@@ -41,6 +41,7 @@ export const Unknown: Story = {
  * together — provenance is metadata, not four competing status colors.
  */
 export const AllSources: Story = {
+  tags: ["!manifest"],
   render: () => (
     <div className="flex flex-col items-start gap-2">
       <InstallSourceLabel source={InstallSource.Pushed} />

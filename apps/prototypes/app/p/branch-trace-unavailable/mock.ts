@@ -13,9 +13,12 @@
 // everything on the Branch details tab) is deliberately identical across all
 // four — that asymmetry IS the bug and the fix.
 
-import type { BranchDetail, SessionLane } from "@/app/p/branches/mock";
-import { branchRows } from "@/app/p/branches/mock";
-import { buildBranchDetail } from "@/app/p/branches/mock-detail";
+import type {
+  BranchDetail,
+  SessionLane,
+} from "@repo/app/branches/components/prototype-preview/mock";
+import { branchRows } from "@repo/app/branches/components/prototype-preview/mock";
+import { buildBranchDetail } from "@repo/app/branches/components/prototype-preview/mock-detail";
 
 // Sanitized reason inventory a failed/degraded trace read resolves to. Mirrors
 // `BranchTraceUnavailableReason` in @repo/api/src/types/branch-trace (raw error

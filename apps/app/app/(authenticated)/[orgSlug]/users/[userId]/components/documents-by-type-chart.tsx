@@ -6,22 +6,7 @@ import {
   ChartTooltip,
   ChartTooltipContent,
 } from "@repo/design-system/components/ui/chart";
-import type { FC } from "react";
 import { Bar, BarChart, XAxis, YAxis } from "recharts";
-
-// Cast recharts components to work around React 19 JSX type incompatibility.
-// biome-ignore lint/suspicious/noExplicitAny: recharts React 19 type workaround
-const TypedBarChart = BarChart as unknown as FC<any>;
-// biome-ignore lint/suspicious/noExplicitAny: recharts React 19 type workaround
-const TypedBar = Bar as unknown as FC<any>;
-// biome-ignore lint/suspicious/noExplicitAny: recharts React 19 type workaround
-const TypedXAxis = XAxis as unknown as FC<any>;
-// biome-ignore lint/suspicious/noExplicitAny: recharts React 19 type workaround
-const TypedYAxis = YAxis as unknown as FC<any>;
-// biome-ignore lint/suspicious/noExplicitAny: recharts React 19 type workaround
-const TypedChartTooltip = ChartTooltip as unknown as FC<any>;
-// biome-ignore lint/suspicious/noExplicitAny: recharts React 19 type workaround
-const TypedChartTooltipContent = ChartTooltipContent as unknown as FC<any>;
 
 const TYPE_LABELS: Record<string, string> = {
   PRD: "PRDs",
@@ -57,21 +42,17 @@ export function DocumentsByTypeChart({ data }: DocumentsByTypeChartProps) {
         },
       }}
     >
-      <TypedBarChart data={chartData} layout="vertical">
-        <TypedXAxis allowDecimals={false} type="number" />
-        <TypedYAxis
+      <BarChart data={chartData} layout="vertical">
+        <XAxis allowDecimals={false} type="number" />
+        <YAxis
           dataKey="type"
           tick={{ fontSize: 12 }}
           type="category"
           width={80}
         />
-        <TypedChartTooltip content={<TypedChartTooltipContent />} />
-        <TypedBar
-          dataKey="count"
-          fill="hsl(var(--primary))"
-          radius={[0, 4, 4, 0]}
-        />
-      </TypedBarChart>
+        <ChartTooltip content={<ChartTooltipContent />} />
+        <Bar dataKey="count" fill="hsl(var(--primary))" radius={[0, 4, 4, 0]} />
+      </BarChart>
     </ChartContainer>
   );
 }

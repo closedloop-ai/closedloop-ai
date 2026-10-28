@@ -16,11 +16,13 @@
  * barrel that also re-exports the artifact.ts `BranchDetail`.
  */
 
+import type { ArtifactParentSummary } from "./artifact-parent.ts";
 import type { BranchActivityEvidenceProjection } from "./branch-activity.ts";
 import type {
   BranchAssociatedPullRequest,
   BranchAssociatedPullRequestCollection,
 } from "./branch-associated-pull-request.js";
+import type { BranchViewCheckProjection } from "./branch-check-projection.js";
 import type { ChecksStatus, ReviewDecision } from "./branch-checks.js";
 import type {
   BranchCostFields,
@@ -30,10 +32,13 @@ import type {
   BranchCollaborators,
   BranchOwnerIdentity,
 } from "./branch-identity.ts";
+import type { BranchLastActiveCohort } from "./branch-list-cohort.ts";
+import type * as BranchListContract from "./branch-list-contract.ts";
 import type {
   BranchDetailMetricBundle,
   BranchListMetricBundle,
   BranchMetricResult,
+  BranchMetricSelectedCycle,
 } from "./branch-metrics.js";
 import type {
   BranchPhaseAttributionResult,
@@ -42,7 +47,6 @@ import type {
 import type { CanonicalBranchProjectionV1 } from "./branch-projection.ts";
 import { normalizeRepoFullName as normalizeRepositoryFullName } from "./branch-repository.ts";
 import type { BranchSelectedPullRequestChecksResponse } from "./branch-selected-pull-request-checks.ts";
-
 import type {
   BranchTraceResponse as CanonicalBranchTraceResponse,
   MergedTraceItem as CanonicalMergedTraceItem,
@@ -53,10 +57,19 @@ import type {
   BranchUsagePhaseStack as CanonicalBranchUsagePhaseStack,
   BranchUsageSummary as CanonicalBranchUsageSummary,
 } from "./branch-usage.js";
+import type { Priority } from "./common.ts";
+import type { CustomFieldValueDetail } from "./custom-field.ts";
 import type { GitHubPRState } from "./github.js";
 import type { GitHubActorType } from "./github-actor.ts";
+import type { PriorityFilterValue } from "./priority-filter.ts";
 import type { ReadSource } from "./read-source.js";
-import type { TagSummary } from "./tag.js";
+import type { ArtifactTagPermissions, TagSummary } from "./tag.js";
+// `.ts`, not `.js`: this is a VALUE import, so the specifier is resolved rather
+// than erased, and no `tag.js` exists on disk. The `.js` specifiers above are
+// type-only and never reach a resolver. `rewriteRelativeImportExtensions`
+// rewrites this to `./tag.js` in the emitted `dist`.
+import { ArtifactTagAvailability } from "./tag.ts";
+import type { BasicUser } from "./user.ts";
 
 // --- Shared enums (const-object + value-type, mirroring the agent-session enums) ---
 
@@ -191,23 +204,23 @@ export type BranchDataState =
  * Whether a producer actually loaded the generic Artifact-tag relation for a
  * Branch. Optional on Branch DTOs so older producers can omit the capability;
  * `Available` with `tags: []` is distinct from `Unavailable` with no `tags`.
+ *
+ * ISS-8712: an ALIAS of the canonical {@link ArtifactTagAvailability}, not a
+ * second declaration. The concept is a property of the generic `TagArtifact`
+ * join, so when Sessions began projecting the same relation the choice was one
+ * vocabulary both surfaces import or two that agree only until someone edits
+ * one. The Branch-flavoured names are kept because every existing Branch
+ * consumer and its wire contract spell them.
  */
-export const BranchTagAvailability = {
-  Available: "available",
-  Unavailable: "unavailable",
-} as const;
-export type BranchTagAvailability =
-  (typeof BranchTagAvailability)[keyof typeof BranchTagAvailability];
+export const BranchTagAvailability = ArtifactTagAvailability;
+export type BranchTagAvailability = ArtifactTagAvailability;
 
 /**
  * Association-level tag capabilities for the authenticated Branch read.
  * Applying includes batch apply; removal is separate because API keys enforce
  * `write` and `delete` scopes independently.
  */
-export type BranchTagPermissions = {
-  canApply: boolean;
-  canRemove: boolean;
-};
+export type BranchTagPermissions = ArtifactTagPermissions;
 
 export const BranchRefreshStatus = {
   Refreshed: "refreshed",
@@ -242,9 +255,10 @@ export type BranchRefreshReason =
  * conflated (PLN-1535 M3.2 — the plan's "UX honesty fix"):
  *
  * - `NotConnected` — no row in the corpus carries a repo identity, so there is
- *   nothing GitHub could enrich. This is the same condition
- *   `resolveBranchListBanner` reads off `repoFullName`, and connecting GitHub
- *   IS the remedy.
+ *   nothing GitHub could enrich, and connecting GitHub IS the remedy. The
+ *   Branches list offers no standalone connect (ISS-11274); the reader reaches
+ *   it from the dashboard card, Settings → Integrations, the onboarding
+ *   checklist, or an unavailable summary card on Desktop (ISS-12638).
  * - `CredentialMissing` — rows DO carry repo identity, but this Desktop holds
  *   no cloud credential (no signed-in session and no stored API key), so the
  *   projection can't be read at all. Connecting GitHub cannot fix it; signing
@@ -354,47 +368,6 @@ export type BranchPrCommentsResponse = {
   prNumber: number | null;
   prUrl: string | null;
 };
-
-/** Trim a PR comment body to the shared comments byte budget. */
-export function trimBranchPrCommentBody(body: string): {
-  body: string;
-  truncated: boolean;
-} {
-  if (byteLength(body) <= BranchCommentsBudget.MaxBodyBytes) {
-    return { body, truncated: false };
-  }
-  let next = body;
-  while (
-    next.length > 0 &&
-    byteLength(next) > BranchCommentsBudget.MaxBodyBytes
-  ) {
-    next = next.slice(0, -1);
-  }
-  return { body: next, truncated: true };
-}
-
-/** Enforce the shared serialized response budget for PR comments responses. */
-export function fitBranchPrCommentsResponseBudget(
-  response: BranchPrCommentsResponse
-): BranchPrCommentsResponse {
-  const next = { ...response, comments: [...response.comments] };
-  while (
-    next.comments.length > 0 &&
-    byteLength(JSON.stringify(next)) > BranchCommentsBudget.MaxResponseBytes
-  ) {
-    next.comments.pop();
-    next.budget.responseTruncated = true;
-    next.budget.omittedComments += 1;
-  }
-  if (next.budget.responseTruncated) {
-    next.state = BranchCommentsState.OverLimitTruncated;
-  }
-  return next;
-}
-
-function byteLength(value: string): number {
-  return new TextEncoder().encode(value).byteLength;
-}
 
 // --- Branch-id encode/decode (single owner: A1; B1 produces, D1 parses, C2/C3 route) ---
 
@@ -643,6 +616,14 @@ export const BRANCH_LOC_MAX_PARAM = "locMax";
  * ignore it so canonical persisted-session membership is never filtered away.
  */
 export const BRANCH_SESSION_PRESENCE_PARAM = "sessionPresence";
+/**
+ * ISS-10350 — legacy URL/query param, accepted and IGNORED.
+ * @deprecated The evaluation instant is server-internal: every branch read
+ * captures its own and threads it down, so a client-supplied clock is never
+ * honored. It stays in the accepted vocabulary only so a version-skewed
+ * producer that still serializes it gets its list instead of a 400.
+ */
+export const BRANCH_EVALUATION_NOW_PARAM = "evaluationNow";
 
 /**
  * Query filters shared by every branch read. Canonical home (AGENTS.md: shared
@@ -653,6 +634,14 @@ export const BRANCH_SESSION_PRESENCE_PARAM = "sessionPresence";
 export type BranchQueryFilters = {
   startDate?: string; // ISO; trailing-window lower bound for usage/analytics
   endDate?: string; // ISO
+  /**
+   * ISS-10350 — deprecated compatibility input. Producers may still send it and
+   * branch reads ignore it; the evaluation instant is captured server-side per
+   * operation. Retained so an older caller that still serializes this type does
+   * not get its whole Branches list refused at the strict REST boundary.
+   * @deprecated
+   */
+  evaluationNow?: string;
   repo?: string; // repoFullName "owner/name" OR short name; serving matches both
   owner?: string; // branch owner (actor) filter; not all producers/routes support it
   status?: string; // BranchStatus value
@@ -674,6 +663,24 @@ export type BranchQueryFilters = {
   projectId?: string;
   limit?: number;
   offset?: number;
+  /** Additive bounded List mode; omission preserves the complete-corpus path. */
+  pageMode?: BranchListContract.BranchListPageMode;
+  names?: string[];
+  owners?: string[];
+  collaborators?: string[];
+  statuses?: string[];
+  pullRequests?: BranchListContract.BranchListPullRequestPresence[];
+  lastActiveRanges?: BranchListContract.BranchListLastActiveRange[];
+  repositories?: string[];
+  tags?: string[];
+  /**
+   * ISS-10332: priority members plus the unset token (`PRIORITY_FILTER_VALUES`).
+   * Served by the cloud server-page read (PLN-2086 Milestone 1) and, since
+   * Milestone 3, by the local Desktop server page.
+   */
+  priorities?: PriorityFilterValue[];
+  sortKey?: BranchListContract.BranchListSortKey;
+  sortDir?: BranchListContract.BranchListSortDirection;
 };
 
 // --- LIST ---
@@ -685,6 +692,8 @@ export type BranchRow = BranchCostFields & {
   artifactId?: string;
   /** Owning project when the branch is attached to one; optional for older producers. */
   projectId?: string | null;
+  /** Owning project's display name; optional for older producers (ISS-12453). */
+  projectName?: string | null;
   /** Existing generic Artifact tags; `[]` means the relation loaded empty. */
   tags?: TagSummary[];
   /** Distinguishes a loaded tag relation from unavailable/unknown tag data. */
@@ -696,16 +705,27 @@ export type BranchRow = BranchCostFields & {
   baseBranch: string | null;
   /** NULL until repo-identity capture (FEA-1899). */
   repoFullName: string | null;
-  /** Actor; NULL when not captured -> "unattributed". */
+  /** The Owner's label: the branch's assignee (ISS-12463); NULL -> "unattributed". */
   owner: string | null;
-  /** Canonical earliest-push Owner evidence; omitted by legacy producers. */
+  /** The Owner, read from the branch's assignee (ISS-12463); omitted by legacy producers. */
   ownerIdentity?: BranchOwnerIdentity;
   /** Canonical persisted commenter union; omitted by legacy producers. */
   collaborators?: BranchCollaborators;
   status: BranchStatus;
+  /**
+   * ISS-10332: `null` is "no priority"; OMITTED is "this producer does not know"
+   * (an older API or Desktop build, or a stored value outside the vocabulary),
+   * never to be read as unset.
+   */
+  priority?: Priority | null;
   prNumber: number | null;
   prTitle: string | null;
-  /** NULL when no PR / enrichment `pr_state` unpopulated. */
+  /**
+   * NULL when no PR, when enrichment left `pr_state` unpopulated, and (ISS-8422)
+   * when the persisted row's `pr_state` is its `@default(OPEN)` with no observed
+   * evidence behind it — the projection refuses to restate a schema default as a
+   * reading. A non-null `prNumber` beside a NULL `prState` is that third case.
+   */
   prState: BranchPrState | null;
   prUrl: string | null;
   /**
@@ -764,9 +784,6 @@ export type BranchRow = BranchCostFields & {
   analyticsAdditions?: number | null;
   /** FILE-CACHE-only changed-LOC deletions (see `analyticsAdditions`). */
   analyticsDeletions?: number | null;
-  /** Optional desktop cloud overlay status; omitted by older/local-only producers. */
-  cloudHydrationStatus?: BranchCloudHydrationStatus;
-  cloudHydrationFailure?: string;
   /**
    * ISO timestamp of the branch's most recent GENUINE activity (PLN-1034): a
    * pushed commit, PR open/merge/close, PR review submission, or attributable
@@ -795,6 +812,14 @@ export type BranchRow = BranchCostFields & {
   dataState?: BranchDataState;
   /** Additive canonical projection; absent on legacy and local producers. */
   canonicalProjection?: CanonicalBranchProjectionV1;
+  /**
+   * ISS-12663: org-level custom-field values attached to this Branch artifact,
+   * the same projection `AgentSessionListItem.customFields` carries. Additive
+   * and optional: omitted means the producer did not load it (local and
+   * older producers, or a failed best-effort read), while `[]` is a successful
+   * read with no values.
+   */
+  customFields?: CustomFieldValueDetail[];
 };
 
 export type BranchListResponse = {
@@ -804,6 +829,11 @@ export type BranchListResponse = {
   viewerScope: BranchViewerScope;
   hasMore?: boolean;
   /**
+   * Additive full-cohort Last-active composition for the applied filter scope.
+   * Omitted by older producers; consumers must never treat absence as zero.
+   */
+  lastActiveCohort?: BranchLastActiveCohort;
+  /**
    * FEA-3120: which store produced these rows — `local` (desktop SQLite via IPC),
    * `cloud` (synced cloud state via `apps/api`), or `fallback` (degraded/empty
    * best-effort, e.g. a failed cloud read that resolved to an empty list).
@@ -812,6 +842,10 @@ export type BranchListResponse = {
    * value as "unknown source" and render nothing rather than guess.
    */
   readSource?: ReadSource;
+  /** Additive atomic server-page metadata; omission identifies a legacy producer. */
+  pageInfo?: BranchListContract.BranchListPageInfo;
+  /** Compact pre-pagination self-excluding facet options/counts. */
+  facets?: BranchListContract.BranchListFacets;
   /**
    * FEA-3695 — the AUTHORITATIVE per-session captured cost (USD), each session
    * counted ONCE. Keyed by the non-nullable session artifact id
@@ -988,10 +1022,10 @@ export type BranchSession = BranchSessionCostFields & {
    * FEA-3576 — the resolved display name of the HUMAN stakeholder/user who owns
    * (paid for) this session, so the branch-detail PR activity timeline can
    * segment each hour by user spend rather than by the session/model actor.
-   * Cloud resolves this from the session's `SessionDetail.userId` (batched,
-   * org-scoped User lookup — the same owner attribution the branch-list `owner`
-   * column and byActor rollup use); desktop is single-player, so it is the local
-   * desktop user label. NULL when no owner is resolvable (folds into the shared
+   * Cloud resolves this from the session's Owner, its assignee (ISS-12251; batched,
+   * org-scoped User lookup — the same owner attribution the byActor rollup uses;
+   * the branch-list Owner is the pushing session's creator instead); desktop is
+   * single-player, so it is the local desktop user label. NULL when no owner is resolvable (folds into the shared
    * "unattributed" bucket). Nullable so an un-hydrated/ownerless session is
    * honest rather than fabricating a user.
    */
@@ -1100,6 +1134,25 @@ export type BranchSelectedPullRequestDetail = BranchAssociatedPullRequest & {
   changedFiles: number | null;
   additions: number | null;
   deletions: number | null;
+  /**
+   * ISS-8241: THIS PR's own base ref and author, as its producer measured them
+   * (ISS-8155's `pull_request_detail` columns). `null` is the single spelling of
+   * "no producer measured this" and must render as an explicit unknown — never
+   * as the owning Branch's current base, which belongs to whichever PR the
+   * branch points at now, and never as a blank that reads as "none". The desktop
+   * local producer has neither value to give and always sends `null`.
+   *
+   * OPTIONAL, unlike the siblings above: this shape crosses a deploy boundary
+   * with no schema to fill it in, so a Desktop build newer than the cloud it
+   * reads receives `undefined` here, not `null`, and a required annotation would
+   * promise every consumer a value that a supported response omits. Treat
+   * absent, `null`, and `""` as one state (`selected.baseRefName?.trim()`);
+   * never read it bare. Producers still decide — the cloud select is
+   * `satisfies`-checked and both columns are pinned by
+   * `canonical-projection.test.ts`.
+   */
+  baseRefName?: string | null;
+  authorLogin?: string | null;
 };
 
 /**
@@ -1130,12 +1183,29 @@ export type BranchIdleSpan = {
 
 /**
  * Lightweight work/idle activity summary for the lead-time waterfall (PLN-1148
- * Phase 2). Derived server-side from the captured event instants — which survive
- * the light (`omitEventData`) hydration — so the DEFAULT branch-detail view can
- * chart work-vs-idle WITHOUT loading the full `mergedTrace` (the events-heavy
- * trace is fetched lazily only when the Sessions & timeline tab opens). The
- * waterfall builds its track from `firstActivityT` → `max(lastActivityT,
- * mergedAt)` with `idleSpans` hatched.
+ * Phase 2). Derived server-side so the DEFAULT branch-detail view can chart
+ * work-vs-idle WITHOUT loading the full `mergedTrace` (the events-heavy trace is
+ * fetched lazily only when the Sessions & timeline tab opens).
+ *
+ * The two producers hold different evidence and say so, which is why this is
+ * spelled out rather than left as "the captured event instants". Desktop
+ * (`apps/desktop/src/main/branch/branch-lead-time-projection.ts`) walks every
+ * captured session event instant, so it fills all three fields. Cloud
+ * (`apps/api/app/branches/branch-read-service/canonical-projection.ts`) has no
+ * event instants at the projection site: `firstActivityT` is the earliest linked
+ * session's start, `lastActivityT` is the canonical last-active instant, and
+ * `idleSpans` is empty — an absence of measurement, never a claim that the
+ * branch had no idle gaps.
+ *
+ * ISS-8821: cloud used to fill `firstActivityT` from the canonical LAST-active
+ * instant, so every cloud-served branch reported its first activity at the
+ * moment of its last. Either end is `null` when that producer could not measure
+ * it, and the shipped waterfall anchors its own track on the same earliest
+ * session start rather than reading this field.
+ *
+ * Because cloud's two ends come off two evidence lanes, they can in principle
+ * disagree. Both are published as measured rather than folded into one `null`,
+ * so a consumer can see the disagreement instead of reading it as an absence.
  */
 export type BranchLeadTimeActivity = {
   firstActivityT: string | null;
@@ -1164,6 +1234,45 @@ export type BranchPageDetail = BranchRow & {
    * Older producers omit it; omission must not be interpreted as known-empty.
    */
   selectedPullRequestChecks?: BranchSelectedPullRequestChecksResponse;
+  /**
+   * ISS-12278: the cloud read scheduled a stale-PR refresh to run after its
+   * response, so a client refetches once to pick up the refreshed state.
+   * Omitted when no refresh was scheduled, and by every older producer.
+   */
+  pullRequestRefreshPending?: true;
+  /**
+   * ISS-8241: the selected pull request's OWN checks as a producer MEASURED
+   * them — the stored current-head projection, served only while it was written
+   * at that pull request's `headRefOid`, because a check run belongs to a commit
+   * and the branch's rollup stops describing this pull request the moment the
+   * two heads part. Absent is the single spelling of "no producer measured this
+   * pull request's head"; it is NOT an empty check population, which arrives as
+   * a present projection whose `providerState` is `no_checks`, and it is not a
+   * failed read, which arrives as `provider_unavailable` carrying no rollup and
+   * no counts.
+   *
+   * Distinct from `selectedPullRequestChecks` above, which is a LIVE provider
+   * acquisition performed per request: that one is fresher, this one is what the
+   * platform can stand behind between refreshes. Additive and optional, so a
+   * Desktop build older than this field simply never sees it.
+   */
+  selectedPullRequestChecksProjection?: BranchViewCheckProjection;
+  /**
+   * ISS-12197: the Branch Artifact row's generic fields for the Details tab,
+   * plus its parent — the source of the inbound `PRODUCES` link. `assignee` is
+   * the artifact's assignee, which `owner` also reads (ISS-12463), and
+   * `createdBy` its creator (decision 2026-10-07). Every key is additive and optional: an older
+   * cloud producer and the desktop local producer omit them, and `null` on a
+   * nullable one is a read that found none.
+   */
+  slug?: string | null;
+  assignee?: BasicUser | null;
+  createdAt?: string;
+  createdBy?: BasicUser | null;
+  updatedAt?: string;
+  dueDate?: string | null;
+  projectName?: string | null;
+  parent?: ArtifactParentSummary | null;
   /** READ-ONLY PR description (clamp/expand). Draft-PR CTA DEFERRED. */
   prBody: string | null;
   prBodyHtmlUrl: string | null;
@@ -1198,6 +1307,8 @@ export type BranchPageDetail = BranchRow & {
   phaseAttribution?: BranchPhaseAttributionResult; // Canonical priced segments and provenance.
   /** Additive ISS-4469 lifetime formulas and selected-cycle outcomes. */
   canonicalMetrics?: BranchDetailMetricBundle;
+  /** Optional for older producers; null explicitly means no observed selected cycle. */
+  canonicalMetricCycle?: BranchMetricSelectedCycle | null;
   /**
    * Cross-session interleaved trace incl. sessionstart + idle. PLN-1148 Phase 2:
    * the detail endpoint no longer ships this (always `[]`); it is fetched lazily
@@ -1241,31 +1352,6 @@ export const BranchBaselineScope = {
 } as const;
 export type BranchBaselineScope =
   (typeof BranchBaselineScope)[keyof typeof BranchBaselineScope];
-
-/**
- * WHAT a branch metric measures — the second half of comparability (ISS-4686).
- * Two figures over the same population still cannot be compared when they
- * measure different spans: `leadTimeForChangeMs` is first-commit → merge, while
- * the lead-time headline card shows first-session → merge.
- */
-export const BranchMetricBasis = {
-  /** Total churn (added + removed lines) ÷ estimated cost. */
-  ChurnPerDollar: "churn_per_dollar",
-  /** DORA lead time for change: first commit → merge. */
-  FirstCommitToMerge: "first_commit_to_merge",
-  /** Wall clock from the first contributing session → merge. */
-  FirstSessionToMerge: "first_session_to_merge",
-  /** Summed estimated AI cost, in USD. */
-  EstimatedSpendUsd: "estimated_spend_usd",
-  /** Count of branches whose status is neither merged nor closed. */
-  ActiveBranchCount: "active_branch_count",
-  /** Merged ÷ decided (merged + closed) PRs, as a percentage. */
-  MergeRateOfDecided: "merge_rate_of_decided",
-  /** Median additions + deletions across merged PRs. */
-  MedianMergedPrChurn: "median_merged_pr_churn",
-} as const;
-export type BranchMetricBasis =
-  (typeof BranchMetricBasis)[keyof typeof BranchMetricBasis];
 
 type BranchKpiMeasurement = {
   /** null when unavailable/degraded. */
@@ -1316,9 +1402,9 @@ export type BranchAnalytics = {
   /**
    * median `additions + deletions` over MERGED, single-PR branches whose LOC is
    * KNOWN. "Known" here means the branch's file-change rows fold to a non-null
-   * line total via `sumFileChanges` (BOTH dimensions present) — i.e. at least one
+   * line total via the server's file-cache fold (BOTH dimensions present) — i.e. at least one
    * enriched file row exists. A branch whose line total is null (un-enriched, OR
-   * a branch that enriched with ZERO file-change rows — `sumFileChanges([])` →
+   * a branch that enriched with ZERO file-change rows — an empty fold →
    * `{additions: null}`) is EXCLUDED from the median population; it is NOT folded
    * in as 0. Multi-PR branches (`multiPrWarning`) are also excluded (ambiguous
    * lifecycle). Unavailable (null, NOT 0) when the median population is empty —
@@ -1327,7 +1413,7 @@ export type BranchAnalytics = {
    * PARITY CAVEAT (verified 2026-07-28, FEA-4271): this basis matches the desktop
    * producer (`branch-analytics-projection.ts`) and the client filtered
    * projection (`filtered-branch-analytics.ts`) — all three key "known" off
-   * `sumFileChanges`/`isLocEnrichedRow`, so all three DROP a merged branch with
+   * the file-cache fold/`isLocEnrichedRow`, so all three DROP a merged branch with
    * zero file-change rows. It does NOT fully match the delivery dashboard
    * (`getDelivery` in `apps/api/app/insights/service.ts`): getDelivery keys
    * enrichment off `BranchDetail.fileCacheStatus === Fresh` and folds a Fresh
@@ -1349,9 +1435,10 @@ export type BranchAnalytics = {
    *
    * `multiPrWarning` branches are EXCLUDED from BOTH the numerator and the
    * denominator on the desktop producer and the client filtered projection.
-   * That field is a legacy live-overlay ambiguity gate, not associated-history
-   * multiplicity; cloud keeps it structurally false. New consumers must use the
-   * repository-qualified `associatedPullRequests` collection instead.
+   * Cloud and desktop row producers may set that existing compatibility field
+   * when the normalized associated/linked PR collection contains more than one
+   * PR; consumers that need repository-qualified detail should still use the
+   * `associatedPullRequests` collection instead.
    */
   mergeRate: BranchKpi;
   /** first-commit -> merge (GATED). */
@@ -1380,35 +1467,6 @@ export type BranchAnalytics = {
     state: BranchKpiState;
   };
 };
-
-/**
- * What each listed `BranchAnalytics` KPI's `value`/`baseline30d` MEASURE, keyed
- * by field name so the basis sits beside the field docs above and cannot drift
- * into a card's local comment (ISS-4686).
- *
- * SCOPE OF THE PROMISE: this covers exactly the KPIs listed below, and BOTH
- * Branches consumers of a `BranchKpi` baseline route through it via
- * `resolveBranchBaselineComparison` — the branch-DETAIL headline cards
- * (`branch-headline-cards.tsx`, per-branch figures, `valueScope: Branch`) and the
- * Branches LIST summary cards (`branches-summary-cards.tsx`, corpus figures,
- * `valueScope: Corpus`). Neither reads `deltaPct` off the wire, so the two
- * surfaces cannot print incompatible things about the same KPI on the same visit
- * — the list can't show a "+12% better" chip drawn from a BRANCH-scoped baseline
- * while the detail card shows "No comparison" for the same metric (#4242 review).
- *
- * The list card's `valueBasis` IS its `baselineBasis`, because that card renders
- * `kpi.value` itself rather than deriving a figure — the gate that does the work
- * there is `comparisonScope`. The detail cards derive their own numbers, so for
- * them both halves are live.
- */
-export const BRANCH_KPI_METRIC_BASIS = {
-  locPerDollar: BranchMetricBasis.ChurnPerDollar,
-  leadTimeForChangeMs: BranchMetricBasis.FirstCommitToMerge,
-  totalSpendUsd: BranchMetricBasis.EstimatedSpendUsd,
-  activeBranchCount: BranchMetricBasis.ActiveBranchCount,
-  mergeRate: BranchMetricBasis.MergeRateOfDecided,
-  medianPrSize: BranchMetricBasis.MedianMergedPrChurn,
-} as const satisfies Partial<Record<keyof BranchAnalytics, BranchMetricBasis>>;
 
 /**
  * Combined list + analytics read (FEA-3056 follow-up). The Branches screen

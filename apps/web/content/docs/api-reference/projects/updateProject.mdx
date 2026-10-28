@@ -10,8 +10,11 @@ _openapi:
     contents:
       - content: >-
           Updates a project by UUID or slug. All fields are optional — only the
-          supplied fields change. `settings` accepts a free-form JSON object
-          (known keys such as `repositoryOverrides` are shape-validated).
+          supplied fields change. `teamIds` is the one field with a floor: omit
+          it to leave the project's teams unchanged, but an explicit empty array
+          is rejected with a 400, because clearing the last team would make the
+          project invisible in the web app. `settings` accepts a free-form JSON
+          object (known keys such as `repositoryOverrides` are shape-validated).
           `customFields` maps custom-field UUIDs to values. Requires the `write`
           scope.
 ---

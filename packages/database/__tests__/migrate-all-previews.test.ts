@@ -7,7 +7,13 @@ import {
   type MigrateAllPreviewsDeps,
   migrateAllPreviewSchemas,
 } from "../scripts/migrate-all-previews";
+import { MigrateGateOutcome } from "../scripts/migrate-telemetry";
 import { SerializeLockContendedError } from "../scripts/migration-lock";
+import {
+  type VibeEnvironmentMarker,
+  VibeEnvironmentMode,
+  VibeEnvironmentState,
+} from "../scripts/vibe-environment";
 
 const BASE_URL = "postgresql://u@stage-host:5432/app";
 const MERGE_QUEUE_REF = "gh-readonly-queue/main/pr-4444-abc1234";
@@ -43,7 +49,7 @@ describe("migrateAllPreviewSchemas — serial walk (FEA-3071 Slice 2)", () => {
     const order: string[] = [];
     const applyToSchema = vi.fn((_url: string, schema: string) => {
       order.push(schema);
-      return Promise.resolve({ didReset: false, cloneFailed: false });
+      return Promise.resolve({ didReset: false });
     });
     const signer = makeSigner();
     const summary = await run(signer, {
@@ -68,7 +74,7 @@ describe("migrateAllPreviewSchemas — serial walk (FEA-3071 Slice 2)", () => {
     const applyToSchema = vi.fn((_url: string, schema: string) =>
       schema === "preview_b"
         ? Promise.reject(new Error("boom"))
-        : Promise.resolve({ didReset: false, cloneFailed: false })
+        : Promise.resolve({ didReset: false })
     );
     const summary = await run(makeSigner(), {
       enumeratePreviewSchemas: () =>
@@ -85,7 +91,7 @@ describe("migrateAllPreviewSchemas — serial walk (FEA-3071 Slice 2)", () => {
     const applyToSchema = vi.fn((_url: string, schema: string) =>
       schema === "preview_b"
         ? Promise.reject(new SerializeLockContendedError("57014"))
-        : Promise.resolve({ didReset: false, cloneFailed: false })
+        : Promise.resolve({ didReset: false })
     );
     const summary = await run(makeSigner(), {
       enumeratePreviewSchemas: () =>
@@ -107,9 +113,7 @@ describe("migrateAllPreviewSchemas — serial walk (FEA-3071 Slice 2)", () => {
     const times = [0, 0, 500, 500, 500];
     let i = 0;
     const now = () => times[Math.min(i++, times.length - 1)];
-    const applyToSchema = vi.fn(() =>
-      Promise.resolve({ didReset: false, cloneFailed: false })
-    );
+    const applyToSchema = vi.fn(() => Promise.resolve({ didReset: false }));
     const summary = await run(makeSigner(), {
       enumeratePreviewSchemas: () =>
         Promise.resolve(previews("preview_a", "preview_b", "preview_c")),
@@ -129,7 +133,6 @@ describe("migrateAllPreviewSchemas — serial walk (FEA-3071 Slice 2)", () => {
     const applyToSchema = vi.fn((_url: string, schema: string) =>
       Promise.resolve({
         didReset: schema === "preview_reset",
-        cloneFailed: false,
       })
     );
     await run(makeSigner(), {
@@ -144,10 +147,32 @@ describe("migrateAllPreviewSchemas — serial walk (FEA-3071 Slice 2)", () => {
     expect(seed).toHaveBeenCalledWith(expect.any(String), "preview_reset");
   });
 
+  it("never seeds a reset vibe environment (ISS-12056)", async () => {
+    const seed = vi.fn();
+    const applyToSchema = vi.fn((_url: string, schema: string) =>
+      Promise.resolve({
+        didReset: true,
+        vibeEnvironment: schema === "preview_vibe",
+      })
+    );
+    const summary = await run(makeSigner(), {
+      enumeratePreviewSchemas: () =>
+        Promise.resolve(previews("preview_vibe", "preview_reset")),
+      applyToSchema,
+      runPreviewSeed: seed,
+      logger: makeLogger(),
+    });
+
+    expect(seed).toHaveBeenCalledTimes(1);
+    expect(seed).toHaveBeenCalledWith(expect.any(String), "preview_reset");
+    expect(summary).toMatchObject({ succeeded: 2 });
+  });
+
   it("counts a reset with a failed clone as failed and does NOT seed it", async () => {
     const seed = vi.fn();
+    // ISS-11785: a failed clone throws out of the shared core.
     const applyToSchema = vi.fn(() =>
-      Promise.resolve({ didReset: true, cloneFailed: true })
+      Promise.reject(new Error("The data clone from public failed"))
     );
     const summary = await run(makeSigner(), {
       enumeratePreviewSchemas: () =>
@@ -167,7 +192,7 @@ describe("migrateAllPreviewSchemas — serial walk (FEA-3071 Slice 2)", () => {
     const applyToSchema = vi.fn(
       (_url: string, _schema: string, remainingBudgetMs: number) => {
         seen.push(remainingBudgetMs);
-        return Promise.resolve({ didReset: false, cloneFailed: false });
+        return Promise.resolve({ didReset: false });
       }
     );
     // Clock advances 10ms per read; budget 1000ms → both schemas get a positive,
@@ -217,9 +242,7 @@ describe("migrateAllPreviewSchemas — serial walk (FEA-3071 Slice 2)", () => {
   });
 
   it("skips a schema whose URL cannot be signed, continuing the rest", async () => {
-    const applyToSchema = vi.fn(() =>
-      Promise.resolve({ didReset: false, cloneFailed: false })
-    );
+    const applyToSchema = vi.fn(() => Promise.resolve({ didReset: false }));
     const signed: string[] = [];
     const sign = vi.fn((schema: string) => {
       if (schema === "preview_b") {
@@ -241,9 +264,7 @@ describe("migrateAllPreviewSchemas — serial walk (FEA-3071 Slice 2)", () => {
   });
 
   it("threads the registry branch from enumeration into applyToSchema (ISS-5285)", async () => {
-    const applyToSchema = vi.fn(() =>
-      Promise.resolve({ didReset: false, cloneFailed: false })
-    );
+    const applyToSchema = vi.fn(() => Promise.resolve({ didReset: false }));
     await run(makeSigner(), {
       enumeratePreviewSchemas: () =>
         Promise.resolve([
@@ -280,16 +301,32 @@ describe("defaultApplyToSchema — queue-ref clone skip via the walk (ISS-5285)"
    * adapter's own branch-forwarding into the shared core is what decides
    * whether the clone runs.
    */
-  function makePipelineOverrides(opts: { reset: boolean }) {
+  function makePipelineOverrides(opts: {
+    reset: boolean;
+    marker?: VibeEnvironmentMarker | null;
+  }) {
     return {
+      readVibeEnvironmentMarker: vi.fn(() =>
+        Promise.resolve(opts.marker ?? null)
+      ),
       probePreviewSchemaAtHead: vi.fn(() => Promise.resolve(false)),
       withMigrationSerializeLock: vi.fn(
-        (_opts: { databaseUrl: string }, fn: () => Promise<boolean>) => fn()
+        (
+          opts: {
+            databaseUrl: string;
+            onOutcome?: (outcome: MigrateGateOutcome, waitMs: number) => void;
+          },
+          fn: () => Promise<boolean>
+        ) => {
+          opts.onOutcome?.(MigrateGateOutcome.Acquired, 1);
+          return fn();
+        }
       ),
       prestampSkippableMigrationsViaSql: vi.fn(() => Promise.resolve()),
+      replayPendingMigrationsViaSql: vi.fn(() => Promise.resolve(true)),
       plainBuildPreviewConcurrentIndexes: vi.fn(() => Promise.resolve()),
       runMigrate: vi.fn(() => Promise.resolve(opts.reset)),
-      cloneDataFromPublic: vi.fn(() => Promise.resolve(true)),
+      cloneDataFromPublic: vi.fn(() => Promise.resolve()),
       sweepInvalidIndexes: vi.fn(() => Promise.resolve([])),
     };
   }
@@ -314,7 +351,6 @@ describe("defaultApplyToSchema — queue-ref clone skip via the walk (ISS-5285)"
     );
     expect(result).toEqual({
       didReset: true,
-      cloneFailed: false,
       invalidIndexes: [],
     });
   });
@@ -333,8 +369,35 @@ describe("defaultApplyToSchema — queue-ref clone skip via the walk (ISS-5285)"
     expect(overrides.cloneDataFromPublic).toHaveBeenCalledTimes(1);
     expect(result).toEqual({
       didReset: true,
-      cloneFailed: false,
       invalidIndexes: [],
+    });
+  });
+  it("a walk-triggered reset of a vibe environment re-migrates it empty and reports it (ISS-12056)", async () => {
+    const overrides = makePipelineOverrides({
+      reset: true,
+      marker: {
+        mode: VibeEnvironmentMode.Blank,
+        state: VibeEnvironmentState.Ready,
+      },
+    });
+    const result = await defaultApplyToSchema(
+      `${BASE_URL}?schema=preview_q`,
+      "preview_q",
+      60_000,
+      () => Promise.resolve(`${BASE_URL}?schema=preview_q&token=fresh`),
+      "feat/my-branch",
+      overrides
+    );
+
+    expect(overrides.readVibeEnvironmentMarker).toHaveBeenCalledWith(
+      `${BASE_URL}?schema=preview_q`,
+      "preview_q"
+    );
+    expect(overrides.cloneDataFromPublic).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      didReset: true,
+      invalidIndexes: [],
+      vibeEnvironment: true,
     });
   });
 });

@@ -1,16 +1,23 @@
 "use client";
 
+import { ArtifactStatusVocabulary } from "@repo/api/src/types/artifact-status-contract";
 import type {
   BranchPageDetail,
   BranchStatus,
 } from "@repo/api/src/types/branch";
 import { BranchStatus as BranchStatusEnum } from "@repo/api/src/types/branch";
+import { UNIVERSAL_ARTIFACT_STATUS_FLAG_KEY } from "@repo/api/src/types/universal-artifact-status-flag";
+import { ArtifactStatus as UniversalArtifactStatus } from "@repo/app/shared/components/artifact-status/artifact-status";
+import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { artifactStatusView } from "@repo/app/shared/lib/artifact-status-adapter";
+import { ArtifactStatusVariant } from "@repo/app/shared/lib/artifact-status-view-contract";
 import { formatNumber } from "@repo/app/shared/lib/format-utils";
 import { ChevronRightIcon, GitBranchIcon } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { BRANCH_STATUS_CONFIG } from "../lib/branch-row";
 import { toRenderStatus } from "../lib/branch-row-adapter";
 import type { PreferredBranchLoc } from "../lib/preferred-branch-loc";
+import { BranchUnavailableValue } from "./branch-unavailable-value";
 
 /**
  * Branch Properties panel (Epic D / D8) — restyled to the Branches Page design
@@ -43,13 +50,11 @@ const EMPTY = "—";
  */
 function buildPropertyRows({
   detail,
-  dot,
-  statusLabel,
+  statusValue,
   loc,
 }: {
   detail: BranchPageDetail;
-  dot: string;
-  statusLabel: string;
+  statusValue: ReactNode;
   loc?: PreferredBranchLoc;
 }): [string, ReactNode][] {
   // PLN-1535 M5.3 retired the live `/pr/files` overlay, so `loc` is now just
@@ -64,17 +69,11 @@ function buildPropertyRows({
       <b className="bq-del">−{formatNumber(deletions ?? 0)}</b>
     </span>
   ) : (
-    EMPTY
+    <BranchUnavailableValue />
   );
 
   return [
-    [
-      "Status",
-      <span className="sd3-pp" key="status">
-        <span className="sd3-status-dot" style={{ background: dot }} />
-        {statusLabel}
-      </span>,
-    ],
+    ["Status", statusValue],
     [
       "Branch",
       <span className="font-mono" key="branch" title={detail.branchName}>
@@ -103,10 +102,29 @@ export function BranchPropertiesPanel({
   detail,
   loc,
 }: BranchPropertiesPanelProps) {
+  const champion = useFeatureFlagEnabledOptional(
+    UNIVERSAL_ARTIFACT_STATUS_FLAG_KEY
+  );
   const [open, setOpen] = useState(false);
   const statusLabel = BRANCH_STATUS_CONFIG[toRenderStatus(detail.status)].label;
   const dot = STATUS_DOT[detail.status] ?? "var(--muted-foreground)";
-  const rows = buildPropertyRows({ detail, dot, statusLabel, loc });
+  const statusView = artifactStatusView(
+    detail.artifactId ?? detail.id,
+    ArtifactStatusVocabulary.Branch,
+    detail.status
+  );
+  const statusValue = champion ? (
+    <UniversalArtifactStatus
+      variant={ArtifactStatusVariant.DetailField}
+      view={statusView}
+    />
+  ) : (
+    <span className="sd3-pp" key="status">
+      <span className="sd3-status-dot" style={{ background: dot }} />
+      {statusLabel}
+    </span>
+  );
+  const rows = buildPropertyRows({ detail, statusValue, loc });
 
   return (
     <section className="prd-props-section sd3-props bq-props" data-open={open}>
@@ -124,10 +142,17 @@ export function BranchPropertiesPanel({
         </span>
         {open ? null : (
           <span className="sd3-props-preview">
-            <span className="sd3-pp">
-              <span className="sd3-status-dot" style={{ background: dot }} />
-              {statusLabel}
-            </span>
+            {champion ? (
+              <UniversalArtifactStatus
+                variant={ArtifactStatusVariant.CompactCell}
+                view={statusView}
+              />
+            ) : (
+              <span className="sd3-pp">
+                <span className="sd3-status-dot" style={{ background: dot }} />
+                {statusLabel}
+              </span>
+            )}
             <span className="sd3-pp font-mono" title={detail.branchName}>
               <GitBranchIcon aria-hidden className="size-3.5" />
               <span className="min-w-0 truncate">{detail.branchName}</span>

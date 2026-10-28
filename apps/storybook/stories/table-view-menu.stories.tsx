@@ -7,12 +7,10 @@ import {
 } from "@repo/design-system/components/ui/table-view-menu";
 import type { Meta, StoryObj } from "@storybook/react";
 import {
-  BadgeCheckIcon,
   CalendarIcon,
   FileIcon,
   FolderIcon,
   ListTreeIcon,
-  RefreshCwIcon,
   UserIcon,
 } from "lucide-react";
 import { useState } from "react";
@@ -31,12 +29,6 @@ const initialColumns: TableViewMenuColumn[] = [
     visible: true,
   },
   {
-    id: "loop",
-    icon: <RefreshCwIcon className="h-4 w-4 text-muted-foreground" />,
-    label: "Loop",
-    visible: false,
-  },
-  {
     id: "parent",
     icon: <ListTreeIcon className="h-4 w-4 text-muted-foreground" />,
     label: "Parent",
@@ -46,12 +38,6 @@ const initialColumns: TableViewMenuColumn[] = [
     id: "priority",
     icon: <PriorityIcon priority={Priority.Medium} size={16} />,
     label: "Priority",
-    visible: true,
-  },
-  {
-    id: "score",
-    icon: <BadgeCheckIcon className="h-4 w-4 text-muted-foreground" />,
-    label: "Quality Score",
     visible: true,
   },
   {
@@ -107,9 +93,9 @@ function TableViewMenuDemo() {
 }
 
 const meta = {
-  title: "Design System/Primitives/Table View Menu",
+  title: "Composites v1.0/Data Display/Tables/Table View Menu",
   component: TableViewMenuDemo,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: {
     layout: "centered",
   },

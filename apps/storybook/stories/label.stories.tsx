@@ -5,9 +5,9 @@ import type { Meta, StoryObj } from "@storybook/react";
  * Renders an accessible label associated with controls.
  */
 const meta = {
-  title: "Design System/Primitives/Label",
+  title: "Primitives v1.0/Inputs/Label",
   component: Label,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   argTypes: {
     children: {
       control: { type: "text" },

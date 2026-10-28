@@ -1,4 +1,6 @@
+import { AgentSessionCloudSyncState } from "@repo/api/src/types/agent-session-cloud-sync-state-constants";
 import { TranscriptDisposition } from "@repo/api/src/types/transcript-disposition-constants";
+import { TranscriptSkipReason } from "@repo/api/src/types/transcript-skip-reason-constants";
 import { describe, expect, it } from "vitest";
 import {
   getSessionSyncStatus,
@@ -170,5 +172,123 @@ describe("getSessionSyncStatus", () => {
     expect(status.freshnessLabel).toBe("Last synced 11 min ago");
     // No leading `undefined · ` — only the freshness half renders.
     expect(status.valueLabel).toBe("Last synced 11 min ago");
+  });
+});
+
+describe("ISS-9884: the failedTransient pair that means paused, not retrying", () => {
+  it("renders Upload paused in warning tone for environment_unavailable", () => {
+    // The whole point of the reason reaching the list. Before it did, this row
+    // read "Sync failed, retrying" in danger red while the detail panel said
+    // "Transcript upload paused" about the same transcript.
+    const status = getSessionSyncStatus(
+      {
+        transcriptDisposition: TranscriptDisposition.FailedTransient,
+        transcriptDispositionReason:
+          TranscriptSkipReason.EnvironmentUnavailable,
+      },
+      { now: NOW }
+    );
+
+    expect(status.dispositionLabel).toBe("Upload paused");
+    expect(status.tone).toBe("warning");
+    expect(status.attention).toBe(true);
+  });
+
+  it("leaves the re-queued producer of the SAME disposition unchanged", () => {
+    // The control. `failedTransient` with no reason is the ordinary
+    // retryable upload failure the desktop re-queues with backoff, and
+    // "It retries automatically" is true of it.
+    const status = getSessionSyncStatus(
+      { transcriptDisposition: TranscriptDisposition.FailedTransient },
+      { now: NOW }
+    );
+
+    expect(status.dispositionLabel).toBe("Sync failed, retrying");
+    expect(status.tone).toBe("danger");
+  });
+
+  it("needs BOTH halves: the reason alone does not pause another disposition", () => {
+    // A version-skewed producer can carry a reason on a row whose verdict it
+    // did not produce. Only the pair names the paused state.
+    const status = getSessionSyncStatus(
+      {
+        transcriptDisposition: TranscriptDisposition.FailedPermanent,
+        transcriptDispositionReason:
+          TranscriptSkipReason.EnvironmentUnavailable,
+      },
+      { now: NOW }
+    );
+
+    expect(status.dispositionLabel).toBe("Sync failed");
+    expect(status.tone).toBe("danger");
+  });
+
+  it("keeps failedTransient with any OTHER reason on the retrying copy", () => {
+    const status = getSessionSyncStatus(
+      {
+        transcriptDisposition: TranscriptDisposition.FailedTransient,
+        transcriptDispositionReason: TranscriptSkipReason.RetriesExhausted,
+      },
+      { now: NOW }
+    );
+
+    expect(status.dispositionLabel).toBe("Sync failed, retrying");
+  });
+
+  it("joins the paused label with freshness like any other verdict", () => {
+    const status = getSessionSyncStatus(
+      {
+        transcriptDisposition: TranscriptDisposition.FailedTransient,
+        transcriptDispositionReason:
+          TranscriptSkipReason.EnvironmentUnavailable,
+        lastSyncedAt: new Date("2026-06-10T12:19:00.000Z"),
+      },
+      { now: NOW }
+    );
+
+    expect(status.valueLabel).toBe("Upload paused · Last synced 11 min ago");
+  });
+});
+
+describe("getSessionSyncStatus — ISS-11427 dead-lettered rows", () => {
+  const lastSyncedAt = new Date("2026-06-10T12:00:00.000Z");
+
+  it("names a dead letter and an abandoned row apart, each drawing attention", () => {
+    const deadLetter = getSessionSyncStatus(
+      { lastSyncedAt, cloudSyncState: AgentSessionCloudSyncState.DeadLetter },
+      { now: NOW }
+    );
+    const abandoned = getSessionSyncStatus(
+      { lastSyncedAt, cloudSyncState: AgentSessionCloudSyncState.Abandoned },
+      { now: NOW }
+    );
+
+    expect(deadLetter.dispositionLabel).toBe("Dead letter");
+    expect(deadLetter.tone).toBe("warning");
+    expect(abandoned.dispositionLabel).toBe("Abandoned");
+    expect(abandoned.tone).toBe("danger");
+    expect([deadLetter.attention, abandoned.attention]).toEqual([true, true]);
+    expect(deadLetter.valueLabel).toBe(
+      `Dead letter · ${deadLetter.freshnessLabel}`
+    );
+  });
+
+  it("leaves a pending or synced row to its transcript verdict", () => {
+    for (const cloudSyncState of [
+      AgentSessionCloudSyncState.Pending,
+      AgentSessionCloudSyncState.Synced,
+    ]) {
+      const status = getSessionSyncStatus(
+        {
+          lastSyncedAt,
+          cloudSyncState,
+          transcriptDisposition: TranscriptDisposition.Synced,
+        },
+        { now: NOW }
+      );
+      expect(status.dispositionLabel).toBe(
+        getTranscriptDispositionLabel(TranscriptDisposition.Synced)
+      );
+    }
   });
 });

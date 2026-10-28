@@ -1,6 +1,11 @@
+import {
+  allOrNothingCanonicalSortSql,
+  canonicalRankingKeySql,
+} from "./session-timestamp-form.js";
+
 /**
  * ISS-4854 / ISS-5629: the SQLite read behind `getSkills`, extracted from
- * `dashboard-queries.ts` (a grandfathered over-ceiling file) so the skills
+ * `dashboard-queries.ts` so the skills
  * aggregate can grow without growing it. The consumer keeps only the JS map
  * from a row to a `DashboardSkillSummary`.
  */
@@ -60,6 +65,13 @@ export type SqliteSkillRow = {
   install_path: string | null;
   invocation_count: number | bigint;
   last_used_at: string | null;
+  /**
+   * The query's single `MAX` aggregate. No summary field maps from it, but it
+   * MUST stay in the SELECT list: dropping it leaves the query with no min/max
+   * aggregate at all, so the bare-column rule below stops applying and
+   * `last_used_at` silently rebinds to the inner column of the same name.
+   */
+  last_used_sort: string | null;
 };
 
 /**
@@ -82,10 +94,56 @@ export type SqliteSkillRow = {
  * `${harness}:${packId ?? "standalone"}:${name}`: `packIdFromSkillName` is a
  * pure function of `name` (its prefix before the first `/` or `:`), so that key
  * is injective in the pair and is still derived in JS by the caller.
- * `description`/`install_path` are BARE columns beside the single
- * `MAX(created_at)`, which SQLite documents as taking their values from the row
- * that produced the max — the newest event, i.e. the first row the former
- * `ORDER BY created_at DESC` fold saw and kept.
+ * `last_used_at`/`description`/`install_path` are BARE columns beside the single
+ * `MAX` aggregate, which SQLite documents as taking their values from the row
+ * that produced the max.
+ *
+ * ISS-6414: what that max ranks is `last_used_sort`, not the raw
+ * `created_at` bytes. `events.created_at` holds raw harness text and is
+ * deliberately outside the FEA-3743 heal's `HEALED_COLUMNS`
+ * (timestamp-format-maintenance.ts), so the column carries mixed forms
+ * indefinitely — and byte order is only time order at a FIXED width. A
+ * whole-second stamp beats a sub-second one at the same instant (`Z` 0x5A sorts
+ * after `.` 0x2E), so the ISS-5629 byte-wise max returned the EARLIER event,
+ * regressing the `maxIso`/`Date.parse` fold it replaced. It handed the
+ * descriptive columns to that same earlier row, which the pre-ISS-5629 fold also
+ * got wrong (it took them from the first row of a byte-wise
+ * `ORDER BY created_at DESC`), so those are corrected here for the first time.
+ *
+ * TWO MODES, never mixed — ISS-5497's rule, and it is load-bearing rather than
+ * conservative. Both ways of half-applying it move a value BACKWARD past where
+ * `main` puts it, on shapes ISS-5497 measured in the real store:
+ *
+ *  - MIXING a canonical operand with a raw one. Canonicalizing LOWERS a value's
+ *    text whenever it applies a positive offset, so a canonicalized true winner
+ *    can sort below an un-canonicalizable sibling — `2026-06-22T23:00:00+05:00`
+ *    (18:00Z) and `2026-06-22T21:00:00.000+0530` (15:30Z, which SQLite cannot
+ *    parse) fold to 18:00Z today and to 15:30Z when only the first is rewritten.
+ *  - DROPPING the un-canonicalizable operand, which is the same defect from the
+ *    other side: the row it drops is exactly the one that could have won.
+ *    `2026-06-25T10:00:00.000+0530` beside `2026-06-22T10:00:00.000Z` folds to
+ *    the June 25 row today, and to June 22 — three days back, with a stale
+ *    description — once the June 25 row is skipped for being unreadable.
+ *
+ * So `last_used_sort` is canonical for every row in the group or raw for every
+ * row in it: `canonicalRankingKeySql` (session-timestamp-form.ts, the SSOT for
+ * what a stored timestamp's text form means) yields NULL for a shape it
+ * declines, the window `COUNT` compares that against the non-NULL `created_at`
+ * count, and a single dissenter drops the whole group back to the pre-ISS-6414
+ * expression verbatim — which cannot regress anything, because it is what
+ * shipped. The guarantee is: a group whose every event canonicalizes gets an
+ * exact instant comparison; any other group behaves EXACTLY as it did before.
+ *
+ * Consuming that SSOT rather than a bare `unixepoch` keeps the ACCEPTED SET in
+ * step with the `Date.parse` this read's own consumer re-sorts on
+ * (`compareLastUsedThenName`): SQLite alone would accept an hour of `24` that
+ * `Date.parse` reads as NaN, and would hand the renderer a `lastUsedAt` it
+ * cannot render. ISS-6815 (review) closed the same hole from the other side: the
+ * canonical GLOB is a SHAPE test, so `canonicalRankingKeySql` adds the VALUE
+ * check that keeps an impossible instant like month 13 from passing through as
+ * canonical and winning the fold on its bytes. Only the accepted set — the two readers still disagree on the
+ * INSTANT of a zone-less `T`-form, which the SSOT reads as UTC (ISS-5496) and
+ * `Date.parse` reads as host-local. That round trip is `main`'s too.
  *
  * The trailing ORDER BY is NOT redundant with the caller's
  * `compareLastUsedThenName` sort: that comparator returns 0 for two rows
@@ -93,6 +151,13 @@ export type SqliteSkillRow = {
  * `Array.prototype.sort` is stable, so input order decides the tie. Without
  * this clause the tie would fall to SQLite's unordered GROUP BY output and the
  * dashboard could reorder between reads of an unchanged corpus.
+ *
+ * Canonicalizing WIDENS that tie class rather than narrowing it: two spellings
+ * of one instant used to sort apart on their raw bytes and now collapse to the
+ * same key, so a same-instant/same-name pair is a full tie here and the row
+ * order — like the bare columns inside a same-instant group — falls to the query
+ * plan. Which of two events recorded at the same instant supplies the
+ * description is arbitrary in the domain, so this is accepted, not resolved.
  */
 export const SKILL_SUMMARY_SQL = `
   SELECT
@@ -101,27 +166,38 @@ export const SKILL_SUMMARY_SQL = `
     description,
     install_path,
     COUNT(*) AS invocation_count,
-    MAX(created_at) AS last_used_at
+    created_at AS last_used_at,
+    MAX(last_used_sort) AS last_used_sort
   FROM (
     SELECT
-      COALESCE(
-        ${sqlNonEmptyText(skillDataTextExpr("skillName"))},
-        ${sqlNonEmptyText(skillDataTextExpr("skill"))},
-        ${sqlNonEmptyText(skillDataTextExpr("name"))},
-        ${sqlNonEmptyText("e.summary")}
-      ) AS name,
-      COALESCE(${sqlNonEmptyText("s.harness")}, 'unknown') AS harness,
-      ${sqlNonEmptyText(skillDataTextExpr("description"))} AS description,
-      COALESCE(
-        ${sqlNonEmptyText(skillDataTextExpr("installPath"))},
-        ${sqlNonEmptyText(skillDataTextExpr("path"))}
-      ) AS install_path,
-      e.created_at AS created_at
-    FROM events e
-    LEFT JOIN sessions s ON s.id = e.session_id
-    WHERE e.tool_name = 'Skill'
+      name,
+      harness,
+      description,
+      install_path,
+      created_at,
+      ${allOrNothingCanonicalSortSql("canonical_created_at", "created_at", "PARTITION BY harness, name")} AS last_used_sort
+    FROM (
+      SELECT
+        COALESCE(
+          ${sqlNonEmptyText(skillDataTextExpr("skillName"))},
+          ${sqlNonEmptyText(skillDataTextExpr("skill"))},
+          ${sqlNonEmptyText(skillDataTextExpr("name"))},
+          ${sqlNonEmptyText("e.summary")}
+        ) AS name,
+        COALESCE(${sqlNonEmptyText("s.harness")}, 'unknown') AS harness,
+        ${sqlNonEmptyText(skillDataTextExpr("description"))} AS description,
+        COALESCE(
+          ${sqlNonEmptyText(skillDataTextExpr("installPath"))},
+          ${sqlNonEmptyText(skillDataTextExpr("path"))}
+        ) AS install_path,
+        e.created_at AS created_at,
+        ${canonicalRankingKeySql("e.created_at")} AS canonical_created_at
+      FROM events e
+      LEFT JOIN sessions s ON s.id = e.session_id
+      WHERE e.tool_name = 'Skill'
+    )
+    WHERE name IS NOT NULL
   )
-  WHERE name IS NOT NULL
   GROUP BY harness, name
-  ORDER BY last_used_at DESC, name ASC
+  ORDER BY last_used_sort DESC, name ASC
 `;

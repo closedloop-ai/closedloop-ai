@@ -3,6 +3,7 @@ import {
   EvaluationReportType,
 } from "@repo/api/src/types/evaluation";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { isUuid } from "@/lib/is-uuid";
 import {
   badRequestResponse,
   errorResponse,
@@ -25,6 +26,10 @@ export const GET = withAnyAuth<
 
     if (!projectId) {
       return badRequestResponse("projectId is required");
+    }
+
+    if (!isUuid(projectId)) {
+      return badRequestResponse("projectId must be a UUID");
     }
 
     const result = await documentEvaluationService.getBatchJudgeScores(

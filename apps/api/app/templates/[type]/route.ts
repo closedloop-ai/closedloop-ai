@@ -3,7 +3,7 @@ import {
   type Document,
   type DocumentType,
 } from "@repo/api/src/types/document";
-import { withAuth } from "@/lib/auth/with-auth";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
   badRequestResponse,
   errorResponse,
@@ -15,7 +15,7 @@ import { documentTemplatesService } from "../service";
  * GET /templates/[type] - Get a single template by document type
  * Ensures default templates exist (lazy seeding) before returning the requested template
  */
-export const GET = withAuth<Document, "/templates/[type]">(
+export const GET = withAnyAuth<Document, "/templates/[type]">(
   async ({ user }, _request, params) => {
     try {
       const { type } = await params;

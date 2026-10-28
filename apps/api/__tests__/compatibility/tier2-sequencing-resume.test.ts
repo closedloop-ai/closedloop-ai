@@ -1,9 +1,11 @@
+import { DesktopCommandStatus } from "@repo/api/src/types/compute-target";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST } from "@/app/internal/relay/socket-event/route";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import {
   INTERNAL_SECRET,
   makeEnvelope,
+  makeHelloAckEnvelope,
   makeSocketEventRequest,
   mockGatewayOwnerAuthContext,
 } from "./utils/test-fixtures";
@@ -42,7 +44,6 @@ vi.mock("@/lib/relay-event-bus", async (importOriginal) => {
     ...original,
     relayEventBus: {
       ...original.relayEventBus,
-      publishResult: vi.fn(),
     },
   };
 });
@@ -66,10 +67,10 @@ describe("POST /internal/relay/socket-event — sequencing and resume", () => {
       commandId: "cmd-1",
       computeTargetId: "target-1",
       operationId: "op-1",
-      status: "running",
+      status: DesktopCommandStatus.Running,
       lastSequenceAcked: 2,
       createdAt: new Date().toISOString(),
-    } as any);
+    });
 
     const request = makeSocketEventRequest(
       "desktop.command.event",
@@ -89,7 +90,7 @@ describe("POST /internal/relay/socket-event — sequencing and resume", () => {
     expect(body.emit).toHaveLength(1);
     expect(body.emit[0].event).toBe("desktop.hello.ack");
     expect(body.emit[0].payload).toEqual(
-      makeEnvelope({
+      makeHelloAckEnvelope({
         computeTargetId: "target-1",
         sessionId: expect.any(String),
         serverTime: expect.any(String),
@@ -111,10 +112,10 @@ describe("POST /internal/relay/socket-event — sequencing and resume", () => {
       commandId: "cmd-1",
       computeTargetId: "target-1",
       operationId: "op-1",
-      status: "running",
+      status: DesktopCommandStatus.Running,
       lastSequenceAcked: 2,
       createdAt: new Date().toISOString(),
-    } as any);
+    });
 
     const request = makeSocketEventRequest(
       "desktop.command.event",
@@ -135,7 +136,7 @@ describe("POST /internal/relay/socket-event — sequencing and resume", () => {
 
     const body = await response.json();
     expect(body.emit[0].payload).toEqual(
-      makeEnvelope({
+      makeHelloAckEnvelope({
         computeTargetId: "target-1",
         sessionId: expect.any(String),
         serverTime: expect.any(String),

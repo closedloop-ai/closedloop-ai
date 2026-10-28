@@ -1,5 +1,5 @@
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
-import { DATA_REVISION } from "../collectors/engine/data-revision.js";
+import { effectiveDataRevision } from "../collectors/engine/effective-data-revision.js";
 import { toCanonicalIso } from "../database/db-helpers.js";
 import type { Prisma, PrismaClient } from "../database/generated/client.js";
 import type { DesktopPrisma } from "../database/prisma-client.js";
@@ -113,7 +113,7 @@ function tokenUsageUpsert(
     usage.cacheReadTokens,
     usage.cacheWriteTokens,
     CodexOtelTokenUsageSource.OtelLogPayload,
-    DATA_REVISION,
+    effectiveDataRevision(),
     // FEA-3743: canonicalize observedAt before it becomes token_usage.created_at
     // — the MIN(existing, excluded) merge above compares these values as text,
     // so a mixed-format created_at column could keep the wrong "earliest" value.
@@ -260,7 +260,7 @@ function minimalCodexSessionUpsert(
     CODEX_HARNESS,
     UNKNOWN_BILLING_MODE,
     JSON.stringify({ source: "codex_otel" }),
-    DATA_REVISION,
+    effectiveDataRevision(),
     ...identity.values
   );
 }
@@ -299,7 +299,7 @@ function codexTraceSpanUpsert(
       sanitizeCodexOtelAttributes(span.resourceAttributes)
     ),
     receivedAt: now,
-    revisionId: DATA_REVISION,
+    revisionId: effectiveDataRevision(),
   };
   return client.codexTraceSpan.upsert({
     where: {

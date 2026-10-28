@@ -1,18 +1,12 @@
 /**
- * ISS-5507 — a chart tile's heading must name the population the RESPONSE sent.
+ * A chart tile's heading is the catalog title on every surface (ISS-12638,
+ * operator ruling: titles are the same in single-user and logged-in mode).
  *
- * `chart:klocTrend` is one catalog entry drawn from two producers with different
- * populations: the cloud service sums MERGED PRs and labels its series "KLOC
- * merged", while the desktop local backend sums CAPTURED PRs and labels its own
- * "KLOC captured" (the merged-vs-captured split FEA-2947 and the desktop
- * "KLOC captured" KPI exist to keep straight). The catalog title was hardcoded
- * to the cloud wording and rendered verbatim, so a desktop-shaped response drew
- * "KLOC merged over time" above a legend reading "KLOC captured".
- *
- * These drive the real `InsightsTile` rather than calling `chartTileTitle`
- * directly, so deleting the resolution from the card shell fails here instead of
- * leaving a green helper nobody calls. Between them they cover every branch of
- * that helper: no suffix, series label, KPI-label fallback, and neither loaded.
+ * The desktop producer labels its KLOC series and KPI with the captured-PR noun
+ * while the catalog says "KLOC merged". These drive the real `InsightsTile` with
+ * those conflicting labels and assert the heading, the expand control, the
+ * modal's accessible name and the heatmap's grid name all stay on the catalog
+ * title, so a card never renames itself from the response it is given.
  */
 
 import type {
@@ -38,119 +32,66 @@ vi.mock("@repo/design-system/components/ui/category-bar-chart", () => ({
   CategoryBarChart: () => <div data-testid="bar-chart" />,
 }));
 
-const CLOUD_METRIC_LABEL = "KLOC merged";
-const DESKTOP_METRIC_LABEL = "KLOC captured";
+const PRODUCER_METRIC_LABEL = "KLOC captured";
 const KLOC_METRIC_KEY = "kloc";
 
-describe("chart tile heading resolution (ISS-5507)", () => {
-  // The two sources are given CONFLICTING labels on purpose: a response carries
-  // both, so a fixture where they agree cannot tell series-first precedence from
-  // KPI-first. Cloud sends the merged series; the KPI beside it is deliberately
-  // the desktop noun, and it must lose.
-  it("keeps the cloud heading, preferring the series label over a conflicting KPI label", () => {
+describe("chart tile headings follow the catalog, not the response (ISS-12638)", () => {
+  it("keeps the catalog heading when the series and the KPI carry another noun", async () => {
+    const user = userEvent.setup();
+    const catalogTitle = tile("chart:klocTrend").title;
     renderTile(
       "chart:klocTrend",
       sections({
-        kpiLabel: DESKTOP_METRIC_LABEL,
-        seriesLabel: CLOUD_METRIC_LABEL,
+        kpiLabel: PRODUCER_METRIC_LABEL,
+        seriesLabel: PRODUCER_METRIC_LABEL,
       })
     );
 
-    expect(cardHeading("KLOC merged over time")).toBeInTheDocument();
+    expect(cardHeading(catalogTitle)).toBeInTheDocument();
     expect(
-      screen.queryByText("KLOC captured over time")
+      screen.queryByText(`${PRODUCER_METRIC_LABEL} over time`)
     ).not.toBeInTheDocument();
-  });
-
-  it("names the captured population when the desktop producer labels the series", async () => {
-    const user = userEvent.setup();
-    renderTile(
-      "chart:klocTrend",
-      sections({ seriesLabel: DESKTOP_METRIC_LABEL })
-    );
-
-    expect(cardHeading("KLOC captured over time")).toBeInTheDocument();
-    expect(screen.queryByText("KLOC merged over time")).not.toBeInTheDocument();
-    // The expand control names the same chart the heading does.
+    // The expand control and the modal it opens name the same chart.
     await user.click(
-      screen.getByRole("button", { name: "Expand KLOC captured over time" })
+      screen.getByRole("button", { name: `Expand ${catalogTitle}` })
     );
-
-    // So does the modal it opens — whose accessible name comes from a SEPARATE
-    // `ExpandableWidget title` prop, so pinning the button label alone leaves
-    // reverting that prop to the catalog title green.
-    expect(screen.getByRole("dialog")).toHaveAccessibleName(
-      "KLOC captured over time"
-    );
+    expect(screen.getByRole("dialog")).toHaveAccessibleName(catalogTitle);
   });
 
-  it("resolves the bar variant's heading from the same series", () => {
-    renderTile(
-      "chart:klocTrend:bar",
-      sections({ seriesLabel: DESKTOP_METRIC_LABEL })
-    );
+  it.each(["chart:klocTrend:bar", "chart:klocTrend:heatmap"])(
+    "keeps %s on its catalog heading",
+    (tileId) => {
+      const catalogTitle = tile(tileId).title;
+      renderTile(tileId, sections({ seriesLabel: PRODUCER_METRIC_LABEL }));
 
-    expect(cardHeading("KLOC captured by day")).toBeInTheDocument();
-  });
+      expect(cardHeading(catalogTitle)).toBeInTheDocument();
+    }
+  );
 
-  it("resolves the heatmap's heading and its sr-only grid label together", () => {
+  it("names the heatmap grid with the catalog heading too", () => {
+    const catalogTitle = tile("chart:klocTrend:heatmap").title;
     renderTile(
       "chart:klocTrend:heatmap",
-      sections({ seriesLabel: DESKTOP_METRIC_LABEL })
+      sections({ seriesLabel: PRODUCER_METRIC_LABEL })
     );
 
-    expect(cardHeading("KLOC captured heatmap")).toBeInTheDocument();
-    // `ActivityHeatmap` points the grid's `aria-labelledby` at this node, so an
-    // unresolved label would leave the screen-reader name contradicting the
-    // visible heading.
     expect(
-      screen.getByRole("grid", { name: "KLOC captured heatmap" })
+      screen.getByRole("grid", { name: catalogTitle })
     ).toBeInTheDocument();
   });
 
-  // The heading and the grid's accessible name are resolved at two call sites,
-  // so they are given the SAME two sources. A series whose key the tile does not
-  // know is the case that pulls them apart: it is data (so the heatmap draws and
-  // does need a name) while naming no metric, and only a producer — not this
-  // repo's types — decides the key.
-  it("keeps the heatmap's accessible name equal to its heading when the series names no known metric", () => {
-    const response = sections({ kpiLabel: DESKTOP_METRIC_LABEL });
-    const delivery = response[InsightsSection.Delivery];
-    if (delivery) {
-      delivery.charts.klocTrend = {
-        series: [{ key: "kloc-v2", label: "KLOC captured (v2)" }],
-        points: [{ date: "2026-05-15", values: { "kloc-v2": 3.2 } }],
-      };
-    }
+  it("keeps the catalog title when the producer omits the series", () => {
+    const catalogTitle = tile("chart:klocTrend").title;
+    renderTile(
+      "chart:klocTrend",
+      sections({ kpiLabel: PRODUCER_METRIC_LABEL })
+    );
 
-    renderTile("chart:klocTrend:heatmap", response);
-
-    expect(cardHeading("KLOC captured heatmap")).toBeInTheDocument();
-    expect(
-      screen.getByRole("grid", { name: "KLOC captured heatmap" })
-    ).toBeInTheDocument();
+    expect(cardHeading(catalogTitle)).toBeInTheDocument();
   });
 
-  // ISS-5412: desktop OMITS `klocTrend` entirely when no captured PR can be
-  // sized. The card is empty either way, but it still has to name the right
-  // population — and the KPI stat for the same metric is the only noun left.
-  it("falls back to the section's KPI label when the producer omits the series", () => {
-    renderTile("chart:klocTrend", sections({ kpiLabel: DESKTOP_METRIC_LABEL }));
-
-    expect(cardHeading("KLOC captured over time")).toBeInTheDocument();
-  });
-
-  it("keeps the catalog title while the response is still loading", () => {
-    renderTile("chart:klocTrend", {});
-
-    expect(cardHeading("KLOC merged over time")).toBeInTheDocument();
-  });
-
-  // A tile whose heading is fixed copy must not start echoing a series label:
-  // desktop splits `prTrend` into "Agent-raised"/"Manual" series, neither of
-  // which is a heading.
-  it("leaves a tile that declares no suffix on its catalog title", () => {
-    const response = sections({ seriesLabel: DESKTOP_METRIC_LABEL });
+  it("leaves a tile whose series are not headings on its catalog title", () => {
+    const response = sections({ seriesLabel: PRODUCER_METRIC_LABEL });
     response[InsightsSection.Delivery]?.charts.prTrend.series.push({
       key: "merged",
       label: "Agent-raised",

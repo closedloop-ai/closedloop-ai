@@ -1,247 +1,83 @@
-/**
- * FEA-2923 (T-10.7): Unit tests for desktopComponentsSyncService.
- *
- * The route test mocks this service wholesale, so its internals — the ownership
- * gate, the upsert where/create/update shape, ISO date parsing, and the
- * org-scoping invariant on the update payload — are exercised only here.
- *
- * Covers:
- *  - sync() returns Result.err("forbidden") when the compute target is not owned.
- *  - upsert is called with the correct where/create/update shape.
- *  - parseDateField handles valid ISO / null / undefined / absent fields.
- *  - the update payload never carries organizationId or computeTargetId.
- *  - one upsert per component, each keyed by
- *    (computeTargetId, componentKind, externalComponentId).
- */
+/** FEA-2923: Unit coverage for desktopComponentsSyncService. */
 import { Status } from "@repo/api/src/types/result";
 import { SearchEntityType } from "@repo/api/src/types/search-entity-kind";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DB_FANOUT_MAX_CONCURRENCY } from "@/lib/db-fanout";
 
-const mocks = vi.hoisted(() => ({
-  withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
-  findOwnedById: vi.fn(),
-  upsert: vi.fn(),
-  versionUpsert: vi.fn(),
-  versionUpdate: vi.fn(),
-  versionCreateMany: vi.fn(),
-  versionUpdateMany: vi.fn(),
-  registerDefinitionVersion: vi.fn(),
-  relinkActiveForComputeTarget: vi.fn(),
-  componentFindMany: vi.fn(),
-  logInfo: vi.fn(),
-  logWarn: vi.fn(),
-  indexManyAfterCommit: vi.fn(),
-  removeManyAfterCommit: vi.fn(),
-}));
-
-vi.mock("@repo/database", () => ({
-  withDb: mocks.withDb,
-  // Enum runtime values referenced by the sync service (FEA-3290).
-  SourceAccessState: { accessible: "accessible", inaccessible: "inaccessible" },
-}));
-
-vi.mock("@/app/compute-targets/service", () => ({
-  computeTargetsService: {
-    findOwnedById: mocks.findOwnedById,
-  },
-}));
-
-vi.mock("@repo/observability/log", () => ({
-  log: { info: mocks.logInfo, warn: mocks.logWarn },
-}));
-
-vi.mock("@/app/agent-sessions/service/component-invocations", () => ({
-  agentComponentInvocationsService: {
-    relinkActiveForComputeTarget: mocks.relinkActiveForComputeTarget,
-  },
-}));
-
-// FEA-3290 (F1, Slice 3): the sync writer delegates the exact-version registry
-// write to this service. Mocked here so the sync-lane unit test asserts the
-// wiring (called with the right args, link stamped) without a DB.
-vi.mock("@/app/definition-registry/service", () => ({
-  registerDefinitionVersion: mocks.registerDefinitionVersion,
-}));
-
-// FEA-4011 Slice A: keep the real `agentComponentProjection` mapper (so the test
-// asserts the exact projection input) but stub the fail-open index hooks so the
-// sync-lane unit test never touches a DB / waitUntil.
-vi.mock("@/app/search/search-index-service", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("@/app/search/search-index-service")>();
-  return {
-    ...actual,
-    searchIndexService: {
-      indexManyAfterCommit: mocks.indexManyAfterCommit,
-      removeManyAfterCommit: mocks.removeManyAfterCommit,
-    },
-  };
+vi.mock("@repo/database", async () => {
+  const { databaseModuleMock } = await import(
+    "@/__tests__/support/desktop/components/sync/service.test-mocks"
+  );
+  return databaseModuleMock();
 });
 
+vi.mock("@/app/compute-targets/service", async () => {
+  const { computeTargetsModuleMock } = await import(
+    "@/__tests__/support/desktop/components/sync/service.test-mocks"
+  );
+  return computeTargetsModuleMock();
+});
+
+vi.mock("@repo/observability/log", async () => {
+  const { logModuleMock } = await import(
+    "@/__tests__/support/desktop/components/sync/service.test-mocks"
+  );
+  return logModuleMock();
+});
+
+vi.mock("@repo/observability/telemetry/metrics", async () => {
+  const { telemetryModuleMock } = await import(
+    "@/__tests__/support/desktop/components/sync/service.test-mocks"
+  );
+  return telemetryModuleMock();
+});
+
+vi.mock("@/app/agent-sessions/service/component-invocations", async () => {
+  const { componentInvocationsModuleMock } = await import(
+    "@/__tests__/support/desktop/components/sync/service.test-mocks"
+  );
+  return componentInvocationsModuleMock();
+});
+
+vi.mock("@/app/definition-registry/service", async () => {
+  const { definitionRegistryModuleMock } = await import(
+    "@/__tests__/support/desktop/components/sync/service.test-mocks"
+  );
+  return definitionRegistryModuleMock();
+});
+
+vi.mock("@/app/search/search-index-service", async (importOriginal) => {
+  const { searchIndexModuleMock } = await import(
+    "@/__tests__/support/desktop/components/sync/service.test-mocks"
+  );
+  return searchIndexModuleMock(
+    await importOriginal<typeof import("@/app/search/search-index-service")>()
+  );
+});
+
+import {
+  buildComponent,
+  buildInput,
+  CLERK_USER_ID,
+  COMPUTE_TARGET_ID,
+  installOwnedTarget,
+  ORG_ID,
+  USER_ID,
+} from "@/__tests__/support/desktop/components/sync/service.test-harness";
+import { mocks } from "@/__tests__/support/desktop/components/sync/service.test-mocks";
 import { agentComponentProjection } from "@/app/search/search-index-service";
+import {
+  INDEX_KEY_MAX_BYTES,
+  INDEX_KEY_PROJECTED_METRIC,
+  projectIndexKey,
+} from "@/lib/index-key-projection";
+import { componentIndexKeyProjectionGate } from "./component-index-key-telemetry";
 import { desktopComponentsSyncService } from "./service";
-
-// ---------------------------------------------------------------------------
-// Fixtures
-// ---------------------------------------------------------------------------
-
-const ORG_ID = "org-sync-1";
-const USER_ID = "user-sync-1";
-const CLERK_USER_ID = "clerk-sync-1";
-const COMPUTE_TARGET_ID = "target-sync-1";
-
-type SyncedComponentInput = {
-  externalId: string;
-  componentKind: string;
-  harness?: string | null;
-  name?: string | null;
-  componentKey?: string | null;
-  version?: string | null;
-  description?: string | null;
-  sourceUrl?: string | null;
-  installPath?: string | null;
-  packId?: string | null;
-  scope?: string | null;
-  projectPath?: string | null;
-  metadata?: Record<string, unknown> | null;
-  content?: string | null;
-  contentHash?: string | null;
-  resolvedState?: "resolved" | "unresolved" | "inaccessible" | "missing";
-  firstSeenAt?: string | null;
-  lastSeenAt?: string | null;
-  uninstalledAt?: string | null;
-  // FEA-3290 (F1, Slice 3) additive source-evidence fields.
-  accessState?: "accessible" | "inaccessible" | null;
-  scannedAt?: string | null;
-};
-
-function buildComponent(
-  overrides: Partial<SyncedComponentInput> = {}
-): SyncedComponentInput {
-  return {
-    externalId: "skill::my-skill",
-    componentKind: "skill",
-    harness: "claude",
-    name: "My Skill",
-    componentKey: "my-skill",
-    version: null,
-    description: null,
-    sourceUrl: null,
-    installPath: null,
-    packId: null,
-    scope: null,
-    projectPath: null,
-    metadata: null,
-    content: null,
-    contentHash: null,
-    firstSeenAt: "2026-01-01T00:00:00.000Z",
-    lastSeenAt: "2026-01-10T00:00:00.000Z",
-    uninstalledAt: null,
-    ...overrides,
-  };
-}
-
-function buildPayload(components: SyncedComponentInput[]) {
-  return {
-    schemaVersion: 1 as const,
-    batchId: "11111111-1111-4111-8111-111111111111",
-    syncMode: "incremental" as const,
-    componentCount: components.length,
-    components,
-  };
-}
-
-function buildInput(components: SyncedComponentInput[]) {
-  return {
-    clerkUserId: CLERK_USER_ID,
-    computeTargetId: COMPUTE_TARGET_ID,
-    organizationId: ORG_ID,
-    // `payload` is typed as DesktopAgentComponentsPayload in the service; the
-    // fixture shape matches it structurally.
-    payload: buildPayload(components) as never,
-    userId: USER_ID,
-    // FEA-4169: inject the org-policy gate as allowed so the write-path tests
-    // exercise persistence; the DB-backed default would need withDb.organization
-    // (not part of this unit's fake db). The policy-off case is covered below.
-    isOrgPolicyEnabled: async () => true,
-  };
-}
-
-// Row id counter so each upserted component gets a distinct, deterministic id
-// in the mock's echoed-back row (the projection carries entity_id = this id).
-let upsertRowSeq = 0;
-
-/**
- * Echo the upserted AgentComponent row back from its create/update args so the
- * FEA-4011 post-commit projection can read `id`/`name`/…/`uninstalledAt` off it,
- * exactly as Prisma's `upsert` return would. `uninstalledAt` follows the
- * create/update payload so the index-vs-remove branch is faithful.
- */
-function echoUpsertedRow(args: {
-  where: {
-    computeTargetId_componentKind_externalComponentId: {
-      componentKind: string;
-      externalComponentId: string;
-    };
-  };
-  create: Record<string, unknown>;
-  update: Record<string, unknown>;
-}) {
-  upsertRowSeq += 1;
-  const key = args.where.computeTargetId_componentKind_externalComponentId;
-  const create = args.create;
-  return {
-    id: `ac-${upsertRowSeq}`,
-    organizationId: ORG_ID,
-    componentKind: key.componentKind,
-    externalComponentId: key.externalComponentId,
-    name: (create.name as string | null) ?? null,
-    componentKey: (create.componentKey as string | null) ?? null,
-    description: (create.description as string | null) ?? null,
-    updatedAt: new Date("2026-02-01T00:00:00.000Z"),
-    uninstalledAt: (create.uninstalledAt as Date | null) ?? null,
-  };
-}
-
-function installOwnedTarget() {
-  upsertRowSeq = 0;
-  mocks.findOwnedById.mockResolvedValue({ id: COMPUTE_TARGET_ID });
-  mocks.upsert.mockImplementation((args) =>
-    Promise.resolve(echoUpsertedRow(args))
-  );
-  mocks.versionUpsert.mockResolvedValue({});
-  mocks.versionCreateMany.mockResolvedValue({ count: 0 });
-  mocks.versionUpdateMany.mockResolvedValue({ count: 0 });
-  mocks.versionUpdate.mockResolvedValue({});
-  mocks.registerDefinitionVersion.mockResolvedValue("definition-version-1");
-  mocks.relinkActiveForComputeTarget.mockResolvedValue(0);
-  // ISS-4778: the skew guard reads the target's already-stored RESOLVED skills.
-  // Default to none, so the guard is a no-op unless a test opts in.
-  mocks.componentFindMany.mockResolvedValue([]);
-  mocks.withDb.mockImplementation((callback: (db: unknown) => unknown) =>
-    callback({
-      agentComponent: {
-        findMany: mocks.componentFindMany,
-        upsert: mocks.upsert,
-      },
-      agentComponentVersion: {
-        upsert: mocks.versionUpsert,
-        update: mocks.versionUpdate,
-        createMany: mocks.versionCreateMany,
-        updateMany: mocks.versionUpdateMany,
-      },
-    })
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 describe("desktopComponentsSyncService.sync", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    componentIndexKeyProjectionGate.clear();
   });
 
   it("returns Result.err(Status.Forbidden) when the compute target is not owned (gate before any write)", async () => {
@@ -274,26 +110,6 @@ describe("desktopComponentsSyncService.sync", () => {
       USER_ID,
       CLERK_USER_ID
     );
-  });
-
-  it("FEA-4169: denies (Status.Forbidden) when the org session-sync policy is OFF, without any write", async () => {
-    installOwnedTarget();
-    const isOrgPolicyEnabled = vi.fn(async () => false);
-
-    const result = await desktopComponentsSyncService.sync({
-      ...buildInput([buildComponent()]),
-      isOrgPolicyEnabled,
-    });
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error).toBe(Status.Forbidden);
-    }
-    // Gate is org-scoped and enforced BEFORE any DB write.
-    expect(isOrgPolicyEnabled).toHaveBeenCalledWith(ORG_ID);
-    expect(mocks.withDb).not.toHaveBeenCalled();
-    expect(mocks.upsert).not.toHaveBeenCalled();
-    expect(mocks.relinkActiveForComputeTarget).not.toHaveBeenCalled();
   });
 
   it("upserts each component keyed by (computeTargetId, componentKind, externalComponentId)", async () => {
@@ -333,6 +149,7 @@ describe("desktopComponentsSyncService.sync", () => {
     expect(create?.firstSeenAt).toBeInstanceOf(Date);
     expect(create?.firstSeenAt?.toISOString()).toBe("2026-01-01T00:00:00.000Z");
     expect(create?.lastSeenAt).toBeInstanceOf(Date);
+    expect(create?.lastSeenAt?.toISOString()).toBe("2026-01-10T00:00:00.000Z");
     // Absent/null dates parse to null.
     expect(create?.uninstalledAt).toBeNull();
   });
@@ -344,8 +161,10 @@ describe("desktopComponentsSyncService.sync", () => {
     // a brand-new label-only row) → create defaults to unresolved; update is a
     // no-op (undefined) so a resolved cloud row is never demoted.
     await desktopComponentsSyncService.sync(buildInput([buildComponent()]));
+    expect(mocks.upsert).toHaveBeenCalledTimes(1);
     const call = mocks.upsert.mock.calls[0]?.[0];
     expect(call?.create?.resolvedState).toBe("unresolved");
+    expect(call?.update).toBeDefined();
     expect(call?.update?.resolvedState).toBeUndefined();
   });
 
@@ -396,7 +215,9 @@ describe("desktopComponentsSyncService.sync", () => {
       buildInput([withoutUninstalled as never])
     );
 
+    expect(mocks.upsert).toHaveBeenCalledTimes(1);
     const update = mocks.upsert.mock.calls[0]?.[0]?.update;
+    expect(update).toBeDefined();
     expect(update?.uninstalledAt).toBeUndefined();
   });
 
@@ -452,11 +273,8 @@ describe("desktopComponentsSyncService.sync", () => {
     expect(kinds).toEqual(["skill", "command", "mcp"]);
   });
 
-  // FEA-2923 (Gap A): cloud-authored agents are backfilled onto a synthetic
-  // per-org sentinel compute target. Desktop sync must keep upserting onto the
-  // real, ownership-verified device target — never the sentinel — so its rows
-  // are isolated from the backfilled cloud rows by a distinct computeTargetId
-  // in the (computeTargetId, componentKind, externalComponentId) upsert key.
+  // FEA-2923: device rows must remain isolated from cloud sentinel rows by the
+  // ownership-verified computeTargetId in the compound upsert key.
   it("keys every upsert on the ownership-verified device target, isolating it from cloud-sentinel rows", async () => {
     installOwnedTarget();
 
@@ -484,11 +302,8 @@ describe("desktopComponentsSyncService.sync", () => {
     );
   });
 
-  // FEA-3321: the sync payload carries no `format`, so the version row's format
-  // must be inferred from the already-synced `installPath` via the shared
-  // `inferComponentFormat` SSOT. Leaving it null made the read path's
-  // `format ?? "md"` fallback label every non-markdown definition as Markdown on
-  // the web Prompt panel, disagreeing with desktop.
+  // FEA-3321: infer format from installPath so non-Markdown definitions are not
+  // mislabeled by the read path's `format ?? "md"` fallback.
   it("infers the version row's format from installPath (real extension wins)", async () => {
     installOwnedTarget();
 
@@ -547,11 +362,7 @@ describe("desktopComponentsSyncService.sync", () => {
     expect(mocks.versionUpsert.mock.calls[0]?.[0]?.update).toEqual({});
   });
 
-  // Regression: a large inventory must not fan out one pooled pg connection per
-  // component in a single request. Unbounded `Promise.all` over the whole
-  // inventory drained the pool and starved every other endpoint ("timeout
-  // exceeded when trying to connect"). The fan-out is now bounded, so peak
-  // in-flight upserts stay capped regardless of inventory size.
+  // Keep large-inventory upserts bounded so they cannot drain the pg pool.
   it("bounds concurrent upserts so a large inventory can't exhaust the connection pool", async () => {
     mocks.findOwnedById.mockResolvedValue({ id: COMPUTE_TARGET_ID });
 
@@ -588,10 +399,7 @@ describe("desktopComponentsSyncService.sync", () => {
     expect(peakInFlight).toBeLessThanOrEqual(DB_FANOUT_MAX_CONCURRENCY);
   });
 
-  // -------------------------------------------------------------------------
-  // FEA-3290 (F1, Slice 3): sync-lane registers the exact DefinitionVersion +
-  // occurrence and stamps definitionVersionId onto the coarse version row.
-  // -------------------------------------------------------------------------
+  // FEA-3290: exact DefinitionVersion registration and linkage.
 
   it("registers a DefinitionVersion for a content-bearing component and stamps definitionVersionId onto the version row", async () => {
     installOwnedTarget();
@@ -617,6 +425,7 @@ describe("desktopComponentsSyncService.sync", () => {
       componentKind: "skill",
       content: "# My Skill",
       computeTargetId: COMPUTE_TARGET_ID,
+      editorUserId: USER_ID,
       installPath: ".claude/skills/my-skill/SKILL.md",
       accessState: "accessible",
     });
@@ -639,6 +448,120 @@ describe("desktopComponentsSyncService.sync", () => {
     expect(updateArgs?.data).toEqual({
       definitionVersionId: "definition-version-1",
     });
+  });
+
+  // ISS-8201 (codex P2 + whitlockk review, PR #7220). `definitionHash` folds the
+  // kind and IS the version identity, so projecting the kind INTO the hash
+  // rekeys every version already registered under a raw over-long kind — a
+  // resync misses the row, duplicates the version, and moves the
+  // `AgentComponentVersion` link — and splits provenance against a producer that
+  // registers the same bytes with no projection at all. Two arguments, not one:
+  // the RAW kind is the fingerprint input, the PROJECTED one is the column.
+  it("fingerprints an over-long kind RAW while storing it projected", async () => {
+    installOwnedTarget();
+    const overLongKind = `skill-${"k".repeat(1024)}`;
+
+    await desktopComponentsSyncService.sync(
+      buildInput([
+        buildComponent({
+          componentKind: overLongKind,
+          content: "# My Skill",
+          contentHash: "hash-skill-1",
+        }),
+      ])
+    );
+
+    const regArgs = mocks.registerDefinitionVersion.mock.calls[0]?.[1];
+    expect(regArgs?.componentKind).toBe(overLongKind);
+    // The column still takes a bounded spelling — the second btree this string
+    // lands in is what removing the wire cap exposed.
+    expect(regArgs?.storedComponentKind).not.toBe(overLongKind);
+    expect(
+      Buffer.byteLength(regArgs?.storedComponentKind ?? "", "utf8")
+    ).toBeLessThanOrEqual(INDEX_KEY_MAX_BYTES);
+  });
+
+  // The opposite state on the same subject: a kind inside the budget is NOT
+  // split into two spellings, so the separation above is a projection and not a
+  // second value invented for every component.
+  it("passes one spelling for a kind that fits", async () => {
+    installOwnedTarget();
+
+    await desktopComponentsSyncService.sync(
+      buildInput([
+        buildComponent({ content: "# My Skill", contentHash: "hash-skill-1" }),
+      ])
+    );
+
+    const regArgs = mocks.registerDefinitionVersion.mock.calls[0]?.[1];
+    expect(regArgs?.componentKind).toBe("skill");
+    expect(regArgs?.storedComponentKind).toBe("skill");
+  });
+
+  /**
+   * ISS-8285 (review — codex, whitlockk): the F1 stamp must address the row the
+   * version upsert just wrote.
+   *
+   * Once the version upsert adopted a legacy raw component's STORED identity,
+   * the stamp still rebuilt its `where` by re-projecting the payload, so for
+   * such a component the two statements named different tuples. The update then
+   * raised P2025 after the component and version writes had already landed —
+   * a partial sync whose retry replays the same failure forever.
+   *
+   * Asserted as "the stamp equals the upsert's own key" rather than against a
+   * hardcoded string, so the pair cannot drift apart in either direction.
+   */
+  it("stamps the F1 link on the tuple the version upsert wrote, for a component stored under a legacy RAW identity", async () => {
+    installOwnedTarget();
+    const overBudgetKind = "k".repeat(INDEX_KEY_MAX_BYTES + 1);
+    // The legacy row is sitting under its RAW kind, so the identity probe finds
+    // it there and the version upsert is keyed on that value.
+    mocks.componentFindUnique.mockImplementation(
+      (args: {
+        where: {
+          computeTargetId_componentKind_externalComponentId: {
+            componentKind: string;
+          };
+        };
+      }) =>
+        Promise.resolve(
+          args.where.computeTargetId_componentKind_externalComponentId
+            .componentKind === overBudgetKind
+            ? {
+                componentKind: overBudgetKind,
+                externalComponentId: "skill::my-skill",
+                componentKey: "my-skill",
+              }
+            : null
+        )
+    );
+
+    await desktopComponentsSyncService.sync(
+      buildInput([
+        buildComponent({
+          componentKind: overBudgetKind,
+          content: "# My Skill",
+          contentHash: "hash-skill-1",
+        }),
+      ])
+    );
+
+    const upsertWhere =
+      mocks.versionUpsert.mock.calls[0]?.[0]?.where
+        .organizationId_componentKind_componentKey_source_contentHash;
+    const updateWhere =
+      mocks.versionUpdate.mock.calls[0]?.[0]?.where
+        .organizationId_componentKind_componentKey_source_contentHash;
+
+    // Both statements ran at all — an absent call would satisfy a bare equality
+    // of two undefineds.
+    expect(mocks.versionUpsert).toHaveBeenCalledTimes(1);
+    expect(mocks.versionUpdate).toHaveBeenCalledTimes(1);
+    expect(updateWhere).toEqual(upsertWhere);
+    expect(updateWhere?.componentKind).toBe(overBudgetKind);
+    // Not vacuous: the projected form the stamp used to rebuild really is a
+    // different string, so an equal pair could not have happened by accident.
+    expect(projectIndexKey(overBudgetKind).value).not.toBe(overBudgetKind);
   });
 
   it("forwards an inaccessible accessState from the payload to the registry writer (AC-5)", async () => {
@@ -730,9 +653,7 @@ describe("desktopComponentsSyncService.sync", () => {
     );
   });
 
-  // -------------------------------------------------------------------------
-  // FEA-4011 Slice A: post-commit, fail-open search projection sync.
-  // -------------------------------------------------------------------------
+  // FEA-4011: post-commit, fail-open search projection sync.
 
   it("indexes each installed component into unified search after the upsert commits", async () => {
     installOwnedTarget();
@@ -745,13 +666,15 @@ describe("desktopComponentsSyncService.sync", () => {
           name: "My Skill",
           componentKey: "my-skill",
           description: "does a thing",
+          contentHash:
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         }),
       ])
     );
 
     expect(result.ok).toBe(true);
     // Asserted AFTER the sync ran, from the test body — one BATCH upsert
-    // carrying the upserted row's id + the exact mapper output.
+    // carrying the upserted row's id + literal routable content-hash slug.
     expect(mocks.indexManyAfterCommit).toHaveBeenCalledTimes(1);
     expect(mocks.removeManyAfterCommit).toHaveBeenCalledWith([]);
     expect(mocks.indexManyAfterCommit).toHaveBeenCalledWith([
@@ -764,8 +687,13 @@ describe("desktopComponentsSyncService.sync", () => {
         externalComponentId: "skill::my-skill",
         description: "does a thing",
         updatedAt: new Date("2026-02-01T00:00:00.000Z"),
+        contentHash:
+          "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
       }),
     ]);
+    expect(mocks.indexManyAfterCommit.mock.calls[0]?.[0]?.[0]?.slug).toBe(
+      "skill::0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    );
   });
 
   it("removes an uninstalled component from unified search instead of indexing it", async () => {
@@ -797,9 +725,9 @@ describe("desktopComponentsSyncService.sync", () => {
     await desktopComponentsSyncService.sync(
       buildInput([
         buildComponent({
-          externalId: "skill::a",
-          componentKey: "a",
-          name: "a",
+          externalId: "skill::older",
+          componentKey: "shared",
+          name: "older",
         }),
         buildComponent({
           externalId: "skill::b",
@@ -807,12 +735,18 @@ describe("desktopComponentsSyncService.sync", () => {
           name: "b",
           uninstalledAt: "2026-02-02T00:00:00.000Z",
         }),
+        buildComponent({
+          externalId: "skill::newer",
+          componentKey: "shared",
+          name: "newer",
+        }),
       ])
     );
 
-    // One BATCH index carrying the live "a" and one BATCH remove carrying the
-    // uninstalled "b". The fail-open guarantee of the hook itself is covered in
-    // the index-service test — production swallows its own errors.
+    // One BATCH index carrying the live "older"/"newer" rows and one BATCH
+    // remove carrying the uninstalled "b". The fail-open guarantee of the hook
+    // itself is covered in the index-service test — production swallows its own
+    // errors.
     expect(mocks.indexManyAfterCommit).toHaveBeenCalledTimes(1);
     expect(mocks.removeManyAfterCommit).toHaveBeenCalledTimes(1);
     const indexedBatch = mocks.indexManyAfterCommit.mock.calls[0][0] as Array<{
@@ -821,13 +755,18 @@ describe("desktopComponentsSyncService.sync", () => {
     const removedBatch = mocks.removeManyAfterCommit.mock.calls[0][0] as Array<{
       entityType: string;
     }>;
-    // The live "a" is indexed (distinct slug from "b"), the uninstalled "b" is
-    // removed — one entry each, regardless of fan-out ordering.
+    // The two live rows share a slug, so only the later one is indexed; the
+    // uninstalled row is removed independently.
     expect(indexedBatch).toHaveLength(1);
-    expect(indexedBatch[0].title).toBe("a");
+    expect(indexedBatch[0]).toMatchObject({
+      entityId: "ac-3",
+      title: "newer",
+      updatedAt: new Date("2026-02-02T00:00:00.000Z"),
+    });
     expect(removedBatch).toHaveLength(1);
     expect(removedBatch[0].entityType).toBe(SearchEntityType.AgentComponent);
   });
+
   // -------------------------------------------------------------------------
   // ISS-4778 — skew guard: a stale Desktop still emitting the phantom `command`
   // component for a slash-invoked SKILL must not re-pollute the inventory after
@@ -922,5 +861,102 @@ describe("desktopComponentsSyncService.sync", () => {
 
     expect(mocks.componentFindMany).not.toHaveBeenCalled();
     expect(mocks.upsert).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("desktopComponentsSyncService.sync — projected index keys (ISS-8069)", () => {
+  /**
+   * High-entropy so it is a faithful stand-in for the value that trips the
+   * engine: an index tuple can be compressed inline, so a repeated character
+   * past 2704 bytes is accepted by Postgres and would make this a false green.
+   * The DB-backed proof is
+   * `__tests__/integration/index-key-poison-batch.integration.test.ts`; this
+   * case pins the REPORT, which that suite does not assert.
+   */
+  const OVER_LIMIT_HASH = Array.from(
+    { length: 128 },
+    (_, index) => `${index.toString(36)}f3a91c7e5b2d08`
+  ).join("");
+
+  // `emitTelemetryMetric` is file-scoped and nothing resets mocks between
+  // describe blocks here, so without this the silence case below would read the
+  // PREVIOUS case's emission and fail — the same trap
+  // `status-fold-telemetry.test.ts` records. `clearAllMocks` also drops the db
+  // fake, so the owned-target install has to be replayed.
+  //
+  // The gate is cleared BY NAME (#7213 review, tamsinb): it is a module-level
+  // latch that `clearAllMocks` cannot reach, and every case here shares one
+  // (ORG_ID, COMPUTE_TARGET_ID), so the second projection below would be
+  // suppressed by the first case's occurrence and fail for a reason that has
+  // nothing to do with the code under test. `vi.resetModules()` would NOT do
+  // it — the top-level import above keeps pointing at the primed instance.
+  beforeEach(() => {
+    vi.clearAllMocks();
+    componentIndexKeyProjectionGate.clear();
+    installOwnedTarget();
+  });
+
+  it("reports the bound keys once for the request rather than absorbing them", async () => {
+    await desktopComponentsSyncService.sync(
+      buildInput([
+        buildComponent({ contentHash: OVER_LIMIT_HASH, content: "# body" }),
+      ])
+    );
+
+    const emissions = mocks.emitTelemetryMetric.mock.calls
+      .map(([arg]) => arg)
+      .filter((arg) => arg?.metric === INDEX_KEY_PROJECTED_METRIC);
+
+    expect(emissions).toEqual([
+      {
+        metric: INDEX_KEY_PROJECTED_METRIC,
+        organizationId: ORG_ID,
+        computeTargetId: COMPUTE_TARGET_ID,
+        count: 1,
+      },
+    ]);
+  });
+
+  /**
+   * The SECOND projection in this block, and the case the reset above exists
+   * for (#7213 review, tamsinb). It shares (ORG_ID, COMPUTE_TARGET_ID) with
+   * the case before it, so a gate carried over from that case suppresses this
+   * emission — and the failure reads as "the service stopped reporting
+   * projections" when nothing about the service changed.
+   */
+  it("reports a later batch's bound keys rather than inheriting the previous case's window", async () => {
+    await desktopComponentsSyncService.sync(
+      buildInput([
+        buildComponent({
+          contentHash: `${OVER_LIMIT_HASH}5e0d7a2b91c4f6`,
+          content: "# body",
+        }),
+      ])
+    );
+
+    const emissions = mocks.emitTelemetryMetric.mock.calls
+      .map(([arg]) => arg)
+      .filter((arg) => arg?.metric === INDEX_KEY_PROJECTED_METRIC);
+
+    expect(emissions).toEqual([
+      {
+        metric: INDEX_KEY_PROJECTED_METRIC,
+        organizationId: ORG_ID,
+        computeTargetId: COMPUTE_TARGET_ID,
+        count: 1,
+      },
+    ]);
+  });
+
+  it("stays silent for an inventory whose keys all fit", async () => {
+    await desktopComponentsSyncService.sync(
+      buildInput([buildComponent({ contentHash: "abc123", content: "# body" })])
+    );
+
+    expect(
+      mocks.emitTelemetryMetric.mock.calls
+        .map(([arg]) => arg)
+        .filter((arg) => arg?.metric === INDEX_KEY_PROJECTED_METRIC)
+    ).toEqual([]);
   });
 });

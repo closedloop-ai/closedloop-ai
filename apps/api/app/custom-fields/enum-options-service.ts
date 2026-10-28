@@ -5,8 +5,42 @@ import type {
 } from "@repo/api/src/types/custom-field";
 import { CustomFieldType } from "@repo/api/src/types/custom-field";
 import { Prisma, type TransactionClient, withDb } from "@repo/database";
+import { fieldsThatMoved } from "@/lib/operation-receipts/changed-fields";
+import {
+  type RecordWriteInTransaction,
+  writeInShape,
+  writeRecorded,
+} from "@/lib/record-write-in-transaction";
+import { ENUM_OPTION_UPDATE_FIELDS } from "./custom-field-definition-receipt";
 
 import { checkOptionLimit, MULTI_ENUM_DISPLAY_SEPARATOR } from "./utils";
+
+/**
+ * Transaction bounds for `updateEnumOption`.
+ *
+ * A rename does not touch one row: it rewrites the cached `displayValue` of
+ * every `CustomFieldValue` that selected the option. Those rows come from
+ * `setValue`, not from `attachField`'s cascade (which writes
+ * `CustomFieldSetting` rows only) — but the cascade is what puts the field on
+ * every FEATURE document in a project, so the ceiling on that population is the
+ * same 8000+ documents `CASCADE_TX_TIMEOUT_MS` in project-field-cascade.ts was raised
+ * for. Under Prisma's 5s default the rewrite aborts with P2028 and rolls back,
+ * so on a tenant that far along the rename can never succeed, however often it
+ * is retried.
+ *
+ * Bounds follow the long-transaction convention already used across apps/api
+ * (audit ledger append, catalog pack import): 30s of work, 5s to acquire a pool
+ * connection — the longer the transaction holds a connection, the more a
+ * contended caller needs a maxWait above Prisma's 2s default to avoid failing
+ * with P2024 before it ever starts. The timeout is a ceiling, not a duration:
+ * the rewrite is one set-based statement per field type either way, so how long
+ * it holds row locks against a concurrent `setValue` is unchanged — what
+ * changes is whether it is allowed to finish.
+ */
+export const ENUM_OPTION_UPDATE_TX_OPTIONS = {
+  maxWait: 5000,
+  timeout: 30_000,
+} as const;
 
 /**
  * Verifies that a custom field belongs to the given organization.
@@ -66,26 +100,36 @@ export const enumOptionsService = {
   async createEnumOption(
     customFieldId: string,
     organizationId: string,
-    input: CreateEnumOptionInput
+    input: CreateEnumOptionInput,
+    /**
+     * Runs on the insert's transaction (ISS-12552). Without it the count and
+     * insert run as main ran them, with no transaction.
+     */
+    recordWrite?: RecordWriteInTransaction<{ id: string }>
   ): Promise<CustomFieldEnumOption> {
     await verifyFieldOwnership(customFieldId, organizationId);
     await checkOptionLimit(customFieldId);
 
-    const created = await withDb(async (db) => {
-      const currentCount = await db.customFieldEnumOption.count({
-        where: { customFieldId },
-      });
+    const created = await writeRecorded(
+      recordWrite,
+      () =>
+        withDb(async (db) => {
+          const currentCount = await db.customFieldEnumOption.count({
+            where: { customFieldId },
+          });
 
-      return db.customFieldEnumOption.create({
-        data: {
-          customFieldId,
-          name: input.name,
-          color: input.color ?? "none",
-          enabled: input.enabled ?? true,
-          sortOrder: input.sortOrder ?? currentCount,
-        },
-      });
-    });
+          return db.customFieldEnumOption.create({
+            data: {
+              customFieldId,
+              name: input.name,
+              color: input.color ?? "none",
+              enabled: input.enabled ?? true,
+              sortOrder: input.sortOrder ?? currentCount,
+            },
+          });
+        }),
+      (option) => option
+    );
 
     return toEnumOption(created);
   },
@@ -96,18 +140,28 @@ export const enumOptionsService = {
    * Verifies field ownership before updating. If the name changed, recalculates
    * the cached displayValue for all CustomFieldValue rows that reference this
    * option — via enumValueId for ENUM fields, or multiEnumValueIds for
-   * MULTI_ENUM fields — in one set-based statement per field type.
+   * MULTI_ENUM fields — in one set-based statement per field type. That statement
+   * spans the whole value population for the field, so the transaction runs
+   * under ENUM_OPTION_UPDATE_TX_OPTIONS rather than Prisma's 5s default.
    */
   async updateEnumOption(
     optionId: string,
     customFieldId: string,
     organizationId: string,
-    input: UpdateEnumOptionInput
+    input: UpdateEnumOptionInput,
+    /** Runs on the update's transaction with the columns that moved (ISS-12552). */
+    recordWrite?: RecordWriteInTransaction<{ changedFields: string[] }>
   ): Promise<CustomFieldEnumOption> {
     const field = await verifyFieldOwnership(customFieldId, organizationId);
     const isRename = input.name !== undefined;
 
     const updated = await withDb.tx(async (tx) => {
+      const previous = recordWrite
+        ? await tx.customFieldEnumOption.findFirst({
+            where: { id: optionId, customFieldId },
+            select: { name: true, color: true, enabled: true },
+          })
+        : null;
       const option = await tx.customFieldEnumOption.update({
         where: { id: optionId, customFieldId },
         data: {
@@ -140,8 +194,16 @@ export const enumOptionsService = {
         );
       }
 
+      await recordWrite?.(tx, {
+        changedFields: fieldsThatMoved(
+          ENUM_OPTION_UPDATE_FIELDS,
+          input,
+          previous ?? {},
+          option
+        ),
+      });
       return option;
-    });
+    }, ENUM_OPTION_UPDATE_TX_OPTIONS);
 
     return toEnumOption(updated);
   },
@@ -156,7 +218,12 @@ export const enumOptionsService = {
   async reorderEnumOptions(
     customFieldId: string,
     organizationId: string,
-    orderedOptionIds: string[]
+    orderedOptionIds: string[],
+    /**
+     * Runs on the reorder's transaction with whether any option moved
+     * (ISS-12552).
+     */
+    recordWrite?: RecordWriteInTransaction<{ changed: boolean }>
   ): Promise<void> {
     const field = await verifyFieldOwnership(customFieldId, organizationId);
 
@@ -171,24 +238,37 @@ export const enumOptionsService = {
       );
     }
 
-    // Nothing to reorder (a field with no options) — skip the batched UPDATE so
-    // we never emit an empty `VALUES ()` clause. Mirrors the no-op the previous
-    // `Promise.all([])` produced, and projectsService.reorder's empty guard.
+    // Nothing to reorder (a field with no options): skip the transaction and
+    // the batched UPDATE so we never emit an empty `VALUES ()` clause. Mirrors
+    // projectsService.reorder's empty guard. It writes nothing, so it records
+    // no receipt either.
     if (orderedOptionIds.length === 0) {
       return;
     }
 
-    await withDb.tx(async (tx) => {
-      const valueRows = orderedOptionIds.map(
-        (optionId, index) => Prisma.sql`(${optionId}::uuid, ${index}::int)`
-      );
-      await tx.$executeRaw(Prisma.sql`
-        UPDATE "custom_field_enum_options"
-        SET "sort_order" = data.new_order
-        FROM (VALUES ${Prisma.join(valueRows)}) AS data(id, new_order)
-        WHERE "custom_field_enum_options"."id" = data.id
-          AND "custom_field_enum_options"."custom_field_id" = ${customFieldId}::uuid
-      `);
+    await writeInShape(recordWrite, {
+      unrecorded: () =>
+        withDb.tx(async (tx) => {
+          const valueRows = orderedOptionIds.map(
+            (optionId, index) => Prisma.sql`(${optionId}::uuid, ${index}::int)`
+          );
+          await tx.$executeRaw(Prisma.sql`
+            UPDATE "custom_field_enum_options"
+            SET "sort_order" = data.new_order
+            FROM (VALUES ${Prisma.join(valueRows)}) AS data(id, new_order)
+            WHERE "custom_field_enum_options"."id" = data.id
+              AND "custom_field_enum_options"."custom_field_id" = ${customFieldId}::uuid
+          `);
+        }),
+      recorded: (record) =>
+        withDb.tx(async (tx) => {
+          const moved = await writeEnumOptionOrder(
+            tx,
+            customFieldId,
+            orderedOptionIds
+          );
+          await record(tx, { changed: moved > 0 });
+        }),
     });
   },
 };
@@ -240,5 +320,30 @@ function updateMultiEnumDisplayValues(
     WHERE cfv."custom_field_id" = ${customFieldId}::uuid
       AND cfv."organization_id" = ${organizationId}::uuid
       AND cfv."multi_enum_value_ids" && ARRAY[${optionId}]::text[]
+  `);
+}
+
+/**
+ * Writes each option's position as its `sort_order`, in one statement, and
+ * returns how many options actually moved. A row already in place is left
+ * alone, so an unchanged order counts zero and its receipt is a no-op
+ * (ISS-12552); enum options carry no `updated_at`, so skipping it is
+ * otherwise invisible. The caller guarantees a non-empty list.
+ */
+async function writeEnumOptionOrder(
+  tx: TransactionClient,
+  customFieldId: string,
+  orderedOptionIds: string[]
+): Promise<number> {
+  const valueRows = orderedOptionIds.map(
+    (optionId, index) => Prisma.sql`(${optionId}::uuid, ${index}::int)`
+  );
+  return await tx.$executeRaw(Prisma.sql`
+    UPDATE "custom_field_enum_options"
+    SET "sort_order" = data.new_order
+    FROM (VALUES ${Prisma.join(valueRows)}) AS data(id, new_order)
+    WHERE "custom_field_enum_options"."id" = data.id
+      AND "custom_field_enum_options"."custom_field_id" = ${customFieldId}::uuid
+      AND "custom_field_enum_options"."sort_order" IS DISTINCT FROM data.new_order
   `);
 }

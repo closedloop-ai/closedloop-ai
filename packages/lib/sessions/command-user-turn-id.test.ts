@@ -63,30 +63,24 @@ describe("normalizeCommandComponentKey — one key per command (ISS-4795)", () =
 });
 
 describe("isAdmissibleCommandComponentKey — placeholders never mint a component (ISS-4796)", () => {
-  it.each([
-    ["/build"],
-    ["/code-review:deep"],
-    ["/2fa"],
-    ["/日本語"],
-  ])("admits %j as a real command", (key) => {
-    expect(isAdmissibleCommandComponentKey(key)).toBe(true);
-  });
+  it.each([["/build"], ["/code-review:deep"], ["/2fa"], ["/日本語"]])(
+    "admits %j as a real command",
+    (key) => {
+      expect(isAdmissibleCommandComponentKey(key)).toBe(true);
+    }
+  );
 
   /**
    * `/...` and `/…` are the two spellings observed in production, but the gate
    * is a positive test for a letter or digit rather than a denylist, so any
    * other truncation spelling is rejected too.
    */
-  it.each([
-    ["/..."],
-    ["/…"],
-    ["/"],
-    ["/.."],
-    ["/---"],
-    ["/  "],
-  ])("rejects the placeholder %j", (key) => {
-    expect(isAdmissibleCommandComponentKey(key)).toBe(false);
-  });
+  it.each([["/..."], ["/…"], ["/"], ["/.."], ["/---"], ["/  "]])(
+    "rejects the placeholder %j",
+    (key) => {
+      expect(isAdmissibleCommandComponentKey(key)).toBe(false);
+    }
+  );
 
   it("rejects a placeholder even after normalization repairs its shape", () => {
     expect(

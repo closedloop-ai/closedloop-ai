@@ -1,14 +1,18 @@
+import { OperationKind } from "@repo/api/src/types/attribution-evidence";
 import type { CustomFieldEnumOption } from "@repo/api/src/types/custom-field";
-import { isOrgAdmin } from "@/lib/auth/org-admin";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
-import { withAuth } from "@/lib/auth/with-auth";
+import { machineWriteReceipt } from "@/lib/machine-write-receipt";
+import {
+  withOperationReceipt,
+  withOperationReceipts,
+} from "@/lib/operation-receipts/operation-receipt-recorder";
 import {
   errorResponse,
-  forbiddenResponse,
   notFoundResponse,
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
+import { requireCustomFieldsAdmin } from "../../custom-fields-admin-gate";
 import { enumOptionsService } from "../../enum-options-service";
 import { createEnumOptionValidator } from "../../enum-options-validators";
 import { customFieldsService } from "../../service";
@@ -34,32 +38,44 @@ export const GET = withAnyAuth<
   }
 });
 
-export const POST = withAuth<
-  CustomFieldEnumOption,
-  "/custom-fields/[id]/enum-options"
->(async ({ user, clerkOrgId, clerkUserId }, request, params) => {
-  if (!(await isOrgAdmin(clerkOrgId, clerkUserId))) {
-    return forbiddenResponse();
-  }
+export const POST = withAnyAuth(
+  withOperationReceipts<
+    CustomFieldEnumOption,
+    "/custom-fields/[id]/enum-options"
+  >(
+    OperationKind.OrganizationWrite,
+    async ({ user, clerkOrgId, clerkUserId }, request, params, receipts) => {
+      const denial = await requireCustomFieldsAdmin(clerkOrgId, clerkUserId);
+      if (denial) {
+        return denial;
+      }
 
-  const { id } = await params;
+      const { id } = await params;
 
-  const { body, errorResponse: parseError } = await parseBody(
-    request,
-    createEnumOptionValidator
-  );
-  if (parseError) {
-    return parseError;
-  }
+      const { body, errorResponse: parseError } = await parseBody(
+        request,
+        createEnumOptionValidator
+      );
+      if (parseError) {
+        return parseError;
+      }
 
-  try {
-    const option = await enumOptionsService.createEnumOption(
-      id,
-      user.organizationId,
-      body
-    );
-    return successResponse(option);
-  } catch (error) {
-    return errorResponse("Failed to create enum option", error);
-  }
-});
+      try {
+        const option = await enumOptionsService.createEnumOption(
+          id,
+          user.organizationId,
+          body,
+          receipts.whenRecording((tx) =>
+            receipts.record(
+              tx,
+              machineWriteReceipt(OperationKind.OrganizationWrite, true)
+            )
+          )
+        );
+        return successResponse(withOperationReceipt(option, receipts));
+      } catch (error) {
+        return errorResponse("Failed to create enum option", error);
+      }
+    }
+  )
+);

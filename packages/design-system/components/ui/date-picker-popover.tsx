@@ -124,6 +124,13 @@ function DatePickerPopover({
       <PopoverContent className="w-auto p-0" align="start">
         <Calendar
           mode="single"
+          // Open on the month of the selected day, not on today. react-day-picker
+          // picks the displayed month with `month || defaultMonth || today` and
+          // never consults `selected`, so without this a cell reading
+          // "Aug 17, 2026" opens a September grid with nothing selected — the
+          // day the user is editing is off-screen, and the calendar's
+          // click-the-selected-day-to-clear toggle is unreachable.
+          defaultMonth={value || undefined}
           selected={value || undefined}
           onSelect={handleSelect}
           initialFocus

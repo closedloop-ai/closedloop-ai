@@ -19,11 +19,9 @@ describe("SESSION_STATUS_FILTER_OPTIONS", () => {
     expect(failedOption?.value).toBe(SESSION_STATUS.ERROR);
   });
 
-  // ISS-5592: the Status facet is a DISPLAY surface, so its vocabulary is
-  // DISPLAYED_SESSION_STATUS — the lifecycle trio plus waiting/stale/unknown,
-  // each of which the server projects and the badge renders. Pinning it to the
-  // stored SESSION_STATUS set instead would forbid exactly the three values the
-  // facet exists to gather.
+  // ISS-9939 / ISS-10629 narrowed the facet to the three PERSISTED
+  // SESSION_STATUS values. ISS-10364 later shrank DISPLAYED_SESSION_STATUS to
+  // the same three, so this assertion is now an equality, not a proper subset.
   it("only emits DISPLAYED_SESSION_STATUS values across every option", () => {
     const displayedValues = new Set<string>(
       Object.values(DISPLAYED_SESSION_STATUS)
@@ -42,17 +40,28 @@ describe("SESSION_STATUS_FILTER_OPTIONS", () => {
         SESSION_STATUS.ERROR,
       ])
     );
-    // completed/abandoned collapsed into Inactive — the facet no longer offers
-    // them (the Inactive predicate still reaches those stored rows).
+    // completed/abandoned are retired — the facet no longer offers them, and
+    // since ISS-5592 the Inactive predicate no longer reaches them either.
     expect(values).not.toContain("completed");
     expect(values).not.toContain("abandoned");
   });
 
-  it("offers Waiting so awaiting-input sessions stay reachable through a status filter", () => {
-    const waitingOption = SESSION_STATUS_FILTER_OPTIONS.find(
-      (option) => option.value === DISPLAYED_SESSION_STATUS.WAITING
-    );
-    expect(waitingOption?.label).toBe("Waiting");
+  // ISS-9939 / ISS-10629 (2026-09-17): Waiting, Stale, and Unknown were retired
+  // from the FILTER facet first — they were derived DISPLAY-only projections,
+  // not stored statuses, and the operator ruling collapsed FILTER (and SORT,
+  // ISS-10262) to the three PERSISTED SESSION_STATUS values. ISS-10364 later
+  // retired all three from DISPLAY too, so there is no longer a wider display
+  // vocabulary this facet is narrower than.
+  it("retires Waiting, Stale, and Unknown from the filter facet (ISS-9939 / ISS-10629)", () => {
+    const values = SESSION_STATUS_FILTER_OPTIONS.map((option) => option.value);
+    expect(values).not.toContain("waiting");
+    expect(values).not.toContain("stale");
+    expect(values).not.toContain("unknown");
+    expect(values).toEqual([
+      SESSION_STATUS.ACTIVE,
+      SESSION_STATUS.INACTIVE,
+      SESSION_STATUS.ERROR,
+    ]);
   });
 
   it("stays a RUN-status vocabulary — no sync-lane value such as 'syncing' (ISS-4846)", () => {
@@ -72,35 +81,6 @@ describe("SESSION_STATUS_FILTER_OPTIONS", () => {
     expect(
       SESSION_STATUS_FILTER_OPTIONS.some((option) => option.value === "failed")
     ).toBe(false);
-  });
-
-  it("offers Stale and Unknown so every value the Status column can badge is filterable (ISS-5366)", () => {
-    // Retiring `sessions-honest-unknown-states` made the Stale and Unknown
-    // badges unconditional. Without these options a user could see a Stale row
-    // and have nothing to click to gather the rest — and Status = Active would
-    // hand back a page whose badges read Stale. Both now have real server
-    // predicates (`buildStatusFacetPredicate`), which is what the vocabulary's
-    // "a member here is a promise the server can filter on" rule requires.
-    const values = SESSION_STATUS_FILTER_OPTIONS.map((option) => option.value);
-    expect(values).toContain(DISPLAYED_SESSION_STATUS.STALE);
-    expect(values).toContain(DISPLAYED_SESSION_STATUS.UNKNOWN);
-  });
-
-  it("labels Stale and Unknown from the same map the row badge reads", () => {
-    // A chip that said "Status: stale" beside a badge that said "Stale" would be
-    // the same one-row-two-stories defect in miniature.
-    const staleOption = SESSION_STATUS_FILTER_OPTIONS.find(
-      (option) => option.value === DISPLAYED_SESSION_STATUS.STALE
-    );
-    const unknownOption = SESSION_STATUS_FILTER_OPTIONS.find(
-      (option) => option.value === DISPLAYED_SESSION_STATUS.UNKNOWN
-    );
-    expect(staleOption?.label).toBe(
-      SESSION_STATUS_LABELS[DISPLAYED_SESSION_STATUS.STALE]
-    );
-    expect(unknownOption?.label).toBe(
-      SESSION_STATUS_LABELS[DISPLAYED_SESSION_STATUS.UNKNOWN]
-    );
   });
 });
 
@@ -132,8 +112,12 @@ describe("SessionStatusFacetValue (ISS-4696 — one vocabulary declaration)", ()
     // ISS-4654: they are no longer STORED values either. The facet already
     // excluded them; now the vocabulary does as well, so the distinction this
     // assertion used to draw (facet-excluded but still storable) is closed.
-    // They survive only as inbound fold aliases — see the loops-api contract
-    // test that pins that, which is what keeps a straggler classified.
+    // ISS-5592 then removed the inbound fold aliases they had survived as, so
+    // neither spelling gets special handling any more: an inbound one is
+    // observed as unmodelled INPUT and fail-opens to `active` before it is
+    // persisted (`normalizeSessionStatus`), so it never survives as a STORED
+    // value. The fold itself is pinned by `session-status.test.ts`; these two
+    // assertions only pin its premise — that neither spelling is a member.
     expect(Object.values(SESSION_STATUS)).not.toContain("completed");
     expect(Object.values(SESSION_STATUS)).not.toContain("abandoned");
   });
@@ -145,6 +129,13 @@ describe("SessionStatusFacetValue (ISS-4696 — one vocabulary declaration)", ()
     expect(isSessionStatusFacetValue("completed")).toBe(false);
     expect(isSessionStatusFacetValue("abandoned")).toBe(false);
     expect(isSessionStatusFacetValue("syncing")).toBe(false);
+    // ISS-9939 / ISS-10629 retired Waiting/Stale/Unknown as facet values first;
+    // ISS-10364 later retired all three from the display vocabulary too, so
+    // these are plain literals now rather than `DISPLAYED_SESSION_STATUS`
+    // members — still correctly refused either way.
+    expect(isSessionStatusFacetValue("waiting")).toBe(false);
+    expect(isSessionStatusFacetValue("stale")).toBe(false);
+    expect(isSessionStatusFacetValue("unknown")).toBe(false);
   });
 
   it("every facet value resolves an option, so a chip never falls back to the raw wire string", () => {

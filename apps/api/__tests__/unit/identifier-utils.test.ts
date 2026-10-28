@@ -13,46 +13,11 @@ vi.mock("@repo/database", () => ({
 }));
 
 import {
-  isUuid,
   resolveArtifactIdentifier,
   resolveDocumentId,
   resolveProjectId,
   uuidOrSlug,
 } from "../../lib/identifier-utils";
-
-describe("isUuid", () => {
-  it("returns true for a valid UUID v4", () => {
-    expect(isUuid("550e8400-e29b-41d4-a716-446655440000")).toBe(true);
-  });
-
-  it("returns true for a valid UUID v7", () => {
-    expect(isUuid("01932b3a-7e4d-7c8f-9a1b-2c3d4e5f6a7b")).toBe(true);
-  });
-
-  it("returns true for uppercase UUID", () => {
-    expect(isUuid("550E8400-E29B-41D4-A716-446655440000")).toBe(true);
-  });
-
-  it("returns false for typed slugs", () => {
-    expect(isUuid("PRD-42")).toBe(false);
-    expect(isUuid("FEAT-1")).toBe(false);
-    expect(isUuid("PROJ-123")).toBe(false);
-    expect(isUuid("WORK-5")).toBe(false);
-    expect(isUuid("PLAN-7")).toBe(false);
-  });
-
-  it("returns false for nanoid slugs", () => {
-    expect(isUuid("m4e8g7k2j9h5b3")).toBe(false);
-  });
-
-  it("returns false for empty string", () => {
-    expect(isUuid("")).toBe(false);
-  });
-
-  it("returns false for partial UUIDs", () => {
-    expect(isUuid("550e8400-e29b-41d4")).toBe(false);
-  });
-});
 
 describe("uuidOrSlug", () => {
   const schema = uuidOrSlug();
@@ -86,6 +51,10 @@ describe("uuidOrSlug", () => {
     }
   });
 
+  it("accepts a DOC-* slug (ISS-10984)", () => {
+    expect(schema.safeParse("DOC-39").success).toBe(true);
+  });
+
   it("rejects empty string", () => {
     const result = schema.safeParse("");
     expect(result.success).toBe(false);
@@ -116,10 +85,48 @@ describe("resolveDocumentId", () => {
     vi.clearAllMocks();
   });
 
-  it("returns UUID directly when input is a UUID", async () => {
+  // ISS-6988: this case previously asserted the UUID was handed straight back
+  // with no query at all. The expectation changed because the behavior did —
+  // the UUID branch now proves org membership before returning, so what it must
+  // assert is the org predicate reaching the `where`, not the passthrough.
+  it("confirms a UUID belongs to the org before returning it", async () => {
     const uuid = "550e8400-e29b-41d4-a716-446655440000";
+    const findFirst = vi.fn().mockResolvedValue({ id: uuid });
+    mockWithDbCall({ artifact: { findFirst } });
+
     const result = await resolveDocumentId(uuid, "org-1");
+
     expect(result).toBe(uuid);
+    expect(findFirst).toHaveBeenCalledWith({
+      where: { id: uuid, organizationId: "org-1" },
+      select: { id: true },
+    });
+  });
+
+  it("returns null for a UUID that resolves to no row in the org", async () => {
+    const findFirst = vi.fn().mockResolvedValue(null);
+    mockWithDbCall({ artifact: { findFirst } });
+
+    const result = await resolveDocumentId(
+      "550e8400-e29b-41d4-a716-446655440000",
+      "org-1"
+    );
+
+    expect(result).toBeNull();
+  });
+
+  // A Branch/PR artifact UUID reaches this resolver on live paths (see
+  // `/documents/[id]/threads`), so the UUID branch must not narrow on `type` —
+  // that would 404 a row the caller can legitimately address.
+  it("does not constrain artifact type on the UUID branch", async () => {
+    const uuid = "550e8400-e29b-41d4-a716-446655440000";
+    const findFirst = vi.fn().mockResolvedValue({ id: uuid });
+    mockWithDbCall({ artifact: { findFirst } });
+
+    await resolveDocumentId(uuid, "org-1");
+
+    const [{ where }] = findFirst.mock.calls[0] as [{ where: object }];
+    expect(where).not.toHaveProperty("type");
   });
 
   it("queries by slug when input is not a UUID", async () => {
@@ -198,10 +205,31 @@ describe("resolveProjectId", () => {
     vi.clearAllMocks();
   });
 
-  it("returns UUID directly when input is a UUID", async () => {
+  // ISS-7447: the UUID branch used to return the input unverified. It now
+  // resolves through the same org-scoped existence check the slug branch does,
+  // so these two cases pin the `where` the resolver actually issues rather than
+  // only the value it hands back — a passthrough would satisfy the first case's
+  // return value alone.
+  it("confirms a UUID against the caller's org before returning it (ISS-7447)", async () => {
     const uuid = "550e8400-e29b-41d4-a716-446655440000";
+    const findFirst = vi.fn().mockResolvedValue({ id: uuid });
+    mockWithDbCall({ project: { findFirst } });
+
     const result = await resolveProjectId(uuid, "org-1");
+
     expect(result).toBe(uuid);
+    expect(findFirst).toHaveBeenCalledWith({
+      where: { id: uuid, organizationId: "org-1" },
+      select: { id: true },
+    });
+  });
+
+  it("returns null for a UUID naming no project in the caller's org (ISS-7447)", async () => {
+    mockWithDbCall({ project: { findFirst: vi.fn().mockResolvedValue(null) } });
+
+    await expect(
+      resolveProjectId("550e8400-e29b-41d4-a716-446655440000", "org-1")
+    ).resolves.toBeNull();
   });
 
   it("queries by slug when input is not a UUID", async () => {

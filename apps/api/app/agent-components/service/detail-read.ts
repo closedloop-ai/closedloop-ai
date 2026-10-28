@@ -1,3 +1,4 @@
+import type { AgentComponentDetailReadOptions } from "./detail-read-options";
 import "server-only";
 
 import type { AgentComponentDetail } from "@repo/api/src/types/agent-component";
@@ -5,36 +6,46 @@ import {
   AGENT_COMPONENT_INVENTORY_CAP,
   AgentComponentKind,
   type ComponentResolvedState,
-  PLUGIN_CHILD_KINDS,
 } from "@repo/api/src/types/agent-component";
-import { decodeComponentHashKey } from "@repo/api/src/types/agent-component-analytics";
 import { buildComponentProperties } from "@repo/api/src/types/agent-component-properties";
 import { reduceResolvedState } from "@repo/api/src/types/component-resolution";
 import { unionComponentSourceProvenance } from "@repo/api/src/types/component-source";
 import { emitLocPerDollarWithLegacy } from "@repo/api/src/utils/loc-per-dollar";
 import { withDb } from "@repo/database";
+import { isBranchPushEvidenceExclusionEnabled } from "@/lib/branch-push-evidence-exclusion-feature";
+import type { FeatureFlagIdentity } from "@/lib/feature-flag-identity";
 import { computeCohortPerformance } from "../cohort-performance";
-import { resolveDetailAuthors } from "../component-authors";
-import { resolveDetailIdentityScope } from "../content-hash-identity";
-import type { DetailOrphanUsageRow } from "../detail-usage-reads";
+import {
+  namesForUserIds,
+  resolveDetailAuthors,
+  resolveOwnerFallbackByUserId,
+} from "../component-authors";
+import {
+  decodeDetailRouteKey,
+  resolveDetailIdentityScope,
+} from "../content-hash-identity";
+import {
+  detailUsageNameKeys,
+  usageNameIdentityWhere,
+} from "../detail-usage-reads";
 import { resolveComponentHarness } from "../harness-attribution";
 import {
   resolveDetailHonestSource,
   resolveDetailSourceProjection,
-  type UsageGroupRow,
 } from "../identity";
-import { loadSessionLocCost, locPerDollarForKind } from "../loc-per-dollar";
-
+import { installerUserIdsOf } from "../installer-roster";
 import {
-  buildChildIdentityPackLookup,
-  loadDetailChildIdentityLookup,
-  MAX_ORG_ORPHAN_USAGE_ROWS,
-  usageWithoutTombstonedInventoryWhere,
-} from "../plugin-child-usage";
+  loadSessionLocCost,
+  locPerDollarForKind,
+  locPerDollarUncoveredOperand,
+} from "../loc-per-dollar";
+import {
+  foldOrphanUsageIntoTotals,
+  resolveDetailInvocationCounts,
+} from "./detail-invocation-counts";
 import { buildOrphanOnlyDetail } from "./detail-read-orphan";
 import {
   addPerBranchInvocation,
-  buildInvCountBySession,
   buildPerBranchInvBySession,
   resolveDetailSessionTabs,
 } from "./detail-session-tabs";
@@ -57,7 +68,9 @@ import { ownerCompat } from "./owner-compat";
  * (ISS-4404): `getDetailForOrg` (the inventory-present detail) and its
  * aggregation helpers. The used-only synthetic detail lives in
  * `detail-read-orphan.ts` (split out under ISS-5577), the per-session tab lane
- * in `detail-session-tabs.ts`, and the invocation page in `invocation-read.ts`.
+ * in `detail-session-tabs.ts`, the Invocations/Sessions counts in
+ * `detail-invocation-counts.ts` (split out under ISS-9852), and the invocation
+ * page in `invocation-read.ts`.
  * The service object delegates its `getDetailForOrg` method here.
  */
 
@@ -66,10 +79,16 @@ import { ownerCompat } from "./owner-compat";
 // ---------------------------------------------------------------------------
 
 /**
- * Shared with the list read's inventory cap so the detail's authors-lineage read
- * bounds the same working set (see `MAX_ORG_INVENTORY_ROWS` in the list read).
+ * How many `DefinitionVersion` rows the detail's authors-lineage read walks for
+ * the ONE component it answers for.
+ *
+ * ISS-6891 removed the org population caps this used to be described as sharing.
+ * It is unaffected by that removal — it bounds a single identity's version
+ * history, not a facet-scoped population, so it cannot make a narrower filter
+ * reveal a component a broader one hides. It keeps the shared
+ * {@link AGENT_COMPONENT_INVENTORY_CAP} value so the number stays declared once.
  */
-const MAX_ORG_INVENTORY_ROWS = AGENT_COMPONENT_INVENTORY_CAP;
+const MAX_DETAIL_AUTHOR_VERSIONS = AGENT_COMPONENT_INVENTORY_CAP;
 
 // ---------------------------------------------------------------------------
 // getDetailForOrg helpers
@@ -108,117 +127,16 @@ type DetailInventoryRow = {
   variantsTruncatedReason: string | null;
   firstSeenAt: Date | null;
   lastSeenAt: Date | null;
-  // FEA-4098 (Slice 3): the compute-target `user` is no longer carried — the
-  // detail's authors people-set comes from the `DefinitionVersionEditor` lineage
-  // (`resolveDetailCollaborators`), not the inventory row's owner.
+  // FEA-4098 (Slice 3): the compute-target `user` is not carried — the detail's
+  // authors people-set comes from the `DefinitionVersionEditor` lineage
+  // (`resolveDetailCollaborators`), not the inventory row's owner. ISS-6768's
+  // installer roster reads `userId` and resolves names org-scoped, so it needs
+  // no nested `user` join either.
   computeTarget: {
     id: string;
     userId: string;
   };
 };
-
-/**
- * FEA-2923 (soul review): plugin-detail per-session invocation map, built from
- * CHILD usage rolled up by `pack_id` — the plugin has no direct usage rows of
- * its own. Candidate packs = every `packId` on the plugin's inventory rows plus
- * the identity key (a plugin's own pack_id usually equals its componentKey),
- * mirroring `pluginPackCandidates` / the desktop `PLUGIN_USAGE_SESSIONS_SQL`.
- * Returns a session_id → summed-invocations map so the plugin detail's totals,
- * `usageSessions`, and `sessionsTab` are derived from the same source as the
- * list view's rollup (and as the desktop).
- */
-async function buildPluginChildInvCountBySession(
-  db: Parameters<Parameters<typeof withDb>[0]>[0],
-  organizationId: string,
-  inventoryRows: DetailInventoryRow[],
-  identityKey: string
-): Promise<Map<string, number>> {
-  const candidatePacks = new Set<string>();
-  for (const row of inventoryRows) {
-    if (row.packId) {
-      candidatePacks.add(row.packId);
-    }
-  }
-  if (identityKey) {
-    candidatePacks.add(identityKey);
-  }
-  const bySession = new Map<string, number>();
-  if (candidatePacks.size === 0) {
-    // whitlockk (ISS-5363 review): a REAL zero, not an unknown. A plugin's usage is
-    // by definition the sum over its candidate packs' children; with no
-    // candidate pack that sum is empty. The LIST reaches the identical answer
-    // through the identical short-circuit (`loadPluginChildUsage` returns an
-    // empty map for an empty pack set, and `sumPluginChildUsage` then REPLACES
-    // the plugin's aggregates with 0), as does the desktop reader. Dashing here
-    // would manufacture the very cross-surface disagreement this change removes.
-    return bySession;
-  }
-  // FEA-4337: attribute child usage by the child INVENTORY identity
-  // (`kind::key`), not the usage row's nullable `agentComponentId` FK, so a
-  // plugin's orphan-FK child usage still counts on its detail page — identical
-  // to the list rollup (`loadChildUsageByPackId`) and the desktop reader.
-  const { packIdsByIdentity, identityPrefilter } =
-    await loadDetailChildIdentityLookup(
-      db,
-      [...candidatePacks],
-      organizationId
-    );
-  if (identityPrefilter.length === 0) {
-    // whitlockk (ISS-5363 review): also a REAL zero. The child-inventory lookup RAN
-    // and returned nothing, and `loadChildUsageByPackId` — the LIST's rollup —
-    // carries the SAME `identityPrefilter.length === 0` short-circuit over the
-    // SAME `loadChildInventoryJoin`, so the list turns this into a plain `0`
-    // too. Reporting an unknown here would put a `—` on the detail beside the
-    // list's `0` for identical inputs.
-    return bySession;
-  }
-  const belongsToPlugin = buildChildIdentityPackLookup(packIdsByIdentity);
-  const childUsage = await db.agentComponentSessionUsage.findMany({
-    where: {
-      componentKind: { in: [...PLUGIN_CHILD_KINDS] },
-      // Prefilter to THIS plugin's child identities BEFORE the cap so unrelated
-      // org child activity can't fill MAX_ORG_ORPHAN_USAGE_ROWS and starve the
-      // requested plugin's detail to zero (whitlockk review). Case-insensitive
-      // `contains` of each normalized key admits every case/whitespace variant
-      // the `belongsToPlugin` re-match below keeps (FEA-3239).
-      OR: identityPrefilter,
-      // ISS-6180 (davetho review): the SAME tombstoned-FK exclusion the list's
-      // `loadChildUsageByPackId` applies. `belongsToPlugin` is identity-only, so
-      // without it a tombstoned child sharing a live sibling's `(kind, key)`
-      // counts here while the usage-only lane also reports it — and the detail
-      // would drift HIGH against a list that had been fixed alone.
-      AND: [usageWithoutTombstonedInventoryWhere()],
-      session: {
-        artifact: {
-          organizationId,
-        },
-      },
-    },
-    select: {
-      agentSessionId: true,
-      componentKind: true,
-      componentKey: true,
-      invocationCount: true,
-    },
-    // Deterministic tail so the cap drops a stable, most-recent-kept subset
-    // rather than an arbitrary one that varies request-to-request (whitlockk review).
-    orderBy: [
-      { lastInvokedAt: { sort: "desc", nulls: "last" } },
-      { id: "asc" },
-    ],
-    take: MAX_ORG_ORPHAN_USAGE_ROWS,
-  });
-  for (const usage of childUsage) {
-    // A child under one of the candidate packs; count its invocations toward the
-    // session once (the detail's per-session map is a plain sum, not per-pack).
-    if (!belongsToPlugin(usage.componentKind, usage.componentKey)) {
-      continue;
-    }
-    const prev = bySession.get(usage.agentSessionId) ?? 0;
-    bySession.set(usage.agentSessionId, prev + usage.invocationCount);
-  }
-  return bySession;
-}
 
 function buildProvenance(
   inventoryRows: DetailInventoryRow[]
@@ -254,62 +172,6 @@ function reduceInventoryResolvedState(
   inventoryRows: DetailInventoryRow[]
 ): ComponentResolvedState {
   return reduceResolvedState(inventoryRows.map((row) => row.resolvedState));
-}
-
-type DetailInvocationCounts = {
-  invCountBySession: Map<string, number>;
-  totalInvocations: number;
-  sessionIdSet: Set<string>;
-};
-
-/**
- * Resolve the per-session invocation map + effective totals for a component
- * detail. Plugins roll up child usage by pack_id (they have no direct usage
- * rows — matching `applyPluginChildUsageRollup` in the list view + the desktop
- * reader); every other kind folds its FK-linked + orphan usage. Extracted from
- * `getDetailForOrg` to keep that method within the complexity budget.
- */
-async function resolveDetailInvocationCounts(
-  db: Parameters<Parameters<typeof withDb>[0]>[0],
-  params: {
-    kind: string;
-    key: string;
-    organizationId: string;
-    typedRows: DetailInventoryRow[];
-    usageGroups: UsageGroupRow[];
-    orphanUsages: readonly DetailOrphanUsageRow[];
-    linkedTotalInvocations: number;
-    linkedSessionIdSet: Set<string>;
-  }
-): Promise<DetailInvocationCounts> {
-  if (params.kind === AgentComponentKind.Plugin) {
-    const invCountBySession = await buildPluginChildInvCountBySession(
-      db,
-      params.organizationId,
-      params.typedRows,
-      params.key
-    );
-    let totalInvocations = 0;
-    for (const count of invCountBySession.values()) {
-      totalInvocations += count;
-    }
-    return {
-      invCountBySession,
-      totalInvocations,
-      sessionIdSet: new Set(invCountBySession.keys()),
-    };
-  }
-
-  const invCountBySession = buildInvCountBySession(params.usageGroups);
-  for (const usage of params.orphanUsages) {
-    const prev = invCountBySession.get(usage.agentSessionId) ?? 0;
-    invCountBySession.set(usage.agentSessionId, prev + usage.invocationCount);
-  }
-  return {
-    invCountBySession,
-    totalInvocations: params.linkedTotalInvocations,
-    sessionIdSet: params.linkedSessionIdSet,
-  };
 }
 
 function reduceMinDate(
@@ -364,12 +226,32 @@ async function attachUsageSessionVersions(
   usageSessions: AgentComponentDetail["usageSessions"]
 ): Promise<AgentComponentDetail["usageSessions"]> {
   const usageSessionIds = usageSessions.map((u) => u.sessionId);
-  if (usageSessionIds.length === 0) {
+  // ISS-6756: `usageNameIdentityWhere`'s precondition, honoured by this caller
+  // too. An empty key would emit `component_key_normalized IN ('')`, which
+  // matches every row still carrying the `ADD COLUMN … DEFAULT ''` value — a
+  // predicate that attributes ANOTHER component's revision rather than
+  // returning nothing, which is what the `ILIKE ''` it replaces did. The
+  // orphan-only content-hash route is the case with no name at all; there is no
+  // identity to attribute a revision by, so the lane reports none.
+  const nameKeys = detailUsageNameKeys(key, []);
+  if (usageSessionIds.length === 0 || nameKeys.length === 0) {
     return usageSessions.map((u) => ({ ...u, versionHash: null }));
   }
   const usageWhere = {
     componentKind: kind,
-    componentKey: { equals: key, mode: "insensitive" as const },
+    // ISS-6756: the SAME folded-identity predicate the lanes that PRODUCED
+    // `usageSessions` now use. Those lanes moved off `componentKey ILIKE`, whose
+    // fold differs from the persisted one in two directions — it does not trim,
+    // and it treats `_`/`%` in the key as wildcards — so leaving this lane on
+    // the old spelling would make it select a different population from the
+    // session list it annotates: a session admitted by the new fold would find
+    // no row here and render a null `versionHash`, and an `mcp__x__y`-style key
+    // could match some OTHER component's row and attribute ITS hash.
+    //
+    // Deliberately still the primary `key` only, not `scope.keys`: this lane has
+    // never matched the alias set, and widening it is a separate question from
+    // the spelling. Bound by `agentSessionId` below, so no index depends on it.
+    ...usageNameIdentityWhere(nameKeys),
     agentSessionId: { in: usageSessionIds },
     // AC-019: usage isolates via SessionDetail → Artifact.organizationId; scope
     // the read so a session id from another org can never be attributed here.
@@ -389,15 +271,15 @@ async function attachUsageSessionVersions(
   // recently active" ordering), then derive BOTH attributes from that one row so
   // they can never come from different branches/revisions.
   //
-  // ISS-5464 (review): this is NOT bounded by `MAX_DETAIL_SESSION_IN_IDS`, as an
-  // earlier comment here claimed. `usageSessionIds` comes from
-  // `buildUsageSessions` over the FULL per-session map, not the sliced
-  // `sessionArtifactIds`. That asymmetry is DELIBERATE: `usageSessions` is the
-  // existence set the Evidence tab's link coverage reads (`agent-detail.tsx`,
-  // `getInvocationSessionHref`), so capping it would return every Evidence link
-  // on a heavy component to null — the 78%->0% regression the `sessionsTab`
-  // bound already caused once. Pinned by `detail-sessions-tab-wiring.test.ts`.
-  // The real bound is the component's session count, one row per (session, branch).
+  // ISS-5464 / ISS-9855: this is NOT bounded by the session-tab page size.
+  // `usageSessionIds` comes from `buildUsageSessions` over the FULL per-session
+  // map, not the paged `sessionArtifactIds`. That asymmetry is DELIBERATE:
+  // `usageSessions` is the existence set the Evidence tab's link coverage reads
+  // (`agent-detail.tsx`, `getInvocationSessionHref`), so capping it would
+  // return every Evidence link on a heavy component to null — the 78%->0%
+  // regression the `sessionsTab` bound already caused once. Pinned by
+  // `detail-sessions-tab-wiring.test.ts`. The real bound is the component's
+  // session count, one row per (session, branch).
   const usageRows = await db.agentComponentSessionUsage.findMany({
     where: usageWhere,
     select: {
@@ -471,9 +353,23 @@ async function attachUsageSessionVersions(
 // getDetailForOrg
 // ---------------------------------------------------------------------------
 
+/** ISS-8148: fail-closed flag resolve — no identity means the gate stays off. */
+function resolvePushEvidenceGate(
+  flagIdentity: FeatureFlagIdentity | undefined
+): Promise<boolean> {
+  return flagIdentity
+    ? isBranchPushEvidenceExclusionEnabled(flagIdentity)
+    : Promise.resolve(false);
+}
+
 export function getDetailForOrg(
   organizationId: string,
-  slug: string
+  slug: string,
+  // ISS-8148: requester identity for the read-side flag. Optional and
+  // fail-closed — a caller without one (internal/test) keeps the
+  // pre-ISS-8148 populations, the same posture as an unavailable flag.
+  flagIdentity?: FeatureFlagIdentity,
+  readOptions?: AgentComponentDetailReadOptions
 ): Promise<AgentComponentDetail | null> {
   // FEA-4335: the detail key is content-hash-based (`${kind}::${fingerprint}`)
   // for new links, or the legacy name-level `${kind}::${key}` for old links /
@@ -481,13 +377,24 @@ export function getDetailForOrg(
   // content-distinct component (fixing the `skill::deploy` name collision); a
   // name key resolves the whole name-level identity exactly as before
   // (skew/legacy-safe).
-  const identity = decodeComponentHashKey(slug);
+  //
+  // ISS-10815 adds a THIRD accepted spelling: the NAME-QUALIFIED
+  // `${kind}::${name}@${fingerprint}`, which the catalog list publishes as the
+  // `id` of a usage-only row. It used to 404 — the one published spelling of a
+  // component's identity that this endpoint, which the list links to, would not
+  // resolve. Nothing links with it today, so this is purely additive; see
+  // `decodeDetailRouteKey` for where it comes from and why the order is safe.
+  const identity = decodeDetailRouteKey(slug);
   if (!identity) {
     return Promise.resolve(null);
   }
   const { kind, fingerprint } = identity;
 
   return withDb(async (db) => {
+    // ISS-8148 read-side gate, resolved once per detail read (same flag and
+    // fail-closed posture as the insights delivery section): an unavailable
+    // flag or an identity-less caller keeps the pre-ISS-8148 populations.
+    const requirePushEvidence = await resolvePushEvidenceGate(flagIdentity);
     // FEA-4335: resolve the (content-hash OR legacy-name) key into the
     // name-level `key` used by the aggregation below plus, for a content-hash
     // key, the coarse-hash inventory narrow. Extracted to keep this method
@@ -503,9 +410,11 @@ export function getDetailForOrg(
     if (scope.orphanOnly) {
       // A content hash that matched no version row — resolve as orphan-only
       // usage if any exists (used-only components), else 404. No name fallback.
-      // FEA-4335: pass the content scope so the orphan read selects rows by the
-      // requested `componentVersionHash`/`definitionHash` (the empty name key
-      // alone would match nothing).
+      // ISS-10341: the ONE caller that still passes a content scope, and not as
+      // a narrowing — this identity resolved no name at all (`key` is `""`,
+      // `keys` is empty), so the fingerprint IS its whole identity and the empty
+      // name key alone would match nothing. There is no family here to be
+      // narrower than.
       return buildOrphanOnlyDetail(
         db,
         organizationId,
@@ -513,7 +422,9 @@ export function getDetailForOrg(
         key,
         slug,
         scope.keys,
-        scope.usageContentScope
+        scope.usageContentScope,
+        requirePushEvidence,
+        readOptions
       );
     }
 
@@ -569,9 +480,6 @@ export function getDetailForOrg(
         variantsTruncatedReason: true,
         firstSeenAt: true,
         lastSeenAt: true,
-        // FEA-4098 (Slice 3): the nested `user` select is dropped — the
-        // detail's authors people-set comes from the `DefinitionVersionEditor`
-        // lineage, not the inventory compute-target user.
         computeTarget: {
           select: {
             id: true,
@@ -583,7 +491,10 @@ export function getDetailForOrg(
       // representative below) is stable across requests rather than whatever
       // order Postgres happens to return. Newest-observed first with `id` as a
       // unique tiebreak (mirrors the list inventory read's ordering).
-      orderBy: [{ lastSeenAt: "desc" }, { id: "asc" }],
+      // `lastSeenAt` is nullable and PostgreSQL sorts nulls FIRST on a
+      // descending sort, so without `nulls: "last"` a legacy row that never
+      // recorded one would lead the roster ahead of genuinely recent installs.
+      orderBy: [{ lastSeenAt: { sort: "desc", nulls: "last" } }, { id: "asc" }],
     });
 
     if (inventoryRows.length === 0) {
@@ -593,6 +504,16 @@ export function getDetailForOrg(
       // FEA-4335: for a content-hash route where the inventory moved A→B but no
       // B inventory row exists yet, carry the full name set + content scope so
       // the orphan read stays scoped to the requested version.
+      //
+      // ISS-10469: NOT content-scoped any more. `scope.usageContentScope` still
+      // arrives, because it is how this route was ADDRESSED — but the fingerprint
+      // resolved version rows, and those carried the family's NAMES, so
+      // `usedOnlyUsageIdentityWhere` keys both used-only lanes on the family and
+      // narrows by content only on the nameless route above. That is the same
+      // ONE POPULATION PER PAGE rule the inventory-present call below follows;
+      // this was the last state that did not. Widening the FK-linked lane is safe
+      // because it gained an identity of its own rather than borrowing one from
+      // the content narrow — see that function for the disjointness invariant.
       return buildOrphanOnlyDetail(
         db,
         organizationId,
@@ -600,7 +521,9 @@ export function getDetailForOrg(
         key,
         slug,
         scope.keys,
-        scope.usageContentScope
+        scope.usageContentScope,
+        requirePushEvidence,
+        readOptions
       );
     }
 
@@ -626,17 +549,34 @@ export function getDetailForOrg(
     // below (the totals fold, the harness fold, the per-session and per-branch
     // maps) shares one set. See `service/detail-usage-identity.ts` for why each
     // lane exists and why they must share a snapshot.
-    const { usageGroups, orphanUsages } = await loadDetailUsageGroups({
-      organizationId,
-      identity: {
-        kind,
-        key,
-        keys: scope.keys,
-        inventoryRows: typedRows,
-      },
-      liveInventoryWhere,
-      contentScope: scope.usageContentScope,
-    });
+    const { usageGroups, orphanUsages, orphanTotals, orphanTruncated } =
+      await loadDetailUsageGroups({
+        organizationId,
+        identity: {
+          kind,
+          key,
+          keys: scope.keys,
+          inventoryRows: typedRows,
+        },
+        liveInventoryWhere,
+        // ISS-10341 (Marisol Ashgrove's ruling): NO content narrowing. FEA-4335
+        // scoped these lanes to the requested byte-version, which made the detail
+        // answer a different question than the list row linking to it — the list
+        // collapses the FAMILY (FEA-4267) and links it at the canonical VERSION's
+        // routable key, so `${kind}::${fingerprint}` addresses the family and the
+        // detail must sum the family. It is not only the two counts: this one
+        // session-id set is the spine every other aggregate on the page hangs off
+        // (LOC/$, the cohort performance panel, token efficiency, merged PRs, the
+        // efficiency trend), which is why a narrowed population did not merely
+        // understate them — it emptied them. ONE POPULATION PER PAGE; a version
+        // narrows only inside an explicit drill-down (ISS-10467/ISS-10468), never
+        // here. Everything else on this page — version history, collaborators,
+        // first/last seen, `invocationRows` — was already family-scoped; these
+        // lanes were the outlier. ISS-10469 brought the used-only detail
+        // (`buildOrphanOnlyDetail`, above) onto the same rule, so every state of
+        // this page now sums one population.
+        contentScope: null,
+      });
 
     // 2. Build per-device provenance
     const provenance = buildProvenance(typedRows);
@@ -645,13 +585,12 @@ export function getDetailForOrg(
     const { totalInvocations: linkedInvocations, sessionIdSet } =
       aggregateDetailUsage(usageGroups);
 
-    // Fold orphan usage into the detail aggregates.
-    let orphanInvocations = 0;
-    for (const usage of orphanUsages) {
-      orphanInvocations += usage.invocationCount;
-      sessionIdSet.add(usage.agentSessionId);
-    }
-    const totalInvocations = linkedInvocations + orphanInvocations;
+    const { totalInvocations, totalSessions } = foldOrphanUsageIntoTotals(
+      linkedInvocations,
+      sessionIdSet,
+      orphanUsages,
+      orphanTotals
+    );
 
     // 4. Build the per-session invocation-count map + effective totals. For
     // plugins this rolls up child usage by pack_id (matching the list view +
@@ -660,9 +599,12 @@ export function getDetailForOrg(
     // resolveDetailSessionTabs).
     const {
       invCountBySession,
+      sessionLastInvoked,
       totalInvocations: effectiveTotalInvocations,
+      totalSessions: effectiveTotalSessions,
       sessionIdSet: effectiveSessionIdSet,
-    } = await resolveDetailInvocationCounts(db, {
+      sessionIdSetSampled,
+    } = await resolveDetailInvocationCounts({
       kind,
       key,
       organizationId,
@@ -670,7 +612,12 @@ export function getDetailForOrg(
       usageGroups,
       orphanUsages,
       linkedTotalInvocations: totalInvocations,
+      linkedTotalSessions: totalSessions,
       linkedSessionIdSet: sessionIdSet,
+      // ISS-9853: on this arm the FK lanes are uncapped `groupBy` reads and the
+      // org inventory read is uncapped, so the orphan lane's `take` is the only
+      // thing that can make the session set a sample.
+      linkedSessionIdSetSampled: orphanTruncated,
     });
 
     // 5. Resolve usageSessions + branchesTab + sessionsTab.
@@ -707,11 +654,15 @@ export function getDetailForOrg(
       branchesTabTruncated,
       sessionsTab,
       sessionsTabTruncated,
+      nextCursor: sessionsTabNextCursor,
     } = await resolveDetailSessionTabs(
       db,
       organizationId,
       invCountBySession,
-      perBranchInvBySession
+      requirePushEvidence,
+      perBranchInvBySession,
+      sessionLastInvoked,
+      readOptions?.sessionCursor
     );
 
     // FEA-2923: attribute each usage session to the definition revision that
@@ -726,21 +677,29 @@ export function getDetailForOrg(
 
     // LOC/$ from the same local-git session LOC + cost the list view uses
     // (FEA-2923 follow-up; ISS-4667 unit reconciliation). Deduped by session id
-    // via the effective set.
-    const locCostBySession = await loadSessionLocCost(db, organizationId, [
-      ...effectiveSessionIdSet,
+    // via the effective set. Comparison-based delivery metrics come from the
+    // same shared, bounded computation the per-pack overlay uses.
+    //
+    // ISS-9114: the two are mutually independent — they are correlated only in
+    // JS below — so they run as ONE concurrent batch, the shape the orphan arm
+    // already uses (ISS-4886). They are NOT collapsed into one read: both walk
+    // the FULL id set in chunks (ISS-9853 removed the cohort read's 2,000 cap),
+    // but they carry different projections and differ in failure mode (LOC/$
+    // is fail-open enrichment, the cohort read is not). Sharing one read would
+    // put the LOC fold on a fatal path and emit no `locPerDollar` whenever the
+    // heavier cohort projection rejects.
+    const effectiveSessionIds = [...effectiveSessionIdSet];
+    const [locCostBySession, cohortMetrics] = await Promise.all([
+      loadSessionLocCost(db, organizationId, effectiveSessionIds),
+      computeCohortPerformance(db, organizationId, effectiveSessionIds, {
+        cohortSampled: sessionIdSetSampled,
+      }),
     ]);
     const locPerDollar = locPerDollarForKind(
       kind,
       effectiveSessionIdSet,
       locCostBySession
     );
-
-    // Comparison-based delivery metrics over this component's session cohort
-    // (same shared, bounded computation the per-pack overlay uses).
-    const cohortMetrics = await computeCohortPerformance(db, organizationId, [
-      ...effectiveSessionIdSet,
-    ]);
 
     const firstSeenAt =
       reduceMinDate(typedRows, "firstSeenAt") ?? canonical.firstSeenAt;
@@ -773,6 +732,7 @@ export function getDetailForOrg(
         kind,
         key,
         inventoryIds: typedRows.map((row) => row.id),
+        cursor: readOptions?.invocationCursor,
       }),
     ]);
 
@@ -798,13 +758,27 @@ export function getDetailForOrg(
     // prompt-history DTO, capped at 20 rows) so an author who only touched an
     // older revision is not silently dropped from the detail's Collaborators;
     // the prompt selector keeps its 20-body cap independently.
+    // ISS-6768: the installer roster and the authors OWNER FALLBACK fold the
+    // same deduped, sentinel-skipped user-id set, so it is resolved to names
+    // ONCE — org-scoped, because `AgentComponent`, `ComputeTarget`, and `User`
+    // carry independent org foreign keys and a nested `computeTarget.user` join
+    // would hand back whatever user a stale cross-org link points at.
+    const installerUserIds = installerUserIdsOf(typedRows);
+    const ownerNameByUserId = await resolveOwnerFallbackByUserId(
+      db,
+      organizationId,
+      installerUserIds
+    );
+    const installers = namesForUserIds(installerUserIds, ownerNameByUserId);
+
     const detailAuthors = await resolveDetailAuthors(
       db,
       organizationId,
       kind,
       key,
       typedRows,
-      MAX_ORG_INVENTORY_ROWS
+      MAX_DETAIL_AUTHOR_VERSIONS,
+      ownerNameByUserId
     );
 
     // FEA-4374: `sourceType` (gates web Install) + `source` (the pack id its
@@ -830,9 +804,20 @@ export function getDetailForOrg(
       // still declares them nullable (`number | null`) for the producers that
       // genuinely cannot compute them — the desktop detail and a version-skewed
       // payload — and every consumer dashes rather than inventing a `0`.
+      //
+      // ISS-10341 (Marisol Ashgrove's ruling): these are FAMILY totals, and the
+      // whole page states ONE POPULATION — see the `loadDetailUsageGroups` call
+      // above for why nothing here narrows by content version.
       invocations: effectiveTotalInvocations,
-      sessions: effectiveSessionIdSet.size,
-      ...emitLocPerDollarWithLegacy(locPerDollar),
+      sessions: effectiveTotalSessions,
+      ...emitLocPerDollarWithLegacy(
+        locPerDollar,
+        locPerDollarUncoveredOperand(
+          kind,
+          effectiveSessionIdSet,
+          locCostBySession
+        )
+      ),
       trend: [],
       // FEA-4098 (Slice 3) + FEA-4247: authors (discoverer + editors) unioned
       // across this component's linked version revisions; when that lineage is
@@ -865,9 +850,18 @@ export function getDetailForOrg(
       invocationRows,
       sessionsTab,
       sessionsTabTruncated,
+      sessionsTabNextCursor,
       branchesTab,
       branchesTabTruncated,
       provenance,
+      // ISS-6768: the per-user "Used by" roster, folded from the SAME live
+      // inventory rows by the SAME producer the desktop pack overlay reads
+      // (`installerRosterOf` → `PackAnalyticsResponse.owners`). Distinct from
+      // `collaborators`/`owner` above, which are the definition's AUTHORS. `[]`
+      // here is a measured empty (rows exist, none resolved to an org user), not
+      // an unavailable roster — the orphan path, which has no inventory to fold,
+      // omits the field instead.
+      installers,
       usageSessions: usageSessionsWithVersion,
       ...cohortMetrics,
     };

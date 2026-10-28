@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
-import type { DotColor } from "./activity-dot-rendering";
+import { type DotColor, getDotShapeClassName } from "./activity-dot-rendering";
 import type { ActivityMarker } from "./session-timeline-axis";
 import { EventDotTooltip } from "./session-timeline-strip-parts";
 import { getTooltipAnchor, type TooltipAnchor } from "./viewport-tooltip";
@@ -31,9 +31,30 @@ import { getTooltipAnchor, type TooltipAnchor } from "./viewport-tooltip";
  * every story at once would stack them all on the same viewport coordinates.
  */
 const meta = {
-  title: "App Core/Agents/Session Timeline Event Dot Tooltip",
+  title: "Composites v1.0/Agents/Detail/Session Timeline Strip Parts",
+  tags: ["deprecated"],
   component: EventDotTooltip,
   parameters: { layout: "fullscreen" },
+  argTypes: {
+    // `color` is `DotColor` (`"b" | "g" | "r"`, a lane code — never an actual
+    // CSS color), but this preview's global `controls.matchers.color`
+    // (`.storybook/preview.tsx`) matches any arg literally named "color"
+    // regardless of type, so left un-overridden it got auto-assigned a
+    // `color` swatch control that cannot render or accept a one-letter lane
+    // code. `DotColor` is a genuine 3-value enum though, so — per the
+    // controls guidance (2-5 exclusive options → `inline-radio`) — the right
+    // fix is a real enum control, not `control: false`; the labels spell out
+    // what "b"/"g"/"r" mean, mirroring this file's own lane commentary above.
+    color: {
+      control: { type: "inline-radio" },
+      options: ["b", "g", "r"],
+      labels: {
+        b: "b — human steering",
+        g: "g — commits & PRs",
+        r: "r — failures & limits",
+      },
+    },
+  },
 } satisfies Meta<typeof EventDotTooltip>;
 
 export default meta;
@@ -174,7 +195,10 @@ function EventDotStage({
         {caption}
       </p>
       {/* A stand-in for one dot, at the size the rail actually draws. */}
-      <div className={`sd3-dot d-${color}`} ref={dotRef} />
+      <div
+        className={`sd3-dot d-${color} ${getDotShapeClassName(color)}`}
+        ref={dotRef}
+      />
       <EventDotTooltip anchor={anchor} color={color} events={events} />
     </div>
   );

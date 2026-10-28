@@ -481,6 +481,7 @@ async function appendWithinTx(
       detail: input.detail,
       createdAt,
     },
+    select: { organizationId: true, seq: true },
   });
 
   return { seq: seq.toString(), hash };

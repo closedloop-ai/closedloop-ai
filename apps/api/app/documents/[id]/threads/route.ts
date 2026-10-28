@@ -1,4 +1,8 @@
 import {
+  OperationKind,
+  OperationReceiptOutcome,
+} from "@repo/api/src/types/attribution-evidence";
+import {
   type CommentThreadWithComments,
   DOCUMENT_THREAD_REQUEST_MAX_BYTES,
   ThreadSource,
@@ -6,13 +10,24 @@ import {
 } from "@repo/api/src/types/comment";
 import { success } from "@repo/api/src/types/common";
 import { isAnchorValidationError } from "@repo/collaboration/server/yjs-anchor";
-import { NextResponse } from "next/server";
+import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { documentService } from "@/app/documents/document-service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import type {
+  AuthContext,
+  AuthenticatedJsonResponse,
+  RouteContext,
+} from "@/lib/auth/with-auth";
 import { resolveDocumentId } from "@/lib/identifier-utils";
+import {
+  type OperationReceiptRecorder,
+  withOperationReceipt,
+  withOperationReceipts,
+} from "@/lib/operation-receipts/operation-receipt-recorder";
 import { errorResponse, notFoundResponse, parseBody } from "@/lib/route-utils";
 import { commentsService } from "../../../comments/service";
+import type { DocumentThreadWrite } from "../../../comments/service/document-thread-mutations";
 
 const getThreadsValidator = z.object({
   source: z.enum(ThreadSource).optional(),
@@ -29,7 +44,14 @@ const createThreadValidator = z.object({
 export const POST = withAnyAuth<
   { commentId: string; threadId: string },
   "/documents/[id]/threads"
->(async ({ user }, request, params) => {
+>(withOperationReceipts(OperationKind.Comment, createThreadResponse));
+
+async function createThreadResponse(
+  { user }: AuthContext,
+  request: NextRequest,
+  params: RouteContext<"/documents/[id]/threads">["params"],
+  receipts: OperationReceiptRecorder
+): Promise<AuthenticatedJsonResponse<{ commentId: string; threadId: string }>> {
   let requestHadAnchorText = false;
 
   try {
@@ -58,23 +80,34 @@ export const POST = withAnyAuth<
     }
     requestHadAnchorText = body.anchorText !== undefined;
 
+    const recordComment = receipts.whenRecording<DocumentThreadWrite>(
+      (tx, written) =>
+        receipts.record(tx, {
+          operationKind: OperationKind.Comment,
+          outcome: OperationReceiptOutcome.Committed,
+          targetArtifactId: artifact.id,
+          commentId: written.commentRowId,
+        })
+    );
     const result =
       body.anchorText === undefined
         ? await commentsService.createArtifactLevelDocumentThread(
             user.organizationId,
             artifact.slug,
             user.id,
-            body.body
+            body.body,
+            recordComment
           )
         : await commentsService.createDocumentThread(
             user.organizationId,
             artifact.slug,
             user.id,
             body.body,
-            body.anchorText
+            body.anchorText,
+            recordComment
           );
 
-    return NextResponse.json(success(result));
+    return NextResponse.json(success(withOperationReceipt(result, receipts)));
   } catch (error) {
     const isStructured =
       error != null && typeof error === "object" && "status" in error;
@@ -97,7 +130,7 @@ export const POST = withAnyAuth<
 
     return errorResponse(message, error, status);
   }
-});
+}
 
 export const GET = withAnyAuth<
   CommentThreadWithComments[],

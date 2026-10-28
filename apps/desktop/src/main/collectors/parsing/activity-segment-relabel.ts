@@ -15,7 +15,7 @@
  * and both post-passes share. Leaf module: imports only the taxonomy phase type,
  * so the post-passes and the classifier that consume it cannot cycle through it.
  */
-import type { ActivityPhase } from "./activity-taxonomy.js";
+import type { ActivityPhase } from "@repo/api/src/types/activity-phase";
 
 /**
  * Parse a token/turn stream's timestamps to finite epoch-ms, de-duplicated and

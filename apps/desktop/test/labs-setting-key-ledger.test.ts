@@ -1,21 +1,61 @@
 /**
  * @file labs-setting-key-ledger.test.ts
  * @description ISS-6523 — the retirement sweep as a gate rather than a
- * convention.
+ * convention. ISS-8071 — the edit-site manifest, because this file is the one a
+ * lane adding a Labs key reads, and it was believed to be the whole contract.
  *
- * Retiring a Labs toggle needs four edits and only three of them break the
- * build, so the fourth — the `RETIRED_LABS_SETTING_KEYS` entry that deletes the
- * key from an upgrading profile — is the one that gets missed. Two lanes missed
- * it on three flags in one night.
+ * Retiring a Labs toggle needs FIVE edits — the registry entry, the
+ * `DesktopSettings` member, its `DEFAULT_DESKTOP_SETTINGS` default, the
+ * `REGISTRY_MEMBERSHIP_WITNESS` line, and the `RETIRED_LABS_SETTING_KEYS` entry — and
+ * only the last leaves nothing behind when it is skipped. The other four are
+ * load-bearing for `tsc` or for a sibling suite, so they get done; the sweep
+ * entry that deletes the key from an upgrading profile is the one that gets
+ * missed. Two lanes missed it on three flags in one night.
  *
  * The claim under test is STORE absence, not panel absence. The ISS-5820 lane
  * already had a test for its retired key and it was a false green: it asserted
- * the key was gone from the Labs PANEL, which stays true forever while the
+ * the key was gone from the retired settings tab, which stayed true forever while the
  * persisted residue keeps bleeding through `SettingsStore.getAll()`. Every
  * assertion here goes through the store.
+ *
+ * ADDING ONE LABS SETTING KEY COSTS SIX EDITS, NOT FIVE. "Five" was the working
+ * number until the ISS-8024 lane (PR #5989) made the five it knew about, ran
+ * THIS suite, saw green, and was failed by a sixth site this file had never
+ * looked at. Each site below is listed with the guard that reddens when it is
+ * skipped, verified by adding a synthetic key and omitting one site at a time
+ * (ISS-8071):
+ *
+ *  1. `FEATURE_FLAGS` — `apps/desktop/src/shared/feature-flags.ts`, or the
+ *     sibling module that owns the concern. The subject of the other five.
+ *     Guard: this file (a ledgered key in neither the registry nor the sweep is
+ *     a missing sweep entry) plus `feature-flags-registry-composition.test.ts`.
+ *  2. The `DesktopSettings` member — `apps/desktop/src/shared/contracts.ts`.
+ *     Guard: `tsc` ALONE. The type is erased before any test runs, so no suite
+ *     can see this one; omitting it is TS2353 on the defaults literal.
+ *  3. The `DEFAULT_DESKTOP_SETTINGS` entry — same file. Guard: `tsc` (TS2741)
+ *     plus `feature-flags-registry-plumbing.test.ts`, which requires `getAll()`
+ *     to answer a boolean for every registered flag on a fresh profile.
+ *  4. `LABS_SETTING_KEY_LEDGER` — `src/main/settings/labs-setting-key-ledger.ts`.
+ *     Guard: this file.
+ *  5. `LEDGER_HISTORICAL_KEYS` — below in this file. Guard: this file.
+ *  6. `REGISTRY_MEMBERSHIP_WITNESS` — `test/feature-flags-registry-membership-witness.ts`.
+ *     THE SIXTH SITE, and the one the five-edit folklore omits.
+ *     Membership is guarded here, and duplicate keys are guarded by
+ *     `feature-flags-registry-composition.test.ts`.
+ *
+ * A SEVENTH edit exists for the SHARED web+desktop class only — the kebab-case
+ * keys aliasing a `@repo/api` leaf constant `apps/app` imports too. Those also
+ * need `packages/api/src/types/<key>-flag.ts` and a parity row in
+ * `feature-flags-cross-surface.test.ts`, whose rows are hand-maintained: a
+ * shared key with no row there is reported by nothing. A desktop-owned key needs
+ * none of it, which is why the count above is six.
+ *
+ * Declaring the key as its own exported constant module is a CONVENTION, not a
+ * seventh site: inlining the literal at the registry entry was verified to keep
+ * every suite and both typecheck projects green.
  */
 import assert from "node:assert/strict";
-import { afterEach, test } from "node:test";
+import { afterEach, test } from "vitest";
 import {
   describeLabsSettingKeyViolations,
   findLabsSettingKeyLedgerViolations,
@@ -24,6 +64,7 @@ import {
   RETIRED_LABS_SETTING_KEYS,
 } from "../src/main/settings/labs-setting-key-ledger.js";
 import { FEATURE_FLAGS } from "../src/shared/feature-flags.js";
+import { REGISTRY_MEMBERSHIP_WITNESS } from "./feature-flags-registry-membership-witness.js";
 import {
   cleanupFeatureFlagStores,
   makeFeatureFlagStore,
@@ -38,7 +79,7 @@ const REGISTRY_KEYS = FEATURE_FLAGS.map((def) => def.key);
 const SWEEP_ARRAY_PATTERN = /RETIRED_LABS_SETTING_KEYS/;
 const LEDGER_MODULE_PATTERN = /labs-setting-key-ledger\.ts/;
 const LEDGER_ARRAY_PATTERN = /LABS_SETTING_KEY_LEDGER/;
-const RETIRED_FIXTURE_KEY_PATTERN = /grid-table-v2/;
+const RETIRED_FIXTURE_KEY_PATTERN = /branches-pinned-name-column/;
 
 /**
  * The ledger's append-only property, pinned OUTSIDE the ledger module.
@@ -77,11 +118,22 @@ const RETIRED_FIXTURE_KEY_PATTERN = /grid-table-v2/;
  * It lives HERE, not beside the array, so one edit cannot remove both a key and
  * the record of it. No in-repo witness is immune to a determined co-deletion
  * across two files; the goal is to make the omission loud, not impossible.
+ *
+ * NEVER DERIVE THIS FROM `LABS_SETTING_KEY_LEDGER`. It is a hand-written literal
+ * on purpose, and that is the whole guard: a witness computed from the array it
+ * polices agrees with whatever that array currently is, so it stays green
+ * through a DELETION — precisely the omission it exists to catch. Replacing this
+ * literal with `[...LABS_SETTING_KEY_LEDGER]` deletes the gate and leaves every
+ * test in this file green.
  */
 const LEDGER_HISTORICAL_KEYS: readonly string[] = [
+  "activity-coverage-diagnostics",
   "agent-collaboration-network",
+  "agent-type-roster-incomplete",
   "agentCoachingPacks",
   "agentCoachingTips",
+  "agents-bounded-page-data",
+  "agents-card-attribute-labels",
   "agents-count-column-alignment",
   "agents-default-sort-usage",
   "agents-definition-empty-state-honesty",
@@ -91,9 +143,21 @@ const LEDGER_HISTORICAL_KEYS: readonly string[] = [
   "agents-source-provenance-honesty",
   "agents-type-tab-overflow",
   "agentsNav",
+  "artifact-cell-primitives",
+  "eligible-branch-navigation",
   "auditBot",
+  "boot-import-degraded-terminal",
+  "branch-detail-measured-checks",
+  "branch-detail-metric-honesty",
+  "branch-detail-pr-base-and-author",
   "branch-timeline-cost-fallback-marker",
+  "branches-cohort-transparency",
+  "branches-cost-coverage-agreement",
+  "branches-pinned-name-column",
+  "branches-summary-honest-loading",
+  "branches-server-pagination",
   "chart-distinguishable-series",
+  "claudeCodeOtelCapture",
   "cloud-read-cutover-gate",
   "cloudCommandsPaused",
   "cloudConnectionEnabled",
@@ -104,9 +168,12 @@ const LEDGER_HISTORICAL_KEYS: readonly string[] = [
   "commandSigningEnforcementEnabled",
   "component-versions-truncated",
   "compute-progress-count",
+  "custom-field-editor-contracts",
   "db-ahead-banner",
+  "desktopPosthogFlags",
   "detail-route-loading-state",
   "docsHelp",
+  "github-clerk-credentials",
   "grid-table-v2",
   "grid-table-width-budget",
   "guest-onboarding",
@@ -115,29 +182,47 @@ const LEDGER_HISTORICAL_KEYS: readonly string[] = [
   "localSessionAuthoredPrGate",
   "loopCompletedNotificationsEnabled",
   "member-self-service-install",
+  "metric-delta-neutral-pill",
   "metric-delta-unified-pill",
   "opencode-withheld-diagnostics",
   "planExtractionEnabled",
   "requestsLiveRefresh",
   "routines",
   "session-activity-phases",
+  "session-claude-reported-cost",
   "session-detail-read-source",
   "session-duration-unmeasurable-span",
+  "session-launch-attribution",
   "session-linked-artifacts-reachable",
   "session-loc-pr-attribution",
+  "session-metric-population-disclosure",
   "session-phase-confidence-disclosure",
   "session-timeline-axis-reconciliation",
   "session-timeline-column-hit-target",
+  "session-timeline-coverage-disclosure",
   "session-timeline-jump-feedback",
+  "session-timeline-source-extent",
   "session-timeline-synthesized-cost",
+  "session-tokens-recorded-honesty",
+  "session-touched-branches",
+  "session-trace-evidence-disclosure",
+  "session-trace-idle-rows",
   "session-trace-slash-command-chip",
+  "session-transcript-never-expected",
   "sessionCompletionNotifications",
   "sessions-branches-tab-titles",
+  "sessions-change-pr-filters",
+  "sessions-comment-count-tag",
   "sessions-cost-billing-honesty",
+  "sessions-cost-breakdown",
+  "sessions-custom-date-window",
+  "sessions-delivery-card-no-data",
   "sessions-detail-prototype-parity",
   "sessions-displayed-status-parity",
   "sessions-grid-fold-legibility",
   "sessions-honest-unknown-states",
+  "sessions-loc-per-dollar-coverage",
+  "sessions-merged-loc-rung",
   "sessions-owner-name-resolution",
   "sessions-row-qualifiers-column",
   "sessions-row-state-chip-parity",
@@ -152,6 +237,9 @@ const LEDGER_HISTORICAL_KEYS: readonly string[] = [
   "summary-strip-column-cardinality",
   "summary-strip-density",
   "summary-strip-density-tier",
+  "tag-create-color",
+  "terminalInstallFailureNotifications",
+  "threadViewershipSignal",
   "transcriptSyncEnabled",
   "updateAndRestartEnabled",
   "valueNumeratorV2",
@@ -232,7 +320,7 @@ test("ISS-6523: a flag removed from the registry with no sweep entry is reported
   // The counterfactual the ticket asks for, run against the REAL ledger with one
   // key withheld from the registry — exactly the shape of a retirement that
   // edited feature-flags.ts and contracts.ts but not the sweep.
-  const retiredWithoutSweep = "grid-table-v2";
+  const retiredWithoutSweep = "branches-pinned-name-column";
   assert.ok(
     LABS_SETTING_KEY_LEDGER.includes(retiredWithoutSweep),
     "fixture key must be in the ledger for this counterfactual to mean anything"
@@ -259,7 +347,7 @@ test("ISS-6523: a flag removed from the registry with no sweep entry is reported
 });
 
 test("ISS-6523: adding the sweep entry clears the violation", () => {
-  const retired = "grid-table-v2";
+  const retired = "branches-pinned-name-column";
 
   const violations = findLabsSettingKeyLedgerViolations({
     registryKeys: REGISTRY_KEYS.filter((key) => key !== retired),
@@ -371,4 +459,34 @@ test("ISS-6523: a stale key left in a persisted profile reddens the store assert
     "an unswept persisted key must bleed through getAll() — if it does not, the sibling test cannot fail either"
   );
   assert.equal(all[unsweptKey], false);
+});
+
+test("ISS-8071: the registry membership witness is the sixth edit site, reconciled here", () => {
+  // The site the five-edit folklore omits. Checked in BOTH directions for the
+  // same reason the ledger is: a registry key missing from the witness is an
+  // ADDITION that skipped the site (the PR #5989 shape), and a witness key
+  // missing from the registry is a RETIREMENT that did.
+  //
+  // The overlap is the point: a lane reads THIS file, so a site named here only
+  // in prose is a site that rots, and a failure that does not name the file to
+  // edit is the thing this gate exists to replace.
+  const witnessed = new Set(REGISTRY_MEMBERSHIP_WITNESS);
+  const unwitnessed = REGISTRY_KEYS.filter((key) => !witnessed.has(key));
+
+  assert.deepEqual(
+    unwitnessed,
+    [],
+    `Registered flags missing from REGISTRY_MEMBERSHIP_WITNESS: ${unwitnessed.join(", ")}. Add each to apps/desktop/test/feature-flags-registry-membership-witness.ts so a new registry entry cannot skip the hand-maintained witness.`
+  );
+
+  const registered = new Set(REGISTRY_KEYS);
+  const stranded = REGISTRY_MEMBERSHIP_WITNESS.filter(
+    (key) => !registered.has(key)
+  );
+
+  assert.deepEqual(
+    stranded,
+    [],
+    `REGISTRY_MEMBERSHIP_WITNESS carries keys the registry does not: ${stranded.join(", ")}. A retirement removes the witness entry in the same change — the list is the pre-split membership minus retirements, not a frozen snapshot.`
+  );
 });

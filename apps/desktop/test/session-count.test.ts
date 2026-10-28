@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { test } from "vitest";
 import { ipcSessionCount } from "../src/main/dashboard/agent-dashboard-ipc-perf.js";
 import { createSqliteSessionStore } from "../src/main/database/read-stores.js";
 import { countSqliteSessions } from "../src/main/database/session-count.js";
@@ -13,7 +13,7 @@ import { openTestPrisma } from "./prisma-test-utils.js";
 // `prisma.read` with a fake counter, so a count that returns 0 against a real
 // libSQL store (the packaged-build behaviour of the reader-pool `session.count()`
 // delegate) was invisible. These exercise the actual reader-pool COUNT. The
-// failed-COUNT fallback (→ 0 + onError) is covered in
+// failed-COUNT fallback (→ null + onError) is covered in
 // agent-dashboard-ipc-perf.test.ts.
 //
 // FEA-2252: `ipcSessionCount` now reads through the clone-safe

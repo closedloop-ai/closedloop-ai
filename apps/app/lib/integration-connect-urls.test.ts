@@ -2,25 +2,26 @@ import { describe, expect, it } from "vitest";
 import {
   getGitHubConnectUrl,
   getGoogleOAuthUrl,
-  getLinearOAuthUrl,
 } from "./integration-connect-urls";
 
 /**
  * These builders return the exact Next API-route URLs that OAuth entry points
- * navigate the browser to across settings, onboarding, insights, and the
- * agent-onboarding card. A silent change to the path or query params would
+ * navigate the browser to across settings, onboarding, and insights. A silent
+ * change to the path or query params would
  * break the redirect flow for every provider, so each assertion pins the
  * fully-constructed URL — path plus every query parameter — rather than a
  * substring.
  */
 describe("integration-connect-urls", () => {
   describe("getGitHubConnectUrl", () => {
-    it("defaults to the authorize route with no query string", () => {
-      expect(getGitHubConnectUrl()).toBe("/api/integrations/github");
+    // PLN-1742 M5: authorize mode targets the Clerk linking page; the
+    // in-house authorize route survives only as the install entry point.
+    it("defaults to the Clerk linking page with no query string", () => {
+      expect(getGitHubConnectUrl()).toBe("/connect/github/link");
     });
 
-    it("returns the bare authorize route when mode is explicitly 'authorize'", () => {
-      expect(getGitHubConnectUrl("authorize")).toBe("/api/integrations/github");
+    it("returns the bare linking page when mode is explicitly 'authorize'", () => {
+      expect(getGitHubConnectUrl("authorize")).toBe("/connect/github/link");
     });
 
     it("adds install=true when mode is 'install'", () => {
@@ -31,7 +32,7 @@ describe("integration-connect-urls", () => {
 
     it("adds a returnTo param in authorize mode", () => {
       expect(getGitHubConnectUrl("authorize", { returnTo: "/settings" })).toBe(
-        "/api/integrations/github?returnTo=%2Fsettings"
+        "/connect/github/link?returnTo=%2Fsettings"
       );
     });
 
@@ -46,14 +47,12 @@ describe("integration-connect-urls", () => {
         getGitHubConnectUrl("authorize", {
           returnTo: "/settings?tab=integrations",
         })
-      ).toBe(
-        "/api/integrations/github?returnTo=%2Fsettings%3Ftab%3Dintegrations"
-      );
+      ).toBe("/connect/github/link?returnTo=%2Fsettings%3Ftab%3Dintegrations");
     });
 
     it("ignores an empty returnTo (falsy) and stays on the bare route", () => {
       expect(getGitHubConnectUrl("authorize", { returnTo: "" })).toBe(
-        "/api/integrations/github"
+        "/connect/github/link"
       );
     });
   });
@@ -61,12 +60,6 @@ describe("integration-connect-urls", () => {
   describe("getGoogleOAuthUrl", () => {
     it("returns the google integration route", () => {
       expect(getGoogleOAuthUrl()).toBe("/api/integrations/google");
-    });
-  });
-
-  describe("getLinearOAuthUrl", () => {
-    it("returns the linear integration route", () => {
-      expect(getLinearOAuthUrl()).toBe("/api/integrations/linear");
     });
   });
 });

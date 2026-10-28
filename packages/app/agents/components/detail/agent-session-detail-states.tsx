@@ -1,6 +1,9 @@
 "use client";
 
-import { SESSION_DETAIL_LOADING_SLOT } from "@repo/app/agents/lib/session-detail-slots";
+import {
+  SESSION_DETAIL_LOADING_LABEL,
+  SESSION_DETAIL_LOADING_SLOT,
+} from "@repo/app/agents/lib/session-detail-slots";
 import { ApiError } from "@repo/app/shared/api/api-error";
 import { PageHeading } from "@repo/app/shared/components/page-heading";
 import { EmptyState } from "@repo/design-system/components/ui/empty-state";
@@ -47,7 +50,7 @@ export function SessionDetailLoading() {
     >
       <PageHeading>{SESSION_PAGE_HEADING}</PageHeading>
       <Skeleton
-        aria-label={SESSION_LOADING_LABEL}
+        aria-label={SESSION_DETAIL_LOADING_LABEL}
         aria-live="polite"
         className="h-[520px] w-full"
         role="status"
@@ -55,27 +58,6 @@ export function SessionDetailLoading() {
     </div>
   );
 }
-
-/**
- * The accessible name of the pending session-detail read.
- *
- * The desktop route's Suspense fallback (`DetailRouteFallback`) already wraps
- * the IDENTICAL 520px slab in a polite live region named "Loading session", then
- * hands off to this component once the lazy chunk resolves. Until ISS-5593 this
- * side announced nothing, so the handoff read as "Loading session" → silence →
- * content arriving with no signal: two treatments of one state on one route.
- * Naming it here with the SAME string makes the swap continuous rather than a
- * gap.
- *
- * On the live region rather than a wrapper element deliberately — the skeleton's
- * geometry is load-bearing (it exists so the fallback→view swap moves nothing),
- * so this adds attributes to the existing node instead of a new one.
- *
- * The sibling `BranchDetailLoading` still has this gap. Left alone: it belongs
- * to the branches slice, which this Sessions-detail change does not otherwise
- * touch.
- */
-const SESSION_LOADING_LABEL = "Loading session";
 
 export function SessionDetailNotFound({ backHref }: { backHref: string }) {
   return (

@@ -9,13 +9,12 @@
 // `cost-query-reconciliation.test.ts` (ISS-4675) so that file stays under the
 // 1,000-line ceiling and this composition seam has its own owner.
 //
-// Its sibling, `list-display-sort.integration.test.ts`, pins the same orderings
+// Its sibling, `list-display-sort.test.ts`, pins the same orderings
 // on the plain path; the two must agree.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   installCostSessions,
-  resetCapturedQueryRaw,
   UNDER_1_BUCKET,
   UPDATED,
 } from "@/__tests__/support/agent-sessions/service/cost-query-reconciliation.test-harness";
@@ -38,7 +37,6 @@ vi.mock("@repo/observability/telemetry/metrics", async () => {
 describe("cost-bucket filter composed with a display-value sort", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    resetCapturedQueryRaw();
   });
 
   it("honors an Owner sort composed with a cost-bucket filter — orders survivors by DISPLAYED name, not recency (thread #1/#4)", async () => {

@@ -4,6 +4,7 @@ import {
   differenceInHours,
   differenceInMinutes,
   format,
+  isSameDay,
   parseISO,
 } from "date-fns";
 
@@ -262,4 +263,28 @@ export function formatMonthDayTime(
     ensureDateRequired(date),
     `MMM d, ${timeFormatPattern(options)}`
   );
+}
+
+/**
+ * Format a timestamp the way a dense provenance pill needs it (ISS-7235): a
+ * time of day when it happened TODAY, an `MM/DD` date when it did not.
+ *
+ * The switch is what makes the pill readable — "9:04 AM" answers "just now or
+ * this morning?" for the rows a reader is most likely to care about, while an
+ * older row that rendered as a bare time would be actively misleading. The
+ * comparison is against `now` in the VIEWER's timezone, so a contribution made
+ * late yesterday UTC does not read as today's for a reader west of it.
+ *
+ * `now` is injectable so callers and tests pin the boundary rather than racing
+ * the wall clock across midnight.
+ */
+export function formatTimeOfDayOrMonthDay(
+  date: Date | string,
+  options: { now?: Date | number } = {}
+): string {
+  const parsed = ensureDateRequired(date);
+  const now = options.now === undefined ? new Date() : new Date(options.now);
+  return isSameDay(parsed, now)
+    ? format(parsed, "h:mm a")
+    : format(parsed, "MM/dd");
 }

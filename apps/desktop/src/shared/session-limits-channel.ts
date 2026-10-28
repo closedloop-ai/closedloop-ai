@@ -43,14 +43,10 @@ export type RateLimitSnapshot = {
  * detail drawer can label the data's provenance.
  *  - `usage_api` — AUTHORITATIVE: the owned `GET /api/oauth/usage` endpoint,
  *    the same one Claude Code's `/usage` reads (PRD-538 R5). Server-computed
- *    utilization for every window, so it outranks both local producers;
- *  - `statusline` — RICH interactive statusline `rate_limits` (continuous %);
- *  - `rate_limit_event` — COARSE non-interactive `SDKRateLimitInfo`.
+ *    utilization for every window, so it outranks the local producer;
+ *  - `statusline` — RICH interactive statusline `rate_limits` (continuous %).
  */
-export type SessionLimitSource =
-  | "usage_api"
-  | "statusline"
-  | "rate_limit_event";
+export type SessionLimitSource = "usage_api" | "statusline";
 
 /**
  * Compile-time drift guard: this main-process union must stay exactly equal to

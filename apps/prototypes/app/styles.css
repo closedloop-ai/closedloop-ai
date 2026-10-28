@@ -1,5 +1,12 @@
 @import "tailwindcss";
 @import "@repo/design-system/styles/globals.css";
+/* Registers @repo/app as a Tailwind source and loads its feature stylesheets
+   (`.bq-*`, `.st-*`), which the Branch and Session detail design harnesses
+   render with. Relative path, as in apps/app: @repo/app has no `exports`
+   map, and Turbopack rejects bare package CSS subpaths without one. */
+@import "../../../packages/app/styles.css";
+@import "react-grid-layout/css/styles.css";
+@import "react-resizable/css/styles.css";
 
 /* Sandbox layout tokens. Additive: these only publish new utilities into
    Tailwind's namespaces, so no design-system token or utility is redefined. */
@@ -12,4 +19,106 @@
      uses (packages/app/branches/components/branch-detail-page.tsx). Kept in
      px, not rem, so this stays an exact extraction of the value it replaces. */
   --container-content: 1000px;
+}
+
+.style-lab-grid {
+  isolation: isolate;
+  position: relative;
+  z-index: 0;
+}
+
+.style-lab-canvas {
+  background-color: color-mix(in oklab, var(--muted) 45%, var(--background));
+  background-image:
+    linear-gradient(
+      to right,
+      color-mix(in oklab, var(--border) 65%, transparent) 1px,
+      transparent 1px
+    ),
+    linear-gradient(
+      to bottom,
+      color-mix(in oklab, var(--border) 65%, transparent) 1px,
+      transparent 1px
+    );
+  background-size: 24px 24px;
+}
+
+.style-lab-grid .react-grid-item {
+  overflow: visible;
+}
+
+.style-lab-grid .react-grid-item.react-draggable-dragging,
+.style-lab-grid .react-grid-item.resizing {
+  z-index: 20;
+}
+
+.style-lab-grid .react-resizable-handle {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.style-lab-grid .react-grid-item:hover .react-resizable-handle,
+.style-lab-grid .react-grid-item:focus-within .react-resizable-handle {
+  opacity: 1;
+}
+
+/* Canonical selected-text comment anchor treatment. Documents and session
+   traces share this so an anchored review behaves consistently everywhere. */
+.artifact-selected-text-anchor,
+.tiptap a[rel="comment"] {
+  border-radius: 2px;
+  background: var(--highlight);
+  color: inherit;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  text-decoration: none;
+}
+
+.artifact-selected-text-anchor[data-scroll-highlight="true"],
+.tiptap a[rel="comment"][data-scroll-highlight="true"] {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes session-trace-comment-scroll-highlight {
+    0% {
+      background: var(--highlight);
+      outline-color: transparent;
+    }
+    20%,
+    60% {
+      background: color-mix(in oklch, var(--ring) 35%, var(--highlight));
+      outline-color: var(--ring);
+    }
+    100% {
+      background: var(--highlight);
+      outline-color: transparent;
+    }
+  }
+
+  .artifact-selected-text-anchor[data-scroll-highlight="true"],
+  .tiptap a[rel="comment"][data-scroll-highlight="true"] {
+    animation: session-trace-comment-scroll-highlight 1.6s ease-out 1;
+  }
+}
+
+/* Anchored prototype comments use fragment links as a lightweight durable mark.
+   Render them like review annotations rather than navigation links. Scoped to
+   the prototypes shell deliberately: @repo/rich-text's stylesheet is loaded by
+   the production document editors, which have no such comment contract. */
+.ProseMirror a[href^="#document-comment-"] {
+  border-radius: 0.125rem;
+  background: color-mix(in oklab, var(--primary) 10%, transparent);
+  padding: 0 0.125rem;
+  color: inherit;
+  text-decoration-line: underline;
+  text-decoration-style: dotted;
+  text-decoration-color: color-mix(in oklab, var(--primary) 40%, transparent);
+  text-underline-offset: 0.125rem;
+  cursor: pointer;
+}
+
+.ProseMirror a[href^="#document-comment-"]:hover {
+  background: color-mix(in oklab, var(--primary) 20%, transparent);
 }

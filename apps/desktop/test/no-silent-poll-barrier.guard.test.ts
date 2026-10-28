@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { test } from "vitest";
 
 // FEA-2399 guard: keep the desktop `test:node` slice deterministic.
 //
@@ -10,10 +10,14 @@ import { fileURLToPath } from "node:url";
 // count-bounded poll loop as a completion barrier over real async I/O and then
 // FELL THROUGH SILENTLY when the turn budget was exhausted — asserting a stale
 // value under load instead of failing loudly. This guard forbids that shape:
-// any async wait-for-condition helper (a function whose parameters include a
-// `predicate`/`condition` callback and whose body loops) MUST `throw` when it
-// gives up, so a missed signal surfaces as an explicit timeout, never a
-// confusing stale-value assertion.
+// any async wait-for-condition helper (a function that takes a predicate
+// callback and whose body loops) MUST `throw` when it gives up, so a missed
+// signal surfaces as an explicit timeout, never a confusing stale-value
+// assertion.
+//
+// ISS-8041: a predicate callback is named by INTENT, so matching only the word
+// `predicate` left the rule unenforced. `drive(service, isDone)` shipped the
+// exact banned shape past this guard because its parameter was called `isDone`.
 //
 // It intentionally does NOT flag: fixed-count settle helpers (no predicate
 // param, e.g. settleAsyncTurns), single-flush `await new Promise(r => ...)`
@@ -25,7 +29,8 @@ const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 // Function headers: `async function name(` or `const name = async (`.
 const FUNCTION_HEADER =
   /(?:async\s+function\s+([A-Za-z0-9_$]+)|(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=\s*async)\s*\(/g;
-const PREDICATE_PARAM = /\b(?:predicate|condition)\b/;
+const PREDICATE_PARAM =
+  /\b(?:predicate|condition|until|done|isDone|isReady|isSettled|isComplete)\b/;
 const LOOP_KEYWORD = /\b(?:for|while)\s*\(/;
 const THROW_KEYWORD = /\bthrow\b/;
 const BLOCK_COMMENT = /\/\*[\s\S]*?\*\//g;
@@ -120,6 +125,22 @@ test("guard detector flags a silent predicate-poll helper", () => {
   const violations = findViolations(bad);
   assert.equal(violations.length, 1);
   assert.equal(violations[0].fn, "waitForImmediateCondition");
+});
+
+test("guard detector flags a predicate callback named by intent, not by the word", () => {
+  const bad = `
+    async function drive(service, isDone) {
+      for (let tick = 0; tick < 40; tick += 1) {
+        await service.whenSettled();
+        if (isDone()) {
+          return;
+        }
+      }
+    }
+  `;
+  const violations = findViolations(bad);
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].fn, "drive");
 });
 
 test("guard detector accepts a throwing (fail-loud) predicate-poll helper", () => {

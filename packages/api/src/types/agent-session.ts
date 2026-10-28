@@ -6,12 +6,11 @@ import type {
   AgentSessionModelFacetOption,
   AgentSessionProjectFacetOption,
 } from "./agent-session-facet-options";
+import type { AgentSessionListPageInfo } from "./agent-session-list-contract.js";
+import type { AcceptedAgentSessionSyncSchemaVersion } from "./agent-session-sync-schema-version.ts";
+import type { ToolCallDetailState } from "./agent-session-tool-call.js";
 import type {
-  ToolCallDetailState,
-  ToolCats,
-  ToolItem,
-} from "./agent-session-tool-call.js";
-import type {
+  AgentSessionAgentRosterIncompleteness,
   AgentSessionAgentTypeBreakdown,
   AgentSessionProjectBreakdown,
   AgentSessionRepositoryBreakdown,
@@ -20,17 +19,45 @@ import type {
   AgentSessionUsageByPr,
 } from "./agent-session-usage-breakdown";
 import type { AgentSessionUsageComparison } from "./agent-session-usage-comparison";
-import type { JsonObject, JsonValue } from "./common.js";
+import type { JsonObject, JsonValue, Priority } from "./common.js";
+import type { CustomFieldValueDetail } from "./custom-field.js";
+import type { DataSyncLevel } from "./data-sync-level.js";
 import type { TranscriptAvailabilitySummary } from "./desktop-transcripts.js";
+import { DesktopWriteLaneRejectReason } from "./desktop-write-lane.ts";
 import type { DocumentType } from "./document.js";
+import type { LocPerDollarCoverage } from "./loc-per-dollar-coverage.js";
+import type { SessionOperationEvidence } from "./operation-claims.ts";
 import type { ReadSource } from "./read-source.js";
+import type {
+  SessionActivityMetricsRead,
+  SyncedSessionActivityMetrics,
+  TranscriptArchiveProgress,
+} from "./session-activity-metrics";
 import type {
   SyncedArtifactRef,
   SyncedSessionPrRef,
 } from "./session-artifact-link.js";
+import type { SessionEvidenceCoverage } from "./session-evidence-coverage-constants.js";
+import type {
+  PhaseIterations,
+  PhaseLoopback,
+  SessionMarker,
+  SessionPhase,
+  SessionSpan,
+  SessionThrottle,
+} from "./session-trace-shape.ts";
+import type { TurnItem } from "./session-transcript-turn.ts";
+import type { SessionUntrackedRepositoryTarget } from "./session-untracked-repository.ts";
 import type { SyncedComponentVariantsEnvelope } from "./synced-component-content.js";
+import type {
+  ArtifactTagAvailability,
+  ArtifactTagPermissions,
+  TagSummary,
+} from "./tag.js";
 import type { TokenEventProvenanceFields } from "./token-cost-provenance.js";
 import type { TranscriptDisposition } from "./transcript-disposition-constants.js";
+import type { TranscriptSkipReason } from "./transcript-skip-reason-constants.js";
+import type { TranscriptTurnIdentity } from "./transcript-turn-identity.ts";
 import type { BasicUser } from "./user.js";
 
 // ---------------------------------------------------------------------------
@@ -48,26 +75,35 @@ import type { BasicUser } from "./user.js";
  */
 /**
  * FEA-4011: upper bound (characters) on a synced component's IDENTITY fields —
- * `externalId`, `componentKind`, `componentKey`, `name`. These feed the
- * org-identity slug and now ride into the `search_document` route metadata
- * (`slug`, `entity_subtype`, `title`), so unlike `content` they were previously
+ * `externalId`, `componentKind`, `componentKey`. These feed the org-identity
+ * slug and now ride into the `search_document` route metadata (`slug`,
+ * `entity_subtype`, `title`), so unlike `content` they were previously
  * unbounded on the wire: a burst of components with pathologically long keys
  * could inflate one query's route metadata into tens of MiB. 512 chars
- * comfortably covers a real component name/key/kind while capping abuse. The
- * cloud ingest Zod schema rejects anything larger; a slug/route built from these
+ * comfortably covers a real component key/kind while capping abuse. The cloud
+ * ingest Zod schema rejects anything larger; a slug/route built from these
  * fields therefore has a bounded length.
+ *
+ * ISS-8051 narrowed the set: `name` is NO LONGER bounded by this constant. The
+ * three that remain are the columns of the `AgentComponent` / `AgentComponentVersion`
+ * unique indexes, where an over-long value is never stored at all (Postgres
+ * refuses a btree index tuple over 2704 bytes) — that is why rejecting is the
+ * better failure there. `name` is not an index key, so a rejecting cap on it
+ * only cost the whole batch.
  */
 export const SYNCED_COMPONENT_IDENTITY_MAX_CHARS = 512;
 
 /**
- * Maximum number of `SyncedComponentUsage` entries allowed per session payload.
- * Mirrors the `MAX_SYNCED_ARTIFACT_REFS` pattern to prevent oversized batches.
+ * PRODUCER-SIDE bound: the number of `SyncedComponentUsage` entries the desktop
+ * slices a session down to before sending.
  *
- * Shared single source of truth (FEA-3322): the cloud ingest Zod schema rejects
- * anything larger (`.max(...)`) and the desktop slices per-session usage to this
- * cap before sending. Both sides MUST reference this constant — if they drift, a
- * session whose component usage exceeds the cloud cap fails validation as
- * `session_invalid` and the entire session silently never syncs (total loss).
+ * ISS-8051: this is NO LONGER a receive-side cap. The cloud ingest Zod schema
+ * used to enforce it with `.max(...)`, and because a Zod `.max()` REJECTS rather
+ * than truncates, a session one entry over the cap failed validation entirely
+ * and never synced — the total loss FEA-3322 was trying to prevent by keeping
+ * the two sides equal was in fact caused by the cap itself. The cloud now
+ * accepts whatever arrives, so the two sides drifting apart no longer costs a
+ * session; this constant only decides how much the desktop volunteers to send.
  */
 export const MAX_SYNCED_COMPONENT_USAGE = 500 as const;
 
@@ -116,6 +152,13 @@ export type SyncedComponent = SyncedComponentVariantsEnvelope & {
    * previous `lastSeenAt` rule, so no existing row is re-keyed or re-dated.
    */
   contentFirstSeenAt?: string | null;
+  /**
+   * ISS-4965 (Perrin, 2026-10-05): the usage-space digest
+   * (`usageScopeHashForContent`) of the definition as written, sent only when
+   * `content` was secret-redacted on the way out; omitted otherwise. Usage rows
+   * carry that raw-content digest, which the redacted `content` cannot reproduce.
+   */
+  usageScopeHash?: string;
   /**
    * F1 (FEA-3290 / PRD-527 Slice 4) — honest resolution state (AC-007). One of
    * "resolved" | "unresolved" | "inaccessible" | "missing". Additive/optional:
@@ -195,6 +238,26 @@ export type SyncedComponentUsage = {
    */
   gitBranch?: string | null;
   /**
+   * ISS-7259: this component is the session's FIRST ATTRIBUTED SKILL.
+   *
+   * Named for what it holds, not for what a reader wants it to mean. It derives
+   * from the facet's `firstAttributedSkill`, which Claude stamps per assistant
+   * turn and never marks as a launch — in this repo's frozen corpus the first
+   * stamped turn sits at record 251 of 381, and not one of 105 scanned
+   * transcripts carried an attribution on its first record. So a boolean called
+   * `launchAttributed` would let a cloud rollup sum it as "sessions this skill
+   * launched", which the value cannot support; this name cannot be read that way.
+   *
+   * A FLAG ON THE INVOCATION ROW, deliberately not a row of its own: "invoked in
+   * the session" and "first attributed in the session" are facts about the same
+   * (session, component) pair, so a second row would count one `cl-produce` twice
+   * and inflate every rollup that sums this table.
+   *
+   * Omitted rather than sent `false`, so an older cloud that never learned the
+   * field is byte-identical to one that learned it and matched nothing.
+   */
+  isFirstAttributedSkill?: boolean;
+  /**
    * FEA-2923: the component's content hash when this usage was recorded
    * (hash-at-invocation). Additive/optional — omitted/null when the definition
    * content had not been collected. Lets the cloud attribute each session/branch
@@ -203,10 +266,6 @@ export type SyncedComponentUsage = {
   componentVersionHash?: string | null;
 };
 
-export const DESKTOP_AGENT_SESSIONS_SOCKET_EVENT =
-  "desktop.agent-sessions" as const;
-export const DESKTOP_AGENT_SESSION_SYNC_FEATURE_FLAG_KEY =
-  "desktop-agent-session-sync" as const;
 /**
  * Canonical PostHog flag key that gates the Active Runs surface — the live,
  * in-flight view of the Sessions surface (`packages/app`, re-exported via
@@ -220,19 +279,11 @@ export const DESKTOP_AGENT_SESSION_SYNC_FEATURE_FLAG_KEY =
  */
 export const ACTIVE_RUNS_FEATURE_FLAG_KEY = "emergent" as const;
 /**
- * FEA-2718 (PLN-1294) bumps this 1 → 2. Dropping `summary`/`data` from the event
- * schema is itself backward-compatible (a stale desktop's turn text is stripped
- * on ingest and never persisted), but the plan requires the bump so a
- * desktop/API deploy skew is loud and immediate: the API pins acceptance to this
- * literal, so a desktop still on v1 is rejected until it updates rather than
- * silently syncing the pre-FEA-2718 shape. The internal fleet updates in lockstep
- * with the API deploy. The cloud transcript archive (FEA-2717) is the sole source
- * of turn/tool detail; the DB keeps only columnar event metadata.
- *
- * The value 2 is now free: the event-fragment transport that previously used a
- * separate `schemaVersion` 2 was retired in FEA-2718 (slim events always fit one
- * envelope), so there is no collision. The desktop mirror of this constant in
- * `apps/desktop/src/main/agent-session-sync-contract.ts` must move in lockstep.
+ * The version a CURRENT desktop build stamps on every batch it sends, and the
+ * desktop mirror in `agent-session-sync-contract.ts` moves with it. What the API
+ * ACCEPTS is deliberately wider, and lives in
+ * `./agent-session-sync-schema-version.ts` — whose `_V2` constant is pinned to
+ * this value by a compile-time guard, so the two literals cannot diverge.
  */
 export const AGENT_SESSION_SYNC_SCHEMA_VERSION = 2 as const;
 
@@ -261,81 +312,28 @@ export type SyncPayloadEncoding =
  */
 export const SYNC_CONTENT_ENCODING_HEADER = "Content-Encoding" as const;
 
-/**
- * Compatibility tombstone emitted by the removed Session Trace state-action
- * endpoint for stale browser bundles that still call the old route.
+/*
+ * ISS-7019: `AgentSessionState` and `agentSessionStateValidator` were DELETED
+ * here, along with `toAgentSessionState`, `TERMINAL_AGENT_SESSION_STATE`, and
+ * `deriveAgentSessionFallbackState`.
+ *
+ * It claimed to be a second, richer axis, but four of its six members
+ * duplicated `DISPLAYED_SESSION_STATUS` one-for-one (Completed=inactive,
+ * Error=error, PendingApproval=waiting, Running=active) and the other two
+ * (Blocked, InReview) had no producer anywhere in the repo — their only
+ * occurrences were their own display-map entries. Its one non-derived input,
+ * `SessionDetail.state`, is a column nothing has written since the sync path
+ * dropped the field.
+ *
+ * The cost was a row telling two stories: a session silent past the staleness
+ * cutoff read "Running" on its detail page while the Sessions list already
+ * called it "Stale". The detail Status row now renders the SAME displayed
+ * status the list does.
+ *
+ * Do not reintroduce a second status axis here. If a genuinely new fact about
+ * a session needs a home, it is a new field, not a parallel vocabulary for one
+ * the row already has.
  */
-export const AgentSessionStateActionRemoval = {
-  Message: "Agent session state actions are no longer supported",
-  Code: "agent_session_state_actions_removed",
-} as const;
-export type AgentSessionStateActionRemoval =
-  (typeof AgentSessionStateActionRemoval)[keyof typeof AgentSessionStateActionRemoval];
-
-/**
- * The PROJECTED detail state of a session — a DIFFERENT axis from a session's
- * lifecycle status, not that enum renamed. Do not conflate them or "unify" them
- * by aliasing. Full rule: the "Session State" section of the root `AGENTS.md`.
- *
- * Status is the lifecycle (`active` / `inactive` / `error`, `SESSION_STATUS` in
- * `@repo/api/src/types/session-status`). This is a separate, richer value: it
- * carries members status has no equivalent for (PendingApproval, Blocked,
- * InReview, Running), and `toAgentSessionState` derives it from the status and
- * the session's own timestamps.
- *
- * There is no second axis. `toAgentSessionState` took a PR-outcome signal for
- * FEA-3551's rescue — an `abandoned` session read Completed once it shipped a
- * PR — which ISS-4654 made INERT and ISS-6588 removed outright along with the
- * retired-spelling branches that were its only reader. Do not reintroduce it as
- * a live input.
- *
- * A stored `SessionDetail.state` is honored when it parses, but that column is a
- * LEGACY compatibility input, not an actively persisted axis: the current sync
- * path has no `state` field and `toTraceDetailPatch` never writes it. No
- * exhaustive status→state mapper exists today, so adding a `SESSION_STATUS`
- * member does NOT fail `tsc` here — `toAgentSessionState` branches on a
- * free-form status string. Building that mapper is tracked on ISS-5592.
- */
-export const AgentSessionState = {
-  PendingApproval: "PENDING_APPROVAL",
-  Blocked: "BLOCKED",
-  InReview: "IN_REVIEW",
-  Running: "RUNNING",
-  Completed: "COMPLETED",
-  /*
-   * ISS-4654: a dedicated `AgentSessionState.Inactive` is RESOLVED AS NOT
-   * NEEDED — not deferred, and not pending a rollout. `inactive` → `Completed`
-   * is the CORRECT projection, never a placeholder: the two vocabularies answer
-   * different questions. `SESSION_STATUS` is the stored LIFECYCLE of a row
-   * (`active` / `inactive` / `error`); this is the OUTCOME the detail page
-   * reports (did the run finish, or die). A finished-not-failed run IS
-   * `Completed` in outcome terms, so adding an `Inactive` member would put a
-   * lifecycle word into a vocabulary that does not speak lifecycle. Do not
-   * "finish" this by adding one. (ISS-4586's original deferral cited a
-   * version-skew crash on old Desktop builds; that concern is moot because
-   * nothing new is emitted on the wire. The tolerance work shipped anyway in
-   * #4630 and is worth keeping — a missing display-map entry now falls back
-   * instead of crashing, which was a real latent bug on its own.)
-   * FEA-4287: a terminal FAILURE outcome. Previously ERROR collapsed into
-   * `Blocked`, so a failed session read "Blocked" on its detail page while the
-   * Sessions LIST (which renders the raw `SESSION_STATUS`) correctly showed
-   * "Failed". This member lets the detail projection preserve the same terminal
-   * outcome the list renders. `Blocked` is reserved for genuinely nonterminal
-   * blocked work that may resume.
-   * ISS-4654: the sibling `Abandoned` member is RETIRED. ISS-4586 supersedes
-   * FEA-4287's abandonment half — `abandoned` is not an outcome in the
-   * running / finished / finished-with-error vocabulary, it is a finished run —
-   * and the cloud backfill collapsed every such row to `inactive`, which already
-   * projects to `Completed`. Nothing can reach the state any more, so emitting
-   * it would be inventing an outcome the data no longer supports.
-   */
-  Error: "ERROR",
-} as const;
-export type AgentSessionState =
-  (typeof AgentSessionState)[keyof typeof AgentSessionState];
-
-/** Validator for persisted Session Trace workflow state values. */
-export const agentSessionStateValidator = z.enum(AgentSessionState);
 
 export const AgentSessionOrigin = {
   DesktopSync: "DESKTOP_SYNC",
@@ -377,15 +375,24 @@ export type DesktopAgentSessionsAck =
 // syncs or is rejected — there is no longer a `pendingFragments` continuation.
 // Goal stage 2: `acceptedSessionIds` is additive + request-gated (see the ack
 // type above for the `.strict()` skew rationale).
+export type DesktopAgentSessionsSyncResponse = {
+  synced: true;
+  acceptedSessionIds?: string[];
+};
+
+/**
+ * Keys-covered guard for this version-skew-sensitive strict response boundary.
+ * A new response field must be added here deliberately instead of compiling in
+ * a producer while already-installed Desktop validators reject every response.
+ */
+const desktopAgentSessionsSyncResponseShape = {
+  synced: z.literal(true),
+  acceptedSessionIds: z.array(z.string()).optional(),
+} satisfies Record<keyof DesktopAgentSessionsSyncResponse, z.ZodTypeAny>;
+
 export const desktopAgentSessionsSyncResponseValidator = z
-  .object({
-    synced: z.literal(true),
-    acceptedSessionIds: z.array(z.string()).optional(),
-  })
+  .object(desktopAgentSessionsSyncResponseShape)
   .strict();
-export type DesktopAgentSessionsSyncResponse = z.infer<
-  typeof desktopAgentSessionsSyncResponseValidator
->;
 
 /**
  * FEA-3425: machine-readable `code` values carried in the failure `ApiResult`
@@ -399,12 +406,12 @@ export type DesktopAgentSessionsSyncResponse = z.infer<
  * desktop HTTP sync client dispatches on code + status, never status alone.
  */
 export const DesktopAgentSessionsSyncErrorCode = {
-  FeatureDisabled: "feature_disabled",
-  IngestionFailed: "ingestion_failed",
-  InternalError: "internal_error",
-  RateLimited: "rate_limited",
-  TargetNotOwned: "target_not_owned",
-  ValidationFailed: "validation_failed",
+  FeatureDisabled: DesktopWriteLaneRejectReason.FeatureDisabled,
+  IngestionFailed: DesktopWriteLaneRejectReason.IngestionFailed,
+  InternalError: DesktopWriteLaneRejectReason.InternalError,
+  RateLimited: DesktopWriteLaneRejectReason.RateLimited,
+  TargetNotOwned: DesktopWriteLaneRejectReason.TargetNotOwned,
+  ValidationFailed: DesktopWriteLaneRejectReason.ValidationFailed,
 } as const;
 export type DesktopAgentSessionsSyncErrorCode =
   (typeof DesktopAgentSessionsSyncErrorCode)[keyof typeof DesktopAgentSessionsSyncErrorCode];
@@ -425,6 +432,15 @@ export type SyncedAgentSessionAgent = {
   type: string;
   subagentType?: string | null;
   status: string;
+  /**
+   * ISS-6894: delegated task text, populated ONLY by the transcript-archive
+   * reconstruction (`transcript-turn-items.ts` -> `subagentToAgent`), which the
+   * cloud parses at the `full` data-sync level. The desktop sync roster does NOT
+   * carry it: the producer stopped selecting the column and the ingest schema
+   * has no `task` key, so a value here never came off the wire. Do not re-add it
+   * to `sync-source.ts` or `desktop-agent-sessions-schema.ts` -- that is the
+   * egress the decision on ISS-6894 prohibits.
+   */
   task?: string | null;
   currentTool?: string | null;
   startedAt?: string | null;
@@ -517,7 +533,17 @@ export type SyncedAgentSessionAnalytics = {
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
-  estimatedCostUsd?: number;
+  /**
+   * The session's whole-session cost, in USD.
+   *
+   * ISS-7176: `null` is a VALUE here, not an absence — it is the desktop's
+   * authoritative `sessions.cost_usd_estimated` saying nothing was priced, which
+   * is distinct from a subscription session that genuinely cost $0.00. A desktop
+   * build predating this omits the field entirely, and the cloud still folds that
+   * to `0` exactly as before, so an older client degrades to today's behavior
+   * rather than breaking.
+   */
+  estimatedCostUsd?: number | null;
   runtimeMs?: number | null;
   updatedAt?: string | null;
 };
@@ -551,6 +577,30 @@ export type SyncedAgentSessionChunkMeta = {
 export type SyncedAgentSession = {
   externalSessionId: string;
   name?: string | null;
+  /**
+   * ISS-8717: the OWNER's chosen session name, as distinct from the
+   * collector-derived `name` above. Optional + additive — older desktop builds
+   * omit it. An absent value is not "clear the name": it means this payload
+   * makes no claim about the override, so the cloud preserves whatever
+   * `PATCH /agent-sessions/[id]` already stored. Only a present value writes.
+   */
+  nameOverride?: string | null;
+  /**
+   * ISS-10332: the priority set on the desktop in local mode. Optional +
+   * additive, and OMITTED on the wire whenever the desktop holds none, so an
+   * absent value never means "clear": the cloud adopts a present member only
+   * while its own artifact holds no priority (seed-if-unset), and a string
+   * outside the vocabulary is dropped rather than failing the session.
+   */
+  priority?: Priority | null;
+  /**
+   * ISS-12251: when the session was created, as ISO text: the transcript
+   * file's birth time, else its start. Optional + additive, and OMITTED on the
+   * wire when the desktop holds none; an older desktop never sends it and the
+   * cloud keeps the first-sync time. The cloud stores only a plausible value
+   * and only ever moves a stored one earlier.
+   */
+  createdAt?: string;
   status: string;
   /**
    * Per-session billing mode the desktop resolves from its local billing_mode
@@ -591,7 +641,11 @@ export type SyncedAgentSession = {
    * treats an absent value as UTC.
    */
   deviceTimeZone?: string | null;
-  /** Optional bounded Session Trace metadata; omission preserves cloud values. */
+  /**
+   * Legacy desktop-produced branch scalar. Accepted for sync version skew, but
+   * cloud storage deliberately ignores it; durable session→branch association is
+   * represented by synced artifact refs.
+   */
   branch?: string | null;
   prs?: SessionPR[] | null;
   wallClock?: string | null;
@@ -625,27 +679,132 @@ export type SyncedAgentSession = {
    */
   activitySegmentRows?: SyncedActivitySegmentRow[] | null;
   /**
-   * FEA-3779: `true` when the session's raw activity tiling was truncated before
-   * sync — because it exceeded either the row cap
-   * ({@link MAX_SYNCED_ACTIVITY_SEGMENTS}) or the serialized-byte budget
-   * ({@link MAX_SYNCED_ACTIVITY_SEGMENT_BYTES}), so `activitySegmentRows` carries an
-   * intentionally partial (start-ordered) prefix rather than the whole tiling.
-   * Optional + additive: omitted (falsy) means the tiling is complete.
+   * FEA-3779: `true` when the desktop truncated the session's raw activity tiling
+   * before sync — it exceeded the row cap ({@link MAX_SYNCED_ACTIVITY_SEGMENTS})
+   * or the serialized-byte budget ({@link MAX_SYNCED_ACTIVITY_SEGMENT_BYTES}) — so
+   * `activitySegmentRows` carries an intentionally partial (start-ordered) prefix.
    *
-   * Status (be honest — do NOT over-read this field): this is a FORWARD-COMPATIBLE
-   * WIRE SIGNAL, reserved for a follow-up consumer. The desktop PRODUCES it and the
-   * cloud ingest schema VALIDATES it (`apps/api/lib/desktop-agent-sessions-schema`),
-   * but it is NOT YET persisted to a column on the cloud `AgentSession` nor exposed
-   * on any read-side API — so no consumer can currently branch on it. Shipping the
-   * signal now (rather than after the reader) keeps the wire contract stable and
-   * lets a partial tiling be BACKFILLED-correct the moment a consumer lands: wiring
-   * persistence + a read projection is the follow-up that makes the
-   * "distinguish partial from complete" capability real end-to-end. Until then the
-   * value's only guaranteed effect is that the truncation is LOGGED at assembly
-   * time (see `boundActivitySegmentsForSync`'s call site), so a partial tiling is
-   * observable operationally, not silently dropped.
+   * LEGACY: no current desktop build emits it. ISS-4578 replaced cap-truncation
+   * with chunking across sync parts, and a tiling past the db-host load ceiling is
+   * now OMITTED whole rather than shipped as a prefix, so no current PRODUCER cuts
+   * a tiling to a prefix (`apps/desktop/test/sync-source-activity-segments.test.ts`
+   * pins both). It stays on the contract because version-skewed FEA-3779..ISS-4578
+   * builds still send it.
+   *
+   * That is a claim about the producer only — it does NOT mean stored cloud state
+   * is always whole. A chunked tiling lands over SEPARATE TRANSACTIONS
+   * (`persistSessionActivitySegments`): chunk 0 replaces the stored tiling with its
+   * slice and later chunks append. Between chunk 0 and the tail — and permanently
+   * if the tail never arrives, because retries are exhausted or the desktop
+   * quits — the stored tiling is a genuine partial prefix, under
+   * {@link MAX_STORED_ACTIVITY_SEGMENTS} and therefore NOT flagged by the
+   * read-side derivation either. An in-progress or abandoned sequence is the one
+   * way partial cloud state still happens; setting this field would not describe
+   * it, since no producer can know mid-sequence that its tail will not land.
+   *
+   * OMISSION IS NOT A NEGATIVE — absence does not mean the tiling is complete.
+   * Before FEA-3779 the assembly cap was a hardcoded 500 rows that truncated
+   * SILENTLY, emitting no signal at all, so those payloads and the partial tilings
+   * they stored are indistinguishable on the wire from whole ones. That is the same
+   * absent-optional-read-as-assertion shape ISS-7265 corrected on
+   * {@link SyncedAgentSession.activitySegmentRowsStripped} below.
+   *
+   * The cloud ingest schema VALIDATES it
+   * (`apps/api/lib/desktop-agent-sessions-schema`) and nothing consumes it: no
+   * column persists it and no read projection forwards it. The identically named
+   * field on {@link AgentSessionDetail} is an INDEPENDENT derivation — the detail
+   * read hitting {@link MAX_STORED_ACTIVITY_SEGMENTS} — not this value relayed.
    */
   activitySegmentRowsTruncated?: boolean | null;
+  /**
+   * ISS-10721: the session's activity-metrics rollup — the autonomy band, the
+   * spend split by attribution confidence, and the segment coverage counts.
+   *
+   * Optional + additive. Omitted by a desktop build that predates it, and
+   * omitted (not nulled) for a measure the producer could not compute, so the
+   * cloud never stores a zero it was never told. The cloud persists it into
+   * `agent_session_activity_metrics`; a payload without the key leaves any
+   * stored rollup untouched rather than clearing it, matching `tokenEvents` and
+   * `activityBuckets`.
+   */
+  activityMetrics?: SyncedSessionActivityMetrics | null;
+  /**
+   * ISS-7265: `true` when this payload OMITS the session's activity tiling
+   * entirely because the tiling-in-base shape could not fit the wire cap against
+   * a server that does not merge multi-part tilings. Distinct from
+   * {@link SyncedAgentSession.activitySegmentRowsTruncated}, which means the
+   * tiling IS present but as a partial prefix — here `activitySegmentRows` is
+   * absent, and without this flag such a payload is byte-for-byte
+   * indistinguishable from a session that simply has no tiling to send.
+   *
+   * Optional + additive, and OMISSION IS NOT A NEGATIVE. A payload without this
+   * key states no opinion on whether a tiling was stripped — a desktop too old
+   * to report and a chunk that simply carries no tiling both omit it — so the
+   * cloud leaves its column NULL rather than writing `false`. `false` is
+   * reserved for a WITNESSED repair (rows this build actually persisted); it is
+   * never inferred from an absent key. Producers must therefore send `true` on
+   * every delivery that strips, including every chunk of a stripped session's
+   * fallback split, rather than relying on a later payload's silence to mean
+   * anything. The sync request schema is deliberately non-strict, so an old
+   * server drops the key instead of rejecting the batch.
+   *
+   * Status: no longer inert. The cloud PERSISTS it on
+   * `session_detail.activity_segment_rows_stripped` (three-valued — NULL means
+   * no payload has ever reported, which is not `false`) and raises the monitored
+   * `agent_session_activity_tiling_stripped` event once per batch that committed
+   * a stripped session. Desktop-side the strip is counted into the ISS-7248
+   * failure diagnostic AND onto the accepted-ack delivery record, both reported
+   * as `SyncPayloadShaping.TilingStripped`.
+   *
+   * Still NOT on any read-side API or UI: the session-detail activity surfaces
+   * continue to render a stripped tiling exactly as they render one that was
+   * never classified. That layer is deliberately unbuilt here — see ISS-7265's
+   * open read-side/UI capability question.
+   */
+  activitySegmentRowsStripped?: boolean | null;
+  /**
+   * ISS-9859: marks the PR-list parts of a chunk sequence that paginates a
+   * session's `prRefs` and `prs`. The desktop sends it only after the server
+   * advertised `agentSessionSyncPrRefChunking`.
+   *
+   * - `false`: PAGE 0, the first PR-list part. A whole-set replace for both the
+   *   stored PR links and the `pullRequests` blob, and the one retraction the
+   *   sequence gets. The cloud admits it even when it ties the stored
+   *   `updatedAt`, which page 0 always does because base parts land first.
+   * - `true`: a later page. The cloud merges it into the stored links and
+   *   appends its `prs` to the stored blob.
+   * - absent: a base part, or a whole-set payload.
+   *
+   * Either value is honored only on the chunk position of a sequence of at most
+   * {@link MAX_SESSION_SYNC_CHUNKS} parts, and `true` only past index 0. Any
+   * other payload is handled as a whole set under the ordinary rules.
+   */
+  prRefsPaginated?: boolean | null;
+  /**
+   * ISS-8641 / ISS-8714: the top-level `metadata` keys the producer HELD BUT DID
+   * NOT SEND on this payload, because the whole blob could not fit the wire cap
+   * (ISS-7997's last-resort degrade).
+   *
+   * ONE FIELD, NOT A FLAG BESIDE A LIST. A non-empty array IS the degradation
+   * declaration: the degrade is reached only after the whole blob failed and an
+   * empty degrade is refused, so it always withholds at least one key. A sibling
+   * `metadataDegraded` boolean would restate a fact this array already carries
+   * and could disagree with it.
+   *
+   * IT IS THE DISAMBIGUATOR, which is the whole reason it is a list and not a
+   * flag. The cloud replaces `metadata` wholesale, so before this field an absent
+   * key was ambiguous between "the producer degraded it away" and "the user
+   * deleted it", and a receiver that merged on a bare flag would resurrect
+   * deleted data. Listed-and-absent means degraded away and the stored value is
+   * preserved; UNlisted-and-absent means genuinely gone and the stored value is
+   * dropped exactly as it is today.
+   *
+   * Optional + additive, and OMISSION IS NOT A NEGATIVE. A payload without this
+   * key states no opinion, so the cloud keeps today's wholesale replace — which
+   * is what every already-installed desktop build sends and must keep doing.
+   * Absent is never serialized as `null` by this producer.
+   */
+  metadataWithheldKeys?: string[] | null;
   span?: SessionSpan | null;
   markers?: SessionMarker[] | null;
   throttles?: SessionThrottle[] | null;
@@ -668,6 +827,29 @@ export type SyncedAgentSession = {
    */
   frustrationRaw?: number | null;
   frustrationScoreVersion?: number | null;
+  /**
+   * ISS-7229: CLAUDE'S OWN reported cost for this session, summed by the desktop
+   * from the `claude_code_cost_event` rows Claude Code exports over OTel.
+   *
+   * NOT a second opinion of the estimate. `SessionDetail.estimatedCost` is
+   * priced by our engine from token counts; this is what Claude says it charged,
+   * and the two are the OPERANDS of the estimator-drift delta. Nothing may sum
+   * or coalesce them.
+   *
+   * OMITTED, NEVER NULL, when the desktop has no figure — and that is a
+   * correctness requirement, not the general cross-repo style rule. A `null`
+   * on this field is a write like any other, so it would erase a figure already
+   * stored for the session. OTel capture is gated on a Labs setting, so the
+   * same session can sync again from a build that captured nothing, and sending
+   * `null` for "I captured nothing" would erase what an earlier sync
+   * legitimately recorded. Absence means "no
+   * opinion, keep what you have"; there is deliberately no wire spelling for
+   * "clear it".
+   *
+   * A present `0` is a REPORTED zero and a real measurement — Claude charged
+   * nothing — and is written like any other value.
+   */
+  authoritativeCostUsd?: number;
   dataRevision?: number | null;
   /**
    * FEA-3788 (PRD-536 D3): per-chunk metadata for an oversized session split by
@@ -686,6 +868,13 @@ export type SyncedAgentSession = {
   chunk?: SyncedAgentSessionChunkMeta | null;
   artifactRefs?: SyncedArtifactRef[];
   prRefs?: SyncedSessionPrRef[];
+  /**
+   * ISS-12552: the session's operation claims and coverage. Rides every chunk,
+   * like `activityMetrics`; the cloud replaces its evidence when the digest
+   * changes. Absent makes no claim (a Desktop build that predates it, or a
+   * session with no evidence stored yet).
+   */
+  operationEvidence?: SessionOperationEvidence;
   agents: SyncedAgentSessionAgent[];
   events: SyncedAgentSessionEvent[];
   tokenUsageByModel: SyncedAgentSessionTokenUsage[];
@@ -717,7 +906,12 @@ export type SyncedAgentSession = {
 };
 
 export type DesktopAgentSessionsPayload = {
-  schemaVersion: typeof AGENT_SESSION_SYNC_SCHEMA_VERSION;
+  /**
+   * ISS-6886: the version the SENDER declared, preserved verbatim rather than
+   * normalized — rewriting a v1 batch to say `2` would make the parsed payload
+   * claim a provenance it does not have. Diagnostic; nothing branches on it.
+   */
+  schemaVersion: AcceptedAgentSessionSyncSchemaVersion;
   batchId: string;
   syncMode: AgentSessionSyncMode;
   sessionCount: number;
@@ -736,6 +930,23 @@ export type DesktopAgentSessionsPayload = {
    * falls back to whole-batch ack semantics.
    */
   wantsAcceptedSessionIds?: boolean;
+  /**
+   * ISS-7516 — the data-sync level of the MACHINE that produced this batch, at
+   * the moment the batch was built.
+   *
+   * BATCH-level, not per-session, because it is a property of the sending
+   * device: every session in one batch was gated by one setting. The cloud fans
+   * it out to each session row it commits, so the served value describes the
+   * PRODUCING machine — which is what makes a cross-machine reader's answer
+   * correct, and is the one thing a device-local setting could never tell them.
+   *
+   * Optional and additive in both skew directions: an older desktop omits it and
+   * the column stays NULL; a server that predates this field strips it (the
+   * request schema is deliberately non-strict) and the desktop loses nothing.
+   * MUST be declared on the Zod boundary or it is silently dropped before
+   * persistence — see `dataSyncLevelKeyCovered`.
+   */
+  dataSyncLevel?: DataSyncLevel;
 };
 
 export type AgentSessionHarnessBreakdown = {
@@ -935,6 +1146,12 @@ export type SessionTimelineEvent = {
    */
   isBoundary?: boolean;
   /**
+   * ISS-12467: marks the importer's per-turn `TurnDuration` row. Set from the
+   * raw producer event type. The detail projection renders no row for it but,
+   * unlike `isBoundary`, it still ends a tool run.
+   */
+  isTurnDuration?: boolean;
+  /**
    * FEA-3547: full per-call tool detail preserved from the source event's `data`
    * so the tools-turn projection can carry it onto each `ToolItem` (the one-line
    * `detail` above is a lossy summary). Optional/additive — populated only for
@@ -968,27 +1185,18 @@ export type SessionTimelineEvent = {
 };
 
 /**
- * Stable, additive identities carried from a transcript/DB source through the
- * shared detail projection. Timestamp ordinals disambiguate rows emitted at an
- * identical instant; producer ids are preserved when available so deep links
- * never have to infer a target from display text.
- */
-export type TranscriptTurnIdentity = {
-  eventId?: string;
-  providerToolUseId?: string;
-  agentId?: string;
-  externalAgentId?: string;
-  userTurnId?: string;
-  timestamp?: string;
-  timestampOrdinal?: number;
-};
-
-/**
  * ISS-5999: the bar shape lives in its own module now — see
  * `activity-bucket.ts`. Re-exported here so every existing consumer keeps its
  * `@repo/api/src/types/agent-session` import.
  */
 export type { ActivityBucket } from "./activity-bucket";
+/**
+ * The turn identity record lives in its own dependency-free leaf now — see
+ * `transcript-turn-identity.ts`, which also documents why it had to leave this
+ * module. Re-exported here so every existing consumer keeps its
+ * `@repo/api/src/types/agent-session` import.
+ */
+export type { TranscriptTurnIdentity } from "./transcript-turn-identity.ts";
 
 /**
  * FEA-2275: the derived per-phase activity breakdown — the read shape the
@@ -1084,31 +1292,32 @@ export type ActivitySegment = {
 };
 
 /**
- * FEA-3568 / FEA-3779: max raw activity-segment rows accepted per session on the
- * sync wire and emitted by the desktop payload assembly. Mirrors the `MAX_SYNCED_*`
- * bounding pattern; the desktop caps its assembly at this SAME value so a
- * pathological session never sends more rows than the schema accepts (an
- * oversized array is rejected wholesale, which would drop the whole tiling).
+ * FEA-3568 / FEA-3779: max raw activity-segment rows accepted per session in ONE
+ * sync PAYLOAD. It is a PER-CHUNK wire bound, not a per-session ceiling — that is
+ * {@link MAX_STORED_ACTIVITY_SEGMENTS}.
  *
  * This is a single SSOT constant, deliberately NOT an env knob: it bounds both
- * the desktop assembly cap AND the cloud ingest Zod `.max(...)` (and the Prisma
- * `take`), so cloud and desktop MUST agree on the exact value. An env-derived
- * bound could desync the two sides — the cloud would then reject payloads the
- * desktop considered valid (or vice versa). Tune it here, in one place, and both
+ * the desktop's per-chunk row ceiling AND the cloud ingest Zod `.max(...)`, so
+ * cloud and desktop MUST agree on the exact value. An env-derived bound could
+ * desync the two sides — the cloud would then reject payloads the desktop
+ * considered valid (or vice versa). Tune it here, in one place, and both
  * surfaces move together.
  *
- * FEA-3779: raised from the original 500. That 500 was a bare magic number that
- * did NOT reflect real session sizes — a wild session was observed with 1051
- * segments (>2x the cap), so ~half its activity tiling was silently truncated
- * and the cloud stored a partial tiling. 500 was a regular data-loss point, not
- * a rare safety valve. The new value sits comfortably above the observed
- * p95/p99 (1051 seen) with generous headroom for growth, so real sessions sync
- * their full tiling and only genuine pathological outliers are ever truncated.
- * When a session still exceeds this bound (or the byte budget) the truncation is
- * LOGGED at assembly time and the synced record carries the forward-compatible
- * `activitySegmentRowsTruncated` wire signal — see that field's doc for its
- * end-to-end status (produced + validated, persistence/read-side reserved for a
- * follow-up), so today the guaranteed effect is the log, not a consumer branch.
+ * ISS-4578: a tiling past this bound is no longer TRUNCATED to fit. The desktop
+ * paginates it across sync parts (`chunkOversizedSession` passes this value as
+ * `appendPaginatedChunks`'s per-chunk row ceiling, so every emitted chunk stays
+ * acceptable to the route), and the cloud merges the parts additively, so a
+ * session's stored tiling routinely holds many more rows than this. Exceeding
+ * this value is therefore NOT a data-loss point and does NOT raise
+ * {@link SyncedAgentSession.activitySegmentRowsTruncated} — read that field's doc
+ * before assuming otherwise; no current desktop build emits it at all.
+ *
+ * FEA-3779: raised from the original 500, which WAS a truncation point — a wild
+ * session was observed with 1051 segments (>2x the cap), so ~half its activity
+ * tiling was silently truncated and the cloud stored a partial tiling. That
+ * history is why the value is set well above the observed p95/p99 rather than at
+ * a bare round number: a chunk boundary is cheap, but a tiling whose every chunk
+ * is mostly overhead is not.
  */
 export const MAX_SYNCED_ACTIVITY_SEGMENTS = 5000;
 
@@ -1116,9 +1325,10 @@ export const MAX_SYNCED_ACTIVITY_SEGMENTS = 5000;
  * ISS-4541: the maximum number of activity-segment rows the cloud STORES and
  * READS BACK for a single session.
  *
- * This is DISTINCT from {@link MAX_SYNCED_ACTIVITY_SEGMENTS}, which is the
- * PER-PAYLOAD wire cap — the most rows any ONE sync chunk may carry (the ingest
- * schema enforces `.max(MAX_SYNCED_ACTIVITY_SEGMENTS)` per payload). Since
+ * This is DISTINCT from {@link MAX_SYNCED_ACTIVITY_SEGMENTS}, which since
+ * ISS-8051 is a PRODUCER-SIDE chunk target — the most rows the desktop puts in
+ * any ONE sync chunk — and no longer a receive-side cap the ingest schema
+ * enforces with `.max(...)`; that `.max()` rejected the whole session. Since
  * ISS-4541 an oversized tiling is PAGINATED across chunks and MERGED additively
  * on the cloud, so a session's STORED tiling can hold many more rows than one
  * payload — up to this ceiling, which aligns with the desktop producer's own
@@ -1131,8 +1341,13 @@ export const MAX_SYNCED_ACTIVITY_SEGMENTS = 5000;
 export const MAX_STORED_ACTIVITY_SEGMENTS = 50_000;
 
 /**
- * FEA-3595: inclusive upper bound the cloud accepts for a session's
- * `dataRevision` on the sync wire.
+ * FEA-3595 / ISS-8271: inclusive upper bound on the `dataRevision` the cloud
+ * will COMMIT for a session. Since ISS-8271 the wire schema accepts any
+ * integer (a schema rejection was batch-wide and stranded sessions); the bound
+ * is enforced at the apply by `resolveWireDataRevisionDisposition`
+ * (apps/api `wire-data-revision.ts`) — a value above it is HELD per session
+ * (`revision_too_new`: nothing written, id withheld from the ack echo so the
+ * desktop re-sends), never committed.
  *
  * Revision gating is forward-only (`chunk-revision-gating.ts`): a payload below
  * a session's committed/pending high-water mark is rejected as stale. That
@@ -1146,53 +1361,49 @@ export const MAX_STORED_ACTIVITY_SEGMENTS = 50_000;
  * `Int` max: the desktop `DATA_REVISION` is in the low tens and has historically
  * advanced ~10 per month, so this is decades of headroom while still refusing
  * the poison values. Raise it if that ever stops being true — a legitimate
- * revision hitting this ceiling should be a schema change, not a silent
- * rejection.
+ * revision hitting this ceiling should be a deliberate bump of this constant,
+ * not an indefinite per-session hold.
  */
 export const MAX_SUPPORTED_DATA_REVISION = 10_000 as const;
 
 /**
- * FEA-3779: byte budget for a session's serialized `activitySegmentRows` on the
- * sync wire, in serialized-JSON bytes. This is the SECOND, byte-aware bound that
- * complements the row-count {@link MAX_SYNCED_ACTIVITY_SEGMENTS} — the tiling is
- * truncated on whichever cap it hits FIRST.
+ * ISS-9859: the most parts one session may be split into for one sync. The
+ * desktop chunk packer stops at this count
+ * (`apps/desktop/src/main/agent-sync/agent-session-sync-chunk-packer.ts`), and
+ * the cloud honors a `prRefsPaginated` marker only on a sequence no longer than
+ * this. `chunk.total` is client-controlled and the wire schema bounds it from
+ * below only, so a marked part claiming more parts is treated as a whole set
+ * (Replace) rather than merged.
+ */
+export const MAX_SESSION_SYNC_CHUNKS = 100 as const;
+
+/**
+ * FEA-3779: the byte budget the desktop USED TO cut a session's serialized
+ * `activitySegmentRows` at, in serialized-JSON bytes.
  *
- * Why a byte cap is required, not just a row cap: `activitySegmentRows` ride in
- * the session's non-paginated base payload (the desktop chunker paginates only
- * `events`/`tokenEvents`; the base — metadata previews, agents, token usage, and
- * this tiling — is replicated whole into every chunk). If the base alone exceeds
- * the transport's per-request byte cap (`SESSION_PAYLOAD_BYTE_CAP`, 256 KiB),
- * `chunkOversizedSession` returns `[]` and the WHOLE session dead-letters. Raising
- * the row cap from 500 to 5000 without a byte bound reintroduced that failure mode
- * for a moderately-large-but-non-pathological tiling (a few thousand rows can be
- * 100s of KiB), so such a session would fail to sync entirely instead of syncing a
- * capped tiling. Bounding the tiling's serialized size below a conservative reserve
- * keeps the base under the transport cap so the session always syncs (with the
- * partial flag set when the tiling was cut).
+ * RETIRED AND CURRENTLY UNREFERENCED — do not read this as a live bound. Nothing
+ * in the repo imports it: `grep MAX_SYNCED_ACTIVITY_SEGMENT_BYTES` returns this
+ * declaration and the one {@link SyncedAgentSession.activitySegmentRowsTruncated}
+ * `@link` back to it, nothing else. It bounded the FEA-3779 assembly cap, and
+ * ISS-4578 deleted that path: the tiling is now paginated across sync parts by
+ * `chunkOversizedSession`, which bounds each part against the transport's own
+ * per-request budget rather than this constant, so nothing measures a tiling
+ * against 128 KiB any more. Its removal is a separate change (it is an exported
+ * symbol) — until then, treat it as history, not as a cap in force.
  *
- * Sized to reserve a correct margin under `SESSION_PAYLOAD_BYTE_CAP` (256 KiB):
- * 128 KiB leaves 128 KiB for the rest of the base — the metadata preview is
- * itself bounded to ~76 KiB ({@link MAX_METADATA_TOTAL_MESSAGE_TEXT_CHARS} +
- * per-message floor), so 128 KiB still covers agents / token-usage / diff-stats /
- * markers / analytics with headroom. This GUARANTEES the base stays under the
- * transport cap and the session always syncs (partial when cut), which is the
- * property that matters: a byte-capped partial tiling beats dead-lettering the
- * whole session (events, agents, metadata and all).
- *
- * Note the honest trade this constant encodes: a real activity row serializes to
- * ~150–190 bytes, so 128 KiB admits ~700–870 rows. The observed ~1051-segment
- * session serializes to ~152–194 KiB — larger than any budget that can also keep
- * the base under 256 KiB alongside a preview-heavy metadata blob — so such a
- * session is synced as a byte-capped PARTIAL tiling (flagged
- * `activitySegmentRowsTruncated`), not whole. That is intended: you cannot fit a
- * ~194 KiB tiling AND a ~76 KiB preview AND the rest of the base inside one 256 KiB
- * request, and the previous row-only cap would have dead-lettered exactly those
- * sessions. Bumping this bound trades base headroom for tiling completeness; do not
- * raise it past `SESSION_PAYLOAD_BYTE_CAP − worst-case-base` or a preview-heavy
- * session can again overflow the base and dead-letter.
- *
- * Like the row cap this is a single SSOT constant (NOT an env knob) so the desktop
- * assembly and any cloud-side accounting agree on one value.
+ * Why FEA-3779 needed a byte cap at all, since the reasoning still explains the
+ * value: `activitySegmentRows` then rode in the session's NON-paginated base
+ * payload, replicated whole into every chunk. If the base alone exceeded
+ * `SESSION_PAYLOAD_BYTE_CAP` (256 KiB), `chunkOversizedSession` returned `[]` and
+ * the WHOLE session dead-lettered. 128 KiB left 128 KiB for the rest of the base
+ * — the metadata preview is itself bounded to ~76 KiB
+ * ({@link MAX_METADATA_TOTAL_MESSAGE_TEXT_CHARS} + per-message floor) — so the
+ * base stayed under the transport cap and the session always synced, partial
+ * rather than dead-lettered. At ~150–190 bytes per real row that admitted only
+ * ~700–870 rows, well BELOW {@link MAX_SYNCED_ACTIVITY_SEGMENTS}: on a legacy
+ * FEA-3779..ISS-4578 build the byte cap, not the row cap, is what a truncated
+ * tiling almost always hit, which is why a legacy partial tiling is short rather
+ * than exactly 5000 rows. Paginating the tiling removed the trade entirely.
  */
 export const MAX_SYNCED_ACTIVITY_SEGMENT_BYTES = 131_072;
 
@@ -1233,28 +1444,6 @@ export type SyncedActivitySegmentRow = {
    * re-filed to a subagent's own purpose phase (FEA-2271); null for main-agent spans.
    */
   subagentId?: string | null;
-};
-
-export type SessionSpan = {
-  first: string;
-  last: string;
-};
-
-export type SessionMarker = {
-  kind: "commit" | "pr" | "fail" | "frust" | "prompt";
-  x: number;
-  t: string;
-  label: string;
-  tl: number;
-  illustrative?: boolean;
-};
-
-export type SessionThrottle = {
-  x0: number;
-  t0: string;
-  t1: string;
-  durMin: number;
-  tl: number;
 };
 
 export const SessionTracePhaseSourceType = {
@@ -1309,131 +1498,46 @@ export type SessionTraceCorrectionSource = {
   sourceType?: string | null;
 };
 
-export type SessionPhase = {
-  key: string;
-  label: string;
-  dur: string;
-  cost: string;
-  cOut: number;
-  cCache: number;
-  cIn: number;
-};
+/**
+ * The trace's DERIVED render shapes, extracted to `./session-trace-shape`
+ * (ISS-5636) — the same shrink-only split `./activity-bucket` made above, and
+ * for the same reason. The `SessionTrace*Source` evidence records they are
+ * folded FROM stay here, beside the source-kind const objects that discriminate
+ * them. Re-exported so every existing importer of this module keeps resolving
+ * them unchanged.
+ */
+export type {
+  PhaseIterations,
+  PhaseLoopback,
+  SessionMarker,
+  SessionPhase,
+  SessionSpan,
+  SessionThrottle,
+} from "./session-trace-shape.ts";
 
-export type PhaseIterations = Record<string, number>;
-
-export type PhaseLoopback = {
-  from: string;
-  to: string;
-  label: string;
-  depth: number;
-};
-
-export type TurnActor = {
-  name: string | null;
-  sessionId: string;
-  human: string | null;
-  color: string;
-  harness?: string | null;
-};
-
-export type SubagentBodyLine = {
-  kind: "task" | "tool" | "event" | "status";
-  text: string;
-  t?: string;
-  err?: boolean;
-};
-
-export type TurnItem =
-  | {
-      type: "sessionstart";
-      t: string;
-      actor: TurnActor & {
-        machine?: string;
-        isNew?: boolean;
-        isResumed?: boolean;
-        ci?: boolean;
-      };
-    }
-  | {
-      type: "prompt";
-      _row: number;
-      t: string;
-      tMs: number;
-      cum: number;
-      costDelta?: number;
-      actor: TurnActor;
-      text: string;
-      transcriptIdentity?: TranscriptTurnIdentity;
-    }
-  | {
-      type: "say";
-      _row: number;
-      t: string;
-      tMs: number;
-      cum: number;
-      costDelta?: number;
-      actor: TurnActor;
-      text: string;
-      /** Model that produced this turn, rendered as a muted bubble caption. */
-      model?: string | null;
-      /** True when this turn is a reasoning/thinking block, not a response. */
-      isThinking?: boolean;
-      transcriptIdentity?: TranscriptTurnIdentity;
-    }
-  | {
-      type: "tools";
-      _row: number;
-      t: string;
-      tMs: number;
-      endMs: number;
-      cum: number;
-      costDelta?: number;
-      actor: TurnActor;
-      summary: string;
-      items: ToolItem[];
-      hasFail: boolean;
-      failN: number;
-      defaultOpen?: boolean;
-      cats: ToolCats;
-      transcriptIdentity?: TranscriptTurnIdentity;
-    }
-  | {
-      type: "subagent";
-      _row: number;
-      t: string;
-      tMs: number;
-      cum: number;
-      costDelta?: number;
-      actor: TurnActor;
-      sub: string;
-      subagentType: string | null;
-      status: string;
-      model: string | null;
-      duration: string | null;
-      tokens: string | null;
-      cost: string | null;
-      body: SubagentBodyLine[];
-      transcriptIdentity?: TranscriptTurnIdentity;
-    }
-  | {
-      type: "event";
-      _row: number;
-      t: string;
-      tMs: number;
-      dot: "g" | "b" | "r";
-      text: string;
-      tag?: string;
-      transcriptIdentity?: TranscriptTurnIdentity;
-    }
-  | { type: "idle"; gap: number }
-  | { type: "end"; text: string };
+/**
+ * The transcript's DERIVED render shapes, extracted to
+ * `./session-transcript-turn` — the same shrink-only split `./activity-bucket`
+ * and `./session-trace-shape` made above, and for the same reason. Re-exported
+ * so every existing importer of this module keeps resolving them unchanged.
+ */
+export type {
+  SubagentBodyLine,
+  TurnActor,
+  TurnItem,
+} from "./session-transcript-turn.ts";
 
 /**
  * @deprecated Compatibility type for stale clients that may still import the
  * removed Session Trace state-action endpoint response.
  */
 export type AgentSessionStateUpdateResponse = {
-  state: AgentSessionState;
+  /**
+   * ISS-7019: typed `string`, not the deleted `AgentSessionState`. The route is
+   * a 410 tombstone that never emits a body, so this shape exists only so a
+   * stale bundle's import still resolves.
+   */
+  state: string;
 };
 
 export type AgentSessionListItem = {
@@ -1443,9 +1547,34 @@ export type AgentSessionListItem = {
   slug: string | null;
   externalSessionId: string;
   name: string | null;
+  /**
+   * Producer-owned lifecycle evidence retained beside the derived display
+   * {@link status}. Optional for compatibility with older API and Desktop
+   * producers, whose consumers fall back to `status` when it is omitted.
+   */
+  rawStatus?: string | null;
   status: string;
+  /**
+   * ISS-10332: `null` is "no priority"; OMITTED is "this producer does not know"
+   * (an older API or Desktop build), which a consumer must not read as unset.
+   * `project` below is optional for the same reason (ISS-10995): single-user
+   * Desktop has no project concept and omits the key, and the editable Details
+   * row keys on that absence.
+   */
+  priority?: Priority | null;
+  /**
+   * The Session Artifact row's ownership and lifecycle fields. `assignee` is
+   * the session's Owner, the field every artifact type uses (ISS-12251 D-1);
+   * Created by is the artifact's CREATOR. ISO-8601 strings, as the sibling
+   * `createdAt` contracts on this route are. Additive and optional: an older
+   * producer omits every key, and `null` on a nullable one is a read that found
+   * none.
+   */
+  assignee?: BasicUser | null;
+  createdAt?: string;
+  createdBy?: BasicUser | null;
+  dueDate?: string | null;
   origin?: AgentSessionOrigin;
-  state?: AgentSessionState;
   harness: string;
   cwd: string | null;
   repositoryFullName: string | null;
@@ -1453,6 +1582,18 @@ export type AgentSessionListItem = {
   worktreePath: string | null;
   model: string | null;
   primaryModel?: string | null;
+  /**
+   * ISS-7895: the models this session actually BILLED — never the models it
+   * merely declared, which stay on `model`/`primaryModel`. Both producers
+   * derive it through `deriveBilledModels`
+   * (`../agent-session-billed-models.ts`), which is what stops the cloud and
+   * desktop answering the question differently again.
+   *
+   * OMITTED means "not computed on this path", not "none": the session LIST
+   * queries skip the token-usage join for performance (ISS-7598), so only the
+   * DETAIL projections populate it. `[]` is the computed answer for a session
+   * that billed nothing, and callers must not fall back to the declared model.
+   */
   models?: string[];
   branch?: string | null;
   /**
@@ -1494,6 +1635,54 @@ export type AgentSessionListItem = {
    * claimed), so a missing value never fabricates a truncation indicator.
    */
   linkedArtifactsTotal?: number | null;
+  /**
+   * FEA-4204: how many comment THREADS this session carries, so the Sessions
+   * list can mark a discussed session without a per-row fetch. Every artifact
+   * counts the same way (operator ruling, ISS-9404 review on #8671): native and
+   * Liveblocks threads, replies not incremented, resolved threads included, a
+   * thread whose comments were all deleted excluded. Sessions have no Liveblocks
+   * threads, so this is their native thread count. Derivation:
+   * `apps/api/app/artifacts/collaborators/direct-comment-count-service.ts`.
+   * GitHub review comments are not a source — they sync INTO ClosedLoop against
+   * the branch they belong to.
+   *
+   * Optional + additive, and ABSENT IS NOT ZERO. A producer that did not batch the
+   * count omits the key (a version-skewed Desktop build, the desktop local-first
+   * read, or `listSessionsByArtifactIds`), which means "no count available" and
+   * must render nothing. A computed `0` is served as `0`. A consumer that folds
+   * the two together prints a confident "0 comments" on a session it never
+   * counted.
+   */
+  commentCount?: number;
+  /**
+   * Org-level custom-field values attached to this Session artifact. Additive
+   * and optional for version-skewed producers: omitted means the producer did
+   * not load this projection, while `[]` is a successful read with no values.
+   * Field definitions independently declare which entity types they apply to,
+   * so a Session field does not become a Document field implicitly.
+   */
+  customFields?: CustomFieldValueDetail[];
+  /**
+   * ISS-8712: the ORG TAG VOCABULARY applied to this session's Artifact — the
+   * same `TagArtifact` join a PRD, an Issue, or a Branch carries, so a tag
+   * applied here is the same record those surfaces show.
+   *
+   * Distinct from {@link customFields} above, which is the org's own
+   * per-entity field definitions; a custom field named "Tags" is not this.
+   *
+   * Additive and optional for version-skewed producers, with the same
+   * three-state contract the Branch read uses: omitted means this producer did
+   * not load the relation (see {@link tagAvailability}), `[]` is a successful
+   * read that found none.
+   */
+  tags?: TagSummary[];
+  /** Distinguishes a loaded tag relation from unavailable/unknown tag data. */
+  tagAvailability?: ArtifactTagAvailability;
+  /**
+   * Auth-derived tag capabilities; omitted when unknown. A display affordance
+   * only — `/entity-tags` re-checks scope and org ownership on every write.
+   */
+  tagPermissions?: ArtifactTagPermissions;
   cost?: string | null;
   wallClock?: string | null;
   activeAgent?: string | null;
@@ -1519,24 +1708,39 @@ export type AgentSessionListItem = {
    * every consumer of the read contract (web, desktop renderer, raw API clients)
    * sees the same value instead of re-deriving it locally.
    *
-   * The numerator is NOT the bare local working-tree diff. It is
-   * `max(localWorkingTreeDiff, authoredPrLinesChanged)` where
-   * `localWorkingTreeDiff = linesAdded + linesRemoved` and `authoredPrLinesChanged`
-   * is the summed lines changed across the session's AUTHORED PRs (see that
-   * field). The local diff collapses to a tiny residual once a multi-PR session's
-   * branches are merged/reset, so the roll-up is preferred when larger — that is
-   * the real delivered code. `kloc = numerator / 1000`;
+   * ISS-9964 / ISS-9980 (RULED 2026-09-11): the numerator is
+   * `mergedAuthoredPrLinesChanged` and NOTHING ELSE — the lines this session
+   * actually landed, through the shared `locPerDollarNumeratorLines`
+   * (`@repo/api/src/utils/loc-per-dollar`). The earlier
+   * `max(localWorkingTreeDiff, branchDiffLines, mergedAuthoredPrLinesChanged)`
+   * rungs are RETIRED: a local working tree and an unmerged branch diff both
+   * measure work in progress, and mixing them into a delivered-code rate is what
+   * let a session's LOC/$ move because a branch was pushed. Branches LOC/$
+   * counts lines pushed to origin (ISS-9958); that difference is INTENTIONAL —
+   * the two surfaces measure different things on purpose. The `@deprecated`
+   * `authoredPrLinesChanged` is a compatibility field, not a term of this
+   * numerator: a session carrying only that key is NOT KNOWABLE, because it
+   * predates the merge gate and cannot answer the merged question.
+   *
+   * `kloc = numerator / 1000`;
    * `locPerDollar = numerator / estimatedCost` — ISS-4667: raw LINES per dollar,
    * NO divide-by-1000 and never inverted, so the ratio reconciles directly with
    * the same panel's "Lines changed" and "Cost". Consumers MUST NOT reimplement
    * the old `(linesAdded + linesRemoved)`-only formula.
    *
-   * Each is `null` when genuinely undefined rather than a fabricated `0`/`NaN`
-   * (the UI then renders the not-applicable placeholder): `kloc` when the
-   * numerator is 0, `locPerDollar` when the numerator is 0, there is no cost to
-   * divide by (`estimatedCost <= 0`), or either input is non-finite. Optional +
-   * additive: a version-skewed producer that omits them degrades to the client's
-   * local derivation.
+   * The two fields differ on a numerator of ZERO, deliberately:
+   *   - `locPerDollar` DIVIDES it. A numerator that is known and zero is a fact
+   *     about the population — "this session merged nothing, and you spent $X" —
+   *     so it is a real `0`. It is `null` only when the numerator is NOT
+   *     KNOWABLE (no producer supplied the merge-gated count), when there is no
+   *     cost to divide by (`estimatedCost <= 0` — arithmetic, not data), or when
+   *     either input is non-finite.
+   *   - `kloc` is a VOLUME, not a rate, and keeps its own FEA-4250 rule: `null`
+   *     for zero or non-finite churn, so a volume card renders the placeholder
+   *     instead of a misleading `0.0`.
+   *
+   * Optional + additive: a version-skewed producer that omits them degrades to
+   * the client's local derivation.
    *
    * `klocPerDollar` is DEPRECATED (ISS-4667) — the KLOC-unit predecessor of
    * `locPerDollar` (thousand lines per dollar). Retained ONLY so a Desktop build
@@ -1549,26 +1753,53 @@ export type AgentSessionListItem = {
   locPerDollar?: number | null;
   klocPerDollar?: number | null;
   /**
-   * FEA-4378: total lines *changed* (`additions + deletions`) summed across the
-   * PRs the session AUTHORED, deduped by PR identity, from platform-verified PR
-   * detail — the branch's current pointer AND its historical PR set, so a PR
+   * FEA-4378 / ISS-6114: total lines *changed* (`additions + deletions`) summed
+   * across the MERGED PRs the session authored, deduped by PR identity, from
+   * platform-verified PR detail — the branch's current pointer AND its historical PR set, so a PR
    * superseded on a reused branch still counts. Each PR is included only with BOTH
    * a verified `additions` and `deletions`; a partial/unfetched row is unavailable
    * and contributes nothing (never coerced to an understated total). The real
    * delivered-code signal for a multi-PR session, distinct from the session-level
    * `linesAdded/linesRemoved` scalars — which are the LOCAL working-tree git diff
    * and collapse to a tiny residual once a session's branches are merged/reset.
-   * The server-projected `kloc` / `locPerDollar` use
-   * `max(localWorkingTreeDiff, authoredPrLinesChanged)` as the numerator; the
-   * detail view surfaces this figure in its own "Lines changed" row.
+   * ISS-9964 / ISS-9980 (RULED 2026-09-11): this field IS the server-projected
+   * `kloc` / `locPerDollar` numerator (through the shared
+   * `locPerDollarNumeratorLines`), and the detail view's own "Lines changed" row
+   * renders the same resolution. One population, one number.
    *
-   * `0` does NOT mean "no PRs" — it is returned both when the session authored no
-   * PR with a complete verified LOC detail AND, deliberately, when the session's
-   * PRs are SUPPRESSED because no head branch resolves (the same gate that empties
-   * the rendered `prs`). Consumers must treat `0` as "no verified authored-PR LOC
-   * to credit", not as a claim about PR count. Optional + additive: a
-   * version-skewed producer that omits it degrades to the client's local
-   * `linesAdded + linesRemoved` derivation.
+   * `0` and `null` are different answers and must not be collapsed:
+   *   - `0` is a MEASUREMENT that found nothing to credit — the session authored
+   *     no PR with a complete verified LOC detail, or (since ISS-6114) its
+   *     authored PRs are all still open, merged being the gate, so unlanded work
+   *     credits nothing. It is not a claim about PR count, and it divides into a
+   *     real `0` LOC/$.
+   *   - `null` is NOT KNOWABLE — nobody could look. It is emitted when the
+   *     session's PRs are SUPPRESSED because no head branch resolves (the same
+   *     gate that empties the rendered `prs`), and when a matching merged PR's
+   *     per-PR LOC row is unreachable (ISS-4448's session: 88 merged PRs whose
+   *     `additions`/`deletions` cannot be resolved). Consumers render NOT
+   *     AVAILABLE and must never substitute `0`, which would report a
+   *     measurement nobody took.
+   *
+   * Optional + additive: a version-skewed producer that omits it degrades to the
+   * client's local derivation.
+   */
+  mergedAuthoredPrLinesChanged?: number | null;
+  /**
+   * @deprecated ISS-6114 renamed this to {@link mergedAuthoredPrLinesChanged}.
+   *
+   * The value was never "authored PR lines" alone once the merge gate landed —
+   * it is the lines changed across the MERGED PRs a session authored — and the
+   * old name understated the gate by exactly the population the ticket was filed
+   * about. Both qualifiers carry weight: `authored` excludes a referenced or
+   * reviewed PR, `merged` excludes one still open.
+   *
+   * STILL EMITTED, carrying the identical value, because this is a cloud→client
+   * READ contract and an installed Desktop build reads it by the old name. A
+   * client that never learns the new one would silently fall back to its local
+   * working-tree diff — degraded rather than broken, but wrong, and invisible.
+   * Removing this alias needs explicit human approval (repo Compatibility
+   * Guardrail); it is not a cleanup to fold into an unrelated change.
    */
   authoredPrLinesChanged?: number | null;
   turns?: number | null;
@@ -1579,6 +1810,13 @@ export type AgentSessionListItem = {
   tokensOut?: number | null;
   cache?: number | null;
   cacheWrite?: number | null;
+  /**
+   * ISS-8772 took the last in-repo reader: the trace now seats its human actor
+   * on the shared actor-colour authority instead of this per-user hash. Both
+   * producers still serve it and version-skewed clients may still read it, so it
+   * stays — but nothing here consumes it, and a new consumer should ask whether
+   * it wants this hash or that authority before reaching for it.
+   */
   userColor?: string | null;
   activityBuckets?: ActivityBucket[];
   span?: SessionSpan | null;
@@ -1651,12 +1889,36 @@ export type AgentSessionListItem = {
    */
   transcriptDisposition?: TranscriptDisposition;
   /**
+   * ISS-9884: the terminal skip reason that PRODUCED
+   * {@link transcriptDisposition}, when one did — `null`/omitted otherwise.
+   *
+   * The disposition alone stopped being sufficient when a third reason mapped
+   * onto `failedTransient`. An ordinary retryable upload failure (the desktop
+   * re-queues it with backoff) and an `environment_unavailable` give-up (the
+   * lane STOPPED attempting, on a file presumed present) reach the same verdict
+   * and are two different sentences to a user — "Sync failed, retrying" versus
+   * "Upload paused". Without this field every renderer keyed on the disposition
+   * alone states the wrong one of the two.
+   *
+   * Carried as an ADDITIVE OPTIONAL field rather than as a new
+   * `TranscriptDisposition` member on purpose: an old client ignores an unknown
+   * extra key, whereas an unknown disposition would degrade to NO badge at all
+   * (every lookup in `session-sync-status.ts` is a `Record` returning `null`)
+   * and to `pending: false` in `reconcileCloudSyncState`. A producer that does
+   * not compute it omits the key, and the consumer renders the plain
+   * disposition copy — the pre-ISS-9884 behavior.
+   */
+  transcriptDispositionReason?: TranscriptSkipReason;
+  /**
    * FEA (PRD-536 E6): per-row local-vs-cloud sync disclosure. `pending` = this
    * session is still in the local sync outbox (un-acked by the server), so its
    * cloud copy may be missing or behind; `synced` = the cloud is caught up for
    * this row (no un-acked outbox entry, or the row was read from the cloud
-   * store). Distinct from the RESPONSE-level `readSource`, which stamps the whole
-   * list with which store produced it and cannot distinguish two local rows.
+   * store). ISS-11427: a desktop-local row may also read `dead_letter` (the
+   * sync lane set it aside and will retry it) or `abandoned` (no path in the
+   * running lane can reach it); the cloud never stamps either. Distinct from the
+   * RESPONSE-level `readSource`, which stamps the whole list with which store
+   * produced it and cannot distinguish two local rows.
    * Additive + optional: a producer that doesn't compute it omits the key, and
    * consumers treat a missing/`undefined` value as "unknown — render no per-row
    * disclosure" rather than assuming `pending`.
@@ -1666,23 +1928,42 @@ export type AgentSessionListItem = {
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
-  estimatedCost: number;
+  /**
+   * ISS-12260: `null` when `session_detail.estimated_cost` is NULL (never
+   * priced); a stored `0` is served as `0`. `null` rather than an omitted key
+   * because installed Desktop builds do arithmetic on this field
+   * (`Math.max(estimatedCost, 0.01)` in the synthesized activity strip), where
+   * `null` behaves as the `0` they used to receive and `undefined` is `NaN`.
+   */
+  estimatedCost: number | null;
   billingMode?: string | null;
   agentCount: number;
   toolUseCount: number;
+  // ISS-5801: derived component invocations (tools/skills/slash commands/
+  // subagents/hooks) — a substantive-work signal beside toolUseCount. Optional
+  // because this shape crosses a version-skew boundary (an older server omits
+  // it); readers coalesce absent → 0.
+  componentInvocationCount?: number;
   errorCount: number;
   baseBranch: string | null;
   sourceArtifactId: string | null;
   sourceArtifact?: AgentSessionSourceArtifactSummary | null;
   sourceLoopId: string | null;
-  // Nullable since FEA-1699: a Session artifact survives its owner's deletion as
-  // an org-owned record (session_detail.user_id is SetNull on user deletion).
+  /**
+   * @deprecated Read `assignee`. A compatibility alias of `assignee`, kept for
+   * version-skewed web, Desktop and MCP clients that read it as the Owner
+   * (ISS-12585). The cloud API fills it from the artifact assignee; the
+   * recording user it used to carry (`session_detail.user_id`) is retired.
+   * ISS-12613 removes it, not before 2026-11-06.
+   */
   user: BasicUser | null;
   computeTarget: AgentSessionComputeTargetSummary;
-  project: AgentSessionProjectSummary | null;
+  project?: AgentSessionProjectSummary | null;
 };
 
 export type AgentSessionListResponse = {
+  /** Confirms the requested component family was applied; absent on older APIs. */
+  componentScope?: string;
   items: AgentSessionListItem[];
   total: number;
   viewerScope: AgentSessionViewerScope;
@@ -1705,21 +1986,140 @@ export type AgentSessionListResponse = {
    * an absent value as "unknown source" and render nothing rather than guess.
    */
   readSource?: ReadSource;
+  /**
+   * ISS-9555: which page this response actually served — the limit and offset the
+   * producer honoured, beside the offset that was asked for.
+   *
+   * Every host used to re-derive the rendered page from its OWN request plus
+   * `total`, which is several independent pieces of clamping arithmetic kept in
+   * agreement by hand; when one of them disagreed with the rows in hand, the
+   * footer named a page the reader was not looking at. With this present the
+   * position is read, not re-derived.
+   *
+   * OPTIONAL because it is additive on a version-skewed wire, and because not
+   * every producer path performs a read: an older `apps/api` or Desktop build
+   * omits it, and a consumer that finds it absent derives in place exactly as it
+   * did before — it must NOT re-issue the read to go looking for one, because
+   * Sessions has no unpaginated mode to fall back to (the arm that makes
+   * Branches' `getBranchListWithServerFallback` legitimate and would be a second
+   * request for nothing here).
+   */
+  pageInfo?: AgentSessionListPageInfo;
 };
 
 export type AgentSessionDetail = AgentSessionListItem & {
   metadata: JsonObject | null;
+  /**
+   * ISS-7427: what evidence backs the numbers in THIS response, as distinct from
+   * what the response displays.
+   *
+   * The detail read has two independent producers and neither gates the other,
+   * so a session whose main transcript is terminally absent still serves a
+   * complete set of headline numbers. Without this field that session is, from
+   * the response alone, indistinguishable from one whose numbers are backed by a
+   * readable transcript — which is how a "216 events" heading came to sit above
+   * a panel saying "Transcript not archived".
+   *
+   * OPTIONAL because it is additive on a version-skewed wire: an older `apps/api`
+   * omits it, and a client that cannot tell must fall back to disclosing NOTHING
+   * rather than guessing a state. `undefined` therefore means "this server does
+   * not classify", never "main is readable" — do not default it to a verdict.
+   */
+  evidenceCoverage?: SessionEvidenceCoverage;
+  /**
+   * PLN-2061 M5: targets this session's run touched in repositories the
+   * organization does not track, deduplicated and in a stable order. OMITTED,
+   * never null or empty, when there are none or the read of them failed —
+   * additive on a version-skewed wire, so an older `apps/api` and a
+   * desktop-local read both read as "none".
+   */
+  untrackedRepositoryTargets?: SessionUntrackedRepositoryTarget[];
+  /**
+   * ISS-7516: the data-sync level the recording machine reported on its MOST
+   * RECENT sync of this session. Not the reader's level and not the org's — the
+   * producing device's, which is the one that decides whether this session's
+   * transcript is queued (`dataSyncLevelAllowsTranscripts`).
+   *
+   * READ THE TENSE. This is "the level as of the last sync that reported one",
+   * NOT "the level in force when the session ran". The write is last-write-wins
+   * per session row, so a later incremental resync — or a backfill after the
+   * user changes their level — restamps it. The two readings coincide for a
+   * session whose level never moved, which is the common case, and diverge
+   * exactly when it did. A consumer must therefore treat this as a statement
+   * about the DEVICE's current posture, not as a historical fact about the run,
+   * and must not pair it with a claim that only record-time evidence could
+   * support. Whether the column should instead be write-once is an open
+   * question raised on ISS-7516 rather than decided here.
+   *
+   * This is what lets a transcript's absence be told apart from a transcript's
+   * DELAY. On any level but `full` the desktop never queues one, so the panel's
+   * "It'll show up here once the source machine uploads it" was a statement the
+   * source machine had already decided not to honour.
+   *
+   * OPTIONAL because it is additive on a version-skewed wire, and because the
+   * column is NULL for every session synced before this field shipped.
+   * `undefined` therefore means "this server, or that desktop build, does not
+   * report a level" — NEVER a level itself. Do not default it: defaulting to
+   * `metadata` stamps the never-expected note over every session on a lagging
+   * deploy, and defaulting to `full` silently disables the disclosure while
+   * reporting it on. A consumer that cannot tell must render what it renders
+   * today.
+   *
+   * NOTE (privacy): this publishes a per-device privacy setting to every reader
+   * of the session, which is org-scoped. PR #5713 escalated exactly that as a
+   * product question rather than taking it; it is taken here on the operator's
+   * instruction and is called out in the PR body rather than buried.
+   */
+  dataSyncLevel?: DataSyncLevel;
   sourceArtifactId: string | null;
   sourceLoopId: string | null;
+  /**
+   * ISS-7229: Claude Code's own `result.total_cost_usd` (PRD-538). NOT our
+   * derived `estimatedCost` — the two routinely disagree, which is the drift
+   * this field exposes.
+   *
+   * `null` whenever Claude reported nothing, the COMMON case: since ISS-7229 the
+   * figure comes from the desktop's OTel capture, which is gated on a Labs
+   * setting and so reaches a minority of sessions. Consumers must render that
+   * absence AS absence — substituting `estimatedCost` publishes our estimate
+   * under Claude's name, and `0` asserts a true-zero never measured.
+   */
+  authoritativeCostUsd?: number | null;
   tokenUsageByModel: SyncedAgentSessionTokenUsage[];
   attribution: SyncedAgentSessionAttribution | null;
   agents: SyncedAgentSessionAgent[];
+  /**
+   * ISS-6890: present ONLY when this read could not parse the whole persisted
+   * agent roster, so `agents` is not the whole population.
+   *
+   * ABSENCE is the only encoding of "the roster is whole", so a producer that
+   * predates this field — or the desktop's local `mapDetail`, which reads its own
+   * rows and has no such blob — degrades correctly to the complete reading. It is
+   * a nested OBJECT rather than a bare nullable count for the same reason
+   * {@link eventsTruncated} is `true`-or-absent: one truthy predicate
+   * (`if (detail.rosterIncomplete)`) has to catch EVERY incomplete case. A bare
+   * `unreadableAgents?: number | null` would have made the worst case — an
+   * unreadable blob, count unknown — the one that reads as complete under
+   * `!= null`, `??`, and plain truthiness, which is the false-completeness this
+   * field exists to remove.
+   *
+   * `unreadableAgents` is how many stored members were lost, or `null` when the
+   * stored blob was not a readable array at all and the number is genuinely
+   * unknown — never 0, which would claim a whole roster.
+   *
+   * A consumer must not present `agents` as the whole roster while this is
+   * present — in particular must not render a "no agent records were captured"
+   * empty state, which is the contradiction against
+   * {@link AgentSessionListItem.agentCount} that this field makes visible rather
+   * than plausible.
+   */
+  rosterIncomplete?: { unreadableAgents: number | null };
   events: SyncedAgentSessionEvent[];
   /**
    * ISS-5075: `true` when `events` is an intentionally partial, chronological
    * PREFIX — the stored stream exceeded the detail read's row ceiling
-   * (`SESSION_DETAIL_EVENT_MAX_ROWS`). `timeline`/`turnItems` derive from that
-   * same prefix, so this one flag describes all three; a consumer must not
+   * (`SESSION_DETAIL_EVENT_MAX_ROWS`). `turnItems` derives from that same
+   * prefix, so this one flag describes both; a consumer must not
    * present the trace as the whole run when it is set. ABSENCE is the only
    * encoding of "complete", so a producer that never truncates (a client
    * predating this field) degrades correctly, and typing it `true`-or-absent
@@ -1731,9 +2131,29 @@ export type AgentSessionDetail = AgentSessionListItem & {
    * column, so there the cap trims only the `events` relation. Desktop has no such
    * columns — it folds them out of the rows it read — so on that producer this
    * flag ALSO covers the event-derived trace shape: `span`, `activityBuckets`,
-   * `phases`/`phaseIterations`/`phaseLoopbacks`, `throttles`, `markers`,
-   * `steeringEpisodes`, and the `tracePhaseSources`/`throttleSources`/
-   * `correctionSources` arrays all describe the prefix when it is set.
+   * `phases`/`phaseIterations`/`phaseLoopbacks`, `throttles`, `markers`, and the
+   * `tracePhaseSources`/`throttleSources`/`correctionSources` arrays all describe
+   * the prefix when it is set.
+   *
+   * ISS-5636: read that as a ONE-WAY implication, because it is one. Set, those
+   * fields describe a prefix; ABSENT, they are not thereby whole-run. The trace
+   * SOURCE arrays carry their own caps that this flag neither observes nor
+   * reports — `SESSION_TRACE_SOURCE_LIMITS` bounds each of
+   * `tracePhaseSources`/`throttleSources`/`correctionSources` at 100 rows and then
+   * trims the three to a 64 KB aggregate budget — and
+   * `phases`/`phaseIterations`/`phaseLoopbacks`/`throttles` are folded from those
+   * trimmed arrays. ISS-6851: `markers` belongs in that set too — the desktop
+   * producer slices it to 500 rows before sync, a row cap of its own that the 64
+   * KB budget deliberately does not cover and that this flag does not report
+   * either. So a session holding 101 phase-source events inside a raw
+   * stream that never reached the row ceiling yields an incomplete
+   * `phaseIterations` with this flag absent. Those cap outcomes are NOT
+   * propagated today; a consumer that needs them must not infer them from here.
+   *
+   * The two scalars whose completeness IS reported per derivation are
+   * {@link autonomyTruncated} and {@link steeringEpisodesTruncated}, which is
+   * also how a consumer tells the wider desktop scope apart from the cloud's
+   * narrow one.
    *
    * The fields a reader would compare against ANOTHER surface are deliberately
    * NOT in that widened set. `toolUseCount`/`toolCallsTotal`/`errorCount` are
@@ -1744,7 +2164,71 @@ export type AgentSessionDetail = AgentSessionListItem & {
    * `endedAt ?? lastActivityAt`, keeps a bound the cap cannot collapse.
    */
   eventsTruncated?: true;
-  timeline?: SessionTimelineEvent[];
+  /**
+   * ISS-5636: `true` when {@link autonomy} was scored over the served event
+   * PREFIX rather than the whole run.
+   *
+   * Scoped to that ONE scalar because completeness here is a property of a
+   * derivation, not of a read. Autonomy is attributed across a merged
+   * agent-activity stream — the session's parsed transcript messages and its
+   * token events, both read UNCAPPED, plus the raw event rows, which the detail
+   * read bounds — so a bounded read cuts the stream's tail and moves the span
+   * the score is computed over. Only the desktop's local `mapDetail` sets it,
+   * and only when {@link eventsTruncated} is set; the cloud reads the score off
+   * a persisted column the cap never touches and leaves this absent.
+   *
+   * Absence means "this score describes the whole run", so a producer predating
+   * this field (or one reading a persisted column) degrades correctly, and
+   * `true`-or-absent keeps a serialized `false` from becoming a third state.
+   *
+   * Deliberately CONSERVATIVE in two ways, both toward over-hedging, which is
+   * the safe direction — it never does the thing this field exists to stop
+   * (present a prefix count as a whole-run fact). The desktop loader reads
+   * `SESSION_DETAIL_EVENT_MAX_ROWS + 1` rows and folds over ALL of them while
+   * `events` is trimmed back to the ceiling, so a session storing exactly
+   * `MAX + 1` events gets a whole-run fold flagged as a prefix. And a HEADLESS
+   * run with no captured prompt episodes scores a constant 100 by construction,
+   * which no cap can move; telling that case apart from outside the deriver
+   * would mean re-deriving it here.
+   */
+  autonomyTruncated?: true;
+  /**
+   * ISS-5636: `true` when {@link steeringEpisodes} was counted over the served
+   * event PREFIX rather than the whole run.
+   *
+   * Reported separately from {@link autonomyTruncated} because the two scalars
+   * genuinely disagree about their own completeness on reachable sessions, and
+   * one flag over both would mislabel whichever it did not describe. Steering
+   * episodes are grouped from HUMAN-turn timestamps, and where those come from
+   * depends on the session:
+   *
+   * - A run launched headlessly has no human turns to count; its steering is
+   *   fixed at `0` by construction from the harness entrypoint, so the row cap
+   *   cannot move it and this stays absent.
+   * - A session with a parsed transcript takes its human turns from
+   *   `metadata.messages`, which the detail read never bounds, so the count is
+   *   whole-run even past the ceiling and this stays absent.
+   * - A transcript-less (hook-only) session falls back to matching human-input
+   *   rows in the raw event stream, which IS the bounded read — that is the one
+   *   case where the count describes a prefix, and the only case that sets this.
+   *
+   * Absence means "this count describes the whole run", on the same
+   * `true`-or-absent encoding and for the same skew reasons as
+   * {@link autonomyTruncated}.
+   */
+  steeringEpisodesTruncated?: true;
+  /**
+   * ISS-9857: the per-event cost points the DESKTOP-LOCAL producer attributed
+   * to `turnItems`, present ONLY when {@link eventsTruncated} is set. A client
+   * that pages past the prefix (`GET /agent-sessions/[id]/events`, or the
+   * desktop's IPC twin) re-projects the union of prefix + pages through the same
+   * projector the producer ran, and without these points that re-projection
+   * would strip the cost badges the prefix rows already carried. Absent on the
+   * cloud producer, which drops cost points under truncation anyway, and absent
+   * on a complete stream, where no client re-projects. One small point per
+   * token event, bounded by the producer's own token-event read.
+   */
+  tokenEventCostPoints?: TokenEventCostPoint[];
   turnItems?: TurnItem[];
   tracePhaseSources?: SessionTracePhaseSource[];
   throttleSources?: SessionTraceThrottleSource[];
@@ -1759,15 +2243,91 @@ export type AgentSessionDetail = AgentSessionListItem & {
    */
   activitySegmentRows?: SyncedActivitySegmentRow[];
   /**
-   * FEA-3779 / FEA-4238: mirrors the sync-side `activitySegmentRowsTruncated`
-   * signal onto the read shape — `true` when `activitySegmentRows` is an
-   * intentionally partial, start-ordered prefix (cut on the row cap or the
-   * serialized-byte budget) rather than the whole tiling. Optional + additive:
-   * omitted/null means complete (the safe default), so a session synced before
-   * the read projection populates this degrades to "complete" rather than
-   * fabricating truncation. The Activity phases strip consumes it to avoid
-   * folding or labeling a truncated prefix as "mostly idle" — an early-idle
-   * prefix could have had its real work dropped from the missing tail.
+   * ISS-10721: the session's activity-metrics rollup as the READ contract
+   * exposes it — the autonomy band, the spend split across the three
+   * attribution-confidence tiers, and the segment coverage counts.
+   *
+   * UNKNOWN IS NOT ZERO. Every field inside is nullable and `null` is the only
+   * representation of "not computed": a session whose rollup never ran reads
+   * `null` throughout, never `0` coverage and never the bottom band. The whole
+   * key is OMITTED when nothing at all was measured, so a client cannot mistake
+   * an all-`null` object for a rollup that ran and found nothing.
+   *
+   * The three spend figures partition the ATTRIBUTED spend only — out-of-segment
+   * spend belongs to no confidence tier — so their sum is not the session's
+   * total cost and must not be labelled as one.
+   */
+  activityMetrics?: SessionActivityMetricsRead;
+  /**
+   * ISS-10721: how complete the archived evidence behind this view is, in
+   * bytes, as the cloud's own archive state reports it — the quantitative half
+   * of the disclosure whose categorical half is {@link transcriptDisposition}.
+   *
+   * `archivedByteOffset` is the last VERIFIED byte offset across the session's
+   * transcript files; `observedByteSize` is the size the recording machine last
+   * reported for those same files. Both are `null` when no transcript row
+   * exists, and the key is omitted entirely then — a `0` here would claim a
+   * measured empty archive. `observedByteSize >= archivedByteOffset` is the
+   * invariant; a client renders any shortfall as incomplete evidence, never as
+   * an error.
+   *
+   * Both byte figures are ALL-OR-NOTHING over the session's `fileCount` rows:
+   * `observedByteSize` is withheld unless every row reported a size, and
+   * ISS-11089 did not change that (marisolashgrove, 2026-09-27: "we should not be
+   * changing denominators for anything"). A denominator re-based on the rows
+   * that happen to report would read as complete when it is not.
+   *
+   * What ISS-11089 added is two counts that say WHY a figure is withheld, which
+   * a bare `null` never did. `reportingFileCount` is how many rows reported a
+   * readable size, so the gap to `fileCount` is the number of missing operands.
+   * `unrecoverableFileCount` is how many of `fileCount` files the desktop will
+   * NEVER archive, having terminally skipped them for a hard reason — what tells
+   * a permanent withholding from an in-flight one.
+   *
+   * IT COUNTS FILES, AND IT IS NOT A SHORTFALL IN EITHER BYTE FIGURE (review).
+   * The ordinary unrecoverable file never reported a size, so it withholds
+   * `observedByteSize` outright — and, never having completed, it contributes
+   * `0` to `archivedByteOffset` too. A file that completed once and was later
+   * hard-skipped carries its size, and the one write that produced it set the
+   * offset to the same value, so it leaves the denominator whole and both
+   * figures equal. On today's writer the two are therefore EQUAL whenever both
+   * publish, whatever this count says: do not derive "how much is missing" from
+   * their difference, and do not read equality as "nothing is missing". This
+   * count is the only statement that a file will never be archived. Render it
+   * beside the figures, never in place of them.
+   *
+   * Additive and OPTIONAL on the wire, both counts: an older API deployment
+   * serves the pre-ISS-11089 three-key object to a newer client, so absence
+   * means "not reported by this API", never `0`. A client that ignores the new
+   * keys reads exactly the figures it read before.
+   */
+  transcriptArchiveProgress?: TranscriptArchiveProgress;
+  /**
+   * FEA-3779 / FEA-4238: `true` when `activitySegmentRows` is an intentionally
+   * partial, start-ordered prefix rather than the whole stored tiling. It is
+   * derived HERE, per read, from the detail select hitting
+   * {@link MAX_STORED_ACTIVITY_SEGMENTS} (ISS-4541) — the same semantics as the
+   * like-named sync field, but an independent derivation, NOT that wire value
+   * relayed: nothing persists the wire signal.
+   *
+   * Optional + additive, and omitted/null is a DEFAULT, not an assertion: it is
+   * read as complete so a session served before the read projection populated
+   * this degrades to "complete" rather than fabricating truncation. It does not
+   * establish completeness. Two stored shapes are genuinely partial and arrive
+   * here unflagged — a pre-FEA-3779 tiling the desktop cut at its silent 500-row
+   * assembly cap, and a chunked sequence whose tail has not landed (or never
+   * will), since `persistSessionActivitySegments` applies chunk 0 and its
+   * successors in separate transactions.
+   *
+   * ISS-9858: its one reader is the Session Timeline legend line
+   * (`resolveTimelineTruncatedTilingLegend` in
+   * `packages/app/agents/components/detail/session-timeline-coverage.ts`), which
+   * discloses that later activity was not read. `projectActivitySegments` does
+   * not forward it — that projection's only production caller,
+   * `getPhaseTilingSpan`, reads the span bounds and nothing else, so the axis is
+   * sized from the prefix while the legend says so. No shipped producer reaches
+   * the ceiling today (the desktop omits an over-ceiling tiling rather than
+   * sending a prefix), so this is a backstop disclosure, not a reachable state.
    */
   activitySegmentRowsTruncated?: boolean | null;
   /**
@@ -1795,9 +2355,48 @@ export type AgentSessionDetail = AgentSessionListItem & {
    * populate it from the same per-file `transcripts[]` fold
    * (`deriveTranscriptDisposition`).
    */
+  /**
+   * ISS-8427: EVERY branch this session touched, not the one
+   * {@link AgentSessionListItem.branch} picked out of them.
+   *
+   * `branch`/`branchArtifactId` are single-valued and resolve by keeping the
+   * LAST eligible link of an ordered scan, so a session that pushed five
+   * branches and opened a PR from each served one branch name beside five PR
+   * pills and a "Lines changed" figure summed across all five. This field is the
+   * whole eligible set, so a reader is no longer shown a sixth of the answer.
+   *
+   * THE SCALAR'S ELIGIBILITY, widened by exactly one legacy case — never a
+   * looser net. Only branches the session genuinely TOUCHED: a `session_branch`
+   * link (which carries a `branchParticipation`) or an AUTHORED PR link. A
+   * branch a transcript merely mentioned, or a PR the session only referenced or
+   * reviewed, authored no branch and is absent here exactly as it is absent from
+   * the scalar.
+   *
+   * The one addition is the PRE-COLUMN `session_branch` link: `branch_participation`
+   * was added without a backfill, so a link written before it states its
+   * participation only in metadata and reads as untouched to a column-only test.
+   * Those rows are recovered here, which is why this set is a SUPERSET of the
+   * scalar's population and `branch` is always a member of it. The widening is
+   * confined to `session_branch` links on purpose: the metadata rule also maps a
+   * `Reviewed` relation to a participation, so applying it to PR links would
+   * admit the merely-reviewed PR both derivations exclude.
+   *
+   * ORDER is the link scan's `createdAt asc` — the order the session touched
+   * them. It is deliberately NOT a ranking: which of a session's branches
+   * matters most is a product question this field does not answer.
+   *
+   * The scalar pair is UNCHANGED and still served: this is additive, and a
+   * client that reads only `branch` behaves exactly as before. `[]` is the
+   * computed answer for a session that touched none; the key is OMITTED only by
+   * a producer that does not compute it (the LIST projections do not), so a
+   * consumer must read absence as "not computed", never as "none".
+   */
+  branches?: SessionBranch[];
 };
 
 export type AgentSessionUsageSummary = AgentSessionCostSplitFields & {
+  /** Confirms the requested component family was applied; absent on older APIs. */
+  componentScope?: string;
   viewerScope: AgentSessionViewerScope;
   totalSessions: number;
   /**
@@ -1850,7 +2449,77 @@ export type AgentSessionUsageSummary = AgentSessionCostSplitFields & {
    * `resolveLocPerDollar` (which scales it into LOC/$), never render it directly.
    */
   mergedLocPerDollar?: number | null;
+  /**
+   * ISS-9848: WHICH ratio `mergedLocPerDollar` is — the numerator and the
+   * denominator the producer actually divided, so a version-skewed client is
+   * TOLD rather than left to assume. Present on any producer that computes the
+   * ratio at all, including when the value itself is `null` (the caption is
+   * rendered either way); ABSENT — never `null` — from a producer that does not
+   * compute the metric, per the cross-repo omit-don't-null rule.
+   *
+   * A consumer must read an UNRECOGNIZED value as "a basis this build cannot
+   * describe" and coarsen, never as the basis it happens to know: a newer server
+   * can send a member this build never compiled against, and that is precisely
+   * the skew this field exists to make visible.
+   * `resolveMergedLocPerDollarHow` / `resolveMergedLocPerDollarWhat` are the
+   * canonical folds; absence resolves to the pre-ISS-9848 sentences.
+   *
+   * TYPED `string`, NOT `MergedLocPerDollarBasis`, and that is the whole point
+   * (whitlockk review on #6929). This is the CONSUMER-side shape of an open response
+   * contract: the value reaches `api.get` as JSON from a server that may be
+   * newer than this build, so the one member this build compiled against is a
+   * fact about the build, not about the wire. Declaring the closed union here
+   * would let a typed consumer write an exhaustive `switch` over that single
+   * member, satisfy `tsc`, and skip the generic arm — reintroducing the exact
+   * version-skew defect the field exists to close, this time with the compiler
+   * vouching for it. The closed `MergedLocPerDollarBasis` union is retained for
+   * SERVER-SIDE EMISSION (`toMergedLocPerDollarBasis` in
+   * `apps/api/app/agent-sessions/service/loc-per-dollar-basis.ts`), where the
+   * producer genuinely does know every member it can publish.
+   */
+  mergedLocPerDollarBasis?: string;
+  /**
+   * ISS-7705: whether the cost denominator behind `mergedLocPerDollar` actually
+   * covers the merged work in its numerator, and the populations that decided
+   * it. Present only on a producer that measured it AND only when there is a
+   * ratio to gate (at least one merged PR); ABSENT — never `null` — otherwise,
+   * so an older client's `undefined` check and the cross-repo omit-don't-null
+   * rule agree.
+   *
+   * A consumer that renders the ratio must treat any non-`complete` state as
+   * "do not state this number": the two sides are aggregated from independently
+   * scoped reads, and every uncovered numerator session pushes the published
+   * value UP. See `apps/api/app/agent-sessions/service/loc-per-dollar-coverage.ts`.
+   */
+  mergedLocPerDollarCoverage?: LocPerDollarCoverage;
   mergedKlocPerDollar?: number | null;
+  /**
+   * ISS-11117: Pensero delivery points per dollar over the SAME denominator
+   * {@link mergedLocPerDollar} divides — the total estimated cost of the
+   * matched sessions — so the two ratios describe one population and only the
+   * numerator differs.
+   *
+   * A SIBLING FIELD, deliberately, and not a numerator swapped under
+   * `mergedLocPerDollar`. That field's basis contract
+   * ({@link mergedLocPerDollarBasis}) warns that moving its numerator while its
+   * basis member still says `merged_lines_over_total_cost` re-creates the exact
+   * version-skew defect the discriminator exists to close. Publishing the
+   * points ratio under its own name leaves every existing member true, and an
+   * old client that has never heard of this field keeps rendering the LOC card
+   * it already renders.
+   *
+   * Additive and optional, and its absence is MEANINGFUL rather than merely
+   * version skew: a producer predating the field omits it, and so does a
+   * current producer whose reader is outside the Pensero display rollout, whose
+   * sessions touched no branch with delivery evidence, or whose delivery read
+   * failed. All of those mean the same thing to a consumer — there is no
+   * Pensero numerator here, render LOC/$ unchanged — which is why one absent
+   * field serves them all.
+   *
+   * A PRESENT `0` is a measured zero and renders as one. Never serialized as
+   * `null` when absent, per the cross-repo omit-don't-null rule.
+   */
+  penseroPointsPerDollar?: number;
   byUser: AgentSessionUsageByUser[];
   /** Optional query-time lens that splits each session across linked branches. */
   byBranch?: AgentSessionUsageByBranch[];
@@ -1864,7 +2533,20 @@ export type AgentSessionUsageSummary = AgentSessionCostSplitFields & {
    * in the Sessions table's Model column. Do NOT source the Model filter facet
    * from this; use `modelFilterOptions` (FEA-4303).
    */
-  byModel: AgentSessionUsageByModel[];
+  /**
+   * ISS-8554 O2 — OPTIONAL, and the TypedSQL producer omits it entirely.
+   *
+   * It is the only consumer of `agent_session_token_usage` on the Sessions
+   * usage path and it renders nowhere: the Model FACET reads
+   * `modelFilterOptions` (grouped on the primary displayed model, FEA-4303),
+   * and ISS-10733 deleted the last component that read this field, so nothing
+   * renders it today.
+   *
+   * Optional rather than deleted because the live producer still emits it;
+   * absence here means "this producer does not compute it", never "no models
+   * were used".
+   */
+  byModel?: AgentSessionUsageByModel[];
   /**
    * FEA-4303: options for the Model filter facet, grouped by the PRIMARY
    * displayed model (`SessionDetail.model`) — the exact value the Sessions table
@@ -1907,6 +2589,14 @@ export type AgentSessionAnalytics = {
   viewerScope: AgentSessionViewerScope;
   byTool: AgentSessionToolBreakdown[];
   byAgentType: AgentSessionAgentTypeBreakdown[];
+  /**
+   * ISS-6890 (#5209 review): present ONLY when {@link byAgentType} is a lower
+   * bound because some session's persisted roster could not be fully read.
+   * Absence is the only encoding of "complete"; semantics and the
+   * omit-never-null contract live on
+   * {@link AgentSessionAgentRosterIncompleteness}.
+   */
+  agentRosterIncomplete?: AgentSessionAgentRosterIncompleteness;
   byRepository: AgentSessionRepositoryBreakdown[];
   byProject: AgentSessionProjectBreakdown[];
   /** Optional query-time lens that splits each session across linked branches. */
@@ -1972,4 +2662,35 @@ export type AgentSessionsPageData = {
    * (genuine) usage failure leaves it absent so the cards stay honestly errored.
    */
   usageErrorTransient?: boolean;
+};
+
+/**
+ * ISS-5090 / ISS-8005: how many characters of the ingest ack's `detail`
+ * diagnostic the desktop echoes into its gateway log.
+ *
+ * Shared single source of truth, for the same reason as
+ * {@link MAX_SYNCED_COMPONENT_USAGE}: the cloud sizes the field path it puts in
+ * `detail` against this budget, and the desktop slices `detail` to it before
+ * logging. A value spelled separately on each side can drift, and the desktop's
+ * slice emits NO truncation marker — so a shorter cap would silently leave a
+ * bare path prefix that names a field which is not the one that failed, which is
+ * exactly the ambiguity ISS-8005 exists to remove.
+ */
+export const SYNC_ACK_DETAIL_MAX_CHARS = 120;
+
+/**
+ * ISS-8427: ONE branch a session touched, as an addressable destination.
+ *
+ * `branchArtifactId` carries the same OPAQUE-route-token contract as
+ * {@link AgentSessionListItem.branchArtifactId} — the producer owns its format
+ * (the cloud emits the Branch artifact id, the desktop its own encoded id), so
+ * a consumer hands it to that surface's href builder and never parses it.
+ *
+ * A member always carries both a resolved `name` and an id: an entry that could
+ * not resolve a branch NAME would render as an unnamed link, so the derivation
+ * drops it rather than serving it.
+ */
+export type SessionBranch = {
+  name: string;
+  branchArtifactId: string;
 };

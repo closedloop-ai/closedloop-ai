@@ -41,11 +41,10 @@ vi.mock("@/lib/integration-encryption", () => ({
   decryptIntegrationToken: vi
     .fn()
     .mockImplementation((token: string) => Promise.resolve(token)),
-  resolveIntegrationToken: vi
+  resolveEncryptedIntegrationToken: vi
     .fn()
-    .mockImplementation(
-      (_encrypted: string | null | undefined, plaintext: string | null) =>
-        Promise.resolve(plaintext)
+    .mockImplementation((encrypted: string | null) =>
+      Promise.resolve(encrypted)
     ),
   encryptTokenPair: vi.fn().mockResolvedValue({
     encryptedAccessToken: "mock-encrypted-access",

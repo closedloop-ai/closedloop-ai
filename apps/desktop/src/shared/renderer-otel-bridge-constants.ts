@@ -21,6 +21,13 @@ export const RendererOtelExportFailureReason = {
   Disabled: "disabled",
   ExportFailed: "export_failed",
   InvalidPayload: "invalid_payload",
+  /**
+   * ISS-6329 — the main runtime has not finished booting yet. Split out of
+   * `Unavailable`, which now means only the states a retry can never clear
+   * (`Failed`, `Shutdown`). This one is a startup race: the same export
+   * succeeds moments later, so it must never latch the renderer off.
+   */
+  NotStarted: "not_started",
   RateLimited: "rate_limited",
   Unavailable: "unavailable",
   UntrustedSender: "untrusted_sender",

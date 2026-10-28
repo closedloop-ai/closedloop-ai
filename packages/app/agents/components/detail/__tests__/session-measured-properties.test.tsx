@@ -1,15 +1,7 @@
-import { stubContainerWidthPx } from "@repo/app/test/mocks/container-width";
+import { TRACE_PREFIX_COUNTED_NOTE } from "@repo/app/shared/lib/trace-truncation-copy";
 import { tooltipMockModule } from "@repo/app/test/mocks/tooltip";
-import { GridEmptyValue } from "@repo/design-system/components/ui/grid-table";
-import { render, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CostAvailability } from "../../../lib/cost-availability";
-import { SESSIONS_AUTONOMY_COLUMN_ID } from "../../../lib/sessions-table-columns";
-import { createSessionTableRowFixture } from "../../sessions/session-list-fixtures";
-import {
-  SessionsTable,
-  type SessionTableRow,
-} from "../../sessions/sessions-table";
+import { render } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import { createAgentSessionDetailFixture } from "../agent-session-detail-fixtures";
 import {
   SessionAutonomyProperty,
@@ -22,60 +14,15 @@ vi.mock("@repo/design-system/components/ui/tooltip", () => tooltipMockModule);
 /**
  * ISS-5565: the session-detail Properties panel coerced absent counts to `0`.
  *
- * The headline case is Autonomy, because it had a WITNESS: the Sessions list
- * already rendered the shared empty affordance for `autonomy == null`
- * (`sessions-table.tsx`), while the detail rendered
- * `getAutonomyLabel(session.autonomy)` next to `session.autonomy ?? 0`, i.e.
- * "Unknown autonomy | 0/100". One record, two surfaces, two different claims —
- * and the surface a reader reaches by clicking the dash is the one that lied.
- *
- * The parity spec below therefore renders BOTH surfaces from ONE record in ONE
- * tree and compares them to each other. Checking each independently against a
- * constant would keep passing if the two drifted apart again in the same
- * direction, which is precisely the failure mode being fixed.
+ * The headline case was Autonomy, whose list-vs-detail parity spec now lives on
+ * the value (PLN-2169 M2: `values/__tests__/session-autonomy-value.test.tsx`,
+ * with the row's one sentence pinned on `resolveSessionAutonomyExplanation`).
+ * This file keeps the Tokens and Work rows, which still own their own empty
+ * semantics and sentences, plus the proof that the Autonomy row mounts its
+ * shared value and carries the value's sentence in its accessible name.
  */
 
-/** Wide enough that no list column folds out of the assertions. */
-const NATURAL_LAYOUT_CONTAINER_PX = 4000;
 const EM_DASH = "—";
-
-/**
- * The class signature the shared sentinel actually renders with, read from the
- * component rather than hardcoded — so "both surfaces agree" cannot be
- * satisfied by both drifting onto the same bespoke dash.
- */
-function sharedEmptyGlyphClassName(): string {
-  const { container, unmount } = render(<GridEmptyValue />);
-  const span = container.querySelector("span");
-  if (!span) {
-    throw new Error("GridEmptyValue did not render a span");
-  }
-  const className = span.className;
-  unmount();
-  return className;
-}
-
-/**
- * The list's AUTONOMY cell specifically, not just any empty cell in the row.
- *
- * Code review: the parity assertion used the first dash anywhere in the table,
- * which on this fixture is a different column entirely (branch/model/duration
- * are all empty too). That would keep passing if the autonomy cell regressed to
- * a bespoke glyph, so it proved nothing about the field under test.
- * `GridBodyCell` surfaces its owning column via `data-column-id`.
- */
-function listAutonomyCell(list: HTMLElement): HTMLElement {
-  // `role="cell"` excludes the `role="columnheader"` of the same column — both
-  // carry `data-column-id`, and matching the header would assert against the
-  // word "Autonomy" instead of the value under it.
-  const cell = list.querySelector<HTMLElement>(
-    `[role="cell"][data-column-id="${SESSIONS_AUTONOMY_COLUMN_ID}"]`
-  );
-  if (!cell) {
-    throw new Error("list did not render an autonomy cell");
-  }
-  return cell;
-}
 
 function emptyGlyphElements(root: HTMLElement): HTMLElement[] {
   return [...root.querySelectorAll<HTMLElement>("*")].filter(
@@ -84,126 +31,28 @@ function emptyGlyphElements(root: HTMLElement): HTMLElement[] {
   );
 }
 
-function renderName(row: SessionTableRow, className: string) {
-  return (
-    <a className={className} href={`/sessions/${row.id}`}>
-      {row.name}
-    </a>
-  );
+/**
+ * ISS-5581 code review: the reason used to live in a native `title` on the dash,
+ * which is hover-only. It now rides `PropertyValue`'s `explanation` (ISS-4654) —
+ * a focusable button whose accessible name ends with the sentence — so the
+ * assertions below are about the ROW's accessible name, not a title attribute.
+ *
+ * Reads the sr-only TAIL rather than the whole button, because the row's VALUE
+ * is in that name too: "310 tool calls" in the value would satisfy a
+ * `not.toContain("tool calls")` check meant to prove the sentence does not name
+ * that counter (ISS-5636).
+ */
+function explanationOf(container: HTMLElement): string {
+  const trigger = container.querySelector("button");
+  if (!trigger) {
+    throw new Error("row did not render an explained (focusable) value");
+  }
+  const sentence = trigger.querySelector(".sr-only");
+  if (!sentence) {
+    throw new Error("explained value carried no accessible sentence");
+  }
+  return sentence.textContent ?? "";
 }
-
-function listRowFor(autonomy: number | null): SessionTableRow {
-  // ISS-5697: one shared row shape (`session-list-fixtures`). Most fields are
-  // stated here not because the assertions read them but to keep every OTHER
-  // column empty, so the em-dash this test counts can only have come from the
-  // autonomy cell. `harness` is the only value left at the shared default.
-  return createSessionTableRowFixture({
-    autonomy,
-    branch: null,
-    costAvailability: CostAvailability.NoUsage,
-    costLabel: "$0.00",
-    durationLabel: null,
-    id: "ses-parity",
-    lastActivityLabel: null,
-    mergeStatusLabel: null,
-    model: null,
-    name: "agent/parity",
-    pullRequestSummaryLabel: null,
-    pullRequests: [],
-    repo: "acme/app",
-    startedLabel: null,
-    status: "Working",
-  });
-}
-
-let restoreContainerWidth: (() => void) | null = null;
-
-beforeEach(() => {
-  restoreContainerWidth = stubContainerWidthPx(NATURAL_LAYOUT_CONTAINER_PX);
-});
-
-afterEach(() => {
-  restoreContainerWidth?.();
-  restoreContainerWidth = null;
-});
-
-describe("ISS-5565: list and detail agree about an unrecorded autonomy", () => {
-  it("renders the same shared empty glyph on both surfaces for one null-autonomy record", () => {
-    const session = createAgentSessionDetailFixture({ autonomy: null });
-    const shared = sharedEmptyGlyphClassName();
-
-    // ONE tree, ONE record, both surfaces. The comparison that matters is
-    // list-vs-detail, not each-vs-a-constant.
-    const { container } = render(
-      <>
-        <div data-testid="list-surface">
-          <SessionsTable
-            items={[listRowFor(session.autonomy ?? null)]}
-            mode="expanded"
-            renderName={renderName}
-          />
-        </div>
-        <div data-testid="detail-surface">
-          <SessionAutonomyProperty session={session} />
-        </div>
-      </>
-    );
-
-    const list = within(container).getByTestId("list-surface");
-    const detail = within(container).getByTestId("detail-surface");
-
-    const detailGlyphs = emptyGlyphElements(detail);
-    const listGlyphs = emptyGlyphElements(listAutonomyCell(list));
-
-    // The detail now says "nothing recorded" at all, rather than a tier word
-    // beside a floor number.
-    expect(detailGlyphs).toHaveLength(1);
-    expect(detail.textContent).not.toContain("0/100");
-    expect(detail.textContent).not.toContain("Unknown autonomy");
-
-    // ...and it is the SAME glyph the list already used for THIS field — the
-    // lookup is scoped to the autonomy column, so a regression there cannot
-    // hide behind some other empty cell's dash.
-    expect(listGlyphs).toHaveLength(1);
-    expect(detailGlyphs[0].className).toBe(listGlyphs[0].className);
-    expect(detailGlyphs[0].className).toBe(shared);
-  });
-
-  it("still renders a measured autonomy on both surfaces, including a real zero", () => {
-    // The guard against over-correcting: 0 is a MEASURED score, not an absent
-    // one, and must keep its tier word and its number on the detail.
-    const session = createAgentSessionDetailFixture({ autonomy: 0 });
-    const { container } = render(
-      <>
-        <div data-testid="list-surface">
-          <SessionsTable
-            items={[listRowFor(0)]}
-            mode="expanded"
-            renderName={renderName}
-          />
-        </div>
-        <div data-testid="detail-surface">
-          <SessionAutonomyProperty session={session} />
-        </div>
-      </>
-    );
-
-    const detail = within(container).getByTestId("detail-surface");
-    expect(detail.textContent).toContain("0/100");
-    expect(emptyGlyphElements(detail)).toHaveLength(0);
-
-    const list = within(container).getByTestId("list-surface");
-    expect(listAutonomyCell(list).textContent).toContain("0");
-    expect(emptyGlyphElements(listAutonomyCell(list))).toHaveLength(0);
-  });
-
-  it("keeps a high measured autonomy rendering its tier word and score", () => {
-    const session = createAgentSessionDetailFixture({ autonomy: 92 });
-    const { container } = render(<SessionAutonomyProperty session={session} />);
-    expect(container.textContent).toContain("92/100");
-    expect(container.textContent).toContain("High autonomy");
-  });
-});
 
 describe("ISS-5565: the Tokens row degrades per counter", () => {
   it("collapses to one glyph when no token counter was recorded", () => {
@@ -236,7 +85,17 @@ describe("ISS-5565: the Tokens row degrades per counter", () => {
     expect(emptyGlyphElements(container)).toHaveLength(2);
   });
 
-  it("keeps a recorded zero as a zero", () => {
+  /**
+   * ISS-5637: this pins the FLAG-OFF default, and only that. ISS-5565 wrote it
+   * believing an unrecorded counter arrives as `null`, which made an all-zero
+   * quadruple a measured zero — but neither producer can emit that null, so
+   * these four zeros are what a session with NO token-usage rows renders, and
+   * calling them measured is the defect ISS-5637 fixes. Behind
+   * `session-tokens-recorded-honesty` the same fixture reads as one dash; see
+   * `session-tokens-recorded-honesty.test.tsx`, which owns the flag-on
+   * contract and the still-genuine per-counter measured zero.
+   */
+  it("keeps an all-zero quadruple reading as zeros while the gate is closed", () => {
     const session = createAgentSessionDetailFixture({
       tokensIn: 0,
       tokensOut: 0,
@@ -251,18 +110,6 @@ describe("ISS-5565: the Tokens row degrades per counter", () => {
 });
 
 describe("ISS-5581: a missing value's reason is reachable without a mouse", () => {
-  // Code review: the reason used to live in a native `title` on the dash, which
-  // is hover-only. It now rides `PropertyValue`'s `explanation` (ISS-4654) — a
-  // focusable button whose accessible name ends with the sentence — so the
-  // assertions below are about the ROW's accessible name, not a title attribute.
-  function explanationOf(container: HTMLElement): string {
-    const trigger = container.querySelector("button");
-    if (!trigger) {
-      throw new Error("row did not render an explained (focusable) value");
-    }
-    return trigger.textContent ?? "";
-  }
-
   it("puts the autonomy reason in the accessible name, not a hover-only title", () => {
     const session = createAgentSessionDetailFixture({ autonomy: null });
     const { container } = render(<SessionAutonomyProperty session={session} />);
@@ -411,6 +258,133 @@ describe("ISS-5565: the Work row stops inventing steering episodes", () => {
     expect(emptyGlyphElements(container)).toHaveLength(2);
   });
 
+  it("names the steer count as a prefix count when the read was truncated", () => {
+    const session = createAgentSessionDetailFixture({
+      steeringEpisodes: 4,
+      steeringEpisodesTruncated: true,
+      turns: 7,
+    });
+    const { container } = render(<SessionWorkProperty session={session} />);
+
+    // The number itself is unchanged — it is what the producer counted, and
+    // swapping in a different quantity would relocate the split rather than
+    // close it.
+    expect(container.textContent).toContain("4 steers");
+    expect(explanationOf(container)).toContain(
+      `Steering episodes were ${TRACE_PREFIX_COUNTED_NOTE}`
+    );
+  });
+
+  it("leaves the tool-call count out of the qualifier, which ISS-5407 already re-reads whole-run", () => {
+    const session = createAgentSessionDetailFixture({
+      eventsTruncated: true,
+      steeringEpisodes: 4,
+      steeringEpisodesTruncated: true,
+      toolCallsTotal: 310,
+      turns: 7,
+    });
+    const { container } = render(<SessionWorkProperty session={session} />);
+
+    expect(container.textContent).toContain("310 tool calls");
+    // A metadata-sourced `turns` is not event-folded either, so exactly one
+    // counter is named. Hedging all three would trade this bug for the opposite.
+    expect(explanationOf(container)).not.toContain("tool calls");
+    expect(explanationOf(container)).not.toContain("Turns and");
+  });
+
+  it("also names turns when the count fell back to the truncated transcript", () => {
+    const session = createAgentSessionDetailFixture({
+      eventsTruncated: true,
+      steeringEpisodes: 4,
+      steeringEpisodesTruncated: true,
+      turns: null,
+    });
+    const { container } = render(<SessionWorkProperty session={session} />);
+
+    // `turnItems` is projected from the same bounded rows, so the fallback is
+    // prefix-derived where `session.turns` (read off session metadata) is not —
+    // and it is `eventsTruncated`, the flag scoped to THAT read, which says so.
+    expect(explanationOf(container)).toContain(
+      `Turns and steering episodes were ${TRACE_PREFIX_COUNTED_NOTE}`
+    );
+  });
+
+  /**
+   * ISS-5636 (whitlockk): the counterfactual the per-derivation split exists for. A
+   * bounded raw-event read does NOT make every folded scalar a prefix count, so
+   * a row that qualified them off one read-scoped flag mislabels the ones the
+   * cap never touched — the opposite defect, in the same sentence.
+   */
+  it("leaves a whole-run steer count unhedged even when the raw-event read was cut", () => {
+    const session = createAgentSessionDetailFixture({
+      // The producer read past its ceiling AND still counted this session's
+      // steering off inputs the ceiling does not bound (a headless run's fixed
+      // `0`, or a transcript-backed run's whole message stream) — so it emitted
+      // `eventsTruncated` WITHOUT `steeringEpisodesTruncated`.
+      eventsTruncated: true,
+      steeringEpisodes: 4,
+      turns: 7,
+    });
+    const { container } = render(<SessionWorkProperty session={session} />);
+
+    expect(container.textContent).toContain("4 steers");
+    // Nothing to say about this row at all: no counter is missing and none is a
+    // prefix, so it renders no explained (focusable) value rather than a hedge.
+    expect(container.querySelector("button")).toBeNull();
+  });
+
+  it("states a missing counter and a truncated one in the same row", () => {
+    // No turn count from EITHER source (so "turns" is missing outright) while
+    // the steer count IS shown and IS prefix-derived. Both sentences are live,
+    // and neither substitutes for the other: one says a counter is missing, the
+    // other that a counter on screen covers less than the run.
+    const session = createAgentSessionDetailFixture({
+      steeringEpisodes: 4,
+      steeringEpisodesTruncated: true,
+      turnItems: undefined,
+      turns: null,
+    });
+    const { container } = render(<SessionWorkProperty session={session} />);
+
+    expect(explanationOf(container)).toContain(
+      "Turns were not recorded for this session"
+    );
+    expect(explanationOf(container)).toContain(
+      `Steering episodes were ${TRACE_PREFIX_COUNTED_NOTE}`
+    );
+  });
+
+  it("says nothing about truncation when nothing measured survived to qualify", () => {
+    const session = createAgentSessionDetailFixture({
+      eventsTruncated: true,
+      steeringEpisodes: null,
+      turnItems: undefined,
+      turns: null,
+    });
+    const { container } = render(<SessionWorkProperty session={session} />);
+
+    // The other side of the pair above: with no steer count and no turn count
+    // there is no shown number left to describe, so the row states the absence
+    // once rather than hedging a value it is not rendering.
+    expect(explanationOf(container)).toContain(
+      "Turns and steering episodes were not recorded for this session"
+    );
+    expect(explanationOf(container)).not.toContain(TRACE_PREFIX_COUNTED_NOTE);
+  });
+
+  it("says nothing about truncation when the producer served the whole stream", () => {
+    const session = createAgentSessionDetailFixture({
+      steeringEpisodes: 4,
+      toolCallsTotal: 310,
+      turns: 7,
+    });
+    const { container } = render(<SessionWorkProperty session={session} />);
+
+    // Absence is the flag's only encoding of "complete", and the cloud producer
+    // never sets it — so a cloud-read row must stay an unhedged statement.
+    expect(container.querySelector("button")).toBeNull();
+  });
+
   it("treats an empty transcript as a measured zero, not an unknown", () => {
     // The other side of the boundary above: an EMPTY `turnItems` array is
     // evidence — the transcript was read and held no turns — so "0 turns" is a
@@ -424,5 +398,15 @@ describe("ISS-5565: the Work row stops inventing steering episodes", () => {
 
     expect(container.textContent).toContain("0 turns");
     expect(emptyGlyphElements(container)).toHaveLength(0);
+  });
+});
+
+describe("PLN-2169 M2: the Autonomy row mounts the shared value", () => {
+  it("draws the value's measured score under the Autonomy label", () => {
+    const session = createAgentSessionDetailFixture({ autonomy: 92 });
+    const { container } = render(<SessionAutonomyProperty session={session} />);
+
+    expect(container.textContent).toContain("Autonomy");
+    expect(container.textContent).toContain("High autonomy | 92/100");
   });
 });

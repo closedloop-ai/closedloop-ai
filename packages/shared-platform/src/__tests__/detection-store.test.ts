@@ -6,7 +6,6 @@ import {
   getGatewayDetectionSnapshot,
   getNextProbeDelayMs,
   getRearmIntervalMs,
-  invalidateGatewayDetectionCache,
   isGatewayDetectionExhausted,
   rearmGatewayDetection,
   resetGatewayDetectionForTests,
@@ -26,7 +25,7 @@ const mockProbeGateway = vi.mocked(probeGateway);
 
 const CACHE_TTL_MS = 60_000;
 const DETECTED_POLL_INTERVAL_MS = 10_000;
-const AMBIENT_MAX_ABSENT_SWEEPS = 1;
+const DEFAULT_MAX_ABSENT_SWEEPS = 1;
 const FAST_POLL_MAX_ABSENT_SWEEPS = 12;
 const RECOVERY_MAX_ABSENT_SWEEPS = 3;
 const REARM_BASE_INTERVAL_MS = 30_000;
@@ -183,17 +182,6 @@ describe("detection-store", () => {
     expect(probeCount()).toBe(firstCallCount);
   });
 
-  it("re-probes after cache invalidation", async () => {
-    mockProbeGateway.mockResolvedValue(DETECTED_PROBE);
-
-    await ensureGatewayDetection();
-    const firstCallCount = probeCount();
-
-    invalidateGatewayDetectionCache();
-    await ensureGatewayDetection();
-    expect(probeCount()).toBe(firstCallCount + 1);
-  });
-
   it("notifies listeners on state change", async () => {
     const listener = vi.fn();
     subscribeGatewayDetection(listener);
@@ -260,6 +248,12 @@ describe("detection-store", () => {
 });
 
 describe("getNextProbeDelayMs", () => {
+  it("treats a missing options argument as zero sweeps and keeps polling", () => {
+    expect(getNextProbeDelayMs(stateWith({ detected: false }))).toBe(
+      DETECTED_POLL_INTERVAL_MS
+    );
+  });
+
   it("uses the responsive cadence while the gateway is present", () => {
     expect(getNextProbeDelayMs(stateWith({ detected: true }))).toBe(
       DETECTED_POLL_INTERVAL_MS
@@ -270,13 +264,13 @@ describe("getNextProbeDelayMs", () => {
   // the browser's network stack logs each refusal itself -- a JS `.catch()`
   // cannot suppress it. Once the answer is known, the only correct delay is
   // "never": a slower cadence still floods the console, just more slowly.
-  it("stops ambient probing entirely once a sweep comes back absent", () => {
+  it("stops default-loop probing entirely once a sweep comes back absent", () => {
     const absent = stateWith({ detected: false });
     expect(getNextProbeDelayMs(absent, { absentSweeps: 0 })).toBe(
       DETECTED_POLL_INTERVAL_MS
     );
     expect(
-      getNextProbeDelayMs(absent, { absentSweeps: AMBIENT_MAX_ABSENT_SWEEPS })
+      getNextProbeDelayMs(absent, { absentSweeps: DEFAULT_MAX_ABSENT_SWEEPS })
     ).toBeNull();
     expect(getNextProbeDelayMs(absent, { absentSweeps: 500 })).toBeNull();
   });
@@ -630,7 +624,7 @@ describe("startGatewayDetectionPolling", () => {
     expect(getGatewayDetectionSnapshot().detected).toBe(true);
 
     // The gateway blips -- a desktop self-update, a sleep/resume, one dropped
-    // probe. The ambient one-sweep rule must NOT apply here: it would stop
+    // probe. The default one-sweep rule must NOT apply here: it would stop
     // detection for good while the app is still running, and every consumer
     // would report not-detected until the user happened to refocus the tab.
     mockProbeGateway.mockResolvedValue(ABSENT_PROBE);
@@ -653,7 +647,7 @@ describe("startGatewayDetectionPolling", () => {
     const detectedProbes = probeCount();
 
     // A genuine quit still converges: the recovery budget buys a few sweeps,
-    // then the ambient rule takes over and the loop arms no timer at all.
+    // then the default rule takes over and the loop arms no timer at all.
     mockProbeGateway.mockResolvedValue(ABSENT_PROBE);
     await vi.advanceTimersByTimeAsync(60 * 60_000);
 
@@ -812,16 +806,16 @@ describe("isGatewayDetectionExhausted", () => {
     vi.unstubAllGlobals();
   });
 
-  it("reports the ambient loop exhausted after its single sweep", async () => {
+  it("reports a default loop exhausted after its single sweep", async () => {
     mockProbeGateway.mockResolvedValue(ABSENT_PROBE);
 
     const dispose = startGatewayDetectionPolling();
     await flushMicrotasks();
 
-    // The ambient loop has armed no further timer, so the answer it reached is
+    // The default loop has armed no further timer, so the answer it reached is
     // final. A consumer that assumed the onboarding budget would keep saying
     // "still looking" through eleven sweeps nobody is going to run.
-    expect(getAbsentSweepCount()).toBe(AMBIENT_MAX_ABSENT_SWEEPS);
+    expect(getAbsentSweepCount()).toBe(DEFAULT_MAX_ABSENT_SWEEPS);
     expect(vi.getTimerCount()).toBe(0);
     expect(isGatewayDetectionExhausted()).toBe(true);
 
@@ -834,9 +828,9 @@ describe("isGatewayDetectionExhausted", () => {
     const dispose = startGatewayDetectionPolling({ fastPoll: true });
     await flushMicrotasks();
 
-    // Same absent count as the ambient case above, opposite answer: this loop
+    // Same absent count as the default-loop case above, opposite answer: this loop
     // has a timer armed and more sweeps to run, so nothing has been established.
-    expect(getAbsentSweepCount()).toBe(AMBIENT_MAX_ABSENT_SWEEPS);
+    expect(getAbsentSweepCount()).toBe(DEFAULT_MAX_ABSENT_SWEEPS);
     expect(isGatewayDetectionExhausted()).toBe(false);
 
     await vi.advanceTimersByTimeAsync(DETECTED_POLL_INTERVAL_MS * 500);
@@ -846,7 +840,7 @@ describe("isGatewayDetectionExhausted", () => {
     dispose();
   });
 
-  it("returns to the ambient budget once the fastPoll loop is disposed", async () => {
+  it("returns to the default budget once the fastPoll loop is disposed", async () => {
     mockProbeGateway.mockResolvedValue(ABSENT_PROBE);
 
     const dispose = startGatewayDetectionPolling({ fastPoll: true });

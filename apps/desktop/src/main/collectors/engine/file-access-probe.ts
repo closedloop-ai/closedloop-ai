@@ -16,6 +16,7 @@
  */
 import fs from "node:fs";
 import os from "node:os";
+import path from "node:path";
 
 /** A harness whose local transcript root could not be read. */
 export type FileAccessBlock = {
@@ -25,8 +26,21 @@ export type FileAccessBlock = {
   path: string;
 };
 
-/** The readability verdict for a single root. */
-export type PathReadability = "readable" | "blocked" | "absent" | "unknown";
+/**
+ * The readability verdict for a single root.
+ *
+ * ISS-8506 added the const object beside the pre-existing union so consumers
+ * compare against members instead of repeating the four literals; the type is
+ * unchanged, so every existing comparison keeps compiling.
+ */
+export const PathReadability = {
+  Readable: "readable",
+  Blocked: "blocked",
+  Absent: "absent",
+  Unknown: "unknown",
+} as const;
+export type PathReadability =
+  (typeof PathReadability)[keyof typeof PathReadability];
 
 /** A harness paired with the local root(s) its transcripts live under. */
 export type HarnessScanRoot = { harness: string; roots: string[] };
@@ -41,12 +55,12 @@ export type HarnessScanRoot = { harness: string; roots: string[] };
 export function classifyAccessError(error: unknown): PathReadability {
   const code = readErrorCode(error);
   if (code === "EACCES" || code === "EPERM") {
-    return "blocked";
+    return PathReadability.Blocked;
   }
   if (code === "ENOENT") {
-    return "absent";
+    return PathReadability.Absent;
   }
-  return "unknown";
+  return PathReadability.Unknown;
 }
 
 /** Whether a single root is readable, blocked on permission, or absent. */
@@ -58,7 +72,7 @@ export function checkPathReadable(root: string): PathReadability {
     // (`fs.accessSync`) can succeed on a TCC-blocked directory, so it would miss
     // the very block this probe exists to detect; mirror the real read path.
     fs.opendirSync(root).closeSync();
-    return "readable";
+    return PathReadability.Readable;
   } catch (error) {
     return classifyAccessError(error);
   }
@@ -76,7 +90,9 @@ export function probeFileAccessBlocks(
 ): FileAccessBlock[] {
   const blocks: FileAccessBlock[] = [];
   for (const { harness, roots } of scanRoots) {
-    const blockedRoot = roots.find((root) => checkReadable(root) === "blocked");
+    const blockedRoot = roots.find(
+      (root) => checkReadable(root) === PathReadability.Blocked
+    );
     if (blockedRoot !== undefined) {
       blocks.push({ harness, path: abbreviateHomePath(blockedRoot) });
     }
@@ -93,11 +109,68 @@ function readErrorCode(error: unknown): string | undefined {
   return undefined;
 }
 
-/** Replace the home-directory prefix with `~` for a user-facing path. */
-function abbreviateHomePath(absolute: string): string {
+/**
+ * Replace the home-directory prefix with `~` for a user-facing path.
+ *
+ * Exported for ISS-8506's byte-inventory evidence, which reports the same roots
+ * this probe classifies and must abbreviate them the same way.
+ */
+export function abbreviateHomePath(absolute: string): string {
   const home = os.homedir();
-  if (home && absolute.startsWith(home)) {
+  if (!home) {
+    return absolute;
+  }
+  if (absolute === home) {
+    return "~";
+  }
+  // A bare `startsWith(home)` also matches a SIBLING whose name merely begins
+  // with the home basename, and ISS-12521's picker hands this any folder the
+  // user chooses: with home `/Users/bob`, `/Users/bobby/code` abbreviated to
+  // `~by/code` (tamsinb, PR #8917). The separator is what makes it a
+  // descendant.
+  if (absolute.startsWith(`${home}${path.sep}`)) {
     return `~${absolute.slice(home.length)}`;
   }
   return absolute;
+}
+
+/**
+ * Whether a single FILE is present and readable.
+ *
+ * {@link checkPathReadable} opens a directory, which is the right granularity
+ * for a TCC/permission denial on a harness root but cannot answer "does this
+ * file exist" — it throws `ENOTDIR` on a regular file. ISS-8506 needs the file
+ * question for `opencode.db`, whose presence is what says OpenCode is installed
+ * at all (its home directory can exist without it). Same error classification,
+ * so the two verdicts read from one vocabulary.
+ */
+export function checkFilePresence(filePath: string): PathReadability {
+  try {
+    fs.statSync(filePath);
+    return PathReadability.Readable;
+  } catch (error) {
+    return classifyAccessError(error);
+  }
+}
+
+/**
+ * The same verdict as {@link checkPathReadable}, off the calling thread.
+ *
+ * Required for any probe of a path the USER chose while on the Electron main
+ * thread: `opendirSync` against a stalled network volume under `/Volumes`
+ * blocks the whole app until the mount times out (marisolashgrove, PR #8917,
+ * ISS-12521). The synchronous twin stays for the harness-root sweeps
+ * (`probeFileAccessBlocks`, `probeTranscriptHarnesses`), whose roots are local
+ * dotfolders and whose callers are synchronous end to end.
+ */
+export async function checkPathReadableAsync(
+  root: string
+): Promise<PathReadability> {
+  try {
+    const dir = await fs.promises.opendir(root);
+    await dir.close();
+    return PathReadability.Readable;
+  } catch (error) {
+    return classifyAccessError(error);
+  }
 }

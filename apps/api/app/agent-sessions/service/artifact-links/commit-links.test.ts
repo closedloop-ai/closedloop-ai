@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   installBranchIngestDb,
   syncBranchRefs,
-} from "@/__tests__/support/agent-sessions/service.test-harness";
+} from "@/__tests__/support/agent-sessions/branch-ingest.test-harness";
 
 vi.mock("@repo/database", async () => {
   const { databaseModuleMock } = await import(
@@ -52,8 +52,11 @@ describe("agentSessionsService", () => {
       },
     ]);
 
-    expect(m.commitDetailCreate).toHaveBeenCalledTimes(1);
-    expect(m.commitDetailCreate.mock.calls[0][0].data).toMatchObject({
+    // ISS-8145 batched this lane's writes, so inserts arrive through ONE
+    // `createMany` rather than a `create` per ref. The identity asserted below
+    // is unchanged — only the statement carrying it is.
+    expect(m.commitDetailCreateMany).toHaveBeenCalledTimes(1);
+    expect(m.commitDetailCreateMany.mock.calls[0][0].data[0]).toMatchObject({
       organizationId: "org-1",
       repositoryFullName: "acme/web",
       sha: "1a2b3c4",
@@ -113,11 +116,16 @@ describe("agentSessionsService", () => {
     // the N+1 it was meant to eliminate. Lock the regression at zero calls.
     expect(m.branchFindFirst).not.toHaveBeenCalled();
     // Each commit still reconciles onto its resolved branch.
-    expect(m.commitDetailCreate).toHaveBeenCalledTimes(3);
-    const created = m.commitDetailCreate.mock.calls.map((call) => ({
-      sha: call[0].data.sha,
-      branchArtifactId: call[0].data.branchArtifactId,
-    }));
+    // ISS-8145: ONE insert for the whole set, carrying every row — so the
+    // count moves onto the batch's payload rather than the call count.
+    expect(m.commitDetailCreateMany).toHaveBeenCalledTimes(1);
+    const created = m.commitDetailCreateMany.mock.calls[0][0].data.map(
+      (data: { sha: string; branchArtifactId: string }) => ({
+        sha: data.sha,
+        branchArtifactId: data.branchArtifactId,
+      })
+    );
+    expect(created).toHaveLength(3);
     expect(created).toContainEqual({
       sha: "1a2b3c4",
       branchArtifactId: "branch-x",
@@ -180,11 +188,16 @@ describe("agentSessionsService", () => {
     ]);
 
     expect(m.branchFindMany).toHaveBeenCalledTimes(1);
-    expect(m.commitDetailCreate).toHaveBeenCalledTimes(2);
-    const created = m.commitDetailCreate.mock.calls.map((call) => ({
-      sha: call[0].data.sha,
-      branchArtifactId: call[0].data.branchArtifactId,
-    }));
+    // ISS-8145: ONE insert for the whole set, carrying every row — so the
+    // count moves onto the batch's payload rather than the call count.
+    expect(m.commitDetailCreateMany).toHaveBeenCalledTimes(1);
+    const created = m.commitDetailCreateMany.mock.calls[0][0].data.map(
+      (data: { sha: string; branchArtifactId: string }) => ({
+        sha: data.sha,
+        branchArtifactId: data.branchArtifactId,
+      })
+    );
+    expect(created).toHaveLength(2);
     // Each commit lands on ITS OWN branch — never collapsed onto one.
     expect(created).toContainEqual({
       sha: "aaa1111",
@@ -210,7 +223,7 @@ describe("agentSessionsService", () => {
     ]);
 
     // Branch absent → no CommitDetail write; the ref is parked for a later tick.
-    expect(m.commitDetailCreate).not.toHaveBeenCalled();
+    expect(m.commitDetailCreateMany).not.toHaveBeenCalled();
     const deferralUpdate = m.sessionDetailUpdate.mock.calls.find(
       (call) =>
         (call[0] as { data?: { metadata?: Record<string, unknown> } }).data

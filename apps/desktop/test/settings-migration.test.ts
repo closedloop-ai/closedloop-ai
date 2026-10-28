@@ -2,15 +2,12 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, test } from "node:test";
+import { afterEach, test } from "vitest";
 import { SettingsStore } from "../src/main/settings/settings-store.js";
 import {
   DEFAULT_AUTH_API_ORIGIN,
   DEFAULT_DESKTOP_SETTINGS,
-  syncTierAllowsSessionMetadata,
-  syncTierAllowsTranscripts,
 } from "../src/shared/contracts.js";
-import { DESKTOP_ROUTINES_FEATURE_FLAG_KEY } from "../src/shared/feature-flags.js";
 
 const tempDirs: string[] = [];
 
@@ -366,35 +363,10 @@ test("migration: fresh install applies defaults", () => {
     "plan extraction should default off"
   );
   assert.equal(
-    all.commandSigningEnforcementEnabled,
-    false,
-    "command signing enforcement should default off"
-  );
-  assert.equal(
     "authApiOrigin" in all,
     false,
     "no stale authApiOrigin key should be present"
   );
-});
-
-test("command signing enforcement persists across settings store reloads", () => {
-  const tmpDir = fs.mkdtempSync(
-    path.join(os.tmpdir(), "settings-command-signing-")
-  );
-  tempDirs.push(tmpDir);
-
-  const storeName = "test-command-signing";
-  const store = new SettingsStore({ cwd: tmpDir, name: storeName });
-  store.update({
-    commandSigningEnforcementEnabled: true,
-    sandboxBaseDirectory: "/Users/test/Source",
-  });
-
-  const reloaded = new SettingsStore({ cwd: tmpDir, name: storeName });
-  const all = reloaded.getAll();
-
-  assert.equal(all.commandSigningEnforcementEnabled, true);
-  assert.equal(all.sandboxBaseDirectory, "/Users/test/Source");
 });
 
 test("plan extraction enablement persists across settings store reloads", () => {
@@ -415,29 +387,6 @@ test("plan extraction enablement persists across settings store reloads", () => 
 
   assert.equal(all.planExtractionEnabled, true);
   assert.equal(all.sandboxBaseDirectory, "/Users/test/Source");
-});
-
-test("partial settings update preserves command signing enforcement", () => {
-  const tmpDir = fs.mkdtempSync(
-    path.join(os.tmpdir(), "settings-command-signing-partial-")
-  );
-  tempDirs.push(tmpDir);
-
-  const store = new SettingsStore({
-    cwd: tmpDir,
-    name: "test-command-signing-partial",
-  });
-  store.update({
-    commandSigningEnforcementEnabled: true,
-    sandboxBaseDirectory: "/Users/test/Source",
-  });
-  store.update({ verboseLogging: true });
-
-  const all = store.getAll();
-
-  assert.equal(all.commandSigningEnforcementEnabled, true);
-  assert.equal(all.sandboxBaseDirectory, "/Users/test/Source");
-  assert.equal(all.verboseLogging, true);
 });
 
 test("partial settings update preserves plan extraction enablement", () => {
@@ -623,48 +572,6 @@ test("setDashboardWelcomeSeen persists across new SettingsStore instances", () =
   assert.equal(reopened.getDashboardWelcomeSeen(), true);
 });
 
-test("FEA-3462: stranded legacy install (onboarded, no tier) is reconciled to the SAFE 'metadata' floor — never 'full'", () => {
-  const tmpDir = fs.mkdtempSync(
-    path.join(os.tmpdir(), "settings-stranded-tier-")
-  );
-  tempDirs.push(tmpDir);
-
-  const storeName = "test-stranded-tier";
-  // Onboarding completed before the consent gate existed: tier key is ABSENT.
-  fs.writeFileSync(
-    path.join(tmpDir, `${storeName}.json`),
-    JSON.stringify({ onboardingCompleted: true })
-  );
-
-  const store = new SettingsStore({ cwd: tmpDir, name: storeName });
-
-  // The reconciliation restores the metadata (counts/aggregates) lane the
-  // legacy install already had, without silently granting transcript sharing.
-  assert.equal(
-    store.getSyncObservabilityTier(),
-    "metadata",
-    "stranded legacy install should be reconciled to the safe 'metadata' floor"
-  );
-
-  // CONSENT SAFETY: the reconciliation must NEVER silently opt the user into the
-  // full-transcript-upload tier without an explicit choice.
-  assert.notEqual(
-    store.getSyncObservabilityTier(),
-    "full",
-    "reconciliation must never auto-grant the 'full' (transcript-content) tier"
-  );
-
-  // The reconciled tier must be persisted, not merely defaulted at read time.
-  const persisted = JSON.parse(
-    fs.readFileSync(path.join(tmpDir, `${storeName}.json`), "utf-8")
-  );
-  assert.equal(
-    persisted.syncObservabilityTier,
-    "metadata",
-    "reconciled tier should be persisted to disk"
-  );
-});
-
 test("FEA-3462: explicit tier choice is never overridden by reconciliation", () => {
   for (const tier of ["local", "metadata", "full"] as const) {
     const tmpDir = fs.mkdtempSync(
@@ -694,9 +601,7 @@ test("FEA-3462: an install with no prior sync state is not reconciled (tier stay
   tempDirs.push(tmpDir);
 
   const storeName = "test-not-onboarded-tier";
-  // No onboarding, no superseded sync flags — a non-sync setting must not trigger
-  // grandfathering. (A not-yet-onboarded install that WAS syncing is a different
-  // case: it is restored to its prior tier — see data-sync-level.test.ts.)
+  // No explicit consent answer: unrelated persisted settings grant nothing.
   fs.writeFileSync(
     path.join(tmpDir, `${storeName}.json`),
     JSON.stringify({ sandboxBaseDirectory: "/Users/test/Source" })
@@ -710,163 +615,26 @@ test("FEA-3462: an install with no prior sync state is not reconciled (tier stay
   );
 });
 
-test("FEA-3462: the reconciled 'metadata' floor permits the metadata lane but keeps transcript CONTENTS local", () => {
-  const tmpDir = fs.mkdtempSync(
-    path.join(os.tmpdir(), "settings-stranded-tier-gate-")
-  );
+// Missing-tier migration and upload gates: settings-unset-sync-consent.test.ts.
+
+test("constructor deletes the retired Routines and Audit Bot keys from persisted store (PRD-797 Q-004)", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "settings-migration-"));
   tempDirs.push(tmpDir);
 
-  const storeName = "test-stranded-tier-gate";
+  // An install that opted in before PRD-797 removed the features carries the
+  // `routines` and `auditBot` Labs keys and the pre-rename `scheduledTasks`
+  // shadow; electron-store spreads raw persisted data in getAll(), so each
+  // would otherwise bleed through to IPC responses.
+  const storeName = "test-settings-prd797-retired-keys";
   fs.writeFileSync(
     path.join(tmpDir, `${storeName}.json`),
-    JSON.stringify({ onboardingCompleted: true })
+    JSON.stringify({ routines: true, scheduledTasks: true, auditBot: true })
   );
 
   const store = new SettingsStore({ cwd: tmpDir, name: storeName });
-  const tier = store.getSyncObservabilityTier();
+  const all = store.getAll();
 
-  // Feed the reconciled tier through the PRD-532 §7 gate the sync services use.
-  assert.equal(
-    syncTierAllowsSessionMetadata(tier),
-    true,
-    "reconciled tier must restore the session-metadata (counts/aggregates) lane"
-  );
-  assert.equal(
-    syncTierAllowsTranscripts(tier),
-    false,
-    "reconciled tier must NOT silently permit transcript CONTENTS to leave the machine"
-  );
-});
-
-test("PRD-566/FEA-4348: a persisted 'scheduledTasks' opt-in migrates to 'routines' AND keeps the legacy shadow so a downgrade still reads it", () => {
-  const tmpDir = fs.mkdtempSync(
-    path.join(os.tmpdir(), "settings-routines-migrate-on-")
-  );
-  tempDirs.push(tmpDir);
-
-  const storeName = "test-routines-migrate-on";
-  // Simulate an install that opted into the pre-rename "Scheduled Tasks" Labs
-  // flag (which booted the crewd scheduler daemon that owns the stored tasks).
-  fs.writeFileSync(
-    path.join(tmpDir, `${storeName}.json`),
-    JSON.stringify({ scheduledTasks: true })
-  );
-
-  const store = new SettingsStore({ cwd: tmpDir, name: storeName });
-
-  // The daemon boot reads `getFlag(routines)`; the opt-in must carry forward so
-  // the scheduler still starts and its already-stored tasks are not stranded.
-  assert.equal(
-    store.getFlag(DESKTOP_ROUTINES_FEATURE_FLAG_KEY),
-    true,
-    "a legacy scheduledTasks=true opt-in must migrate to routines=true"
-  );
-  // The rename is not one-way: the legacy shadow is kept and mirrored so a
-  // downgrade to a pre-rename build still reads the current value (whitlockk, #3896).
-  assert.equal(
-    store.getAll().scheduledTasks,
-    true,
-    "the legacy scheduledTasks shadow must be kept in sync for downgrades"
-  );
-});
-
-test("PRD-566/FEA-4348: a legacy 'scheduledTasks=false' opt-OUT is preserved, not defaulted back on", () => {
-  const tmpDir = fs.mkdtempSync(
-    path.join(os.tmpdir(), "settings-routines-migrate-off-")
-  );
-  tempDirs.push(tmpDir);
-
-  const storeName = "test-routines-migrate-off";
-  fs.writeFileSync(
-    path.join(tmpDir, `${storeName}.json`),
-    JSON.stringify({ scheduledTasks: false })
-  );
-
-  const store = new SettingsStore({ cwd: tmpDir, name: storeName });
-
-  // Mocks the OPPOSITE branch too: the registry default is also false, so the
-  // false must have been carried by the copy path — assert both keys are false.
-  assert.equal(
-    store.getFlag(DESKTOP_ROUTINES_FEATURE_FLAG_KEY),
-    false,
-    "a legacy scheduledTasks=false opt-out must be preserved as routines=false"
-  );
-  assert.equal(
-    store.getAll().scheduledTasks,
-    false,
-    "the false opt-out must be mirrored into the legacy shadow too"
-  );
-});
-
-test("PRD-566/FEA-4348: when routines and the legacy shadow AGREE, routines wins and the shadow stays synced", () => {
-  const tmpDir = fs.mkdtempSync(
-    path.join(os.tmpdir(), "settings-routines-agree-")
-  );
-  tempDirs.push(tmpDir);
-
-  const storeName = "test-routines-agree";
-  fs.writeFileSync(
-    path.join(tmpDir, `${storeName}.json`),
-    JSON.stringify({ routines: true, scheduledTasks: true })
-  );
-
-  const store = new SettingsStore({ cwd: tmpDir, name: storeName });
-
-  assert.equal(store.getFlag(DESKTOP_ROUTINES_FEATURE_FLAG_KEY), true);
-  assert.equal(store.getAll().scheduledTasks, true);
-});
-
-test("PRD-566/FEA-4348: new→old→new — a diverging legacy shadow (old build re-toggled) wins over the frozen routines value", () => {
-  const tmpDir = fs.mkdtempSync(
-    path.join(os.tmpdir(), "settings-routines-downgrade-retoggle-")
-  );
-  tempDirs.push(tmpDir);
-
-  const storeName = "test-routines-downgrade-retoggle";
-  // The round-trip whitlockk called out: a new build set routines=true (+ shadow),
-  // the user downgraded and turned Scheduled Tasks OFF on the old build (which
-  // only writes `scheduledTasks`), leaving `routines` frozen at true. On the
-  // next upgrade the newer opt-OUT — the diverging legacy value — must win, or
-  // the migration would silently ignore the user's most recent choice.
-  fs.writeFileSync(
-    path.join(tmpDir, `${storeName}.json`),
-    JSON.stringify({ routines: true, scheduledTasks: false })
-  );
-
-  const store = new SettingsStore({ cwd: tmpDir, name: storeName });
-
-  assert.equal(
-    store.getFlag(DESKTOP_ROUTINES_FEATURE_FLAG_KEY),
-    false,
-    "the diverging legacy value (the user's newer choice on the old build) must win"
-  );
-  assert.equal(
-    store.getAll().scheduledTasks,
-    false,
-    "and the resolved value is mirrored back into the shadow"
-  );
-});
-
-test("PRD-566/FEA-4348: setFlag('routines') dual-writes the legacy shadow so a later downgrade reads it", () => {
-  const tmpDir = fs.mkdtempSync(
-    path.join(os.tmpdir(), "settings-routines-setflag-shadow-")
-  );
-  tempDirs.push(tmpDir);
-
-  const storeName = "test-routines-setflag-shadow";
-  const store = new SettingsStore({ cwd: tmpDir, name: storeName });
-
-  store.setFlag(DESKTOP_ROUTINES_FEATURE_FLAG_KEY, true);
-  assert.equal(
-    store.getAll().scheduledTasks,
-    true,
-    "toggling routines on must mirror into the legacy shadow"
-  );
-
-  store.setFlag(DESKTOP_ROUTINES_FEATURE_FLAG_KEY, false);
-  assert.equal(
-    store.getAll().scheduledTasks,
-    false,
-    "toggling routines off must mirror into the legacy shadow"
-  );
+  for (const key of ["routines", "scheduledTasks", "auditBot"]) {
+    assert.equal(key in all, false, `${key} should be removed from getAll()`);
+  }
 });

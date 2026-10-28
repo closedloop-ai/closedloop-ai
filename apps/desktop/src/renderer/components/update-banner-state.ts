@@ -197,3 +197,10 @@ export function updateBannerMessage(state: UpdateBannerState): string {
       return "";
   }
 }
+
+/**
+ * Handle for the ready-to-install strip. The strip is a `role="status"` line and
+ * so are its siblings, so a role query alone cannot pick it out — the renderer
+ * suite and the Electron regression both need to address this exact state.
+ */
+export const UPDATE_BANNER_READY_TEST_ID = "update-banner-ready";

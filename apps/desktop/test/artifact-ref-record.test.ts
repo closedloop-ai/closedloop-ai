@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import {
   type ArtifactRefRecord,
   canonicalKeyForRef,
@@ -29,12 +29,12 @@ describe("canonicalKeyForRef", () => {
       canonicalKeyForRef(
         ref({
           targetKind: "pull_request",
-          targetIdentity: "closedloop-ai/example-repo#99",
-          repoFullName: "closedloop-ai/example-repo",
+          targetIdentity: "closedloop-ai/closedloop-ai#99",
+          repoFullName: "closedloop-ai/closedloop-ai",
           prNumber: 99,
         })
       ),
-      "closedloop-ai/example-repo#99"
+      "closedloop-ai/closedloop-ai#99"
     );
   });
 
@@ -44,11 +44,11 @@ describe("canonicalKeyForRef", () => {
         ref({
           targetKind: "branch",
           targetIdentity: "main",
-          repoFullName: "closedloop-ai/example-repo",
+          repoFullName: "closedloop-ai/closedloop-ai",
           branchName: "main",
         })
       ),
-      "closedloop-ai/example-repo:main"
+      "closedloop-ai/closedloop-ai:main"
     );
     assert.equal(
       canonicalKeyForRef(

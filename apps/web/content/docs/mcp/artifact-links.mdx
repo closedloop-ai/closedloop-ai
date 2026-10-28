@@ -42,7 +42,7 @@ list-artifact-links(
   linkType?: string,                       // Filter by link type
   direction?: "source" | "target" | "both", // Default: both
   mode?: "direct" | "tree",                // "tree" does BFS traversal
-  maxDepth?: number,                       // 1–50, only for mode="tree"
+  maxDepth?: number,                       // 1–10, only for mode="tree"; 1–2 with direction "both"
   limit?: number,
   offset?: number
 )
@@ -83,6 +83,7 @@ Each item in the response includes fully hydrated source and target endpoint obj
 ```
 list-artifact-links(
   artifactId: "PRD-42",
+  direction: "target",
   mode: "tree",
   maxDepth: 3,
   linkType: "PRODUCES"
@@ -140,9 +141,7 @@ delete-artifact-link(
 
 **Every link type has a behavioral consequence — none of them is a no-op.**
 
-- **`PRODUCES` changes lineage.** The project tree and the loop roll-ups derive from these edges, so a child detached from its parent stops appearing under it.
-- **`BLOCKS` gates loop dispatch.** An artifact is clear to dispatch only when it has no inbound `BLOCKS` link from a non-terminal source. Deleting such a link can therefore release deferred loop work — not at delete time, but on the next reconciliation pass, which sweeps `BLOCKED` loops on a cron rather than in response to the deletion.
-- **`RELATES_TO` can carry loop context.** An evergreen Document attached to a FEAT/PRD travels through a `RELATES_TO` link and is folded into that artifact's loop context packs. Deleting the link removes the document from every later pack, so subsequent loops run without context they previously had.
+- **`PRODUCES` changes lineage.** The project tree derives from these edges, so a child detached from its parent stops appearing under it.
 
 Check what a link is doing before removing it — the safe-looking types are the ones whose effects are least visible in the UI.
 
@@ -191,7 +190,7 @@ create_branch_artifact(
 2. list-artifact-links(
      artifactId: "FEA-1035",
      mode: "tree",
-     maxDepth: 5
+     maxDepth: 2
    )
    → shows PRD → PLN → FEA chain and any other connected artifacts
 ```

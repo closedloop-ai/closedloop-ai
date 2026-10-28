@@ -14,7 +14,10 @@ export type ArtifactMarkerLinkRow = {
   artifact_observed_at: string | null;
   artifact_last_seen_at: string | null;
   // FEA-3329: AUTHORITATIVE PR-opened instant (pull_requests.opened_at). Null
-  // until the PR is enriched, in which case the observed timestamps are used.
+  // unless some earlier release stored one — its enrichment writer was deleted
+  // by PLN-1535 (PR #4435). On null the PR marker falls back to the session's
+  // corrected activity END, not to the observed timestamps below it; see
+  // `prCandidate`.
   pr_opened_at: string | null;
 };
 
@@ -40,6 +43,16 @@ type ArtifactMarkerCandidate = SessionMarker & {
   timestampMs: number;
 };
 
+export type ArtifactSessionMarkerAccumulator = {
+  observeTimelineRow(
+    createdAt: string,
+    index: number,
+    traceMarker?: SessionMarker | null
+  ): void;
+  observeTraceMarker(marker: SessionMarker): void;
+  finish(): SessionMarker[];
+};
+
 /**
  * Derives commit/PR timeline markers from canonical local artifact links.
  * Relation and identity gates live here so projection SQL can stay broad and
@@ -48,19 +61,29 @@ type ArtifactMarkerCandidate = SessionMarker & {
 export function buildArtifactSessionMarkers(
   input: BuildArtifactSessionMarkersInput
 ): SessionMarker[] {
+  const accumulator = createArtifactSessionMarkerAccumulator(input);
+  input.timelineRows.forEach((row, index) => {
+    accumulator.observeTimelineRow(row.createdAt, index);
+  });
+  return accumulator.finish();
+}
+
+/** Incremental artifact-marker builder for a bounded timeline read. */
+export function createArtifactSessionMarkerAccumulator(
+  input: Omit<BuildArtifactSessionMarkersInput, "timelineRows">
+): ArtifactSessionMarkerAccumulator {
   const sessionStartMs = parseIsoMs(input.startedAt);
   const sessionEndMs =
     input.endMs !== undefined && Number.isFinite(input.endMs)
       ? input.endMs
       : parseIsoMs(input.endedAt ?? input.updatedAt);
-  const timelineMs = input.timelineRows.map((row) => parseIsoMs(row.createdAt));
   const candidates = new Map<string, ArtifactMarkerCandidate>();
 
   for (const link of input.links) {
     const candidate =
       link.target_kind === "commit"
-        ? commitMarkerCandidate(link, sessionStartMs, sessionEndMs, timelineMs)
-        : prMarkerCandidate(link, sessionStartMs, sessionEndMs, timelineMs);
+        ? commitMarkerCandidate(link, sessionStartMs, sessionEndMs)
+        : prMarkerCandidate(link, sessionStartMs, sessionEndMs);
     if (!candidate) {
       continue;
     }
@@ -70,16 +93,61 @@ export function buildArtifactSessionMarkers(
     }
   }
 
-  return [...candidates.values()]
-    .sort((left, right) => {
-      const byTime = left.timestampMs - right.timestampMs;
-      return byTime === 0
-        ? left.identity.localeCompare(right.identity)
-        : byTime;
-    })
-    .map(
-      ({ identity: _identity, timestampMs: _timestampMs, ...marker }) => marker
-    );
+  const nearestByIdentity = new Map<
+    string,
+    { distance: number; index: number }
+  >();
+  const displaySuppressed = new Set<string>();
+  const anchorSuppressed = new Set<string>();
+  return {
+    observeTimelineRow(createdAt, index, traceMarker) {
+      const rowMs = parseIsoMs(createdAt);
+      if (!Number.isFinite(rowMs)) {
+        return;
+      }
+      for (const candidate of candidates.values()) {
+        const distance = Math.abs(rowMs - candidate.timestampMs);
+        const current = nearestByIdentity.get(candidate.identity);
+        if (!current || distance < current.distance) {
+          nearestByIdentity.set(candidate.identity, { distance, index });
+          if (traceMarker?.kind === candidate.kind) {
+            anchorSuppressed.add(candidate.identity);
+          } else {
+            anchorSuppressed.delete(candidate.identity);
+          }
+        }
+      }
+    },
+    observeTraceMarker(marker) {
+      for (const candidate of candidates.values()) {
+        if (
+          markerDisplayIdentity(marker) === markerDisplayIdentity(candidate)
+        ) {
+          displaySuppressed.add(candidate.identity);
+        }
+      }
+    },
+    finish() {
+      return [...candidates.values()]
+        .filter(
+          (candidate) =>
+            !(
+              displaySuppressed.has(candidate.identity) ||
+              anchorSuppressed.has(candidate.identity)
+            )
+        )
+        .sort((left, right) => {
+          const byTime = left.timestampMs - right.timestampMs;
+          return byTime === 0
+            ? left.identity.localeCompare(right.identity)
+            : byTime;
+        })
+        .map(({ identity, timestampMs: _timestampMs, ...marker }) => ({
+          ...marker,
+          tl: nearestByIdentity.get(identity)?.index ?? 0,
+        }));
+    },
+  };
 }
 
 /**
@@ -134,8 +202,7 @@ export function mergeSessionMarkers(
 function commitMarkerCandidate(
   link: ArtifactMarkerLinkRow,
   sessionStartMs: number,
-  sessionEndMs: number,
-  timelineMs: readonly number[]
+  sessionEndMs: number
 ): ArtifactMarkerCandidate | null {
   const sha = normalizedText(link.sha);
   if (link.relation !== "created" || !sha) {
@@ -161,15 +228,13 @@ function commitMarkerCandidate(
     timestamp,
     sessionStartMs,
     sessionEndMs,
-    timelineMs,
   });
 }
 
 function prMarkerCandidate(
   link: ArtifactMarkerLinkRow,
   sessionStartMs: number,
-  sessionEndMs: number,
-  timelineMs: readonly number[]
+  sessionEndMs: number
 ): ArtifactMarkerCandidate | null {
   if (
     link.target_kind !== "pull_request" ||
@@ -180,10 +245,11 @@ function prMarkerCandidate(
     return null;
   }
   // FEA-3329 + FEA-3594: the AUTHORITATIVE PR-opened instant
-  // (pull_requests.opened_at, from GitHub metadata via enrichment) is the only
-  // meaningful time. When absent (PR not yet enriched), fall back to
-  // sessionEndMs — the corrected activity-end anchor — rather than import
-  // timestamps (link_observed_at etc.) which are meaningless rebuild artifacts.
+  // (pull_requests.opened_at) is the only meaningful time. When absent — which is
+  // permanent for any PR no release ever stored one for, since PLN-1535 (PR
+  // #4435) deleted its writer — fall back to sessionEndMs, the corrected
+  // activity-end anchor, rather than import timestamps (link_observed_at etc.)
+  // which are meaningless rebuild artifacts.
   const opened = firstValidTimestamp([link.pr_opened_at]);
   const timestamp =
     opened ??
@@ -203,7 +269,6 @@ function prMarkerCandidate(
     timestamp,
     sessionStartMs,
     sessionEndMs,
-    timelineMs,
   });
 }
 
@@ -214,7 +279,6 @@ function buildCandidate(input: {
   timestamp: { value: string; ms: number };
   sessionStartMs: number;
   sessionEndMs: number;
-  timelineMs: readonly number[];
 }): ArtifactMarkerCandidate {
   const durationMs =
     Number.isFinite(input.sessionStartMs) &&
@@ -232,7 +296,7 @@ function buildCandidate(input: {
     x: roundNumber(Math.max(0, Math.min(100, x))),
     t: input.timestamp.value,
     label: clampMarkerLabel(input.label),
-    tl: nearestTimelineIndex(input.timestamp.ms, input.timelineMs),
+    tl: 0,
   };
 }
 
@@ -246,25 +310,6 @@ function firstValidTimestamp(
     }
   }
   return null;
-}
-
-function nearestTimelineIndex(
-  markerMs: number,
-  timelineMs: readonly number[]
-): number {
-  let bestIndex = 0;
-  let bestDistance = Number.POSITIVE_INFINITY;
-  timelineMs.forEach((rowMs, index) => {
-    if (!Number.isFinite(rowMs)) {
-      return;
-    }
-    const distance = Math.abs(rowMs - markerMs);
-    if (distance < bestDistance) {
-      bestDistance = distance;
-      bestIndex = index;
-    }
-  });
-  return bestIndex;
 }
 
 function markerDisplayIdentity(marker: SessionMarker): string {

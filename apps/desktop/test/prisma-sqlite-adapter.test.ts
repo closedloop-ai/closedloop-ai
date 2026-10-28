@@ -14,8 +14,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
 import { PrismaLibSql } from "@prisma/adapter-libsql";
+import { test } from "vitest";
 import { PrismaClient } from "../src/main/database/generated/client.js";
 import {
   BASELINE_MIGRATIONS,

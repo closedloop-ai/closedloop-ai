@@ -1,14 +1,27 @@
 import { SyncReason } from "@closedloop-ai/telemetry-contract/sync";
+import type { DataSyncLevel } from "@repo/api/src/types/data-sync-level";
+import type { MetadataContentPolicy } from "@repo/lib/agent-sessions/metadata-preview";
+import { dataSyncLevelToMetadataContentPolicy } from "../../shared/data-sync-level.js";
 import {
-  type DesktopSyncBatchEventInput,
   DesktopSyncBatchOutcome,
+  type SessionSyncBatchEvent,
 } from "../telemetry/app-otel-runtime.js";
+import { reportCollectorRecordsDropped } from "../telemetry/collector-records-dropped-telemetry.js";
+import { CollectorRecordsDroppedReason } from "../telemetry/telemetry-protocol.js";
+import {
+  type AgentSessionSyncCapabilities,
+  NO_AGENT_SESSION_SYNC_CAPABILITIES,
+} from "./agent-session-sync-capabilities.js";
+import { syncPayloadSizerFor } from "./agent-session-sync-compression.js";
 import type { SyncedAgentSession } from "./agent-session-sync-contract.js";
-import type {
-  AgentSessionPayloadPreparer,
-  PreparedAgentSessionPayload,
+import {
+  type AgentSessionPayloadPreparer,
+  type PreparedAgentSessionPayload,
+  prepareAgentSessionPayload,
+  type UnsendableComponentUnits,
 } from "./agent-session-sync-payload.js";
 import type { AgentSessionSyncSource } from "./agent-session-sync-source.js";
+import { readLocallyOversizedSessions } from "./sync-source-reply-boundary.js";
 
 /**
  * FEA-4014: outcome of preparing a candidate batch with per-session failure
@@ -29,6 +42,47 @@ export type PreparedSessionFailure = {
   session: SyncedAgentSession;
   error: unknown;
 };
+
+/**
+ * The default, in-process payload preparer: serialize each candidate on the
+ * calling thread.
+ *
+ * The production lane injects a worker-backed preparer instead
+ * (`agent-session-sync-payload-worker-runner.ts`); this is the fallback the sync
+ * service constructs when none is supplied, and what most tests exercise.
+ *
+ * It lives here rather than inline in `agent-session-sync-service.ts` because
+ * that file is on the `noExcessiveLinesPerFile` grandfather list, which is
+ * SHRINK-ONLY — an inline arrow that grows by a parameter makes a required gate
+ * red. Every argument it forwards is also a capability the server negotiated, so
+ * forgetting one silently disables a whole feature for the in-process path:
+ * `prRefChunkingSupported` (ISS-9859) is the seventh, and without it a session
+ * would never paginate its `prRefs` or `prs` however the server answered.
+ */
+export const inProcessAgentSessionPayloadPreparer: AgentSessionPayloadPreparer =
+  (
+    sessions,
+    maxBytes,
+    compress,
+    activityChunkingSupported,
+    policy,
+    prRefChunkingSupported
+  ) => {
+    const sizer = syncPayloadSizerFor(compress === true);
+    return Promise.resolve(
+      sessions.map((session) =>
+        prepareAgentSessionPayload(
+          session,
+          maxBytes,
+          sizer,
+          undefined,
+          activityChunkingSupported === true,
+          policy,
+          prRefChunkingSupported === true
+        )
+      )
+    );
+  };
 
 /**
  * FEA-4014: prepare a candidate batch, isolating any single failing session.
@@ -53,17 +107,48 @@ export async function prepareCandidatePayloadsIsolated(
   // FEA-4138: size the cap/chunk decision against gzip bytes when the server
   // negotiated decompression. Optional + additive; omitted keeps raw-JSON prep.
   compress = false,
-  // ISS-4541: paginate an oversized session's activity-segment tiling across
-  // chunks when the server merges multi-part tilings additively. Optional +
-  // additive; omitted keeps the tiling in the base payload (old behavior).
-  activityChunkingSupported = false
+  // The tick's capability snapshot. ISS-4541 `activityChunking` paginates an
+  // oversized session's activity-segment tiling across chunks; ISS-9859
+  // `prRefChunking` paginates `prRefs` and `prs` when they are why the
+  // replicated split fails; ISS-12552 `tokenEventOwner` keeps token-event
+  // owners. Omitted, each keeps the older server's shape.
+  capabilities: PreparationCapabilities = NO_AGENT_SESSION_SYNC_CAPABILITIES,
+  // ISS-7775: this machine's reconciled data-sync level, which decides what the
+  // producer may keep inside `metadata`. The level → policy mapping happens HERE
+  // rather than at the call site so there is exactly one of it, and `undefined`
+  // (no level wired) is forwarded as `undefined` rather than substituted with a
+  // default — the producer resolves an unstated policy to the WITHHOLDING one,
+  // and a default invented here could only widen that.
+  dataSyncLevel?: DataSyncLevel
+): Promise<IsolatedPreparationResult> {
+  return await prepareIsolated(
+    preparePayloads,
+    withTokenEventOwnersFor(candidateSessions, capabilities.tokenEventOwner),
+    maxBytes,
+    compress,
+    capabilities.activityChunking,
+    dataSyncLevel && dataSyncLevelToMetadataContentPolicy(dataSyncLevel),
+    capabilities.prRefChunking
+  );
+}
+
+async function prepareIsolated(
+  preparePayloads: AgentSessionPayloadPreparer,
+  candidateSessions: SyncedAgentSession[],
+  maxBytes: number,
+  compress: boolean,
+  activityChunkingSupported: boolean,
+  contentPolicy: MetadataContentPolicy | undefined,
+  prRefChunkingSupported: boolean
 ): Promise<IsolatedPreparationResult> {
   try {
     const prepared = await preparePayloads(
       candidateSessions,
       maxBytes,
       compress,
-      activityChunkingSupported
+      activityChunkingSupported,
+      contentPolicy,
+      prRefChunkingSupported
     );
     return { prepared, failures: [] };
   } catch (batchError) {
@@ -83,7 +168,9 @@ export async function prepareCandidatePayloadsIsolated(
       candidateSessions,
       maxBytes,
       compress,
-      activityChunkingSupported
+      activityChunkingSupported,
+      contentPolicy,
+      prRefChunkingSupported
     );
   }
 }
@@ -93,7 +180,9 @@ async function prepareEachSession(
   candidateSessions: SyncedAgentSession[],
   maxBytes: number,
   compress: boolean,
-  activityChunkingSupported: boolean
+  activityChunkingSupported: boolean,
+  contentPolicy: MetadataContentPolicy | undefined,
+  prRefChunkingSupported: boolean
 ): Promise<IsolatedPreparationResult> {
   const prepared: PreparedAgentSessionPayload[] = [];
   const failures: PreparedSessionFailure[] = [];
@@ -103,7 +192,9 @@ async function prepareEachSession(
         [session],
         maxBytes,
         compress,
-        activityChunkingSupported
+        activityChunkingSupported,
+        contentPolicy,
+        prRefChunkingSupported
       );
       prepared.push(...sessionPayloads);
     } catch (sessionError) {
@@ -122,7 +213,7 @@ export type PreparationFailureDeps = {
   // Charges one session's transport-error budget; returns whether it was
   // dead-lettered on this attempt.
   chargeTransportError: (sessionId: string, error: unknown) => boolean;
-  emitBatchTelemetry: (event: DesktopSyncBatchEventInput) => void;
+  emitBatchTelemetry: (event: SessionSyncBatchEvent) => void;
 };
 
 /**
@@ -195,11 +286,21 @@ export async function selectHydratableCandidateIds(
   if (compress) {
     return candidateIds;
   }
-  const oversizedRows =
-    (await source.findLocallyOversizedSessions?.(
+  // ISS-8135: the delegate-absence test is a separate statement from the reply
+  // validation, and deliberately so. The `?? []` it replaces conflated "this
+  // source predates the proof" with "the peer answered something this build
+  // cannot read" — the first is a legacy source behaving as designed, the second
+  // is a version-skew fault worth counting, and only the second may be reported.
+  if (!source.findLocallyOversizedSessions) {
+    return candidateIds;
+  }
+  const oversizedRows = readLocallyOversizedSessions(
+    await source.findLocallyOversizedSessions(
       candidateIds,
       deps.contentByteCap
-    )) ?? [];
+    ),
+    deps.contentByteCap
+  );
   if (oversizedRows.length === 0) {
     return candidateIds;
   }
@@ -220,4 +321,70 @@ export async function selectHydratableCandidateIds(
     deps.deadLetterOversized(id, payloadBytes);
   }
   return hydratableIds;
+}
+
+/**
+ * ISS-6999: route the component-usage rows a delivery shipped without to the
+ * `collector.records_dropped` event.
+ *
+ * The loss is PERMANENT rather than deferred — the usage read is deterministic
+ * and `agent_component_session_usage` carries no sync cursor — so a session that
+ * ships without those rows is otherwise indistinguishable from one that never
+ * had them.
+ *
+ * ROWS, not units, is the count: the event names the records that will not sync.
+ * A pass that skipped nothing emits nothing rather than a reassuring `0`.
+ *
+ * CALLED ONLY FROM A PROVEN DELIVERY (whitlockk, cid 3846110703; codex, cid
+ * 3846063729). Preparing a payload, and even folding it into a batch, proves
+ * nothing: three separate `return`s (empty batch, stale source, capability
+ * downgrade) and a throwing `sendBatch` sit between the fold and the wire, and
+ * every one of them leaves the outbox queued for a re-prepare that would report
+ * the same rows again. The caller is therefore the accepted-ack delivery path,
+ * gated on the FINAL chunk and counted over the ids the SERVER confirmed.
+ */
+export function reportUnsendableComponentUsage(
+  units: UnsendableComponentUnits | undefined
+): void {
+  reportCollectorRecordsDropped({
+    reason: CollectorRecordsDroppedReason.ComponentUsagePayloadBudget,
+    count: units?.rows ?? 0,
+  });
+}
+
+export type PreparationCapabilities = Pick<
+  AgentSessionSyncCapabilities,
+  "activityChunking" | "prRefChunking" | "tokenEventOwner"
+>;
+
+/**
+ * ISS-12552: a token event's owner (`agentExternalId`) and the session's
+ * operation evidence go only when the attempt's snapshot says owners are sent:
+ * the server accepts them and the attribution parse policy is on (PRD-800
+ * "Rollout"). An older server rejects an owner differing from the one it
+ * stored, and every event it holds was stored without one, so a resync would
+ * fail the whole batch; it also drops evidence it does not keep. With the
+ * policy off neither goes, including evidence still stored from an on period
+ * that no rebuild has cleared yet.
+ */
+export function withTokenEventOwnersFor(
+  sessions: SyncedAgentSession[],
+  ownersAccepted: boolean
+): SyncedAgentSession[] {
+  if (ownersAccepted) {
+    return sessions;
+  }
+  return sessions.map((session) => {
+    const { operationEvidence: _evidence, ...withoutEvidence } = session;
+    return session.tokenEvents?.some(
+      (event) => event.agentExternalId !== undefined
+    )
+      ? {
+          ...withoutEvidence,
+          tokenEvents: session.tokenEvents.map(
+            ({ agentExternalId: _owner, ...event }) => event
+          ),
+        }
+      : withoutEvidence;
+  });
 }

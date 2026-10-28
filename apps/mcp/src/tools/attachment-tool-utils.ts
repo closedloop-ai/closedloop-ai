@@ -4,6 +4,7 @@ import type { ApiClient } from "../api-client.js";
 import {
   describeIdOrSlug,
   encodePathSegment,
+  requiredIdOrSlug,
   withErrorHandling,
 } from "./tool-utils.js";
 
@@ -32,11 +33,11 @@ export function registerAttachmentActionTool<TResponse>(
     {
       description: options.description,
       inputSchema: {
-        entityId: z
-          .string()
-          .describe(
-            buildEntityIdDescription(options.entityIdDescriptionSuffix)
-          ),
+        entityId: requiredIdOrSlug(
+          "Document",
+          DOCUMENT_ID_EXAMPLES,
+          "Use list-documents to find one."
+        ).describe(buildEntityIdDescription(options.entityIdDescriptionSuffix)),
         attachmentId: z.string().describe("Attachment UUID"),
       },
     },

@@ -32,6 +32,17 @@ export function toSandboxSettings(
 /** Returns the snapshot's size in bytes. */
 export function snapshotDatabase(sourceDb: string, targetDb: string): number;
 
+/**
+ * Session population of a prepared snapshot. `null` on either field means the
+ * value could not be read — deliberately distinct from a count of zero.
+ */
+export type SessionStats = {
+  sessionCount: number | null;
+  newestLastActivityAt: string | null;
+};
+
+export function readSessionStats(dbPath: string): SessionStats;
+
 /** Returns the number of transcript files copied. */
 export function copyTranscripts(
   sourceClaudeHome: string,
@@ -51,7 +62,7 @@ export function prepareDataset(options: {
   withTranscripts?: number;
   sourceClaudeHome?: string;
   runGit?: (args: readonly string[], cwd: string) => SpawnProbeResult;
-}): {
+}): SessionStats & {
   targetDir: string;
   targetDb: string;
   dbBytes: number;

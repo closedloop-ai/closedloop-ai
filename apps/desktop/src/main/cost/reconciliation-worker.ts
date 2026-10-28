@@ -10,9 +10,11 @@
  * ── Where this runs, and what it never touches ───────────────────────────────
  * Entirely in desktop-main. Reconciliation depends on org-level Admin keys (OS
  * keychain, main-only) and makes outbound calls to the vendor billing APIs. The
- * worker reads the in-process agent database READ-ONLY through the shared
- * connection (FEA-1497). The effective token counts fold the pre-compaction
- * baselines into the standard columns (`input_tokens + baseline_*`, FEA-3390)
+ * metered rows it reconciles are read READ-ONLY by the db-host store
+ * (`loadSqliteMeteredUsageRows` in `database/sync-source.ts`), which resolves
+ * each row's billing mode there. The effective token counts fold the
+ * pre-compaction baselines into the standard columns (`input_tokens +
+ * baseline_*`, FEA-3390)
  * so a compacted session reconciles its full incurred spend, not just the
  * post-compaction subset. It performs NO pricing of its own beyond calling the
  * shared genai-prices engine (`token-cost.ts`), which TRUSTS the library for
@@ -40,11 +42,9 @@
  * configured Admin key is skipped entirely rather than reconciled against a
  * zero bill. The vendor clients throw on a partial page rather than understate.
  */
-import type { DatabaseSync } from "node:sqlite";
-import { isMeteredApi } from "../../shared/billing-mode.js";
+import { type BillingMode, isMeteredApi } from "../../shared/billing-mode.js";
 import { computeTokenCost } from "../../shared/token-cost.js";
 import type { VendorBilledEntry } from "./admin-billing.js";
-import { resolveBillingMode } from "./billing-mode-detector.js";
 import { computeDrift, sumMicroCents, usdToMicroCents } from "./cost-math.js";
 import {
   type DriftCauseHint,
@@ -83,7 +83,7 @@ export type MeteredUsageRow = {
   /** Session start (RFC 3339); supplies both the day and the pricing timestamp. */
   startedAt: string;
   /** Resolved billing mode (only metered rows are reconciled). */
-  billingMode: ReturnType<typeof resolveBillingMode>;
+  billingMode: BillingMode;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
@@ -465,80 +465,6 @@ function dayPlusOne(day: string): string {
 /** Unix epoch SECONDS at the UTC start of the given ISO day. */
 function dayStartUnixSeconds(day: string): number {
   return Math.floor(new Date(`${day}T00:00:00Z`).getTime() / 1000);
-}
-
-/**
- * Read the metered token-usage rows to reconcile from an OPEN agent database
- * (READ-ONLY). Mirrors the sync service's query against the in-process schema:
- * the day comes from `sessions.started_at`, and the billing mode is resolved
- * with the shared rule so only real metered API spend is reconciled.
- * `cutoffIso` bounds the scan to recent sessions.
- *
- * FEA-3390: the standard token columns hold only the POST-compaction subset —
- * a compacted session's PRE-compaction totals live in `baseline_*`. Fold them
- * in (`input_tokens + baseline_input`, …, COALESCE-guarded so a non-compacted
- * row with NULL baselines is unchanged) so the effective totals reconciled
- * against the provider bill count every incurred token. Without the fold a
- * compacted session under-estimates and falsely reads as a provider overcharge.
- */
-export function loadMeteredUsageRows(
-  db: DatabaseSync,
-  cutoffIso: string
-): MeteredUsageRow[] {
-  const rows = db
-    .prepare(
-      `
-        SELECT
-          s.id AS session_id,
-          s.started_at AS started_at,
-          s.billing_mode AS billing_mode,
-          s.harness AS harness,
-          tu.model AS model,
-          COALESCE(tu.input_tokens, 0) + COALESCE(tu.baseline_input, 0) AS input_tokens,
-          COALESCE(tu.output_tokens, 0) + COALESCE(tu.baseline_output, 0) AS output_tokens,
-          COALESCE(tu.cache_read_tokens, 0) + COALESCE(tu.baseline_cache_read, 0) AS cache_read_tokens,
-          COALESCE(tu.cache_write_tokens, 0) + COALESCE(tu.baseline_cache_write, 0) AS cache_write_tokens
-        FROM token_usage tu
-        JOIN sessions s ON s.id = tu.session_id
-        WHERE s.started_at >= ?
-        ORDER BY s.started_at ASC, tu.model ASC
-      `
-    )
-    .all(cutoffIso) as Array<{
-    session_id: string;
-    started_at: string;
-    billing_mode: string | null;
-    harness: string | null;
-    model: string;
-    input_tokens: number;
-    output_tokens: number;
-    cache_read_tokens: number;
-    cache_write_tokens: number;
-  }>;
-
-  const out: MeteredUsageRow[] = [];
-  for (const row of rows) {
-    const billingMode = resolveBillingMode({
-      billingMode: row.billing_mode,
-      harness: row.harness,
-    });
-    // Only real per-token API spend is reconciled; subscription/seat usage is
-    // priced elsewhere as a hypothetical and must never be compared to a bill.
-    if (!isMeteredApi(billingMode)) {
-      continue;
-    }
-    out.push({
-      sessionId: row.session_id,
-      model: row.model,
-      startedAt: row.started_at,
-      billingMode,
-      inputTokens: row.input_tokens,
-      outputTokens: row.output_tokens,
-      cacheReadTokens: row.cache_read_tokens,
-      cacheWriteTokens: row.cache_write_tokens,
-    });
-  }
-  return out;
 }
 
 /** ISO timestamp `windowDays` before `now` — the lower bound for the DB scan. */

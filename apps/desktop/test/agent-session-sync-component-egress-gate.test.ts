@@ -1,24 +1,16 @@
 /**
  * @file agent-session-sync-component-egress-gate.test.ts
  * @description ISS-4623 (davetho review): the component-inventory sync lane
- * (`syncComponentsOnce` → `runComponentSync`) must re-check the LIVE egress gate
- * and compute target IMMEDIATELY before every POST — the normal batch send AND
- * the dead-letter recovery send — not only after it.
+ * (`syncComponentsOnce` → `runComponentSync`) must re-check the live compute
+ * target IMMEDIATELY before every POST — the normal batch send AND the
+ * dead-letter recovery send — not only after it.
  *
- * BUG: the lane sampled the gate + target once at entry, then awaited
- * `listComponentCursorRows` / `loadComponentRows` (DB reads) before sending, with
- * the freshness guard (`isCurrentComponentState`) only re-read AFTER the send (to
- * gate the cursor advance). The guard also only folded in generation + `started`,
- * not the org-policy egress gate or the compute target. So a policy true→false
- * close, or an account/target switch, landing during those reads would still POST
- * the batch under a just-closed gate or the previous target.
- *
- * FIX: `isCurrentComponentState` now ANDs the live `isCloudSyncTierAllowed` (which
- * folds in the org-policy gate) and an unchanged `getSyncComputeTargetId`, and the
- * lane re-checks it right BEFORE both sends.
+ * Component synchronization is unconditional for an authenticated Desktop
+ * target. The target check remains because a target switch during local reads
+ * must never send a batch under the prior account's cursor.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { AgentSessionSyncService } from "../src/main/agent-sync/agent-session-sync-service.js";
 import type { AgentSessionSyncServiceOptions } from "../src/main/agent-sync/agent-session-sync-service-options.js";
 import type { AgentComponentCursorRow } from "../src/main/agent-sync/agent-session-sync-source.js";
@@ -41,7 +33,7 @@ function oneRow(): {
   return { rows, rowsById: new Map(rows.map((r) => [r.id, r])) };
 }
 
-test("component egress gate: an org-policy close during the row load aborts the send BEFORE it POSTs", async () => {
+test("component sync continues when session metadata consent is unavailable", async () => {
   gatewayLog.clear();
   const { rows, rowsById } = oneRow();
 
@@ -52,7 +44,8 @@ test("component egress gate: an org-policy close during the row load aborts the 
     isHttpReady: () => true,
     getSource: () => null,
     getSyncComputeTargetId: () => COMPUTE_TARGET,
-    // The org-policy gate is ANDed into this in app.ts; flip it closed mid-drain.
+    // `deps.isSessionMetadataSyncTierAllowed` is what app.ts wires here; flip it
+    // closed mid-drain.
     isCloudSyncTierAllowed: () => tierAllowed,
     sendBatch: () => Promise.resolve({ accepted: true }),
     listComponentCursorRows: (sinceTs, sinceId) => {
@@ -64,7 +57,7 @@ test("component egress gate: an org-policy close during the row load aborts the 
       return Promise.resolve(after);
     },
     loadComponentRows: (ids) => {
-      // The gate closes (policy true→false) while the row load is in flight.
+      // Session metadata consent can close while component rows load.
       tierAllowed = false;
       return Promise.resolve(
         ids.map((id) => syncedFor(id, rowsById.get(id)?.last_seen_at ?? null))
@@ -84,8 +77,8 @@ test("component egress gate: an org-policy close during the row load aborts the 
 
   assert.equal(
     sendCount,
-    0,
-    "the batch must not POST once the egress gate closed during the load"
+    1,
+    "component inventory is delivered even when session metadata is withheld"
   );
 });
 
@@ -173,4 +166,58 @@ test("component egress gate: a permitted, same-target drain still POSTs (no fals
   service.stop();
 
   assert.equal(sendCount, 1, "a permitted drain sends exactly once");
+});
+
+/**
+ * tamsinb review on #7707: the case above starts with the tier ALLOWED and only
+ * closes it inside `loadComponentRows`, so the service's poll is already armed
+ * before consent matters and reverting `refresh()`'s
+ * `shouldRun() || isHttpReady()` back to `!this.shouldRun()` leaves it green.
+ * THIS is the case the change owes: a Desktop that boots with session-metadata
+ * consent already off, for the whole run. It sends 1 with the change and 0
+ * without it, because a bare `shouldRun()` stops the poll before the component
+ * lane ever ticks.
+ */
+test("component sync runs on a Desktop that boots with session-metadata consent already off", async () => {
+  gatewayLog.clear();
+  const { rows, rowsById } = oneRow();
+
+  let sendCount = 0;
+
+  const options: AgentSessionSyncServiceOptions = {
+    isHttpReady: () => true,
+    getSource: () => null,
+    getSyncComputeTargetId: () => COMPUTE_TARGET,
+    // Consent is off from the first tick and never opens.
+    isCloudSyncTierAllowed: () => false,
+    sendBatch: () => Promise.resolve({ accepted: true }),
+    listComponentCursorRows: (sinceTs, sinceId) => {
+      const after = rows.filter(
+        (r) =>
+          (r.last_seen_at ?? "") > sinceTs ||
+          ((r.last_seen_at ?? "") === sinceTs && r.id > sinceId)
+      );
+      return Promise.resolve(after);
+    },
+    loadComponentRows: (ids) =>
+      Promise.resolve(
+        ids.map((id) => syncedFor(id, rowsById.get(id)?.last_seen_at ?? null))
+      ),
+    sendComponents: () => {
+      sendCount += 1;
+      return Promise.resolve(acceptedResult());
+    },
+  };
+
+  const service = new AgentSessionSyncService(options);
+  service.start();
+  await service.whenComponentSyncSettled();
+  await flush();
+  service.stop();
+
+  assert.equal(
+    sendCount,
+    1,
+    "the component lane must tick even though the session lane never can"
+  );
 });

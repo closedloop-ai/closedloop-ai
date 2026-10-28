@@ -25,7 +25,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   installBranchIngestDb,
   syncBranchRefs,
-} from "@/__tests__/support/agent-sessions/service.test-harness";
+} from "@/__tests__/support/agent-sessions/branch-ingest.test-harness";
 
 vi.mock("@repo/database", async () => {
   const { databaseModuleMock } = await import(
@@ -98,12 +98,12 @@ describe("branchRefEvidenceRank (ISS-5764 prose demotion)", () => {
       proseRef("2026-05-20T17:05:00.000Z"),
     ]);
 
-    const arg = m.artifactLinkUpsert.mock.calls[0]?.[0];
-    expect(arg.create.metadata.method).toBe(GIT_CHECKOUT_METHOD);
-    expect(arg.create.metadata.relation).toBe(ArtifactRefRelation.Workspace);
+    const arg = m.linkRow.mock.calls[0]?.[0];
+    expect(arg.metadata.method).toBe(GIT_CHECKOUT_METHOD);
+    expect(arg.metadata.relation).toBe(ArtifactRefRelation.Workspace);
     // Recency is a separate axis and still advances — only the evidence
     // election is pinned, so this cannot pass by the merge doing nothing.
-    expect(arg.create.metadata.observedAt).toBe("2026-05-20T17:05:00.000Z");
+    expect(arg.metadata.observedAt).toBe("2026-05-20T17:05:00.000Z");
   });
 
   it("lets the command-derived record overtake a prose mention that arrived first", async () => {
@@ -114,9 +114,9 @@ describe("branchRefEvidenceRank (ISS-5764 prose demotion)", () => {
       checkoutRef("2026-05-20T17:05:00.000Z"),
     ]);
 
-    const arg = m.artifactLinkUpsert.mock.calls[0]?.[0];
-    expect(arg.create.metadata.method).toBe(GIT_CHECKOUT_METHOD);
-    expect(arg.create.metadata.relation).toBe(ArtifactRefRelation.Workspace);
+    const arg = m.linkRow.mock.calls[0]?.[0];
+    expect(arg.metadata.method).toBe(GIT_CHECKOUT_METHOD);
+    expect(arg.metadata.relation).toBe(ArtifactRefRelation.Workspace);
   });
 
   // The other direction: the demotion must not silence prose entirely, or the
@@ -126,11 +126,9 @@ describe("branchRefEvidenceRank (ISS-5764 prose demotion)", () => {
 
     await syncBranchRefs([proseRef("2026-05-20T17:01:00.000Z")]);
 
-    const arg = m.artifactLinkUpsert.mock.calls[0]?.[0];
-    expect(arg.create.metadata.method).toBe(
-      ArtifactRefMethod.BranchMentionInProse
-    );
-    expect(arg.create.metadata.relation).toBe(ArtifactRefRelation.Referenced);
+    const arg = m.linkRow.mock.calls[0]?.[0];
+    expect(arg.metadata.method).toBe(ArtifactRefMethod.BranchMentionInProse);
+    expect(arg.metadata.relation).toBe(ArtifactRefRelation.Referenced);
   });
 
   // `referenced` outranking `workspace` is deliberate for COMMAND evidence and
@@ -151,8 +149,8 @@ describe("branchRefEvidenceRank (ISS-5764 prose demotion)", () => {
       },
     ]);
 
-    const arg = m.artifactLinkUpsert.mock.calls[0]?.[0];
-    expect(arg.create.metadata.method).toBe(ArtifactRefMethod.GitCommand);
-    expect(arg.create.metadata.relation).toBe(ArtifactRefRelation.Referenced);
+    const arg = m.linkRow.mock.calls[0]?.[0];
+    expect(arg.metadata.method).toBe(ArtifactRefMethod.GitCommand);
+    expect(arg.metadata.relation).toBe(ArtifactRefRelation.Referenced);
   });
 });

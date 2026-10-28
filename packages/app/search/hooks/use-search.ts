@@ -2,18 +2,23 @@
 
 import type {
   GlobalSearchResponse,
-  SearchHit,
   SearchMode,
   UnifiedSearchResponse,
 } from "@repo/api/src/types/search";
 import {
+  MAX_UNIFIED_SEARCH_LIMIT,
   SearchMode as SearchModeValues,
   unifiedSearchResponseSchema,
 } from "@repo/api/src/types/search";
 import type { SearchEntityType } from "@repo/api/src/types/search-entity-kind";
+import { clamp } from "@repo/api/src/utils/math";
 import { type UseQueryOptions, useQuery } from "@tanstack/react-query";
 import { ApiError, getErrorMessage } from "../../shared/api/api-error";
 import { useApiClient } from "../../shared/api/use-api-client";
+import {
+  isOfferedSearchHit,
+  type OfferedSearchHit,
+} from "../lib/search-display";
 
 export const searchKeys = {
   all: ["search"] as const,
@@ -79,7 +84,7 @@ export type UseUnifiedSearchParams = {
   mode?: SearchMode;
   /** Corpus filter; empty means "all Phase-1 types". */
   types?: SearchEntityType[];
-  /** Page size passed through to the server (server clamps to [1, 100]). */
+  /** Page size; normalized to the server's `[1, MAX_UNIFIED_SEARCH_LIMIT]` contract before it reaches the cache key or request. */
   limit?: number;
 };
 
@@ -87,17 +92,22 @@ export type UseUnifiedSearchParams = {
  * The unified FTS search hook (FEA-3873 / parent FEA-3800, PLN-1456 Slice 5).
  * Consumes the `GET /search` full-text path, passing `mode`, repeated
  * `types[]`, and `limit`, and returns the ranked heterogeneous
- * {@link UnifiedSearchResponse} (documents/projects/loops with snippet + deep
- * link). Repeated `types=document&types=loop` params match the route contract.
+ * {@link UnifiedSearchResponse} (documents, projects and the other offered
+ * kinds, with snippet + deep link). Repeated `types=document&types=project`
+ * params match the route contract.
  */
 export function useUnifiedSearch(
   params: UseUnifiedSearchParams,
-  options?: Omit<UseQueryOptions<UnifiedSearchResponse>, "queryKey" | "queryFn">
+  options?: Omit<
+    UseQueryOptions<OfferedUnifiedSearchResponse>,
+    "queryKey" | "queryFn"
+  >
 ) {
   const apiClient = useApiClient();
   const trimmed = (params.query ?? "").trim();
   const mode = params.mode ?? SearchModeValues.Fulltext;
   const types = params.types ?? [];
+  const limit = normalizeUnifiedSearchLimit(params.limit);
 
   const isEnabled = trimmed.length >= MIN_UNIFIED_QUERY_LENGTH;
 
@@ -105,23 +115,24 @@ export function useUnifiedSearch(
     query: trimmed,
     mode,
     types,
-    limit: params.limit,
+    limit,
   });
 
-  const queryFn = async (): Promise<UnifiedSearchResponse> => {
+  const queryFn = async (): Promise<OfferedUnifiedSearchResponse> => {
     const search = new URLSearchParams();
     search.set("q", trimmed);
     search.set("mode", mode);
     for (const type of types) {
       search.append("types", type);
     }
-    if (params.limit !== undefined) {
-      search.set("limit", String(params.limit));
+    if (limit !== undefined) {
+      search.set("limit", String(limit));
     }
     const response = await apiClient.get<UnifiedSearchResponse>(
       `/search?${search.toString()}`
     );
-    return unifiedSearchResponseSchema.parse(response);
+    const parsed = unifiedSearchResponseSchema.parse(response);
+    return { ...parsed, results: parsed.results.filter(isOfferedSearchHit) };
   };
 
   return useQuery({
@@ -165,9 +176,21 @@ const SEARCH_FILTER_ERROR_STATUS = 400;
 
 export type SearchPanelState = {
   /** Ranked heterogeneous hits (empty until the query settles). */
-  results: SearchHit[];
+  results: OfferedSearchHit[];
   /** True while the first page is loading. */
   isLoading: boolean;
+  /**
+   * True while a RETRY of a failed query is in flight (davetho review).
+   *
+   * `isLoading` covers the initial request alone, so after a failure `refetch()`
+   * leaves it false while `isError` stays latched — and a surface that reads
+   * only those two keeps showing the settled failure, and its retry button,
+   * during the retry it just started. That is the same "renders as the failure
+   * it is already fixing" the desktop producer avoids by clearing its resolved
+   * query; the web path had no equivalent. Kept as a named fact rather than
+   * leaving each consumer to compose `isError && isFetching` for itself.
+   */
+  isRetrying: boolean;
   /** True when the query settled in a (non-filter) error state. */
   isError: boolean;
   /**
@@ -195,7 +218,8 @@ export type SearchPanelState = {
 export function useSearchPanelState(
   params: UseUnifiedSearchParams
 ): SearchPanelState {
-  const { data, isLoading, isError, error, refetch } = useUnifiedSearch(params);
+  const { data, isLoading, isFetching, isError, error, refetch } =
+    useUnifiedSearch(params);
 
   const filterErrorMessage = isSearchFilterError(error)
     ? getErrorMessage(error)
@@ -204,6 +228,7 @@ export function useSearchPanelState(
   return {
     results: data?.results ?? [],
     isLoading,
+    isRetrying: isError && isFetching,
     isError,
     filterErrorMessage,
     nextCursor: data?.nextCursor,
@@ -212,3 +237,26 @@ export function useSearchPanelState(
     },
   };
 }
+
+/**
+ * Mirrors the server's `clampSearchLimit` so the cache key and the request URL
+ * both describe the page size the API will actually apply. `NaN` resolves to an
+ * omitted param rather than a serialized `limit=NaN`, because the route parses
+ * that as absent and falls back to its own default page size.
+ */
+function normalizeUnifiedSearchLimit(
+  raw: number | undefined
+): number | undefined {
+  if (raw === undefined || Number.isNaN(raw)) {
+    return undefined;
+  }
+  return clamp(Math.floor(raw), 1, MAX_UNIFIED_SEARCH_LIMIT);
+}
+
+/** The unified search response, holding only the kinds this build offers. */
+export type OfferedUnifiedSearchResponse = Omit<
+  UnifiedSearchResponse,
+  "results"
+> & {
+  results: OfferedSearchHit[];
+};

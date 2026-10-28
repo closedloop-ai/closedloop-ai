@@ -14,10 +14,21 @@ export async function generateMetadata({ params }: BlogPostPageProps) {
   const post = getBlogPost(slug);
 
   if (!post) {
-    return createPageMetadata("Blog", "Closedloop.ai blog");
+    // The page component 404s on this same predicate. Nothing returned here
+    // reaches a crawler — Next drops the `generateMetadata` result once
+    // `notFound()` is called — so `null` states the intent rather than
+    // relying on that behavior.
+    return createPageMetadata("Blog", "Closedloop.ai blog", null);
   }
 
-  return createPageMetadata(post.title, post.description);
+  // Also `null`, for a different reason than the branch above: `proxy.ts`
+  // matches the RAW `/blog/` prefix and 302s it to `www.gethealthy.com` before
+  // locale routing, so the unprefixed post URL — the canonical this would emit
+  // — redirects off-site. Locale-prefixed forms are not matched and do serve
+  // (`/de/blog/<slug>` answers 200 to a German-preferring client), but those
+  // are the duplicates being consolidated, not canonicals. See the note on the
+  // blog index for the measurement.
+  return createPageMetadata(post.title, post.description, null);
 }
 
 export function generateStaticParams() {

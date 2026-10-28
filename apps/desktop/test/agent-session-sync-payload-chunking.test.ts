@@ -1,14 +1,23 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import {
+  AGENT_TURN_TIMESTAMPS_METADATA_KEY,
+  MAX_METADATA_AGENT_TURN_TIMESTAMPS,
+} from "@repo/lib/agent-sessions/agent-turn-timestamps.js";
+import {
+  HUMAN_TURN_TIMESTAMPS_METADATA_KEY,
+  MAX_METADATA_HUMAN_TURN_TIMESTAMPS,
+} from "@repo/lib/agent-sessions/human-turn-timestamps.js";
+import { MetadataContentPolicy } from "@repo/lib/agent-sessions/metadata-preview.js";
+import { describe, test } from "vitest";
 import { SESSION_PAYLOAD_BYTE_CAP } from "../src/main/agent-sync/agent-session-sync-backoff-policy.js";
 import type {
   SyncedAgentSession,
   SyncedAgentSessionTokenEvent,
 } from "../src/main/agent-sync/agent-session-sync-contract.js";
+import { maxSessionPayloadBytesForBatch } from "../src/main/agent-sync/agent-session-sync-envelope-reserve.js";
 import {
   chunkOversizedSession,
   estimateSessionPayloadBytes,
-  maxSessionPayloadBytesForBatch,
   prepareAgentSessionPayload,
   sanitizeSessionForSync,
 } from "../src/main/agent-sync/agent-session-sync-payload.js";
@@ -147,6 +156,52 @@ describe("chunkOversizedSession (FEA-2730)", () => {
     );
     assert.equal(chunks[0]?.events.length, 0);
     assert.deepEqual(chunks[0]?.tokenEvents, []);
+  });
+
+  test("ISS-9864: a session whose token events are ALL dropped ships no agentTurnTimestamps either (stated residual)", () => {
+    // The producer gates the derived agent key on the SOURCE session's
+    // `tokenEvents` (D2), and that decision is made in `sanitizeSessionForSync`
+    // BEFORE the chunker decides which token events fit. When the budget drops
+    // every token event (the degrade above), the shipped payload carries
+    // neither the round-trip series nor the key, and the cloud falls back to
+    // its capped `$.messages` read for that session — exactly what it did
+    // before ISS-9864, so this is not a regression, and it is outside the
+    // ticket's population (a session that never HAD token events). Pinned so
+    // the residual is visible rather than discovered: the honest remedy is the
+    // token events arriving, not a content-block count standing in for them.
+    const messages = Array.from({ length: 150 }, (_, i) => ({
+      role: "assistant",
+      timestamp: `2026-06-10T10:${String(Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}.000Z`,
+    }));
+    const session = buildSession({
+      metadata: { messages } as SyncedAgentSession["metadata"],
+      tokenEvents: buildTokenEvents(1),
+    });
+    // One byte short of the whole session: the base (no token events) fits, the
+    // single token event does not, so the chunker degrades it away.
+    const maxBytes =
+      estimateSessionPayloadBytes(
+        sanitizeSessionForSync(session, MetadataContentPolicy.Retain)
+      ) - 1;
+
+    const prepared = prepareAgentSessionPayload(
+      session,
+      maxBytes,
+      undefined,
+      undefined,
+      undefined,
+      MetadataContentPolicy.Retain
+    );
+
+    assert.ok(prepared.kind === "chunked", "the token event forces a chunk");
+    const shipped = prepared.firstChunk;
+    assert.deepEqual(shipped.tokenEvents, []);
+    assert.equal(
+      (shipped.metadata as Record<string, unknown>)[
+        AGENT_TURN_TIMESTAMPS_METADATA_KEY
+      ],
+      undefined
+    );
   });
 
   test("paginates a tokenEvent-only session", () => {
@@ -426,7 +481,18 @@ describe("FEA-3672: long-conversation metadata stays under the payload cap", () 
     });
     const maxBytes = maxSessionPayloadBytesForBatch(SESSION_PAYLOAD_BYTE_CAP);
 
-    const prepared = prepareAgentSessionPayload(session, maxBytes);
+    // ISS-7775: state the WIDEST tier explicitly. This test's whole subject is
+    // the aggregate preview-text budget, and the producer now defaults to the
+    // withholding policy — under which there is no preview text at all and every
+    // assertion below would pass while measuring nothing.
+    const prepared = prepareAgentSessionPayload(
+      session,
+      maxBytes,
+      undefined,
+      undefined,
+      undefined,
+      MetadataContentPolicy.Retain
+    );
     assert.notEqual(
       prepared.kind,
       "dead-letter",
@@ -436,7 +502,10 @@ describe("FEA-3672: long-conversation metadata stays under the payload cap", () 
     // The sanitized metadata's summed preview text is bounded well under the cap:
     // the 60k aggregate budget plus the per-message 160-char floor for turns past
     // the budget (worst case ~76k, far below the payload cap).
-    const sanitized = sanitizeSessionForSync(session);
+    const sanitized = sanitizeSessionForSync(
+      session,
+      MetadataContentPolicy.Retain
+    );
     const meta = sanitized.metadata as { messages: { text?: string }[] };
     const totalTextChars = meta.messages.reduce(
       (sum, m) => sum + (typeof m.text === "string" ? m.text.length : 0),
@@ -457,5 +526,118 @@ describe("FEA-3672: long-conversation metadata stays under the payload cap", () 
         "every turn keeps at least the 160-char preview floor"
       );
     }
+  });
+  // ISS-7896: the derived key is replicated into EVERY sync chunk, so its cap has
+  // to be sized against the payload budget rather than against the corpus (whose
+  // worst HUMAN session carries 44 entries). This is the declared worst case for
+  // the METADATA half — a full 1000 entries at the longest length the grammar
+  // admits, beside a blob already carrying near-cap preview text.
+  //
+  // The base is deliberately empty (no agents, component usage, or activity
+  // segments), so the competing-base case is NOT pinned here: a session carrying
+  // both a full-cap key and a large base has ~40 KiB less room than before this
+  // change and could dead-letter where it previously chunked. For the human key
+  // the corpus maximum is 44 entries, so that exposure is small and accepted
+  // rather than covered. ISS-9864 added a SECOND key with the same bound, and
+  // its units run far larger (one per content block); the two-keys-at-cap case
+  // is pinned separately below, because the worst case is no longer per-key.
+  test("a full-cap humanTurnTimestamps array beside near-cap text does not dead-letter", () => {
+    // ISS-7896 (#6116 review): the array is DERIVED from `messages` rather than
+    // hand-placed on the blob. A pre-placed key beside an at-cap `messages` is
+    // now unattributable and `withDerivedTurnTimestamps` drops it, which would
+    // have made this pass for the wrong reason — the budget never tested.
+    const messages = Array.from(
+      { length: MAX_METADATA_HUMAN_TURN_TIMESTAMPS },
+      (_, i) => ({
+        role: "human",
+        timestamp: `2026-06-10T10:00:00.${String(i).padStart(3, "0")}+05:30`,
+        text: "w".repeat(2500),
+      })
+    );
+    const session = buildSession({
+      metadata: { messages } as SyncedAgentSession["metadata"],
+    });
+    const maxBytes = maxSessionPayloadBytesForBatch(SESSION_PAYLOAD_BYTE_CAP);
+
+    const prepared = prepareAgentSessionPayload(
+      session,
+      maxBytes,
+      undefined,
+      undefined,
+      undefined,
+      MetadataContentPolicy.Retain
+    );
+
+    // `assert.ok` narrows the union, so the read below does not need a cast.
+    assert.ok(
+      prepared.kind !== "dead-letter",
+      "a full-cap derived array must still fit the payload budget"
+    );
+    // Assert the array SURVIVED. Without this the test would pass for the wrong
+    // reason if the compactor had dropped the key.
+    const carried =
+      prepared.kind === "session"
+        ? prepared.session.metadata
+        : prepared.firstChunk.metadata;
+    const entries = (carried as Record<string, unknown>)[
+      HUMAN_TURN_TIMESTAMPS_METADATA_KEY
+    ];
+    assert.ok(Array.isArray(entries));
+    assert.equal(entries.length, MAX_METADATA_HUMAN_TURN_TIMESTAMPS);
+    // Every carried entry is the normalized UTC form (ISS-7896), so the widest
+    // an entry can be is 24 chars regardless of the offset spelling it came in
+    // as — the budget above is measured against that.
+    assert.equal(entries[0], "2026-06-10T04:30:00.000Z");
+  });
+
+  // ISS-9864: BOTH derived keys at their caps beside near-cap text — ~80 KiB of
+  // metadata replicated into every chunk. The session carries no token events,
+  // so the producer emits the agent key (the D2 gate is what makes a round-trip
+  // session cheaper: it never pays for this key at all).
+  test("full-cap humanTurnTimestamps AND agentTurnTimestamps beside near-cap text do not dead-letter", () => {
+    const stamp = (i: number) =>
+      `2026-06-10T10:00:00.${String(i).padStart(3, "0")}+05:30`;
+    const messages = [
+      ...Array.from({ length: MAX_METADATA_HUMAN_TURN_TIMESTAMPS }, (_, i) => ({
+        role: "human",
+        timestamp: stamp(i),
+        text: "w".repeat(2500),
+      })),
+      ...Array.from({ length: MAX_METADATA_AGENT_TURN_TIMESTAMPS }, (_, i) => ({
+        role: "assistant",
+        timestamp: stamp(i),
+        text: "a".repeat(2500),
+      })),
+    ];
+    const session = buildSession({
+      metadata: { messages } as SyncedAgentSession["metadata"],
+    });
+    const maxBytes = maxSessionPayloadBytesForBatch(SESSION_PAYLOAD_BYTE_CAP);
+
+    const prepared = prepareAgentSessionPayload(
+      session,
+      maxBytes,
+      undefined,
+      undefined,
+      undefined,
+      MetadataContentPolicy.Retain
+    );
+
+    assert.ok(
+      prepared.kind !== "dead-letter",
+      "two full-cap derived arrays must still fit the payload budget"
+    );
+    const carried = (
+      prepared.kind === "session"
+        ? prepared.session.metadata
+        : prepared.firstChunk.metadata
+    ) as Record<string, unknown>;
+    const human = carried[HUMAN_TURN_TIMESTAMPS_METADATA_KEY];
+    const agent = carried[AGENT_TURN_TIMESTAMPS_METADATA_KEY];
+    assert.ok(Array.isArray(human));
+    assert.ok(Array.isArray(agent));
+    assert.equal(human.length, MAX_METADATA_HUMAN_TURN_TIMESTAMPS);
+    assert.equal(agent.length, MAX_METADATA_AGENT_TURN_TIMESTAMPS);
+    assert.equal(agent[0], "2026-06-10T04:30:00.000Z");
   });
 });

@@ -174,13 +174,29 @@ export function statusDetail(
 /**
  * A human-readable duration string for a tool call derived from an explicit
  * `durationMs`/`duration_ms` field. Undefined when no positive duration is set.
+ *
+ * A negative value means the producer's clock pair is unusable, not that the
+ * call took negative time, so it is treated as absent — `formatDurationMs`
+ * would otherwise render it as a lying `0s` or a nonsense `-1s`. Each candidate
+ * is validated on its own rather than after the fallback chain has already
+ * collapsed, so an unusable higher-priority field falls through to the next
+ * spelling instead of suppressing a duration the producer did record. Mirrors
+ * the `explicit > 0` guard in `toolCallDurationMs`
+ * (`agent-session-tool-detail.ts`), which falls through the same way.
  */
 export function durationDetail(
   data: Record<string, unknown>,
   toolResponse: Record<string, unknown> | null
 ): string | undefined {
-  const durationMs = numberValue(
-    data.durationMs ?? data.duration_ms ?? toolResponse?.durationMs
-  );
-  return durationMs ? formatDurationMs(durationMs) : undefined;
+  const durationMs = [
+    data.durationMs,
+    data.duration_ms,
+    toolResponse?.durationMs,
+  ]
+    .map(numberValue)
+    .find((value) => value > 0);
+  if (durationMs !== undefined) {
+    return formatDurationMs(durationMs);
+  }
+  return undefined;
 }

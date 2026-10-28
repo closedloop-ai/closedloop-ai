@@ -27,7 +27,10 @@
  */
 
 import { AgentComponentKind } from "@repo/api/src/types/agent-component";
-import { encodeComponentSlug } from "@repo/api/src/types/agent-component-analytics";
+import {
+  encodeComponentSlug,
+  normalizeComponentKey,
+} from "@repo/api/src/types/agent-component-analytics";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -45,6 +48,10 @@ vi.mock("../../agent-sessions/service", () => ({
   agentSessionsService: { listByArtifactIds: mocks.listByArtifactIds },
 }));
 
+import {
+  orgWideInventoryReads,
+  orphanUsageFindManyCalls,
+} from "@/__tests__/support/agent-components/usage-lane-doubles";
 import { loadUsageGroupsLinkedElsewhere } from "../org-population";
 import { agentComponentsService } from "../service";
 
@@ -69,6 +76,14 @@ type UsageRow = {
   agentSessionId: string;
   componentKind: string;
   componentKey: string;
+  /**
+   * ISS-6756: the persisted `lower(btrim(component_key))` fold the identity
+   * lanes now match on. Derived here the way the table's BEFORE INSERT/UPDATE
+   * trigger derives it, never set by a fixture — a fixture free to state a fold
+   * that disagrees with its own `componentKey` could make a lane look correct
+   * on a row the database can never produce.
+   */
+  componentKeyNormalized: string;
   invocationCount: number;
   errorCount: number;
   gitBranch: string;
@@ -382,8 +397,10 @@ function installDb(fixture: Fixture) {
   return built;
 }
 
-function usageRow(overrides: Partial<UsageRow> & { id: string }): UsageRow {
-  return {
+function usageRow(
+  overrides: Partial<Omit<UsageRow, "componentKeyNormalized">> & { id: string }
+): UsageRow {
+  const row = {
     agentComponentId: null,
     agentSessionId: `session-${overrides.id}`,
     componentKind: AgentComponentKind.Skill,
@@ -396,6 +413,12 @@ function usageRow(overrides: Partial<UsageRow> & { id: string }): UsageRow {
     definitionVersionId: null,
     lastInvokedAt: SEEN_AT,
     ...overrides,
+  };
+  // ISS-6756: the trigger's fold, applied AFTER the overrides, so a fixture that
+  // sets a mixed-case `componentKey` gets the column the database would give it.
+  return {
+    ...row,
+    componentKeyNormalized: normalizeComponentKey(row.componentKey),
   };
 }
 
@@ -954,18 +977,6 @@ function tombstoneBoundaryFixture(deadRowUninstalledAt: Date | null): Fixture {
   };
 }
 
-/** The usage-only-lane calls a usage `findMany` recorded (ISS-6180 shape). */
-function orphanReadCalls(findMany: { mock: { calls: unknown[][] } }) {
-  return findMany.mock.calls.filter(([args]) =>
-    ((args as { where?: Filter })?.where?.AND as Filter[] | undefined)?.some(
-      (clause) =>
-        (clause.OR as Filter[] | undefined)?.some(
-          (arm) => arm.agentComponentId === null
-        )
-    )
-  );
-}
-
 const REPEATABLE_READ = "RepeatableRead";
 // Matches `DETAIL_USAGE_SNAPSHOT_TX_TIMEOUT_MS` in
 // `../service/detail-usage-identity` — the same generous ceiling the list's
@@ -992,12 +1003,12 @@ describe("getDetailForOrg — consistent usage snapshot (ISS-4669 / ISS-5363)", 
     expect(tx.usageGroupBy).toHaveBeenCalledTimes(2);
     // … and the usage-only lane issued its row read
     // there too, rather than on a later pooled snapshot.
-    expect(orphanReadCalls(tx.usageFindMany)).toHaveLength(1);
+    expect(orphanUsageFindManyCalls(tx.usageFindMany)).toHaveLength(1);
     expect(pooled.usageGroupBy).not.toHaveBeenCalled();
     // The pooled client still serves the detail's other usage reads (the
     // per-session version attribution), so assert on the ORPHAN LANE
     // specifically rather than on the delegate as a whole.
-    expect(orphanReadCalls(pooled.usageFindMany)).toHaveLength(0);
+    expect(orphanUsageFindManyCalls(pooled.usageFindMany)).toHaveLength(0);
   });
 
   it("reads the LIVE-INVENTORY BOUND in the same snapshot as the usage lanes (ISS-6180, davetho)", async () => {
@@ -1010,10 +1021,13 @@ describe("getDetailForOrg — consistent usage snapshot (ISS-4669 / ISS-5363)", 
 
     await agentComponentsService.getDetailForOrg(ORGANIZATION_ID, SKILL_SLUG);
 
-    // `readOrgInventoryIds` is the only issuer of the inventory identity spine on
-    // this path, so where that read landed is where the bound was resolved.
-    expect(tx.inventoryGroupBy).toHaveBeenCalled();
-    expect(pooled.inventoryGroupBy).not.toHaveBeenCalled();
+    // `readOrgInventoryIds` is the only UNFACETED inventory read on this path —
+    // every other one is scoped to the single component the detail answers for —
+    // so where that read landed is where the bound was resolved. ISS-6891 removed
+    // the identity spine that used to be its own delegate and therefore its own
+    // marker; the predicate is the marker now.
+    expect(orgWideInventoryReads(tx.inventoryFindMany)).not.toHaveLength(0);
+    expect(orgWideInventoryReads(pooled.inventoryFindMany)).toHaveLength(0);
   });
 
   it("counts a component once when a TOMBSTONE commits between the two reads (ISS-6180, davetho)", async () => {

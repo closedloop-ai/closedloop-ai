@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Claude Code OTel capture (permission mode transitions) read only by the telemetry rollup that syncs to the cloud; no Desktop view reads it."
+}

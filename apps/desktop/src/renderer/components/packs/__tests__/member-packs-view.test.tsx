@@ -1,5 +1,4 @@
 /**
- * @file member-packs-view.test.tsx
  * @description Behavioral tests for the desktop-member Packs adapter (FEA-4166).
  *
  * FEA-4089 (#3752) shipped the WEB member by-source treatment; desktop still
@@ -22,6 +21,7 @@ import {
   DistributionMode,
   DistributionTargetingType,
 } from "@repo/api/src/types/distribution";
+import { YOUR_PACKS_EMPTY_TITLE } from "@repo/app/packs/components/member-view";
 import type { PackView } from "@repo/app/packs/lib/pack-view";
 import { render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -44,6 +44,8 @@ vi.mock("@repo/app/shared/auth/use-auth-snapshot", () => ({
 vi.mock("../../agents/plugins-panel", () => ({
   PluginsPanel: () => <div data-testid="plugins-panel" />,
 }));
+
+const REQUIRED_GROUP_LABEL = "Required by your org";
 
 function pack(overrides: Partial<PackView> = {}): PackView {
   return {
@@ -117,7 +119,7 @@ describe("DesktopMemberPacksView (FEA-4166)", () => {
     // pack rendered inside it — this is the web treatment, not the flat list.
     const yourPacks = screen.getByRole("region", { name: "Your packs" });
     expect(yourPacks).toBeDefined();
-    expect(screen.getByText("Required by your org")).toBeDefined();
+    expect(screen.getByText(REQUIRED_GROUP_LABEL)).toBeDefined();
     expect(within(yourPacks).getByText("Security Baseline")).toBeDefined();
   });
 
@@ -157,7 +159,7 @@ describe("DesktopMemberPacksView (FEA-4166)", () => {
     // Not required for this member: no Required heading, and the pack does not
     // appear in the "Your packs" region — it degrades to Available (whose body is
     // the PluginsPanel slot here) rather than mislabelling every member's row.
-    expect(screen.queryByText("Required by your org")).toBeNull();
+    expect(screen.queryByText(REQUIRED_GROUP_LABEL)).toBeNull();
     const yourPacks = screen.getByRole("region", { name: "Your packs" });
     expect(within(yourPacks).queryByText("Locale Pack")).toBeNull();
   });
@@ -169,7 +171,7 @@ describe("DesktopMemberPacksView (FEA-4166)", () => {
     render(<DesktopMemberPacksView />);
 
     expect(screen.getByText("Couldn't load packs")).toBeDefined();
-    expect(screen.queryByText("No packs yet")).toBeNull();
+    expect(screen.queryByText(YOUR_PACKS_EMPTY_TITLE)).toBeNull();
   });
 
   it("keeps the local PluginsPanel install surface mounted when the cloud catalog read fails (signed out / offline)", () => {

@@ -16,8 +16,7 @@
  */
 import assert from "node:assert/strict";
 import os from "node:os";
-import { test } from "node:test";
-import { LoopSchedulerContext } from "../src/main/loop/loop-scheduler-context.js";
+import { test } from "vitest";
 import { GatewayRouter } from "../src/server/router.js";
 import {
   ADDITIONAL_TRUSTED_WEB_APP_ORIGINS,
@@ -38,7 +37,6 @@ function createRouter(webAppOrigin: string): GatewayRouter {
     capabilities: EMPTY_CAPABILITIES,
     getActivePort: () => 19_432,
     getGatewayId: () => "cors-header-test-gateway",
-    schedulers: new LoopSchedulerContext(),
   });
 }
 

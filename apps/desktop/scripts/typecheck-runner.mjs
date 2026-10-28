@@ -34,10 +34,10 @@ const desktopDir = dirname(
 );
 
 // Resolve TypeScript's own entrypoint from this module rather than shelling out
-// to `npx tsc`. `npx` costs ~1.9s of bootstrap per invocation (x5 projects), and
-// when its cwd-relative lookup misses it will silently reach the NETWORK and
-// install the deprecated third-party `tsc` stub — an unacceptable hermeticity
-// hole in a required CI gate. `createRequire` either finds the workspace's
+// to `npx tsc`. `npx` costs ~1.9s of bootstrap per invocation (once per
+// project), and when its cwd-relative lookup misses it will silently reach the
+// NETWORK and install the deprecated third-party `tsc` stub — an unacceptable
+// hermeticity hole in a required CI gate. `createRequire` either finds the workspace's
 // TypeScript or throws here, where the message is actionable.
 // Resolve the manifest, not `typescript/lib/tsc.js` directly: TypeScript 7's
 // `exports` map does not list that subpath, so a direct resolve throws

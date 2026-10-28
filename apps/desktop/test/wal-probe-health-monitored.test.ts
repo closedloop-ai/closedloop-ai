@@ -26,7 +26,7 @@
  * synchronizes on the probe's own `emit` rather than a timed wait.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { WAL_TRUNCATE_INTERVAL_MS } from "../src/main/database/connection-pragmas.js";
 import {
   createStoreIntegrityProbe,

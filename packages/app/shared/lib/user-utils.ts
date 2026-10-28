@@ -52,22 +52,18 @@ export function getUserInitials(
   firstName: string | null,
   lastName: string | null
 ): string {
-  const first = firstName?.charAt(0) ?? "";
-  const last = lastName?.charAt(0) ?? "";
-  return (first + last).toUpperCase();
+  // One initial on every avatar (Nerys, 2026-10-22): the first name's, or the
+  // last name's when there is no first.
+  return (firstName?.charAt(0) || lastName?.charAt(0) || "").toUpperCase();
 }
 
 /**
- * Get initials from a full name.
+ * An avatar's initial: the name's first letter (one initial on every avatar,
+ * Nerys 2026-10-22).
  */
 export function getInitials(name: string): string {
-  return name
-    .split(" ")
-    .map((part) => part[0])
-    .filter(Boolean)
-    .join("")
-    .toUpperCase()
-    .slice(0, 2);
+  const first = Array.from(name.trim())[0];
+  return first ? first.toUpperCase() : "";
 }
 
 type ComparableAssignee = {
@@ -115,3 +111,19 @@ export function transformApiUserToSelectUser(user: {
     initials: getUserInitials(user.firstName, user.lastName),
   };
 }
+
+/**
+ * The word an artifact surface shows when nobody is assigned. ISS-7746 made it
+ * the assignee avatar's accessible name too, so it is no longer only a label a
+ * sighted user reads: it is also what a screen reader speaks, and the two must
+ * not diverge.
+ *
+ * Domain-side SSOT for the artifact-assignee and session-owner surfaces that
+ * `apps/app` and the desktop renderer mount (ISS-10249). Two copies of the word
+ * sit outside it: the generic-artifact preview under
+ * `shared/components/generic-artifact-surface/preview/`, which only
+ * `apps/prototypes` mounts, and
+ * `packages/design-system/components/ui/filter-popover*.tsx`, which is gated
+ * from importing `@repo/app`.
+ */
+export const UNASSIGNED_ASSIGNEE_LABEL = "Unassigned" as const;

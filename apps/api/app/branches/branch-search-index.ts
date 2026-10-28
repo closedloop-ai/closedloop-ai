@@ -10,8 +10,8 @@
  * 500 the authoritative branch/PR write. The one-shot backfill
  * (`packages/database` `backfill:search-documents`) is the reconcile net.
  *
- * Kept in a sibling module so the (grandfathered, over-ceiling) branch service
- * adds only the call site, not this logic.
+ * Kept in a sibling module so the branch service adds only the call site, not
+ * this logic.
  */
 
 import { parseError } from "@repo/observability/error";
@@ -26,6 +26,8 @@ import {
 type IndexableBranchArtifact = {
   id: string;
   organizationId: string;
+  /** The branch artifact's own priority (ISS-10332); null when unset. */
+  priority: string | null;
   updatedAt: Date;
   branch: {
     branchName: string;
@@ -45,13 +47,13 @@ type IndexableBranchArtifact = {
  * Fail-open index a branch and (when present) its current pull request into the
  * search projection after the branch upsert committed.
  *
- * The whole body is wrapped so a projection failure — including a synchronous
- * throw while BUILDING the projection args from a partial/legacy artifact shape
- * (e.g. a branch row missing `repositoryFullName`) — can never propagate into
- * the authoritative branch write. `searchIndexService.indexAfterCommit` only
- * fail-opens its own async `waitUntil` task, so the synchronous projection
- * construction here needs its own guard to honor the "never blocks or fails the
- * branch write" contract.
+ * The whole body is wrapped so a synchronous throw — from the projection
+ * builders or from `searchIndexService.indexAfterCommit` itself — can never
+ * propagate into the authoritative branch write. `indexAfterCommit` only
+ * fail-opens its own async `waitUntil` task, so the synchronous work here needs
+ * its own guard to honor the "never blocks or fails the branch write" contract.
+ * A partial/legacy shape (a branch row missing `repositoryFullName`) does not
+ * throw: `branchSearchBody` degrades its body to the base branch.
  */
 export function indexBranchArtifactAfterCommit(
   artifact: IndexableBranchArtifact
@@ -67,6 +69,7 @@ export function indexBranchArtifactAfterCommit(
             artifact.branch.repositoryFullName,
             artifact.branch.baseBranch
           ),
+          priority: artifact.priority,
           updatedAt: artifact.updatedAt,
         })
       );

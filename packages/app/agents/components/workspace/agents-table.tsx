@@ -16,7 +16,7 @@
  * Badge/label helpers imported from packages/app/agents/lib/component-meta.tsx.
  * Row data and sort/select handlers come from props — no direct mock imports.
  *
- * Domain component: lives in this feature slice, NOT in @closedloop-ai/design-system.
+ * Domain component: lives in this feature slice, NOT in @repo/design-system.
  */
 
 import type {
@@ -24,9 +24,19 @@ import type {
   AgentComponentSortDir,
   AgentMetricMode,
 } from "@repo/api/src/types/agent-component";
-import { LOC_PER_DOLLAR_LABEL } from "@repo/api/src/utils/loc-per-dollar";
+import {
+  LOC_METRIC_DEFINITION,
+  LocMetricDefinitionId,
+} from "@repo/api/src/types/loc-metric-definitions";
 import { AGENT_COMPONENT_AUTHORS_LABEL } from "@repo/app/agents/lib/agent-component-authors";
+import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import { resolveAlwaysShowActions } from "@repo/app/shared/lib/adaptive-props";
+import {
+  AGENTS_CARD_ATTRIBUTE_LABELS_FEATURE_FLAG_KEY,
+  AGENTS_SURFACE_HONESTY_FEATURE_FLAG_KEY,
+  ARTIFACT_CELL_PRIMITIVES_FEATURE_FLAG_KEY,
+} from "@repo/app/shared/lib/feature-flags";
+import { CountCell } from "@repo/design-system/components/ui/count-cell";
 import {
   buildGridTableCardFields,
   GridEmptyValue,
@@ -50,6 +60,7 @@ import {
   mergeColumnOrder,
   orderColumns,
 } from "@repo/design-system/lib/column-order";
+import type { CountNoun } from "@repo/design-system/lib/count-noun";
 import { cn } from "@repo/design-system/lib/utils";
 import { Link } from "@repo/navigation/link";
 import { type ReactNode, useMemo } from "react";
@@ -63,17 +74,20 @@ import {
   SourceLabel,
   StatusDot,
 } from "../../lib/component-meta";
+import { SESSIONS_NOUN } from "../../lib/sessions-noun";
 import {
   TRUNCATED_LABEL_CLASS,
   TruncatedLabelTooltip,
 } from "../../lib/truncated-label-tooltip";
 import { HarnessBadge } from "../session-status-badges";
+import {
+  AGENT_CARD_HEADER_ATTRIBUTE_IDS,
+  AgentCardHeaderAttributes,
+} from "./agent-card-header-attributes";
 import { AgentRowActionsMenu } from "./agent-row-actions-menu";
-import { LocPerDollarColumnValue } from "./loc-per-dollar-cell";
+import { MetricCell } from "./loc-per-dollar-cell";
 
-// ---------------------------------------------------------------------------
 // Column specs
-// ---------------------------------------------------------------------------
 
 const LEAD_WIDTH = "minmax(240px, 1fr)";
 
@@ -165,7 +179,7 @@ const COLUMN_SPECS: readonly ColumnSpec[] = [
   // session that used the component and dividing by those sessions'
   // `estimatedCost` — there is no merge predicate in that path, and the field's
   // own contract in `packages/api/src/types/agent-component.ts` reads "lines
-  // changed per dollar". The Sessions card's `LOC / $ (Merged)` IS merged-only
+  // changed per dollar". The Sessions card's `LOC / $` IS merged-only
   // and keeps its own merged wording; the two populations differ, so the two
   // sentences must (ISS-5366, review cid 3737906515 / 3737914543).
   //
@@ -176,7 +190,8 @@ const COLUMN_SPECS: readonly ColumnSpec[] = [
   // without reintroducing the substring.
   {
     id: "metric",
-    label: LOC_PER_DOLLAR_LABEL,
+    label:
+      LOC_METRIC_DEFINITION[LocMetricDefinitionId.ComponentLinesChanged].label,
     width: "132px",
     sortable: true,
     tooltip: LOC_PER_DOLLAR_COLUMN_TOOLTIP,
@@ -291,9 +306,14 @@ const NEVER_COLLAPSE_COLUMN_IDS: readonly string[] = [
   "source",
 ];
 
-// ---------------------------------------------------------------------------
+/**
+ * ISS-5524: the Harness track once the multi-harness rollup is spelled out.
+ * Matches the Authors column's width rather than inventing a third value — it is
+ * the narrowest track on this grid that already holds a two-word label.
+ */
+const HARNESS_MULTI_LABEL_WIDTH = "168px";
+
 // Cell helpers
-// ---------------------------------------------------------------------------
 
 /**
  * A count cell (Invocations / Sessions).
@@ -311,21 +331,43 @@ const NEVER_COLLAPSE_COLUMN_IDS: readonly string[] = [
  * of left-flush em-dashes under right-flush columns. Position is not value —
  * moving the dash right does not fabricate a zero, it puts the "no number" mark
  * where the reader's eye is already scanning for the number.
+ *
+ * ISS-6384: this is the private, unexported hand-roll the shared `CountCell`
+ * was built to absorb, and `sharedCells` is the switch. It stays as the
+ * flag-OFF branch — deleting it would make the gate un-flippable — and the two
+ * differ in exactly two ways, both of them the point of the shared cell:
+ *
+ *  - a count of exactly `0` renders the shared em-dash named "No invocations"
+ *    rather than a literal `0`, which is the rule ISS-6384 took from Branches
+ *    (`renderBranchSessions`) and made the house rule for both;
+ *  - `null` keeps dashing, but now says "invocations unavailable" instead of
+ *    sharing one anonymous glyph with the zero above it.
+ *
+ * Number formatting is NOT one of the differences: `CountCell` groups digits
+ * the same way `NUMBER_FORMAT` does, so `12,847` stays `12,847`.
  */
 const NumberCell = ({
   value,
   alignEnd,
+  noun,
+  sharedCells,
 }: {
   value: number | null;
   alignEnd?: boolean;
-}): ReactNode =>
-  value === null ? (
+  noun: CountNoun;
+  sharedCells: boolean;
+}): ReactNode => {
+  if (sharedCells) {
+    return <CountCell alignEnd={alignEnd} count={value} noun={noun} />;
+  }
+  return value === null ? (
     <GridEmptyValue alignEnd={alignEnd} />
   ) : (
     <span className={cn("text-sm tabular-nums", alignEnd && "ml-auto")}>
       {NUMBER_FORMAT.format(value)}
     </span>
   );
+};
 
 // FEA-3866: the action is hover-revealed on a mouse (`group-hover:opacity-100`)
 // but ALWAYS visible on a touch pointer (`touch:opacity-100`), since there is no
@@ -376,62 +418,13 @@ const ActionsCell = ({
   </div>
 );
 
-// ---------------------------------------------------------------------------
 // Metric cell — the LOC/$ column
-// ---------------------------------------------------------------------------
 //
-// NOT driven by `metricMode`, despite the prop of that name still threading
-// through this component's props. ISS-4667 removed the inverted $/KLOC mode and
-// ISS-4866 removed the picker that selected between the survivors; ISS-5366 then
-// retired that gate, so the mode is no longer settable from any surface. The
-// prop and its persisted view dimension are left in place deliberately (a saved
-// view still carries them, and the ISS-4667 legacy-value migration still maps
-// them), but nothing here reads one.
+// ISS-5532: `MetricCell` now lives in `./loc-per-dollar-cell` beside the value
+// component it wraps — that pair is the column's whole cell shape, and this file
+// is the one the ticket otherwise grew.
 
-const MetricCell = ({
-  component,
-  alignEnd,
-}: {
-  component: AgentComponent;
-  /**
-   * True on the grid row, where the polished column right-aligns so its one
-   * fixed precision actually lines the decimals up. False/absent on the narrow
-   * card, which renders this value inline beside the Type chip.
-   */
-  alignEnd?: boolean;
-}): ReactNode => {
-  const value = component.locPerDollar;
-  // ISS-5333: every arm of this cell honors `alignEnd` — the null branch returns
-  // BEFORE the value render, and leaving it unaligned once produced a left-flush
-  // dash under right-flush numbers. Header, real values, and the unavailable
-  // dash move together or not at all.
-  if (value === null) {
-    // The unavailable dash follows the column's alignment, same as `NumberCell`.
-    // Deliberately still the SHARED `GridEmptyValue` sentinel and not
-    // `<LocPerDollarColumnValue value={null} />` (which the ticket suggested):
-    // `isEmptyCellValue` identifies an empty cell by element TYPE, and the
-    // narrow card drops empty body rows on that test — returning a different
-    // component here would grow every card a literal "Metric —" line.
-    //
-    // ISS-5475: that emptiness is NOT observable from the cell's call site.
-    // `renderCell` hands back `<MetricCell …>` and this sentinel appears only
-    // once the component renders, so `isEmptyCellValue` on the returned node
-    // reports non-empty for a null row. `AgentCard`'s header, which does need to
-    // know, reads `locPerDollar` directly rather than testing the node.
-    return <GridEmptyValue alignEnd={alignEnd} />;
-  }
-  // ISS-4866: no `metricMode` switch. ISS-4667 removed the inverted $/KLOC mode,
-  // leaving a two-arm switch whose arms returned the identical node — a per-mode
-  // transform that no longer transformed. The metric has ONE unit and ONE
-  // orientation (LOC/$, higher is better) on every surface; when a second mode
-  // earns a different computation it brings its own branch back, along with the
-  // picker this ticket also retires.
-  return <LocPerDollarColumnValue alignEnd={alignEnd} value={value} />;
-};
-
-// ---------------------------------------------------------------------------
 // Live activity dot (FEA-3179)
-// ---------------------------------------------------------------------------
 
 /**
  * A component whose most recent ACTUAL invocation (`lastInvokedAt`) falls within
@@ -480,9 +473,7 @@ const ActiveDot = (): ReactNode => (
   />
 );
 
-// ---------------------------------------------------------------------------
 // Name lead — navigates to the component detail page when href is provided
-// ---------------------------------------------------------------------------
 
 function renderNameLead(
   component: AgentComponent,
@@ -616,9 +607,7 @@ function hasVersionCountSignal(
   );
 }
 
-// ---------------------------------------------------------------------------
 // AgentsTable
-// ---------------------------------------------------------------------------
 
 export type AgentsTableGroup = GridTableGroup<AgentComponent>;
 
@@ -699,6 +688,33 @@ export function AgentsTable({
   mode,
   alwaysShowActions,
 }: AgentsTableProps): ReactNode {
+  // ISS-6384. `…Optional` because this table also mounts in Storybook and in
+  // mini-table tests that wrap no flag provider; there it degrades to OFF —
+  // today's private `NumberCell` — rather than crashing.
+  const sharedCells = useFeatureFlagEnabledOptional(
+    ARTIFACT_CELL_PRIMITIVES_FEATURE_FLAG_KEY
+  );
+  // ISS-5532 (ISS-4779 closed-by-default). Resolved ONCE here and passed to
+  // `AgentCard` as a prop: the card is also the RN adapter's entry point
+  // (FEA-3872), which wraps no flag provider. `…Optional` for the same reason
+  // as above — Storybook and mini-table tests degrade to OFF, today's render.
+  const labelledCardAttributes = useFeatureFlagEnabledOptional(
+    AGENTS_CARD_ATTRIBUTE_LABELS_FEATURE_FLAG_KEY
+  );
+  // ISS-5527 (ISS-4779 closed-by-default). The caller groups the CURRENT PAGE,
+  // so `group.items.length` is a count of this page's rows, not of the kind. On a
+  // 48-page inventory that made "Commands 3" mean three of however many the org
+  // has, and the figure changed as the reader paged while the Components card
+  // beside it held steady. `session-grouping.ts` wrote this convention down and
+  // `session-detail-table.tsx` defaults `showGroupCount` to false — same
+  // package, same primitive, and this table was the half that never did.
+  // Derived rather than handed to `GridTable` directly so the read stays the one
+  // swap site; `GridTable` defaults the prop to `true`, which is today's render.
+  const pageScopedGroupCountsSuppressed = useFeatureFlagEnabledOptional(
+    AGENTS_SURFACE_HONESTY_FEATURE_FLAG_KEY
+  );
+  const showGroupCount = !pageScopedGroupCountsSuppressed;
+  const multiHarnessLabelWidensColumn = pageScopedGroupCountsSuppressed;
   // Filter data columns by visibility, append the always-visible actions column,
   // and drop any low-variance column (FEA-3968). Memoized on the inputs so the
   // O(columns × rows) collapse scan does not re-run on unrelated re-renders
@@ -713,6 +729,15 @@ export function AgentsTable({
       }
       if (ALIGNED_COUNT_COLUMN_IDS.has(spec.id)) {
         return { ...spec, ...ALIGNED_COUNT_HEADER };
+      }
+      // ISS-5524: the Harness track was sized for the four short harness names
+      // it used to render. With the gate open a multi-harness row says
+      // "Multiple harnesses" instead of `both` — roughly twice the glyphs — and
+      // a badge cannot ellipsize its way out of a fixed 120px track without
+      // truncating the very word this ticket added. Widened only under the gate
+      // so the flag-OFF grid keeps its exact track geometry.
+      if (spec.id === "harness" && multiHarnessLabelWidensColumn) {
+        return { ...spec, width: HARNESS_MULTI_LABEL_WIDTH };
       }
       return spec;
     });
@@ -770,7 +795,14 @@ export function AgentsTable({
       ].join(" "),
       orderedDataColumnIds: dataSpecs.map((spec) => spec.id),
     };
-  }, [visibleColumns, columnOrder, groups, items, sortBy]);
+  }, [
+    visibleColumns,
+    columnOrder,
+    groups,
+    items,
+    sortBy,
+    multiHarnessLabelWidensColumn,
+  ]);
 
   // Adapt AgentComponentSortDir → GridTable's SortDirection string union.
   const sortDirNormalized: SortDirection = sortDir === "desc" ? "desc" : "asc";
@@ -808,11 +840,13 @@ export function AgentsTable({
       alwaysShowActions,
       alignEnd: true,
       alignCountsEnd: true,
+      sharedCells,
     });
   const renderCellForCard = (columnId: string, item: AgentComponent) =>
     renderCell(columnId, item, {
       getComponentHref,
       alwaysShowActions,
+      sharedCells,
     });
 
   return (
@@ -823,6 +857,7 @@ export function AgentsTable({
           columns={cardColumns}
           getComponentHref={getComponentHref}
           item={item}
+          labelledAttributes={labelledCardAttributes}
           renderCell={renderCellForCard}
         />
       )}
@@ -839,6 +874,7 @@ export function AgentsTable({
       onSort={handleSort}
       renderCell={renderCellForGrid}
       renderLead={(item) => renderNameLead(item, getComponentHref)}
+      showGroupCount={showGroupCount}
       sortBy={sortBy}
       sortDir={sortDirNormalized}
     />
@@ -848,9 +884,11 @@ export function AgentsTable({
 // The Type badge and the metric lead the card header (a chip + value under the
 // name), and the row-actions menu sits in the header too, so none is repeated in
 // the key/value body. Every other visible column stays in the body.
-const AGENT_CARD_HEADER_COLUMN_IDS = new Set([
-  "type",
-  "metric",
+//
+// DERIVED from the promoted-attribute list rather than restating it, so an
+// attribute the header starts stating cannot also keep appearing in the body.
+const AGENT_CARD_HEADER_COLUMN_IDS = new Set<string>([
+  ...AGENT_CARD_HEADER_ATTRIBUTE_IDS,
   ROW_ACTIONS_COLUMN_ID,
 ]);
 
@@ -871,12 +909,20 @@ export function AgentCard({
   renderCell: renderCellForItem,
   getComponentHref,
   alwaysShowActions,
+  labelledAttributes,
 }: {
   item: AgentComponent;
   columns: readonly GridTableColumn[];
   renderCell: (columnId: string, item: AgentComponent) => ReactNode;
   getComponentHref?: (item: AgentComponent) => string;
   alwaysShowActions?: boolean;
+  /**
+   * ISS-5532: name the header attributes instead of stacking bare values. A
+   * PROP, not a hook read, because this component is also the RN adapter's
+   * entry point (FEA-3872) — `AgentsTable` resolves the cross-surface gate once
+   * and passes the answer down.
+   */
+  labelledAttributes?: boolean;
 }): ReactNode {
   // Route the card body through the shared builder so the label-less-column rule
   // (a blank `label` reads by its `ariaLabel` on the card, where there is no
@@ -902,7 +948,7 @@ export function AgentCard({
   // On the grid the column header names it, but the card has no header row, and
   // with the per-row tone deleted a bare "2.50" sat beside a "Subagent" badge,
   // reading as more chip metadata rather than a measurement. The label is the
-  // same `LOC_PER_DOLLAR_LABEL` the column header uses, so the two surfaces
+  // same registry entry the column header reads, so the two surfaces
   // cannot name the unit differently. The value keeps its header placement
   // (FEA-3866 promotes it as a headline attribute) rather than being demoted
   // into the key/value body, which was the other option the reviewer offered.
@@ -930,22 +976,14 @@ export function AgentCard({
         <div className="flex items-start justify-between gap-2">
           <div className="flex min-w-0 flex-col gap-1.5">
             {renderNameLead(item, getComponentHref)}
-            {/* Type + metric read as the card's headline attributes under the
-                name — rendered through the table's own cell renderer, so the
-                chip and value are identical to the grid row. Type is omitted when
-                it collapsed out of the grid so the card never repeats a value the
-                grid dropped. */}
-            <div className="flex min-w-0 flex-wrap items-center gap-2">
-              {showType ? renderCellForItem("type", item) : null}
-              {showMetric ? (
-                <span className="flex min-w-0 items-center gap-1">
-                  <span className="text-muted-foreground text-xs">
-                    {LOC_PER_DOLLAR_LABEL}
-                  </span>
-                  {renderCellForItem("metric", item)}
-                </span>
-              ) : null}
-            </div>
+            <AgentCardHeaderAttributes
+              columns={columns}
+              item={item}
+              labelledAttributes={labelledAttributes}
+              renderCellForItem={renderCellForItem}
+              showMetric={showMetric}
+              showType={showType}
+            />
           </div>
           {/* Actions live inline in the card header, always visible (no hover on
               touch): the grid path is the one that hover-reveals. The card is
@@ -984,6 +1022,14 @@ type RenderCellOptions = {
    * only; the narrow card omits it for the same reason it omits `alignEnd`.
    */
   alignCountsEnd?: boolean;
+  /**
+   * ISS-6384: render the count columns through the shared `CountCell` instead
+   * of this file's private `NumberCell`. Unlike the two alignment seams above
+   * this is NOT a grid/card distinction — both renderers pass the same value,
+   * because a zero must not read as "none" on the grid and as `0` on the card
+   * of the same row.
+   */
+  sharedCells: boolean;
 };
 
 function renderCell(
@@ -994,6 +1040,7 @@ function renderCell(
     alwaysShowActions,
     alignEnd,
     alignCountsEnd,
+    sharedCells,
   }: RenderCellOptions
 ): ReactNode {
   switch (columnId) {
@@ -1012,11 +1059,21 @@ function renderCell(
       return <HarnessBadge harness={component.harness} />;
     case "invocations":
       return (
-        <NumberCell alignEnd={alignCountsEnd} value={component.invocations} />
+        <NumberCell
+          alignEnd={alignCountsEnd}
+          noun={INVOCATIONS_NOUN}
+          sharedCells={sharedCells}
+          value={component.invocations}
+        />
       );
     case "sessions":
       return (
-        <NumberCell alignEnd={alignCountsEnd} value={component.sessions} />
+        <NumberCell
+          alignEnd={alignCountsEnd}
+          noun={SESSIONS_NOUN}
+          sharedCells={sharedCells}
+          value={component.sessions}
+        />
       );
     // FEA-4267: collapsed-family version count, gated to kinds with a real
     // version dropdown on their detail page (see VersionsCell).
@@ -1059,3 +1116,13 @@ function agentCollapseKey(
       return COLLAPSE_EMPTY;
   }
 }
+
+/**
+ * ISS-6384. Singular AND plural, because `CountCell` names a count of one with
+ * the singular: a shared cell that announces "1 invocations" cannot absorb the
+ * call sites it was written for.
+ */
+const INVOCATIONS_NOUN: CountNoun = {
+  one: "invocation",
+  other: "invocations",
+};

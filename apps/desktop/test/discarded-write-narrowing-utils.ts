@@ -15,8 +15,7 @@
  * pass against a write that did not actually execute. `$transaction` callbacks
  * are re-wrapped so writes issued inside an interactive transaction are
  * recorded too — several batch-5 sites (`activity-metrics`,
- * `opencode-withheld-store`, `repository-default-authority-store`) only ever
- * write from inside one.
+ * `opencode-withheld-store`) only ever write from inside one.
  */
 import type { DesktopPrisma } from "../src/main/database/prisma-client.js";
 
@@ -39,6 +38,21 @@ const WIDE_WRITE_METHODS: ReadonlySet<string> = new Set([
   "delete",
 ]);
 
+/**
+ * ISS-6326: the READ verbs that project-narrow — each resolves to every column
+ * unless given a `select`. Opt-in via {@link recordDesktopCalls}; the write
+ * suites keep {@link WIDE_WRITE_METHODS} as their default, because several of
+ * their sites read before they write and a widened default would change what
+ * their recorded verb sequences say.
+ */
+export const WIDE_READ_METHODS: ReadonlySet<string> = new Set([
+  "findFirst",
+  "findFirstOrThrow",
+  "findMany",
+  "findUnique",
+  "findUniqueOrThrow",
+]);
+
 /** Prisma's own surface (`$transaction`, `$queryRaw`, …) is never a delegate. */
 function isDelegateName(prop: string | symbol): prop is string {
   return (
@@ -49,14 +63,15 @@ function isDelegateName(prop: string | symbol): prop is string {
 function proxyDelegate<T extends object>(
   model: string,
   delegate: T,
-  calls: RecordedWrite[]
+  calls: RecordedWrite[],
+  methods: ReadonlySet<string>
 ): T {
   return new Proxy(delegate, {
     get(target, prop, receiver) {
       const value = Reflect.get(target, prop, receiver);
       if (
         typeof prop === "string" &&
-        WIDE_WRITE_METHODS.has(prop) &&
+        methods.has(prop) &&
         typeof value === "function"
       ) {
         return (args: Record<string, unknown>) => {
@@ -72,7 +87,8 @@ function proxyDelegate<T extends object>(
 function proxyClient<T extends object>(
   client: T,
   calls: RecordedWrite[],
-  rawQueries: string[]
+  rawQueries: string[],
+  methods: ReadonlySet<string>
 ): T {
   return new Proxy(client, {
     get(target, prop, receiver) {
@@ -88,7 +104,8 @@ function proxyClient<T extends object>(
           if (typeof arg === "function") {
             const inner = arg as (tx: object) => unknown;
             return Reflect.apply(value, target, [
-              (tx: object) => inner(proxyClient(tx, calls, rawQueries)),
+              (tx: object) =>
+                inner(proxyClient(tx, calls, rawQueries, methods)),
               ...rest,
             ]);
           }
@@ -102,7 +119,7 @@ function proxyClient<T extends object>(
       ) {
         return value;
       }
-      return proxyDelegate(prop, value, calls);
+      return proxyDelegate(prop, value, calls, methods);
     },
   });
 }
@@ -125,6 +142,17 @@ export type RecordedPrisma = {
  * `read`, `client`, or an interactive `$transaction` is recorded AND executed.
  */
 export function recordDesktopWrites(prisma: DesktopPrisma): RecordedPrisma {
+  return recordDesktopCalls(prisma, WIDE_WRITE_METHODS);
+}
+
+/**
+ * The general form: record every delegate call whose method is in `methods`.
+ * Pass {@link WIDE_READ_METHODS} to capture the projection-narrowing reads.
+ */
+export function recordDesktopCalls(
+  prisma: DesktopPrisma,
+  methods: ReadonlySet<string>
+): RecordedPrisma {
   const calls: RecordedWrite[] = [];
   const rawQueries: string[] = [];
   const wrapped = new Proxy(prisma, {
@@ -136,12 +164,13 @@ export function recordDesktopWrites(prisma: DesktopPrisma): RecordedPrisma {
       ) {
         return (fn: (client: object) => unknown, ...rest: unknown[]) =>
           Reflect.apply(value, target, [
-            (client: object) => fn(proxyClient(client, calls, rawQueries)),
+            (client: object) =>
+              fn(proxyClient(client, calls, rawQueries, methods)),
             ...rest,
           ]);
       }
       if (prop === "client" && value !== null && typeof value === "object") {
-        return proxyClient(value, calls, rawQueries);
+        return proxyClient(value, calls, rawQueries, methods);
       }
       return value;
     },
@@ -173,8 +202,8 @@ export function recordDesktopWrites(prisma: DesktopPrisma): RecordedPrisma {
  * Assert a recorded write RETURNINGs exactly `expected` — the row's real
  * primary key in `apps/desktop/prisma/schema.prisma`.
  *
- * The desktop schema is COMPOUND-PK-heavy: only `SessionArtifactLink`,
- * `ScheduledTask`, and `ScheduledTaskRun` carry an `id` column at all, so the
+ * The desktop schema is COMPOUND-PK-heavy: few tables (`SessionArtifactLink`
+ * among them) carry an `id` column at all, so the
  * cloud batches' `select: { id: true }` is a compile error on most tables here.
  * Passing the real key per model is what keeps this suite honest.
  */

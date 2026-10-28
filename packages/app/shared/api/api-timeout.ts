@@ -54,13 +54,10 @@
  * maps that onto this same {@link API_TIMEOUT_ERROR_CODE} (ISS-5082), so a
  * desktop deadline expiry reaches the identical non-retried "we stopped
  * waiting" state as on web. An unlabeled transport failure still arrives as a
- * generic `ApiError(message, 0)`; note that this is NOT a retried state either
- * — `isResponseBackedError` short-circuits on `error instanceof ApiError`
- * without inspecting the status, so `shouldRetryQuery` returns false for every
- * `ApiError` this client throws, and its `status === 0` "stays retryable"
- * branch is unreachable from here. (A caller-initiated `AbortError` is the one
- * thing this function re-throws un-wrapped; React Query treats it as a
- * cancellation, not a failure to retry.)
+ * generic `ApiError(message, 0)`, which `shouldRetryQuery` retries as a
+ * transport blip (ISS-5083). (A caller-initiated `AbortError` is the one thing
+ * this function re-throws un-wrapped; React Query treats it as a cancellation,
+ * not a failure to retry.)
  *
  * One gap remains, deliberately, as separate work: a CALLER abort (React Query
  * cancelling a superseded query, a user navigating away) still does not reach
@@ -85,31 +82,11 @@
  * transfer over their own `fetch` — but a handful of endpoints DO run long work
  * synchronously before responding (repo/zip pack imports, GitHub backfill,
  * Google Drive folder import). Those raise the deadline explicitly at the call
- * site via {@link ApiRequestOptions.timeoutMs} — see
- * {@link LONG_RUNNING_API_TIMEOUT_MS} — rather than the default being widened
- * for the ~230 calls that legitimately answer in under a second.
+ * site via {@link ApiRequestOptions.timeoutMs} — see `LONG_RUNNING_API_TIMEOUT_MS`
+ * in `@repo/api/src/types/long-running-api-timeout` — rather than the default
+ * being widened for the ~230 calls that legitimately answer in under a second.
  */
 export const DEFAULT_API_TIMEOUT_MS = 60_000;
-
-/**
- * Deadline for the few endpoints that do genuinely long synchronous work before
- * they respond (pack import from a repo or zip, GitHub backfill in Apply mode,
- * Google Drive folder import).
- *
- * 5 minutes is not an arbitrary "big number": it is the serverless
- * `maxDuration` each of those routes explicitly declares (`export const
- * maxDuration = 300`), so a request that outlives it cannot still be doing
- * useful work on the server — at that point waiting longer only withholds the
- * failure from the user.
- *
- * That premise only holds while the routes actually declare it. Before PR
- * #4321 they did not, so the platform default terminated the function first and
- * the client surfaced a 504 long before this deadline could fire. The
- * declarations are pinned by `apps/api/app/long-running-route-max-duration.test.ts`
- * — if a new call site raises its deadline to this constant, give its route the
- * matching `maxDuration` and add it there.
- */
-export const LONG_RUNNING_API_TIMEOUT_MS = 5 * 60_000;
 
 /**
  * Status carried by an error that never received an HTTP response at all. `0` is

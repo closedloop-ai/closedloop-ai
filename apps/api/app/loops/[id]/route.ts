@@ -1,139 +1,21 @@
-import type { Loop, LoopDetail, LoopEvent } from "@repo/api/src/types/loop";
-import { LoopCommand } from "@repo/api/src/types/loop";
-import { log } from "@repo/observability/log";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
-import { stopLoopTask } from "@/lib/loops/loop-ecs";
-import { loopEventBus } from "@/lib/loops/loop-event-bus";
-import {
-  errorResponse,
-  notFoundResponse,
-  parseBody,
-  scheduleLogFlush,
-  successResponse,
-} from "@/lib/route-utils";
-import { stopDesktopLoopBestEffort } from "../desktop-cancel";
-import { loopsService } from "../service";
-import { loopMetadataUpdateValidator } from "../validators";
+import { loopsRemovedResponse } from "@/lib/loops-removed-response";
 
 /**
- * DELETE awaits a desktop kill that replays a not-delivered answer (ISS-6046),
- * so this segment cannot run on the platform default. Literal because
- * route-segment config must be statically analysable; pinned to
- * `CANCEL_REQUEST_BUDGET_SECONDS` by `../cancel-route-max-duration.test.ts`.
+ * ISS-12435 (PRD-795): Loops are removed. This route is a 410 tombstone
+ * (`apps/api/AGENTS.md`) for installed Desktop builds, stale browser bundles
+ * and `sk_live_*` integrations that can still call it.
  */
-export const maxDuration = 60;
-
-export const GET = withAnyAuth<LoopDetail, "/loops/[id]">(
-  async ({ user }, _, params) => {
-    try {
-      const { id } = await params;
-
-      const loop = await loopsService.findById(id, user.organizationId, {
-        includeSupportArtifacts: true,
-      });
-
-      if (!loop) {
-        return notFoundResponse("Loop");
-      }
-
-      return successResponse(loop);
-    } catch (error) {
-      return errorResponse("Failed to fetch loop", error);
-    }
-  }
+export const GET = withAnyAuth<never, "/loops/[id]">(() =>
+  Promise.resolve(loopsRemovedResponse())
 );
 
-export const DELETE = withAnyAuth<Loop, "/loops/[id]">(
-  async ({ user }, _, params) => {
-    try {
-      const { id } = await params;
-
-      const loop = await loopsService.findById(id, user.organizationId);
-      if (!loop) {
-        return notFoundResponse("Loop");
-      }
-
-      if (loop.computeTargetId) {
-        // Desktop path: dispatch kill command to electron
-        await stopDesktopLoopBestEffort({
-          loopId: id,
-          computeTargetId: loop.computeTargetId,
-        });
-      } else if (loop.containerId) {
-        // ECS path: stop the container task
-        try {
-          await stopLoopTask(loop.containerId, "Loop cancelled by user");
-        } catch (stopError) {
-          log.warn("Failed to stop loop task", { loopId: id, stopError });
-        }
-      }
-
-      const cancelled = await loopsService.cancel(id, user.organizationId);
-
-      const cancelEvent: LoopEvent = {
-        type: "cancelled",
-        reason: "Cancelled by user",
-        timestamp: new Date().toISOString(),
-      };
-      await loopsService.addEvent(id, user.organizationId, {
-        type: cancelEvent.type,
-        data: cancelEvent,
-      });
-      loopEventBus.publish(id, cancelEvent);
-
-      scheduleLogFlush();
-      return successResponse(cancelled);
-    } catch (error) {
-      return errorResponse("Failed to cancel loop", error);
-    }
-  },
+export const DELETE = withAnyAuth<never, "/loops/[id]">(
+  () => Promise.resolve(loopsRemovedResponse()),
   { requiredScopes: ["delete"] }
 );
 
-/**
- * PATCH /loops/[id] — Update loop metadata (prUrl, branchName, summary).
- * Used by MCP complete-loop to record final state on manual loops.
- */
-export const PATCH = withAnyAuth<Loop, "/loops/[id]">(
-  async ({ user }, request, params) => {
-    try {
-      const { id } = await params;
-
-      const { body, errorResponse: parseError } = await parseBody(
-        request,
-        loopMetadataUpdateValidator
-      );
-      if (parseError) {
-        return parseError;
-      }
-
-      const loop = await loopsService.findById(id, user.organizationId);
-      if (!loop) {
-        return notFoundResponse("Loop");
-      }
-
-      if (loop.command !== LoopCommand.Manual) {
-        return errorResponse(
-          "Metadata updates are only allowed for MANUAL loops",
-          new Error("Forbidden"),
-          403
-        );
-      }
-
-      const updated = await loopsService.updateManualLoopFields(
-        id,
-        user.organizationId,
-        body
-      );
-
-      if (!updated) {
-        return notFoundResponse("Loop");
-      }
-
-      return successResponse(updated);
-    } catch (error) {
-      return errorResponse("Failed to update loop", error);
-    }
-  },
+export const PATCH = withAnyAuth<never, "/loops/[id]">(
+  () => Promise.resolve(loopsRemovedResponse()),
   { requiredScopes: ["write"] }
 );

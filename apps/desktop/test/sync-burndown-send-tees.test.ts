@@ -10,64 +10,25 @@
  * `sync.durable_cursor.stalled` alert claiming the exact opposite.
  */
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
 import {
   AGENT_COMPONENT_INVOCATION_SYNC_PROTOCOL_VERSION,
   AgentComponentInvocationSyncAckState,
 } from "@repo/api/src/types/agent-component-invocation";
+import { describe, it } from "vitest";
 import { ComponentSyncSendOutcome } from "../src/main/agent-sync/agent-component-sync-dead-letter.js";
 import {
   recordAcceptedComponentRecords,
   recordAcceptedInvocationPart,
 } from "../src/main/agent-sync/desktop-sync-lane-composition.js";
-import type { SyncBurndownStoreSample } from "../src/main/database/sync-burndown-store.js";
 import {
   type SyncBurndownLogLevel,
   SyncBurndownReporter,
 } from "../src/main/sync/sync-burndown-reporter.js";
+import { emptySample } from "./sync-burndown-reporter-harness.js";
 
-const COMPONENT_DONE_RE = /component_inventory\].*sinceLastPass: done=(\d+)/;
+const COMPONENT_DONE_RE =
+  /component_inventory\].*sinceLastPass: done=([0-9.]+)/;
 const INVOCATION_DONE_RE = /invocation_parts\].*sinceLastPass: done=(\d+)/;
-
-function emptySample(): SyncBurndownStoreSample {
-  return {
-    sessionOutbox: {
-      pending: 0,
-      readyPending: 0,
-      deadLettered: 0,
-      oldestPendingEnqueuedAtIso: null,
-      unmeasuredRows: 0,
-    },
-    invocationOutbox: {
-      pending: 0,
-      readyPending: 0,
-      deadLettered: 0,
-      oldestPendingEnqueuedAtIso: null,
-      unmeasuredRows: 0,
-      pendingSessions: 0,
-      pendingParts: 0,
-      pendingPayloadBytes: 0,
-      pendingTemplateSessions: 0,
-      pendingTemplateSessionsTruncated: false,
-    },
-    transcript: {
-      inFlightFiles: 0,
-      strandedIdleFiles: 0,
-      deadFiles: 0,
-      bytesRemaining: 0,
-      oldestInFlightUpdatedAtIso: null,
-      unmeasuredRows: 0,
-    },
-    componentInventory: { rowsRemaining: 0, deadLetteredCount: 0 },
-    traceComments: {
-      pendingComments: 0,
-      pendingReplyComments: 0,
-      oldestPendingCreatedAtIso: null,
-      unmeasuredRows: 0,
-    },
-    cursorsBySourceKey: {},
-  };
-}
 
 /**
  * A reporter whose emitted lines are the observable: the counters are private,
@@ -88,11 +49,12 @@ function buildReporter(): {
     invocationTemplateSourceKey: "agent_component_invocations",
     getComponentSourceKey: () => "agent_components:v3:ct-1",
     getTranscriptComputeTargetId: () => "ct-1",
+    getIdentity: () => null,
     isSessionLaneRunning: () => true,
     isInvocationLaneRunning: () => true,
     isTranscriptLaneRunning: () => true,
     isComponentLaneRunning: () => true,
-    isTraceCommentLaneRunning: () => true,
+    isLaneDeliveryConsented: () => true,
     log: (_level: SyncBurndownLogLevel, message: string) => {
       lines.push(message);
     },
@@ -133,6 +95,32 @@ describe("ISS-5387 send tees count results, not attempts", () => {
       25,
       "an accepted batch is work the durable cursor was expected to record"
     );
+  });
+
+  it("accepts a fractional positive component-record count", async () => {
+    const harness = buildReporter();
+    recordAcceptedComponentRecords(
+      harness.reporter,
+      2.5,
+      componentResult(ComponentSyncSendOutcome.Accepted)
+    );
+    assert.equal(
+      doneCount(await harness.sample(), COMPONENT_DONE_RE),
+      2.5,
+      "the current counter accepts every finite count above zero"
+    );
+  });
+
+  it("ignores non-positive and non-finite component-record counts", async () => {
+    const harness = buildReporter();
+    for (const count of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      recordAcceptedComponentRecords(
+        harness.reporter,
+        count,
+        componentResult(ComponentSyncSendOutcome.Accepted)
+      );
+    }
+    assert.equal(doneCount(await harness.sample(), COMPONENT_DONE_RE), 0);
   });
 
   it("counts nothing for a LaneFailure, which leaves the cursor unchanged", async () => {

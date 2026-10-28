@@ -45,7 +45,7 @@ afterEach(() => {
   process.env = { ...ORIGINAL_ENV };
 });
 
-describe.sequential("OAuth config", () => {
+describe("OAuth config", { concurrent: false }, () => {
   it("allows startup in production without redirect allowlist (loopback-only)", async () => {
     process.env.INTERNAL_API_SECRET = "test-internal-secret";
     process.env.WEBAPP_ENV = "stage";
@@ -176,7 +176,7 @@ describe.sequential("OAuth config", () => {
   });
 });
 
-describe.sequential("Redirect URI wildcard matching", () => {
+describe("Redirect URI wildcard matching", { concurrent: false }, () => {
   it("matches exact URIs", async () => {
     process.env.INTERNAL_API_SECRET = "test-internal-secret";
     const mod = await import("../index.js");

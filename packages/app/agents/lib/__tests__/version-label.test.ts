@@ -44,9 +44,9 @@ describe("versionLabelForHash", () => {
 
   // FEA-3520 regression: the DTO types `hash` as `string`, but a malformed /
   // differently-shaped record (the stage Skill-component crash) can deliver a
-  // non-string. Calling `.slice` on it threw inside the detail page's
-  // LiveblocksErrorBoundary → crash-spiral. Every shape must resolve without
-  // throwing (same class as the #3208 `sessionStartedAt` fix).
+  // non-string. Calling `.slice` on it threw and took the detail page down.
+  // Every shape must resolve without throwing (same class as the #3208
+  // `sessionStartedAt` fix).
   it("never throws on a non-string hash and coerces numbers to a #prefix", () => {
     // A numeric hash is coerced to its string form → usable #prefix.
     expect(() =>

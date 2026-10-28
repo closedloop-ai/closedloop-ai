@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Integration tokens are encrypted with AWS KMS, which local vibe environments do not have."
+}

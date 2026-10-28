@@ -2,8 +2,8 @@
  * @file opencode-diff-stats.ts
  * @description Build a session's aggregate `diffStats`, preferring the
  * `session` table's `summary_*` columns and falling back to patch-part
- * accumulation. Extracted from `opencode-parser.ts` (grandfathered shrink-only
- * under the root AGENTS.md line-count contract) when ISS-5238 F5 added the
+ * accumulation. Extracted from `opencode-parser.ts` (under the root AGENTS.md
+ * line-count contract) when ISS-5238 F5 added the
  * validation this path never had.
  *
  * ISS-5238 (F5): the summary columns used to be read with a bare

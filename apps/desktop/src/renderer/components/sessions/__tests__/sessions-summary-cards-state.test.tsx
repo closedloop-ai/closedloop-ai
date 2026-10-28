@@ -42,6 +42,18 @@ const timedOut: IngestProgress = {
   complete: false,
   timedOut: true,
 };
+// ISS-6207: the OTHER degraded terminal — the boot import settled, but a harness
+// gave up with source files outstanding after its automatic re-drive budget was
+// spent. Like `timedOut`, processed (3) stays below total (7) forever; unlike it,
+// nothing is still running. Both must read as terminal-and-not-complete.
+const retriesExhausted: IngestProgress = {
+  byHarness: [],
+  total: 7,
+  processed: 3,
+  preparing: false,
+  complete: false,
+  retriesExhausted: true,
+};
 // ISS-4444 (whitlockk): the window between a poison source's `processed` reaching
 // `total` and `recordFailure` landing the quarantine count. Aggregate
 // `processed >= total` is briefly true, but `complete` is still false and
@@ -66,6 +78,7 @@ describe("deriveSessionsAvailability", () => {
       deriveSessionsAvailability({
         displayState: "unavailable",
         isListError: false,
+        isListLoadingError: false,
         isListLoading: false,
       })
     ).toEqual({
@@ -80,6 +93,7 @@ describe("deriveSessionsAvailability", () => {
       deriveSessionsAvailability({
         displayState: "unavailable",
         isListError: true,
+        isListLoadingError: true,
         isListLoading: false,
       })
     ).toEqual({
@@ -94,6 +108,7 @@ describe("deriveSessionsAvailability", () => {
       deriveSessionsAvailability({
         displayState: "ready",
         isListError: true,
+        isListLoadingError: true,
         isListLoading: false,
       })
     ).toEqual({
@@ -112,6 +127,8 @@ describe("deriveSessionsAvailability", () => {
         displayState: "ready",
         isListError: true,
         isListErrorTransient: true,
+        isListErrorTransientSource: true,
+        isListLoadingError: true,
         isListLoading: false,
       })
     ).toEqual({
@@ -129,6 +146,67 @@ describe("deriveSessionsAvailability", () => {
         displayState: "ready",
         isListError: true,
         isListErrorTransient: false,
+        isListLoadingError: true,
+        isListLoading: false,
+      })
+    ).toEqual({
+      isUnavailable: true,
+      isSyncing: false,
+      isTableLoading: false,
+    });
+  });
+
+  // ISS-7528: the two refetch-failure cases — an error settled over a read that
+  // ALREADY SUCCEEDED, which `isListError` alone cannot tell from the initial
+  // rejections above. A persistent one must stand down (the succeeded read
+  // disproves the outage), while a transient one keeps its own quiet surface.
+  it("a PERSISTENT refetch failure over a succeeded read is neither unavailable nor syncing", () => {
+    expect(
+      deriveSessionsAvailability({
+        displayState: "ready",
+        isListError: true,
+        isListErrorTransient: false,
+        isListLoadingError: false,
+        isListLoading: false,
+      })
+    ).toEqual({
+      isUnavailable: false,
+      isSyncing: false,
+      isTableLoading: false,
+    });
+  });
+
+  it("a TRANSIENT refetch failure over a succeeded read stays unavailable AND syncing", () => {
+    expect(
+      deriveSessionsAvailability({
+        displayState: "ready",
+        isListError: true,
+        isListErrorTransient: true,
+        isListErrorTransientSource: true,
+        isListLoadingError: false,
+        isListLoading: false,
+      })
+    ).toEqual({
+      isUnavailable: true,
+      isSyncing: true,
+      isTableLoading: false,
+    });
+  });
+
+  // ISS-4483 review cid 3679535437's exit, re-pinned by ISS-7528: once a wedged
+  // transient failure exhausts its retries `isListErrorTransient` closes, and the
+  // frame must land on the ERROR card (which carries an action), never on the
+  // genuinely-empty state. The exhaustion-agnostic term is what keeps it
+  // classified unavailable; without it the user is told "you have none" by a
+  // surface whose read is still failing and has stopped retrying.
+  it("a WEDGED transient refetch (retries exhausted) is unavailable and NOT syncing", () => {
+    expect(
+      deriveSessionsAvailability({
+        displayState: "ready",
+        isListError: true,
+        isListErrorTransient: false,
+        isListErrorTransientSource: true,
+        isListLoadingError: false,
         isListLoading: false,
       })
     ).toEqual({
@@ -143,6 +221,7 @@ describe("deriveSessionsAvailability", () => {
       deriveSessionsAvailability({
         displayState: "ready",
         isListError: false,
+        isListLoadingError: false,
         isListLoading: false,
       })
     ).toEqual({
@@ -157,6 +236,7 @@ describe("deriveSessionsAvailability", () => {
       deriveSessionsAvailability({
         displayState: "starting",
         isListError: false,
+        isListLoadingError: false,
         isListLoading: false,
       }).isTableLoading
     ).toBe(true);
@@ -164,6 +244,7 @@ describe("deriveSessionsAvailability", () => {
       deriveSessionsAvailability({
         displayState: "ready",
         isListError: false,
+        isListLoadingError: false,
         isListLoading: true,
       }).isTableLoading
     ).toBe(true);
@@ -320,6 +401,10 @@ describe("isLocalImportInProgress", () => {
     expect(isLocalImportInProgress(timedOut)).toBe(false);
   });
 
+  it("is false once a spent retry budget gives up, even though processed < total", () => {
+    expect(isLocalImportInProgress(retriesExhausted)).toBe(false);
+  });
+
   it("is false when the runtime is not yet up (null)", () => {
     expect(isLocalImportInProgress(null)).toBe(false);
   });
@@ -336,6 +421,10 @@ describe("isImportSettled", () => {
 
   it("is true once a wedged harness times out (watchdog gave up)", () => {
     expect(isImportSettled(timedOut)).toBe(true);
+  });
+
+  it("is true once the retry budget is spent (the import settled, unfinished)", () => {
+    expect(isImportSettled(retriesExhausted)).toBe(true);
   });
 
   it("is FALSE when processed>=total but complete is still false (quarantine count not yet landed)", () => {

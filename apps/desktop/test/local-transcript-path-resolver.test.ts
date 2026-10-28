@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   createLocalTranscriptResolverDeps,
   createMemoizedDiscover,
@@ -332,8 +332,8 @@ const OTHER_SESSION_ID = "some-other-session";
 function largeCorpusRefs(): TranscriptFileRef[] {
   const refs: TranscriptFileRef[] = [ref()];
   for (let index = 1; index <= SIDECHAIN_COUNT; index++) {
-    refs.push(ref({ fileKey: `subagent:agent-${index}` }));
     refs.push(
+      ref({ fileKey: `subagent:agent-${index}` }),
       ref({
         externalSessionId: OTHER_SESSION_ID,
         fileKey: `subagent:other-${index}`,

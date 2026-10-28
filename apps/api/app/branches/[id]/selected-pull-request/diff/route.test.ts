@@ -58,7 +58,7 @@ describe("GET /branches/[id]/selected-pull-request/diff", () => {
       "user-1",
       BRANCH_ID,
       {
-        repositoryFullName: "closedloop-ai/example-repo",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
         pullRequestNumber: 4471,
         path: "apps/api/a file.ts",
         baseSha: BASE_SHA,
@@ -138,7 +138,7 @@ function request(
   signal?: AbortSignal
 ) {
   const params = new URLSearchParams({
-    repositoryFullName: "ClosedLoop-AI/Example-Repo",
+    repositoryFullName: "ClosedLoop-AI/ClosedLoop-AI",
     pullRequestNumber: "4471",
     path: "apps/api/a file.ts",
     baseSha: overrides.baseSha ?? BASE_SHA.toUpperCase(),

@@ -1,6 +1,8 @@
 "use client";
 
+import { hasPositiveCost } from "@repo/api/src/agent-session-filters";
 import type { ActivityBucket } from "@repo/api/src/types/agent-session";
+import { TimelineColumnCoverage } from "@repo/app/agents/lib/session-timeline-projection";
 import { useContainerWidth } from "@repo/design-system/hooks/use-container-width";
 import {
   formatBucketBarLabel,
@@ -8,6 +10,7 @@ import {
   getBarStyle,
   getBucketCost,
   isInteriorGap,
+  TIMELINE_UNMEASURED_INTERVAL_TOOLTIP,
 } from "./activity-bucket-rendering";
 import { fitBucketBarLabels } from "./session-timeline-bar-label-fit";
 
@@ -113,7 +116,7 @@ export function SessionTimelineBarLabels({
  * Built here rather than inside the bar loop so the rail and the bars cannot
  * drift about which bucket is labelled: both read the same `getBarStyle`
  * decision for the same index. It also keeps this decision out of
- * `agent-session-detail-view.tsx`, which is grandfathered shrink-only.
+ * `agent-session-detail-view.tsx`.
  */
 export function buildBucketBarLabels({
   buckets,
@@ -222,12 +225,39 @@ export function getPeakBucketIndex(
  */
 export function buildBucketAccessibleCosts({
   buckets,
+  columnCoverage,
   costsSynthesized,
 }: Readonly<{
   buckets: readonly ActivityBucket[];
+  /**
+   * ISS-5850: parallel to `buckets`. An UNMEASURED column's name carries the
+   * reason it has no figure, rather than simply going quiet.
+   *
+   * Silence would not be neutral here. The tooltip states the fact for a
+   * pointer user, so leaving the name at a bare "Activity bucket 3:00 PM" would
+   * put a distinction in the visual layer and nowhere else — the same
+   * information gap `withStackBreakdown` exists to close for the colour-only
+   * "Group by" cut (WCAG 1.4.1). One statement per column, in both trees.
+   *
+   * Optional so the existing callers that have no coverage answer — Storybook
+   * stories, and any strip rendered before one is resolved — keep today's names
+   * exactly.
+   */
+  columnCoverage?: readonly TimelineColumnCoverage[];
   costsSynthesized: boolean;
 }>): (string | null)[] {
-  return buckets.map((bucket) => {
+  return buckets.map((bucket, index) => {
+    /*
+     * BEFORE the synthesized check, deliberately, and the ordering matches the
+     * tooltip's. `costsSynthesized` withdraws a figure because the MONEY was
+     * invented; this column has no figure because the INTERVAL was never
+     * measured, which is the more basic fact and the one that explains the
+     * silence. Both can hold at once, and when they do this is what the reader
+     * needs to hear.
+     */
+    if (columnCoverage?.[index] === TimelineColumnCoverage.Unmeasured) {
+      return TIMELINE_UNMEASURED_INTERVAL_TOOLTIP;
+    }
     if (costsSynthesized) {
       return null;
     }
@@ -276,13 +306,27 @@ export function buildBucketAccessibleCosts({
  * the tooltip's per-model table together, so they cannot contradict each other.
  *
  * The union matters only while the flag is OFF, where it preserves ISS-5563's
- * already-shipped, ungated withdrawal of the `$0.001` floor labels instead of
+ * already-shipped, ungated withdrawal of the `$0.001` floor figures instead of
  * regressing it. A MEASURED strip has persisted buckets, so both predicates are
- * false and its labels print either way.
+ * false and its figures print either way.
  *
- * Returned as a pair rather than derived at the call site because
- * `agent-session-detail-view.tsx` is grandfathered shrink-only and sits on the
- * cognitive-complexity ceiling.
+ * ISS-5632: `barCostsUnpublished` governs every place a FIGURE is spoken or
+ * printed — the rail, the hover card, and the per-segment amounts in the bar
+ * buttons' accessible names. Two of those three did not consult it, so with the
+ * flag off a floor-priced strip paired a blank rail with a card quoting
+ * `$0.0025` and an `aria-label` reciting the same split.
+ *
+ * It does NOT govern the bar STACK, which still paints the synthesized split as
+ * colour on the flag-off strip; only `costUnmeasured` swaps that for the hatch.
+ * That is a proportion, not a published figure, and changing it ungated is a
+ * perceivable visual change ISS-4779 would gate — so it stays where ISS-5566
+ * put it.
+ *
+ * The flag-gated SENTENCE explaining the withdrawal likewise still rides
+ * `costUnmeasured` — ISS-5563 shipped the withdrawal ungated, not the copy.
+ *
+ * Returned as a pair rather than derived at the call site, so the rail, the
+ * stack and the tooltip cannot read different answers.
  */
 export function resolveTimelineCostDisclosure({
   costsSynthesized,
@@ -303,10 +347,10 @@ export function resolveTimelineCostDisclosure({
 export function hasSynthesizedBucketCosts(
   session: Readonly<{
     activityBuckets?: readonly ActivityBucket[] | null;
-    estimatedCost: number;
+    estimatedCost: number | null;
   }>
 ): boolean {
   const hasPersistedBuckets =
     session.activityBuckets != null && session.activityBuckets.length > 0;
-  return !(hasPersistedBuckets || session.estimatedCost > 0);
+  return !(hasPersistedBuckets || hasPositiveCost(session.estimatedCost));
 }

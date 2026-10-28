@@ -14,8 +14,10 @@
  *  1. Result cache  — the computed JSON response is memoized by (section,period).
  *     A hit at the current data epoch returns immediately; no recompute.
  *  2. Epoch invalidation — every committed DB write bumps a monotonic
- *     `dataEpoch`. A cached entry computed at epoch N is stale once the epoch
- *     advances past N.
+ *     `dataEpoch` (ISS-7110: wired at the write-queue seam via
+ *     `openSqliteAgentDatabase`'s `onCommittedWrite`, so backfill/importer
+ *     writes invalidate too, not just live-hook events). A cached entry
+ *     computed at epoch N is stale once the epoch advances past N.
  *  3. Backfill debounce — during the backfill the epoch advances constantly.
  *     Rather than recompute on every change, a stale entry is still SERVED as
  *     long as it was recomputed within the last `staleServeCooldownMs`; the next

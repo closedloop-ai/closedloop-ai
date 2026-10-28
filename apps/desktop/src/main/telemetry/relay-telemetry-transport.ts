@@ -39,7 +39,7 @@ import { normalizeAndValidateOrigin } from "../settings/origin-policy.js";
 const LOG_TAG = "telemetry-relay";
 
 /** Default bound for handshake/export acks before we give up on a request. */
-const DEFAULT_ACK_TIMEOUT_MS = 5000;
+export const DEFAULT_ACK_TIMEOUT_MS = 5000;
 /** Re-handshake this long before the server TTL actually elapses. */
 const SESSION_RENEW_MARGIN_MS = 30_000;
 /** Bounded warm-up buffer for exports issued before the session is ready. */
@@ -49,7 +49,7 @@ const DEFAULT_WARM_UP_QUEUE_LIMIT = 8;
  * `app.lifecycle` shutdown event) reach the relay before the socket is torn
  * down. Bounded so a degraded relay can never delay app quit by more than this.
  */
-const DEFAULT_SHUTDOWN_DRAIN_MS = 1500;
+export const DEFAULT_SHUTDOWN_DRAIN_MS = 1500;
 
 /** OTLP signal kind carried by an export, mirrors the relay contract. */
 export type RelayTelemetrySignal = KeylessTelemetrySignal;
@@ -112,8 +112,8 @@ export type RelayTelemetryTransportDiagnostics = {
 /**
  * The transport plus a read-only health accessor. The OTel runtime only needs
  * {@link DesktopTelemetryTransport}; `getDiagnostics` exposes the bounded
- * send/drop counters for support bundles and tests (drops are otherwise silent
- * best-effort).
+ * send/drop counters, which the lifecycle heartbeat exports (ISS-11866) and
+ * the ISS-6334 auth-failure reporter reads.
  */
 export type RelayTelemetryTransportHandle = DesktopTelemetryTransport & {
   getDiagnostics: () => RelayTelemetryTransportDiagnostics;
@@ -549,11 +549,11 @@ class RelayTelemetryTransport implements DesktopTelemetryTransport {
   }
 
   private applyCooldown(retryAfterSeconds: number): void {
-    const seconds =
-      Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
-        ? retryAfterSeconds
-        : KEYLESS_TELEMETRY_RETRY_AFTER_SECONDS;
-    this.cooldownUntil = this.now() + seconds * 1000;
+    this.cooldownUntil = laterCooldownDeadline(
+      this.cooldownUntil,
+      this.now(),
+      retryAfterSeconds
+    );
   }
 
   /**
@@ -667,9 +667,59 @@ function defaultConnectFn(url: string): TelemetrySocketLike {
   return io(url, {
     transports: ["websocket"],
     reconnection: true,
+    // Socket.IO caches one Manager per ORIGIN, so without this the anonymous
+    // `/telemetry` namespace and the authenticated `/desktop-gateway` one share
+    // a single Engine.IO transport. `extraHeaders` is transport-level and is
+    // fixed by whichever `io()` call built the Manager, so telemetry winning
+    // that race silently strips the gateway's PoP headers and leaves it
+    // Unauthorized. `forceNew` neither reads nor writes that cache, which makes
+    // the isolation the keyless-telemetry contract already promises hold in
+    // BOTH connect orders rather than only the lucky one (ISS-6494).
+    forceNew: true,
   }) as unknown as TelemetrySocketLike;
 }
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : "unknown error";
+}
+
+/**
+ * Every export the transport declined, across all drop causes.
+ *
+ * ISS-6334 reads this beside `sent` as the only per-process evidence of
+ * non-delivery available above an async batched exporter: a span in which
+ * `sent` did not move but this did proves nothing left the process, so a
+ * record emitted before it certainly did not arrive. Summed here rather than
+ * at the call site because this module owns the counter set — a drop cause
+ * added later is accounted for in one place, and a cause missed from this sum
+ * degrades to "no drop evidence", never to a false delivery claim.
+ */
+export function totalDroppedExports(
+  diagnostics: RelayTelemetryTransportDiagnostics
+): number {
+  return (
+    diagnostics.droppedOversize +
+    diagnostics.droppedNoSession +
+    diagnostics.droppedRateLimited +
+    diagnostics.droppedCollectorUnavailable +
+    diagnostics.droppedInvalid
+  );
+}
+
+/**
+ * The cooldown deadline both keyless transports keep. In-flight exports can
+ * answer out of order, so a shorter retry window answered after a longer one
+ * never moves the deadline earlier (ISS-12261; the API transport since
+ * ISS-12211).
+ */
+export function laterCooldownDeadline(
+  cooldownUntil: number,
+  now: number,
+  retryAfterSeconds: number
+): number {
+  const seconds =
+    Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+      ? retryAfterSeconds
+      : KEYLESS_TELEMETRY_RETRY_AFTER_SECONDS;
+  return Math.max(cooldownUntil, now + seconds * 1000);
 }

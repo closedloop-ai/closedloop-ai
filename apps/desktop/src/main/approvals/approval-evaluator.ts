@@ -8,10 +8,6 @@ import { GATEWAY_DISPATCH_RENDERER_SOURCE } from "../../shared/gateway-dispatch-
 import { normalizeScopePath } from "../../shared/sandbox-policy.js";
 import type { SettingsStore } from "../settings/settings-store.js";
 import {
-  buildUpdateAndRestartDisabledResult,
-  shouldHonorAlwaysAllowRule,
-} from "../update/update-and-restart-helpers.js";
-import {
   ALWAYS_ALLOW_RULE_TTL_MS,
   matchesAlwaysAllowRule,
   pruneExpiredAlwaysAllowRules,
@@ -21,6 +17,7 @@ import {
   FORCE_INTERACTIVE_OPERATIONS,
   OPERATION_RISK_TIERS,
   shouldAutoApprove,
+  shouldHonorAlwaysAllowRule,
 } from "./approval-policy.js";
 import type { ApprovalStore } from "./approval-store.js";
 
@@ -93,13 +90,6 @@ export class ApprovalEvaluator {
         statusCode: 403,
         payload: { error: `Unmapped operation: ${request.path}` },
       };
-    }
-
-    if (
-      operationId === "update_and_restart" &&
-      !this.deps.settingsStore.getUpdateAndRestartEnabled()
-    ) {
-      return buildUpdateAndRestartDisabledResult();
     }
 
     const settings = this.deps.settingsStore.getAll();

@@ -2,11 +2,9 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 import { promisify } from "node:util";
+import { isTccProtectedPath } from "../../shared/sandbox-policy.js";
 import type { Repo } from "../database/generated/client.js";
 import type { DesktopPrisma } from "../database/prisma-client.js";
-
-const execFileAsync = promisify(execFile);
-
 import {
   getAbsoluteGitCommonDir,
   getAbsoluteGitDir,
@@ -16,6 +14,8 @@ import {
   listRemotes,
   normalizeRepoFullName,
 } from "./git-exec.js";
+
+const execFileAsync = promisify(execFile);
 
 export type RepoRow = {
   id: string;
@@ -59,6 +59,12 @@ export async function captureRepoIdentity(
     repoFullName: null,
     isWorktree: false,
   };
+
+  // ISS-11914: every `git` call below reads `.git` inside `cwd`, which raises a
+  // macOS permission prompt in a TCC-protected folder.
+  if (isTccProtectedPath(cwd)) {
+    return empty;
+  }
 
   const isGit = await isInsideWorkTree(gitPath, cwd);
   if (!isGit) {

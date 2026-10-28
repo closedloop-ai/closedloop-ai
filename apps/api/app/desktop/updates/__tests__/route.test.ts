@@ -1,11 +1,20 @@
 import { NextRequest } from "next/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+// ISS-9165: the asset leg is resolved against both mutable channels, promoted
+// first, whatever the ring — the desktop strips the compute-target id before the
+// ZIP request, so there is no ring here to honour. Written out rather than
+// imported so a channel rename has to be acknowledged here.
+const ASSET_CHANNELS = ["desktop-latest", "desktop-candidate"];
+
 const mocks = vi.hoisted(() => ({
   getElectronUpdaterAssetRedirectUrl: vi.fn(),
   getLatestElectronUpdaterFeed: vi.fn(),
+  logDebug: vi.fn(),
   logError: vi.fn(),
+  logInfo: vi.fn(),
   logFlush: vi.fn(() => Promise.resolve()),
+  logWarn: vi.fn(),
   waitUntil: vi.fn(),
 }));
 
@@ -21,8 +30,11 @@ vi.mock("@repo/observability/error", () => ({
 
 vi.mock("@repo/observability/log", () => ({
   log: {
+    debug: mocks.logDebug,
     error: mocks.logError,
     flush: mocks.logFlush,
+    info: mocks.logInfo,
+    warn: mocks.logWarn,
   },
 }));
 
@@ -36,6 +48,7 @@ vi.mock("@/lib/auth/with-any-auth", () => ({
   },
 }));
 
+import { REQUEST_COMPLETED_EVENT } from "@/lib/route-utils";
 import { GET as assetGET } from "../[assetName]/route";
 import {
   DesktopUpdaterFeedCacheControl,
@@ -61,6 +74,8 @@ const FEED_TEXT = `version: ${VERSION}\nfiles:\n  - url: ${ZIP_ASSET}\n    sha51
 const SIGNED_REDIRECT_URL =
   "https://objects.githubusercontent.com/github-production-release-asset-2e65be/12345?X-Amz-Signature=abc";
 const FIXED_NOW = 1_893_456_000_000;
+const FEED_PATH_WITH_NO_CACHE =
+  "/desktop/updates/latest-mac.yml?noCache=1k3o4ea6j";
 const ALLOWED_FEED_CONTENT_TYPE_REGEX =
   /^(application\/x-yaml|text\/yaml|text\/plain)(;.*)?$/;
 
@@ -239,26 +254,36 @@ describe("GET /desktop/updates/[assetName]", () => {
     resetDesktopUpdaterRateLimiterForTests();
   });
 
-  it("redirects the current ZIP to the helper-provided signed URL", async () => {
-    mocks.getElectronUpdaterAssetRedirectUrl.mockResolvedValue(
-      SIGNED_REDIRECT_URL
-    );
+  it.each([
+    ["current ZIP", ZIP_ASSET],
+    ["stale-but-valid ZIP", STALE_ZIP_ASSET],
+    // ISS-10424: the updater ZIP's blockmap now reaches the helper too.
+    ["current ZIP's blockmap", `${ZIP_ASSET}.blockmap`],
+  ])(
+    "redirects the %s when the helper resolves it",
+    async (_name, assetName) => {
+      mocks.getElectronUpdaterAssetRedirectUrl.mockResolvedValue(
+        SIGNED_REDIRECT_URL
+      );
 
-    const response = await assetGET(
-      request(`/desktop/updates/${ZIP_ASSET}`),
-      routeContext(ZIP_ASSET)
-    );
+      const response = await assetGET(
+        request(`/desktop/updates/${assetName}`),
+        routeContext(assetName)
+      );
 
-    expect(response.status).toBe(302);
-    expect(response.headers.get("location")).toBe(SIGNED_REDIRECT_URL);
-    expect(mocks.getElectronUpdaterAssetRedirectUrl).toHaveBeenCalledWith(
-      ZIP_ASSET
-    );
-  });
+      expect(response.status).toBe(302);
+      expect(response.headers.get("location")).toBe(SIGNED_REDIRECT_URL);
+      expect(mocks.getElectronUpdaterAssetRedirectUrl).toHaveBeenCalledWith(
+        assetName,
+        ASSET_CHANNELS
+      );
+    }
+  );
 
   it.each([
     ["unknown", "notes.txt"],
-    ["blockmap", `${ZIP_ASSET}.blockmap`],
+    ["DMG blockmap", `${DMG_ASSET}.blockmap`],
+    ["arbitrary blockmap", "notes.txt.blockmap"],
     ["DMG", DMG_ASSET],
     ["metadata", "desktop-release.json"],
     ["feed", "latest-mac.yml"],
@@ -284,7 +309,8 @@ describe("GET /desktop/updates/[assetName]", () => {
 
     expect(response.status).toBe(404);
     expect(mocks.getElectronUpdaterAssetRedirectUrl).toHaveBeenCalledWith(
-      STALE_ZIP_ASSET
+      STALE_ZIP_ASSET,
+      ASSET_CHANNELS
     );
   });
 
@@ -447,6 +473,78 @@ describe("GET /desktop/updates/[assetName]", () => {
     );
     expect(mocks.getElectronUpdaterAssetRedirectUrl).toHaveBeenCalledTimes(
       DesktopUpdaterRateLimitLimit.GlobalAsset
+    );
+  });
+});
+
+// ISS-11448: 30 days of failing updater traffic left no server record, because
+// these routes had no wrapper to emit `request_completed`. The field names are
+// the ones the cl-api log metrics and monitors group on.
+describe("desktop updater routes emit request_completed", () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+    resetDesktopUpdaterRateLimiterForTests();
+  });
+
+  it("records the feed with its status and duration", async () => {
+    mocks.getLatestElectronUpdaterFeed.mockResolvedValue(FEED_TEXT);
+
+    const response = await feedGET(request(FEED_PATH_WITH_NO_CACHE));
+
+    expect(response.status).toBe(200);
+    expect(mocks.logInfo).toHaveBeenCalledWith(
+      REQUEST_COMPLETED_EVENT,
+      expect.objectContaining({
+        path: "/desktop/updates/latest-mac.yml",
+        method: "GET",
+        status_code: 200,
+        duration_ms: expect.any(Number),
+      })
+    );
+  });
+
+  it("records a failed feed at error level with its 500", async () => {
+    mocks.getLatestElectronUpdaterFeed.mockRejectedValue(new Error("github"));
+
+    const response = await feedGET(request(FEED_PATH_WITH_NO_CACHE));
+
+    expect(response.status).toBe(500);
+    expect(mocks.logError).toHaveBeenCalledWith(
+      REQUEST_COMPLETED_EVENT,
+      expect.objectContaining({
+        path: "/desktop/updates/latest-mac.yml",
+        status_code: 500,
+      })
+    );
+    expect(mocks.logInfo).not.toHaveBeenCalledWith(
+      REQUEST_COMPLETED_EVENT,
+      expect.anything()
+    );
+  });
+
+  it("records the asset redirect, with the route params still reaching the handler", async () => {
+    mocks.getElectronUpdaterAssetRedirectUrl.mockResolvedValue(
+      SIGNED_REDIRECT_URL
+    );
+
+    const response = await assetGET(
+      request(`/desktop/updates/${ZIP_ASSET}`),
+      routeContext(ZIP_ASSET)
+    );
+
+    expect(response.status).toBe(302);
+    expect(mocks.getElectronUpdaterAssetRedirectUrl).toHaveBeenCalledWith(
+      ZIP_ASSET,
+      ASSET_CHANNELS
+    );
+    expect(mocks.logInfo).toHaveBeenCalledWith(
+      REQUEST_COMPLETED_EVENT,
+      expect.objectContaining({
+        path: "/desktop/updates/:assetName",
+        method: "GET",
+        status_code: 302,
+        duration_ms: expect.any(Number),
+      })
     );
   });
 });

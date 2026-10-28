@@ -1,38 +1,47 @@
 import "server-only";
 
+import {
+  POSTGRES_INT4_MAX,
+  POSTGRES_INT4_MIN,
+} from "@closedloop-ai/loops-api/column-limits";
 import type {
   CustomFieldEntityType,
   CustomFieldSettingWithOptions,
 } from "@repo/api/src/types/custom-field";
 import { z } from "zod";
-import { isOrgAdmin } from "@/lib/auth/org-admin";
+import { requireOrgAdmin } from "@/lib/auth/org-admin";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { withAuth } from "@/lib/auth/with-auth";
+import { isUuid } from "@/lib/is-uuid";
 import {
   deleteResponse,
   errorResponse,
-  forbiddenResponse,
   notFoundResponse,
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
-import {
-  customFieldValuesService,
-  EntityNotFoundError,
-  FieldNotFoundError,
-} from "./values-service";
+import { EntityNotFoundError, FieldNotFoundError } from "./custom-field-errors";
+import { customFieldValuesService } from "./values-service";
 
 const attachCustomFieldSettingValidator = z.object({
   customFieldId: z.uuid(),
   isImportant: z.boolean().optional(),
   isRequired: z.boolean().optional(),
-  sortOrder: z.number().int().optional(),
+  // `CustomFieldSetting.sortOrder` is a Prisma `Int`, bounded at that column's
+  // range at both ends — a floor of `0` would refuse a negative this endpoint
+  // stores today.
+  sortOrder: z
+    .number()
+    .int()
+    .min(POSTGRES_INT4_MIN)
+    .max(POSTGRES_INT4_MAX)
+    .optional(),
 });
 
 /**
  * Factory that returns Next.js route handlers for custom field settings endpoints.
  *
- * POST and DELETE are admin-only (withAuth + isOrgAdmin check).
+ * POST and DELETE are admin-only (withAuth + `requireOrgAdmin` check).
  * GET uses withAnyAuth to support both API key and session clients.
  *
  * @param entityType - The entity type for the handler (Project, Workstream, Feature, Artifact).
@@ -46,11 +55,18 @@ export function makeCustomFieldSettingsHandlers(
    */
   const POST = withAuth<CustomFieldSettingWithOptions>(
     async ({ user, clerkOrgId, clerkUserId }, request, params) => {
-      if (!(await isOrgAdmin(clerkOrgId, clerkUserId))) {
-        return forbiddenResponse();
+      const denial = await requireOrgAdmin(clerkOrgId, clerkUserId);
+      if (denial) {
+        return denial;
       }
 
       const { id } = await params;
+      // The path segment is untrusted and the entity's id column is `@db.Uuid`,
+      // so a malformed one is a driver-level P2023 that the catch below would
+      // have reported as a 500 — a caller's typo dressed up as a server fault.
+      if (!isUuid(id)) {
+        return notFoundResponse(entityType);
+      }
 
       const { body, errorResponse: parseError } = await parseBody(
         request,
@@ -93,6 +109,9 @@ export function makeCustomFieldSettingsHandlers(
   const GET = withAnyAuth<CustomFieldSettingWithOptions[]>(
     async ({ user }, _request, params) => {
       const { id } = await params;
+      if (!isUuid(id)) {
+        return notFoundResponse(entityType);
+      }
 
       try {
         const settings = await customFieldValuesService.listSettings(
@@ -117,12 +136,24 @@ export function makeCustomFieldSettingsHandlers(
    */
   const DELETE = withAuth<{ deleted: true }>(
     async ({ user, clerkOrgId, clerkUserId }, _request, params) => {
-      if (!(await isOrgAdmin(clerkOrgId, clerkUserId))) {
-        return forbiddenResponse();
+      const denial = await requireOrgAdmin(clerkOrgId, clerkUserId);
+      if (denial) {
+        return denial;
       }
 
       // settingId is actually the customFieldId (see JSDoc above)
       const { id, settingId } = await params;
+      // Both segments key `@db.Uuid` columns, so both need the guard — a valid
+      // entity id does not make a malformed customFieldId safe. They get
+      // DIFFERENT labels: `settingId` is a customFieldId (see the JSDoc above),
+      // so naming the entity for it would report the wrong missing thing. The
+      // field label matches the POST handler's `FieldNotFoundError` arm.
+      if (!isUuid(id)) {
+        return notFoundResponse(entityType);
+      }
+      if (!isUuid(settingId)) {
+        return notFoundResponse("Custom field");
+      }
 
       try {
         await customFieldValuesService.detachField(

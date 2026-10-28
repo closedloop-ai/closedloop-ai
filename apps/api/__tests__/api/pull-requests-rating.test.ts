@@ -14,8 +14,10 @@ import {
 let mockAuthContext: AuthContext;
 
 vi.mock("@/lib/auth/with-auth", () => ({
-  withAuth: (handler: any) => async (request: any, context: any) =>
-    handler(mockAuthContext, request, context.params),
+  withAuth:
+    (handler: (...args: unknown[]) => Promise<Response>) =>
+    async (request: unknown, context: { params: Promise<unknown> }) =>
+      handler(mockAuthContext, request, context.params),
 }));
 vi.mock("@/app/pull-requests/ratings-service");
 
@@ -96,33 +98,34 @@ const INVALID_SCENARIOS: Record<string, InvalidScenario> = {
 };
 
 describe("submitPullRequestRatingSchema", () => {
-  it.each(Object.entries(VALID_SCENARIOS))("accepts valid input: %s", (_name, {
-    input,
-    expected,
-  }) => {
-    const result = submitPullRequestRatingSchema.safeParse(input);
+  it.each(Object.entries(VALID_SCENARIOS))(
+    "accepts valid input: %s",
+    (_name, { input, expected }) => {
+      const result = submitPullRequestRatingSchema.safeParse(input);
 
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data).toEqual(expected);
-    }
-  });
-
-  it.each(
-    Object.entries(INVALID_SCENARIOS)
-  )("rejects invalid input: %s", (_name, { input, expectedFields }) => {
-    const result = submitPullRequestRatingSchema.safeParse(input);
-
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      const errorPaths = result.error.issues.map((issue) =>
-        String(issue.path[0])
-      );
-      for (const field of expectedFields) {
-        expect(errorPaths).toContain(field);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data).toEqual(expected);
       }
     }
-  });
+  );
+
+  it.each(Object.entries(INVALID_SCENARIOS))(
+    "rejects invalid input: %s",
+    (_name, { input, expectedFields }) => {
+      const result = submitPullRequestRatingSchema.safeParse(input);
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        const errorPaths = result.error.issues.map((issue) =>
+          String(issue.path[0])
+        );
+        for (const field of expectedFields) {
+          expect(errorPaths).toContain(field);
+        }
+      }
+    }
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -336,7 +339,8 @@ describe("PUT /api/pull-requests/[id]/rating", () => {
       mockAuthContext.user.id,
       mockAuthContext.user.organizationId,
       4,
-      "My feedback"
+      "My feedback",
+      undefined
     );
   });
 
@@ -374,7 +378,8 @@ describe("PUT /api/pull-requests/[id]/rating", () => {
       mockAuthContext.user.id,
       mockAuthContext.user.organizationId,
       5,
-      "Excellent code quality!"
+      "Excellent code quality!",
+      undefined
     );
   });
 
@@ -495,7 +500,8 @@ describe("PUT /api/pull-requests/[id]/rating", () => {
       mockAuthContext.user.id,
       mockAuthContext.user.organizationId,
       4,
-      "Feedback"
+      "Feedback",
+      undefined
     );
   });
 

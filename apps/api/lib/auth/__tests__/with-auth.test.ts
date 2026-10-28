@@ -16,12 +16,32 @@ vi.mock("@repo/observability/log", () => ({
     error: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
-    flush: vi.fn().mockResolvedValue(undefined),
+    flush: vi.fn(async () => undefined),
   },
 }));
 
 vi.mock("@vercel/functions", () => ({
   waitUntil: vi.fn(),
+}));
+
+// Records which request's PostHog session the wrapped work ran under, so the
+// wiring below is observable without a real posthog-node client.
+const { postHogContext } = vi.hoisted(() => ({
+  postHogContext: { sessionHeader: undefined as string | null | undefined },
+}));
+
+vi.mock("@repo/analytics/node", () => ({
+  withPostHogRequestContext: async (
+    headers: Headers,
+    fn: () => Promise<unknown>
+  ) => {
+    postHogContext.sessionHeader = headers.get("X-POSTHOG-SESSION-ID");
+    try {
+      return await fn();
+    } finally {
+      postHogContext.sessionHeader = undefined;
+    }
+  },
 }));
 
 vi.mock("@/lib/auth/find-or-create-user", () => ({
@@ -105,6 +125,99 @@ describe("withAuth", () => {
     expect(capturedContext?.orgRole).toBe(SESSION_ORG_ROLE);
     expect(capturedContext?.clerkUserId).toBe(CLERK_USER_ID);
     expect(capturedContext?.authMethod).toBe("session");
+  });
+
+  // ISS-9085. Every browser-session suite mocks the auth wrapper away and sets
+  // `clerkSessionId` on a fake context, so without these two cases the wiring
+  // below is the one line nothing executes: delete it and the whole feature
+  // silently degrades to `currentSessionKnown: false` on every request, with
+  // the self-revoke guard disabled, and every one of those suites stays green.
+  it("carries the Clerk session id from auth() onto the AuthContext", async () => {
+    let capturedContext: AuthContext | undefined;
+    const handler = vi.fn((ctx: AuthContext) => {
+      capturedContext = ctx;
+      return Response.json({ ok: true });
+    });
+
+    vi.mocked(auth).mockResolvedValue({
+      userId: CLERK_USER_ID,
+      orgId: SESSION_CLERK_ORG_ID,
+      orgRole: SESSION_ORG_ROLE,
+      sessionId: "sess_abc123",
+    } as Awaited<ReturnType<typeof auth>>);
+    vi.mocked(resolveOrgHeader).mockResolvedValue({
+      kind: "session",
+      clerkOrgId: SESSION_CLERK_ORG_ID,
+      orgRole: SESSION_ORG_ROLE,
+    });
+    vi.mocked(findOrCreateUser).mockResolvedValue(activeUser);
+
+    const wrapped = withAuth(handler as never);
+    await wrapped(createRequest(), createRouteContext());
+
+    expect(capturedContext?.clerkSessionId).toBe("sess_abc123");
+  });
+
+  it("leaves the Clerk session id undefined when auth() reports none", async () => {
+    let capturedContext: AuthContext | undefined;
+    const handler = vi.fn((ctx: AuthContext) => {
+      capturedContext = ctx;
+      return Response.json({ ok: true });
+    });
+
+    vi.mocked(auth).mockResolvedValue({
+      userId: CLERK_USER_ID,
+      orgId: SESSION_CLERK_ORG_ID,
+      orgRole: SESSION_ORG_ROLE,
+    } as Awaited<ReturnType<typeof auth>>);
+    vi.mocked(resolveOrgHeader).mockResolvedValue({
+      kind: "session",
+      clerkOrgId: SESSION_CLERK_ORG_ID,
+      orgRole: SESSION_ORG_ROLE,
+    });
+    vi.mocked(findOrCreateUser).mockResolvedValue(activeUser);
+
+    const wrapped = withAuth(handler as never);
+    await wrapped(createRequest(), createRouteContext());
+
+    // Undefined, never null: the contract reads absence as "this transport has
+    // no browser session".
+    expect(capturedContext?.clerkSessionId).toBeUndefined();
+  });
+
+  // ISS-11929: server-side captures link to the browser's replay only if the
+  // route's work runs inside the PostHog context of THIS request's headers.
+  it("runs the handler inside the PostHog context of the request's headers", async () => {
+    let sessionHeaderSeenByHandler: string | null | undefined;
+    const handler = vi.fn(() => {
+      sessionHeaderSeenByHandler = postHogContext.sessionHeader;
+      return Response.json({ ok: true });
+    });
+
+    vi.mocked(auth).mockResolvedValue({
+      userId: CLERK_USER_ID,
+      orgId: SESSION_CLERK_ORG_ID,
+      orgRole: SESSION_ORG_ROLE,
+    } as Awaited<ReturnType<typeof auth>>);
+    vi.mocked(resolveOrgHeader).mockResolvedValue({
+      kind: "session",
+      clerkOrgId: SESSION_CLERK_ORG_ID,
+      orgRole: SESSION_ORG_ROLE,
+    });
+    vi.mocked(findOrCreateUser).mockResolvedValue(activeUser);
+
+    const wrapped = withAuth(handler as never);
+    const response = await wrapped(
+      createRequest({
+        "X-POSTHOG-SESSION-ID": "019a0f3e-8c2b-7a4d-9e1f-0123456789ab",
+      }),
+      createRouteContext()
+    );
+
+    expect(response.status).toBe(200);
+    expect(sessionHeaderSeenByHandler).toBe(
+      "019a0f3e-8c2b-7a4d-9e1f-0123456789ab"
+    );
   });
 
   it("uses JWT org when header matches session org", async () => {

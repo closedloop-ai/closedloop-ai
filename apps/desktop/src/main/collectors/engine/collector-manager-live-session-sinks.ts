@@ -1,18 +1,20 @@
 /**
  * @file collector-manager-live-session-sinks.ts
  * @description Everything that happens to ONE session between parsing it and
- * writing it: stamping its import mode, and firing the two cross-subsystem sinks
+ * writing it: stamping its import mode, and firing the cross-subsystem sinks
  * that only a genuine LIVE-WATCHER import may arm. Extracted from
- * collector-manager.ts (grandfathered shrink-only under the root AGENTS.md
- * line-count contract) so this cohesive "annotate and notify" step owns its own
+ * collector-manager.ts (under the root AGENTS.md line-count contract) so this
+ * cohesive "annotate and notify" step owns its own
  * module and contract.
  *
  * The distinction the whole file turns on: `viaWatcher` is true for the startup
  * sweep and the catch-up poll as well as for real watcher events, so it is NOT
  * the live signal. `importMode` is — it is the existing SSOT for "a user is
- * driving this right now" — and both sinks below gate on it, not on `viaWatcher`.
+ * driving this right now" — and every sink below gates on it, not on
+ * `viaWatcher`.
  */
 import type { captureInvocationDefinitionEvidence } from "../../packs/definition-content-collector.js";
+import { genAiRequestTelemetry } from "../../telemetry/gen-ai-request-telemetry.js";
 import {
   type Harness,
   HarnessImportMode,
@@ -73,6 +75,13 @@ export function applyLiveSessionSinks(
     return importMode;
   }
   if (options.generationIsCurrent) {
+    try {
+      genAiRequestTelemetry.observeLiveSession(session, options.harness);
+    } catch (error) {
+      options.log(
+        `gen_ai request telemetry sink failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
     try {
       options.onLiveTranscriptActivity?.(
         options.harness,

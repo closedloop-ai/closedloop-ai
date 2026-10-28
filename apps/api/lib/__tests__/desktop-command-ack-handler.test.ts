@@ -11,14 +11,6 @@ vi.mock("@/lib/desktop-command-store", () => ({
   },
 }));
 
-vi.mock("@/lib/desktop-relay-event-bridge", () => ({
-  publishLegacyRelayEvent: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock("@/lib/loops/rejected-command-loop-failure", () => ({
-  failLoopFromRejectedCommand: vi.fn().mockResolvedValue({ failed: false }),
-}));
-
 // A realistic gateway session id (the value that must never reach a log sink).
 const RAW_GATEWAY_SESSION_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
 

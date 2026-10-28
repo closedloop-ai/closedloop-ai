@@ -1,6 +1,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
-import { PRISMA_CLI_ENTRY_ENV } from "@repo/database/scripts/migration-pipeline";
+import { PRISMA_CLI_ENTRY_ENV } from "@repo/database/scripts/prisma-cli";
+import { log } from "@repo/observability/log";
 
 /**
  * ISS-5983: locates, inside a deployed serverless bundle, the files
@@ -266,16 +267,75 @@ function findSchemaEngineBinary(
  * every depth, without needing any symlink.
  *
  * Caveat: when the store holds two versions of one package, NODE_PATH ORDER
- * decides which one wins, and that order is the store's directory listing. For
- * this spawn that is acceptable — the CLI's closure is pinned by one install,
- * and a possibly-wrong minor beats a certain MODULE_NOT_FOUND.
+ * decides which one wins. That order is no longer the raw directory listing —
+ * PRISMA-SCOPED entries at the CLI's own version lead (ISS-8804). The scoping
+ * is the point and is deliberate (see `matchesCli`): a NON-Prisma package at
+ * the CLI's version is NOT promoted, so it stays ordered by the directory
+ * listing, as does any package installed only at other versions. Determinism
+ * here means "for prisma-scoped packages that have a copy at the CLI's
+ * version", not for the CLI's whole closure — `@prisma/config`'s own
+ * third-party deps are unaffected.
+ *
+ * SCOPE OF THE CLAIM — read this before trusting the paragraph above. NODE_PATH
+ * decides anything only where the pnpm symlinks are absent, i.e. inside the
+ * deployed bundle; locally `@prisma/dev` resolves its own pinned
+ * `@prisma/get-platform` through its symlink and this ordering is inert. In the
+ * bundle it deterministically hands `@prisma/dev` a `get-platform` outside that
+ * pinned range.
+ *
+ * Measured 2026-09-04 (ISS-9148): `@prisma/get-platform` 7.2.0 and 7.10.0 export
+ * the same nine names, depend only on `@prisma/debug`, agree on
+ * `getBinaryTargetForCurrentPlatform()` and on the `getPlatformInfo()` key set,
+ * and carry element-wise identical 30-entry `binaryTargets` lists. So the
+ * plausible failure — `@prisma/dev` calling an export that moved, or reading a
+ * changed binary-target vocabulary — is not present. NOT measured: the linux
+ * bundle itself, and behaviour beyond those exports.
+ *
+ * That residual is ACCEPTED, not outstanding. The only caller feeds the
+ * preview-schema `ensure` path, fail-closed behind `PGHOST` equalling a
+ * configured `STAGE_PGHOST` (unset means refuse), so a wrong pairing cannot
+ * reach production; and `PRISMA_NODE_PATH_CLI_FIRST` makes backing the ordering
+ * out a config change plus a redeploy rather than a code revert — set it on the
+ * failing deployment and redeploy, per
+ * `docs/runbooks/preview-schema-prisma-node-path.md`. ISS-9148 closed on this
+ * narrowing rather than on a deployed capture — this is not a pending task.
+ *
+ * A package present ONLY at some other version still wins by being the only
+ * candidate, and that still beats a certain MODULE_NOT_FOUND.
  */
-function collectModulePaths(root: string, probe: LayoutProbe): string[] {
+function collectModulePaths(
+  root: string,
+  probe: LayoutProbe,
+  cliEntry: string,
+  env: Partial<NodeJS.ProcessEnv>
+): string[] {
   const nodeModules = path.join(root, "node_modules");
   const storeDirectory = path.join(nodeModules, ".pnpm");
-  const storePaths = probe
-    .listDir(storeDirectory)
-    .map((entry) => path.join(storeDirectory, entry, "node_modules"));
+  const entries = probe.listDir(storeDirectory);
+  // ISS-8804/ISS-9148: the store holds MORE THAN ONE version of many packages
+  // the CLI resolves through this path. Measured on a real workspace: twelve
+  // prisma-scoped packages carry 2+ versions, `@prisma/get-platform` and
+  // `@prisma/debug` at three each.
+  // `listDir` order is the filesystem's, so without this the winner differs
+  // between a laptop, CI and the Vercel build container, per build. Order the
+  // CLI's own version first, the same rule `findSchemaEngineBinary` already
+  // applies to the engine binary, so the spawned CLI resolves against the
+  // version it was built as.
+  const cliVersion = storeEntryVersion(cliEntry);
+  // Package identity AND version. Version equality alone promotes any unrelated
+  // package that happens to sit at the CLI's version, which is the opposite of
+  // the intent — on a developer machine those store dirs carry their own dep
+  // symlinks and could win resolution ahead of the Prisma-matched ones.
+  const matchesCli = (entry: string): boolean =>
+    cliVersion !== null &&
+    (entry.startsWith("prisma@") || entry.startsWith("@prisma+")) &&
+    storeEntryVersion(path.join(storeDirectory, entry)) === cliVersion;
+  const ordered = cliFirstOrderingEnabled(env)
+    ? [...entries.filter(matchesCli), ...entries.filter((e) => !matchesCli(e))]
+    : entries;
+  const storePaths = ordered.map((entry) =>
+    path.join(storeDirectory, entry, "node_modules")
+  );
   return [...storePaths, nodeModules];
 }
 
@@ -289,10 +349,65 @@ function readCliEntryOverride(env: Partial<NodeJS.ProcessEnv>): string | null {
   return override ? override : null;
 }
 
+/** Env var that disables the ISS-8804 CLI-first NODE_PATH ordering. */
+export const PRISMA_NODE_PATH_CLI_FIRST_ENV = "PRISMA_NODE_PATH_CLI_FIRST";
+
+/** Spellings accepted as "off". Compared lower-cased and trimmed. */
+const DISABLE_VALUES = new Set(["0", "false", "off", "no"]);
+
+/**
+ * ISS-9148: the reorder's OFF SWITCH. Default ON; set
+ * `PRISMA_NODE_PATH_CLI_FIRST` to `0`, `false`, `off` or `no` to fall back to
+ * the raw `listDir` order this replaced.
+ *
+ * It exists because the reorder cannot be validated where it acts. NODE_PATH
+ * decides resolution only where the pnpm symlinks are absent — the deployed
+ * bundle — and locally `@prisma/dev` resolves its pinned `@prisma/get-platform`
+ * through its own symlink, so every test of it is inert by construction. The
+ * store is also more duplicated than first assumed: MEASURED, twelve
+ * prisma-scoped packages carry more than one version, with `get-platform` and
+ * `debug` at three each. And the pin it crosses is EXACT — `@prisma/dev`
+ * declares `@prisma/get-platform: 7.2.0`, while the CLI is 7.10.0 (whitlockk on
+ * #6604, verified).
+ *
+ * IT ACCEPTS MORE THAN ONE SPELLING, AND SAYS WHAT IT DID, on purpose. This is
+ * reached for mid-incident by someone who has just learned the variable exists.
+ * An exact-`"0"` match would let `=false` silently leave the reorder ON while
+ * looking like it worked, which is the worst behavior available to an escape
+ * hatch (marisolashgrove on #6604). So: several spellings are honoured, an
+ * UNRECOGNISED value warns rather than being silently ignored, and honouring
+ * the switch logs — otherwise the operator cannot tell the flip took effect
+ * from the outside.
+ *
+ * Operator runbook — symptom, the accepted spellings, and how to confirm the
+ * flip took effect: `docs/runbooks/preview-schema-prisma-node-path.md`.
+ */
+function cliFirstOrderingEnabled(env: Partial<NodeJS.ProcessEnv>): boolean {
+  const raw = env[PRISMA_NODE_PATH_CLI_FIRST_ENV]?.trim();
+  if (raw === undefined || raw === "") {
+    return true;
+  }
+  if (DISABLE_VALUES.has(raw.toLowerCase())) {
+    log.info("[prisma-runtime-layout] CLI-first NODE_PATH ordering DISABLED", {
+      [PRISMA_NODE_PATH_CLI_FIRST_ENV]: raw,
+    });
+    return false;
+  }
+  log.warn(
+    "[prisma-runtime-layout] Unrecognised value; CLI-first ordering stays ON",
+    {
+      [PRISMA_NODE_PATH_CLI_FIRST_ENV]: raw,
+      accepted: [...DISABLE_VALUES],
+    }
+  );
+  return true;
+}
+
 function resolveForRoot(
   root: string,
   probe: LayoutProbe,
-  overrideCliEntry: string | null
+  overrideCliEntry: string | null,
+  env: Partial<NodeJS.ProcessEnv>
 ): MigrateRuntimeLayout | null {
   const configDir = path.join(root, RUNTIME_CONFIG_RELATIVE);
   const esmResolverEntry = path.join(configDir, ESM_RESOLVER_FILE);
@@ -317,7 +432,7 @@ function resolveForRoot(
     migrationsDir,
     cliEntry,
     schemaEngineBinary: findSchemaEngineBinary(root, probe, cliEntry),
-    modulePaths: collectModulePaths(root, probe),
+    modulePaths: collectModulePaths(root, probe, cliEntry, env),
   };
 }
 
@@ -348,7 +463,7 @@ export function resolveMigrateRuntimeLayout(
   }
 
   for (const root of rootsTried) {
-    const layout = resolveForRoot(root, probe, overrideCliEntry);
+    const layout = resolveForRoot(root, probe, overrideCliEntry, env);
     if (layout) {
       return { ok: true, layout };
     }

@@ -37,10 +37,13 @@ vi.mock("../../agent-sessions/service", () => ({
   },
 }));
 
+import {
+  buildInventoryRow,
+  buildServiceDb,
+} from "@/__tests__/support/agent-components/service-db-double";
 import type { UsageGroupRow } from "../identity";
 import { agentComponentsService } from "../service";
 import { filterUsageGroupsToDetailIdentity } from "../service/detail-usage-identity";
-import { buildInventoryRow, buildServiceDb } from "./service-db-double";
 
 const ORG = "org-1";
 const KIND = "tool";

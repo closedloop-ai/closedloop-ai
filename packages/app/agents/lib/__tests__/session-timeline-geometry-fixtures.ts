@@ -41,3 +41,26 @@ export function costedBins(count: number): ActivityBucket[] {
     total: 2,
   }));
 }
+
+/**
+ * Bins that tile an interval and deposit NOTHING — no cost, no events, no tool
+ * calls, `tl0` unset — exactly as `createActivityBucket` builds a bin before any
+ * timeline row or token event lands in it.
+ *
+ * The counterpart to {@link costedBins}, and the only shape in which a column's
+ * coverage is decided by the extent at all: `hasDepositedContent` answers first,
+ * so a column that received a costed bin never reaches the extent arithmetic.
+ */
+export function quietBins(count: number): ActivityBucket[] {
+  return Array.from({ length: count }, (_, index) => ({
+    byModel: {},
+    cCache: 0,
+    cIn: 0,
+    cOut: 0,
+    key: `quiet-bin-${index}`,
+    label: `quiet bin ${index}`,
+    tl0: null,
+    toolStart: 0,
+    total: 0,
+  }));
+}

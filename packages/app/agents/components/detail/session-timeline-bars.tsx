@@ -1,7 +1,10 @@
 "use client";
 
 import type { ActivityBucket } from "@repo/api/src/types/agent-session";
+import { TimelineColumnCoverage } from "@repo/app/agents/lib/session-timeline-projection";
 import type { TimelineStackSegment } from "@repo/app/agents/lib/session-timeline-stacks";
+import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { SESSION_TIMELINE_RESOLVABLE_REACH_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { cn } from "@repo/design-system/lib/utils";
 import {
   BucketBarClass,
@@ -13,6 +16,7 @@ import {
   getBucketReachClass,
   isInteriorGap,
   SYNTHESIZED_BAR_CLASS,
+  UNMEASURED_BAR_CLASS,
   UNREAD_BAR_STYLE,
 } from "./activity-bucket-rendering";
 import {
@@ -24,25 +28,24 @@ import {
  * The Session Timeline's BAR ROW — `.sd3-bars2` and the one control per bucket
  * inside it.
  *
- * Extracted from `agent-session-detail-view.tsx` (ISS-5761), which is
- * grandfathered shrink-only under the file-size ceiling and had accumulated the
- * whole strip inline. It is a clean seam: the row is a pure projection of
- * `buckets` plus the per-index decisions its caller already computed, it shares
- * no state with the rest of the view, and the cost rail above it
- * (`SessionTimelineBarLabels`) and the dot rail below it are already their own
- * units — this one was the odd one out.
+ * Extracted from `agent-session-detail-view.tsx` (ISS-5761), which had
+ * accumulated the whole strip inline. It is a clean seam: the row is a pure
+ * projection of `buckets` plus the per-index decisions its caller already
+ * computed, it shares no state with the rest of the view, and the cost rail
+ * above it (`SessionTimelineBarLabels`) and the dot rail below it are already
+ * their own units — this one was the odd one out.
  *
- * Presentational only, and DOM-identical to what the view rendered inline: the
- * same element, the same class list in the same order, the same handlers. The
- * per-bucket decisions (`jumpBlocks`, `accessibleCosts`) are passed in rather
- * than recomputed here, because the view derives them once for the whole strip
- * and the tooltip reads the same values — deriving them twice is how the bar and
- * its own hover card start disagreeing.
+ * Presentational apart from ONE flag read (ISS-8727, below), and DOM-identical
+ * to what the view rendered inline: the same element, the same class list in the
+ * same order, the same handlers. The per-bucket decisions (`jumpBlocks`,
+ * `accessibleCosts`) are passed in rather than recomputed here, because the view
+ * derives them once for the whole strip and the tooltip reads the same values —
+ * deriving them twice is how the bar and its own hover card start disagreeing.
  */
 export function SessionTimelineBars({
   accessibleCosts,
   buckets,
-  columnHitTargetEnabled,
+  columnCoverage,
   costUnmeasured,
   disabled,
   hoverIndex,
@@ -61,7 +64,16 @@ export function SessionTimelineBars({
    */
   accessibleCosts: readonly (string | null)[];
   buckets: readonly ActivityBucket[];
-  columnHitTargetEnabled: boolean;
+  /**
+   * ISS-5850: what backs each column, by index. `undefined` — the disclosure
+   * flag off, and every caller that has no answer — leaves the bars exactly as
+   * they painted before this prop existed.
+   *
+   * A parallel array for the same reason `stacks` is one: coverage is a
+   * rendering decision resolved from the producer's stated extent, and
+   * `ActivityBucket` is a cross-repo sync payload.
+   */
+  columnCoverage?: readonly TimelineColumnCoverage[];
   costUnmeasured: boolean;
   disabled: boolean;
   hoverIndex: number | null;
@@ -82,6 +94,24 @@ export function SessionTimelineBars({
   stacks?: readonly TimelineStackSegment[][] | null;
   unreadFromIndex: number;
 }>) {
+  /*
+   * ISS-8727. `…Optional` for the reason its sibling in
+   * `session-activity-timeline.tsx` is: this row is a leaf of a shared package
+   * and can be mounted by a test that renders a bare subtree with no
+   * `FeatureFlagAdapterProvider`, where it must resolve to today's predicate
+   * rather than crash. (Storybook is NOT one of those sites — `preview.tsx`
+   * mounts `AppCoreStoryProviders` globally, so a story that wants this on opts
+   * in through `parameters.appCore.enabledFlags`.)
+   *
+   * Read HERE rather than threaded down as a prop because it gates one class
+   * decision made in this component and nothing else — a prop would put the
+   * flag one layer from its only consumer and give a caller a way to forget it.
+   * The per-bucket `jumpBlocks` it selects on are still passed in, so the bar
+   * and its hover card cannot disagree about which buckets are blocked.
+   */
+  const resolvableReachEnabled = useFeatureFlagEnabledOptional(
+    SESSION_TIMELINE_RESOLVABLE_REACH_FEATURE_FLAG_KEY
+  );
   return (
     <div className="sd3-bars2">
       {buckets.map((bucket, index) => {
@@ -132,7 +162,25 @@ export function SessionTimelineBars({
               costUnmeasured &&
                 bar.barClass === BucketBarClass.Stacked &&
                 SYNTHESIZED_BAR_CLASS,
-              getBucketReachClass(bucket, columnHitTargetEnabled, disabled),
+              // ISS-5850: a wash instead of the idle hatch, because the hatch on
+              // this strip means "observed, and nothing happened" and this
+              // column was never observed. UNGATED on `bar.barClass`, unlike
+              // `.synthesized` above: that one replaces a stack a zero-cost bar
+              // never had, while this one replaces the CLAIM a zero-cost bar
+              // makes, which is exactly the `Idle` case it needs to reach.
+              columnCoverage?.[index] === TimelineColumnCoverage.Unmeasured &&
+                UNMEASURED_BAR_CLASS,
+              // ISS-8727: the hit box follows the RESOLVED jump, not the
+              // anchor. A bucket whose `tl0` the read transcript does not cover
+              // is blocked, and wearing `.reach` alongside the `.no-jump` and
+              // `aria-disabled` below made it a column-tall region announcing
+              // itself unavailable. Flag off, `null` is passed and the
+              // predicate is exactly today's `tl0 != null`.
+              getBucketReachClass(
+                bucket,
+                disabled,
+                resolvableReachEnabled ? block : null
+              ),
               // ISS-5479: a bar with no jump row keeps `cursor: pointer` and the
               // hover outline today, so it looks exactly like a live control
               // while being announced as unavailable and doing nothing.

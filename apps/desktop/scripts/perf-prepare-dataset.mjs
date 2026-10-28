@@ -166,6 +166,53 @@ export function snapshotDatabase(sourceDb, targetDb) {
 }
 
 /**
+ * Read the session population out of a prepared snapshot.
+ *
+ * Size alone never told the operator whether the dataset is USABLE (ISS-7785):
+ * a 2 GB snapshot whose newest session is ten days old still renders an empty
+ * Sessions list under the product's 7-day default, and the perf run then wedges
+ * and reports expired wait bounds as if they were latencies. Printing the count
+ * and the newest `last_activity_at` next to the size puts the dataset's age in
+ * front of the operator at prep time, when rebuilding is cheap.
+ *
+ * Degrades rather than throws. This is a diagnostic beside a snapshot that has
+ * already been written successfully, so an older schema without
+ * `last_activity_at` — or an unreadable copy — reports what it could learn and
+ * leaves the rest `null`. `null` here means "not known", never "zero".
+ */
+export function readSessionStats(dbPath) {
+  const stats = { sessionCount: null, newestLastActivityAt: null };
+  let db;
+  try {
+    db = new DatabaseSync(dbPath, { readOnly: true });
+  } catch {
+    return stats;
+  }
+  try {
+    const counted = db.prepare("SELECT COUNT(*) AS total FROM sessions").get();
+    const total = Number(counted?.total);
+    if (Number.isFinite(total)) {
+      stats.sessionCount = total;
+    }
+  } catch {
+    // No `sessions` table: an unrecognized snapshot, not a fatal prep error.
+  }
+  try {
+    const newest = db
+      .prepare("SELECT max(last_activity_at) AS newest FROM sessions")
+      .get();
+    if (typeof newest?.newest === "string" && newest.newest.length > 0) {
+      stats.newestLastActivityAt = newest.newest;
+    }
+  } catch {
+    // Column absent on a snapshot predating migration 0005.
+  } finally {
+    db.close();
+  }
+  return stats;
+}
+
+/**
  * Copy up to `limit` Claude Code session transcripts into a sandbox CLAUDE_HOME
  * (`<sandbox>/claude/projects/<project>/<sessionId>.jsonl`), preserving the
  * layout `claude-home.ts` expects so the import workload can point CLAUDE_HOME
@@ -289,6 +336,7 @@ export function prepareDataset(options) {
     targetDir,
     targetDb,
     dbBytes,
+    ...readSessionStats(targetDb),
     transcriptsCopied,
     sandboxClaudeHome,
     settingsKeys: Object.keys(settings).sort(),
@@ -356,6 +404,9 @@ function main() {
   console.log(
     `  database:    ${summary.targetDb} (${formatMib(summary.dbBytes)})`
   );
+  console.log(
+    `  sessions:    ${formatCount(summary.sessionCount)}, newest activity ${formatNewestActivity(summary.newestLastActivityAt)}`
+  );
   console.log(`  transcripts: ${summary.transcriptsCopied}`);
   console.log(
     "  sync state:  off (cloud connection disabled, commands paused)"
@@ -375,6 +426,30 @@ function main() {
 
 function formatMib(bytes) {
   return `${Math.round(bytes / (1024 * 1024))} MB`;
+}
+
+/** `null` is "could not read it", which is not the same claim as zero. */
+function formatCount(count) {
+  return count === null ? "unknown" : String(count);
+}
+
+/**
+ * The newest session's activity stamp, with its age spelled out.
+ *
+ * The age is the actionable half: a workload driving the Sessions view at the
+ * product's 7-day default measures nothing at all once this passes a week old
+ * (ISS-7785), and a bare ISO stamp makes the operator do that subtraction.
+ */
+function formatNewestActivity(newestLastActivityAt) {
+  if (newestLastActivityAt === null) {
+    return "unknown";
+  }
+  const newestMs = Date.parse(newestLastActivityAt);
+  if (Number.isNaN(newestMs)) {
+    return newestLastActivityAt;
+  }
+  const ageDays = Math.floor((Date.now() - newestMs) / 86_400_000);
+  return `${newestLastActivityAt} (${ageDays}d old)`;
 }
 
 if (

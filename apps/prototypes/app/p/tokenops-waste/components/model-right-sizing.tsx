@@ -62,7 +62,7 @@ export function ModelRightSizing({
 }) {
   return (
     <Section
-      description={`Spend and error-outcome spend are measured. The verdict is a judgment, and a model with fewer than ${MIN_GRADED_SESSIONS} sessions in range does not get one.`}
+      description={`Spend and error-outcome spend are measured. Job size counts first-pass tokens only, so replaying one cached prefix is not counted as a bigger job; the price side of the verdict divides spend by every billed token, including the cached reads this column leaves out, so these two columns do not divide into a rate. The verdict is a judgment, and a model with fewer than ${MIN_GRADED_SESSIONS} sessions in range does not get one.`}
       title="Model right-sizing"
     >
       <Table>
@@ -74,7 +74,14 @@ export function ModelRightSizing({
               Ended with error
             </TableHead>
             <TableHead className={NUMERIC_CELL_CLASS}>Sessions</TableHead>
-            <TableHead className={NUMERIC_CELL_CLASS}>Median tokens</TableHead>
+            {/* The basis is named in the header, not only in the description:
+                this is the one number on the row whose meaning changes entirely
+                with which tokens were counted, and it is NOT the basis behind
+                the spend column beside it. The unit stays here too — the cell
+                renders a bare compact number (ISS-5189). */}
+            <TableHead className={NUMERIC_CELL_CLASS}>
+              Median job size (tokens)
+            </TableHead>
             <TableHead>Verdict</TableHead>
           </TableRow>
         </TableHeader>

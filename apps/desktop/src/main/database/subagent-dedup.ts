@@ -10,8 +10,7 @@
  * those fields the fallback row is a byte-identical twin, so the write path
  * retires it using the exact-spawn correlation built here.
  *
- * Extracted from `write-core.ts`, which is on the `biome.jsonc` shrink-only
- * grandfather list.
+ * Extracted from `write-core.ts` so that file shrinks rather than grows.
  */
 import type {
   NormalizedSession,

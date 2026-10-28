@@ -3,12 +3,9 @@ const MAC_USER_AGENT = /Macintosh|Mac OS X/;
 /**
  * Left padding that clears the overlaid macOS stoplight buttons.
  *
- * ONE number for one thing. Three surfaces need it — the Topbar when the sidebar
- * is collapsed, and both halves of the first-run landing — and it was written
- * out at each of them, so the first time those buttons move two of the three get
- * fixed. Anchored to `TRAFFIC_LIGHT_POSITION` in main/window.ts; see
- * `mac-window-controls-underlay.tsx` for how that origin relates to the pixels
- * macOS actually draws.
+ * ONE number for one thing. Anchored to `TRAFFIC_LIGHT_POSITION` in
+ * main/window.ts; see `mac-window-controls-underlay.tsx` for how that origin
+ * relates to the pixels macOS actually draws.
  */
 const MAC_STOPLIGHT_CLEARANCE_CLASS = "pl-[5.25rem]";
 

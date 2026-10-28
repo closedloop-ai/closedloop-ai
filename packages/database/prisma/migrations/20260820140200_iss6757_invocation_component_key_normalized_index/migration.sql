@@ -1,0 +1,63 @@
+-- ISS-6757, step 3 of 3: index the invocation read's fallback arm.
+--
+-- WHAT THIS INDEX IS FOR, and the before/after EXPLAIN it was measured against,
+-- are documented in full on step 1 (migration 20260820140000). In short:
+-- `invocationReadWhere`'s fallback arm filters
+-- `agent_component_id IS NULL AND component_kind = $1 AND component_key_normalized = $2`,
+-- and before this index the only sargable predicate was the IS NULL, so both the
+-- capped `findMany` and the uncapped `groupBy` fell back to a full scan of every
+-- unattributed invocation in the table — every tenant's, since the table has no
+-- `organization_id` column.
+--
+-- SHAPE: PARTIAL, and in this column order. Both decisions were measured on the
+-- 420,000-row seeded slice, not assumed:
+--   * `WHERE agent_component_id IS NULL` mirrors the arm's own first predicate
+--     exactly, so the planner proves the partial predicate from the query
+--     (verified: the Index Cond quoted on step 1 is from this partial index).
+--     It also keeps the index to the unattributed population, which is the only
+--     population this arm can ever return: 1256 kB against 1800 kB for the
+--     non-partial equivalent on identical data, and it SHRINKS as
+--     `relinkActiveForComputeTarget` claims rows for their inventory component,
+--     which is the direction that population moves.
+--   * `component_kind` leads because it is the arm's equality predicate that is
+--     ALWAYS present, and `component_key_normalized` follows it as the second
+--     equality — both reach the Index Cond, leaving no post-scan filter on the
+--     invocation rows at all.
+--
+-- UNMANAGED BY PRISMA. Prisma's DSL cannot declare a partial index, so this
+-- index exists only in this migration and is documented on the
+-- `AgentComponentInvocation` model in schema.prisma so its absence from the
+-- `@@index` block reads as intentional rather than drift. Same treatment as
+-- `agent_components_org_pack_id_idx` (migration 20260812120000) and
+-- `search_document_org_lower_slug_idx` (migration 20260724010000).
+--
+-- CONCURRENTLY, AND THEREFORE ALONE AND BARE IN THIS FILE.
+-- `agent_component_invocations` is written continuously by desktop invocation
+-- sync, so a plain `CREATE INDEX` would hold ACCESS EXCLUSIVE for the whole
+-- build and stall that ingest at production size. `CREATE INDEX CONCURRENTLY`
+-- takes only SHARE UPDATE EXCLUSIVE. It cannot run inside a transaction block
+-- (SQLSTATE 25001), and `prisma migrate deploy` only splits a file into
+-- per-statement simple queries when it can do so confidently — a `DO $$ … $$`
+-- block, embedded semicolons or a `DROP INDEX CONCURRENTLY` push the whole file
+-- onto the single-transaction fallback where every CONCURRENTLY statement fails
+-- 25001. So this file is ONE bare statement: do not add BEGIN/COMMIT, a DO
+-- block, or any other DDL here. That is also why the column, the trigger and
+-- the backfill live in their own earlier migrations rather than here.
+--
+-- NO `IF NOT EXISTS`: required by the concurrent-index lint
+-- (scripts/lint/destructive-migrations/index-ddl.ts) so a retry after a
+-- cancelled or crashed build fails closed on SQLSTATE 42P07 against the
+-- same-named INVALID remnant instead of recording the migration APPLIED over a
+-- permanently-unusable index. Recovery is operator-driven: `DROP INDEX
+-- CONCURRENTLY` the remnant in psql autocommit, then re-run migrate deploy.
+--
+-- PREVIEW SCHEMAS: registered in PREVIEW_SKIPPABLE_CONCURRENT_INDEX_MIGRATIONS
+-- (packages/database/scripts/preview-heavy-migrations-core.mjs) — a pure
+-- non-unique perf-only index, and CONCURRENTLY's instance-wide transaction wait
+-- is the ISS-4437 P1002 advisory-lock amplifier on ephemeral `preview_*`
+-- schemas. CI-enforced by packages/database/__tests__/preview-heavy-migrations.test.ts.
+--
+-- Purely additive: a non-unique index changes plan choice only, never results.
+
+-- CreateIndex
+CREATE INDEX CONCURRENTLY "idx_aci_kind_key_normalized_unattributed" ON "agent_component_invocations"("component_kind", "component_key_normalized") WHERE "agent_component_id" IS NULL;

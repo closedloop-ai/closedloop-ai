@@ -17,8 +17,16 @@
  * testable without libSQL and safe to import from the main process.
  */
 import { reconcileCloudSyncState } from "@repo/api/src/types/agent-session-cloud-sync-reconcile";
-import { AgentSessionCloudSyncState } from "@repo/api/src/types/agent-session-cloud-sync-state-constants";
+import {
+  AgentSessionCloudSyncState,
+  type DeadLetteredCloudSyncState,
+} from "@repo/api/src/types/agent-session-cloud-sync-state-constants";
 import { TranscriptDisposition } from "@repo/api/src/types/transcript-disposition-constants";
+import type { TranscriptSkipReason } from "@repo/api/src/types/transcript-skip-reason-constants";
+import {
+  dispositionForTerminalSkipReason,
+  type SessionTranscriptVerdict,
+} from "@repo/api/src/types/transcript-terminal-skip-disposition";
 import { TranscriptSyncStatus } from "../../shared/transcript-sync-status-contract.js";
 import {
   type TranscriptMainBlobState,
@@ -42,8 +50,27 @@ import {
  *   row settled. Without it the row settles `idle` at zero bytes and this
  *   projection discloses `syncing` forever for a transcript the cloud can read.
  *   Scoped to the acknowledging target for the same reason the cursor is.
- * - `dead` ⇒ `failedPermanent`: the desktop terminally skipped it, the row is as
- *   complete as it will ever be. Matches the cloud's `permanentlyUnavailable`.
+ * - `dead` ⇒ the verdict its TERMINAL SKIP REASON produces, via the same
+ *   `TERMINAL_SKIP_DISPOSITIONS` map the cloud reads (ISS-9884). Usually
+ *   `failedPermanent` — the desktop terminally skipped it and the row is as
+ *   complete as it will ever be — but the map has TWO exceptions, not one, and
+ *   both hand a locally-dead row a verdict that says the bytes may still come:
+ *   an `environment_unavailable` give-up is `failedTransient`, because the lane
+ *   stopped attempting a file that is presumed present and resumes when the
+ *   transport returns; and a `materialized_source_unavailable` give-up is
+ *   `syncing`, because a batch-materialized source re-materializes on a later
+ *   sweep, so it is still coming AND still being attempted. Neither is this
+ *   branch second-guessing the map — both surfaces must read one row the same
+ *   way, so a local `dead` the cloud still reports as coming reads as coming
+ *   here too. This branch was
+ *   unconditionally `failedPermanent` before, and had to be: the row carried
+ *   no durable evidence of why it died until migration 0090. In the
+ *   bucket-unset case — the DEFAULT local-developer path, where the ack lands
+ *   and the row really does go `dead` — that made the desktop's own list say
+ *   "permanently failed" about a transcript the cloud reports as merely
+ *   paused. A `null` reason (pre-0090, or a label this build does not know)
+ *   keeps the conservative `failedPermanent`, matching the cloud's own
+ *   `null` default.
  * - `failed` with nothing readable ⇒ `failedTransient`: a retryable attempt
  *   failure the drain re-queues with backoff. The blob is still absent.
  * - anything else with nothing readable (`queued` / `uploading`, or `idle` at
@@ -56,26 +83,31 @@ import {
  * compare a cursor against, so every row would fall through to `syncing` and the
  * whole list would claim "transcript still uploading" for transcripts that are
  * long since uploaded. That is a worse lie than saying nothing, so the caller
- * skips the lookup entirely while offline (mirroring the pending-outbox lane,
- * which is likewise never read without a target) and no verdict is published.
+ * skips the lookup entirely while offline and no verdict is published.
  */
-export function deriveLocalTranscriptDisposition(
+export function deriveLocalTranscriptVerdict(
   state: TranscriptMainBlobState,
   computeTargetId: string
-): TranscriptDisposition {
+): SessionTranscriptVerdict {
   if (state.status === TranscriptSyncStatus.Dead) {
-    return TranscriptDisposition.FailedPermanent;
+    return {
+      disposition: dispositionForTerminalSkipReason(state.terminalSkipReason),
+      reason: state.terminalSkipReason,
+    };
   }
   if (
     hasCloudReadableBytes(state, computeTargetId) ||
     hasCurrentTargetCloudAck(state, computeTargetId)
   ) {
-    return TranscriptDisposition.Synced;
+    return { disposition: TranscriptDisposition.Synced, reason: null };
   }
   if (state.status === TranscriptSyncStatus.Failed) {
-    return TranscriptDisposition.FailedTransient;
+    // ISS-9884: a row on the retry LADDER, not a terminal — it carries no
+    // reason, which is what keeps the renderer's "Sync failed, retrying" copy
+    // (true here) apart from "Upload paused" (true only of a give-up).
+    return { disposition: TranscriptDisposition.FailedTransient, reason: null };
   }
-  return TranscriptDisposition.Syncing;
+  return { disposition: TranscriptDisposition.Syncing, reason: null };
 }
 
 /**
@@ -87,15 +119,15 @@ export function deriveLocalTranscriptDisposition(
  * `syncing` for a zero-row session because every cloud session is known to
  * expect a `main` file; that premise does not hold locally.)
  */
-export function buildLocalTranscriptDispositions(
+export function buildLocalTranscriptVerdicts(
   states: TranscriptMainBlobState[],
   computeTargetId: string
-): Map<string, TranscriptDisposition> {
-  const byId = new Map<string, TranscriptDisposition>();
+): Map<string, SessionTranscriptVerdict> {
+  const byId = new Map<string, SessionTranscriptVerdict>();
   for (const state of states) {
     byId.set(
       state.externalSessionId,
-      deriveLocalTranscriptDisposition(state, computeTargetId)
+      deriveLocalTranscriptVerdict(state, computeTargetId)
     );
   }
   return byId;
@@ -119,7 +151,7 @@ export function buildLocalTranscriptDispositions(
  *
  * #4150 (davetho review): a FAILED lookup is not proof the session is synced.
  * The loaders distinguish an *unavailable* lane (a lookup that was attempted and
- * threw — {@link TranscriptDispositionLookup} `available:false` / `outboxKnown`
+ * threw — {@link TranscriptVerdictLookup} `available:false` / `outboxKnown`
  * false) from a *proven-empty* one (offline/no-delegate — never consulted — or a
  * successful read that found nothing). When a lane is unavailable we cannot prove
  * the row is caught up, so we OMIT the disclosure entirely (leave `cloudSyncState`
@@ -133,10 +165,16 @@ export function buildLocalTranscriptDispositions(
  *   but the blob lane is unknown, so we cannot prove the aggregate is `synced`.
  *   Omit the disclosure rather than defaulting `synced`.
  *
- * The never-consulted paths (offline `computeTargetId`, a source with no
- * `loadPendingOutboxIds`/`loadTranscriptBlobStates` delegate, and the by-id/detail
- * reads that pass no sets) stay `outboxKnown:true` / `transcriptAvailable:true`
- * with an empty result, preserving the honest `synced` default they relied on.
+ * The never-consulted paths (a source with no `loadPendingOutboxIds` /
+ * `loadTranscriptBlobStates` delegate, the by-id read that passes no sets, and
+ * the detail read's outbox lane) stay `outboxKnown:true` /
+ * `transcriptAvailable:true` with an empty result, preserving the honest
+ * `synced` default they relied on.
+ *
+ * ISS-9004: an offline/absent `computeTargetId` is NOT one of them. The outbox
+ * lane reports it `outboxKnown:false`, so the whole disclosure is omitted and the
+ * transcript branch below is never reached — the row claims neither `synced` nor
+ * `pending`, which is the only honest answer when no target names the lane.
  */
 export function buildLocalCloudSyncDisclosure(
   outbox: OutboxDisclosureInput,
@@ -144,6 +182,7 @@ export function buildLocalCloudSyncDisclosure(
 ): {
   cloudSyncState?: AgentSessionCloudSyncState;
   transcriptDisposition?: TranscriptDisposition;
+  transcriptDispositionReason?: TranscriptSkipReason;
 } {
   if (!outbox.known) {
     // The outbox read failed: metadata-lane state is unknown, so nothing can
@@ -153,16 +192,42 @@ export function buildLocalCloudSyncDisclosure(
   if (outbox.pending) {
     return { cloudSyncState: AgentSessionCloudSyncState.Pending };
   }
+  // ISS-11427: the lane set this row aside, so the cloud copy is missing or
+  // behind whatever its transcript says. Before this the row fell through to
+  // the transcript verdict and could read `synced`. The verdict still rides
+  // with it: the blob lane is independent, and a failed or paused transcript
+  // is a second fact about the row, not one the dead letter subsumes.
+  if (outbox.deadLetter) {
+    return {
+      ...transcriptVerdictFields(transcript),
+      cloudSyncState: outbox.deadLetter,
+    };
+  }
   if (!transcript.available) {
     // Metadata is proven acked, but the blob lookup failed — the aggregate could
     // still be `pending` on a transcript we could not read. Omit rather than lie.
     return {};
   }
   return {
-    cloudSyncState: reconcileCloudSyncState(transcript.disposition),
-    ...(transcript.disposition
-      ? { transcriptDisposition: transcript.disposition }
-      : {}),
+    cloudSyncState: reconcileCloudSyncState(transcript.verdict?.disposition),
+    ...transcriptVerdictFields(transcript),
+  };
+}
+
+/**
+ * The transcript verdict's wire fields. ISS-9884: the reason rides with the
+ * verdict so the desktop list renders the same sentence the cloud list does
+ * for the same row. Both are OMITTED rather than null when absent — additive
+ * optional wire fields the contract does not declare nullable.
+ */
+function transcriptVerdictFields(transcript: TranscriptDisclosureInput): {
+  transcriptDisposition?: TranscriptDisposition;
+  transcriptDispositionReason?: TranscriptSkipReason;
+} {
+  const verdict = transcript.available ? transcript.verdict : undefined;
+  return {
+    ...(verdict ? { transcriptDisposition: verdict.disposition } : {}),
+    ...(verdict?.reason ? { transcriptDispositionReason: verdict.reason } : {}),
   };
 }
 
@@ -200,10 +265,10 @@ function hasCurrentTargetCloudAck(
   );
 }
 
-export const EMPTY_TRANSCRIPT_DISPOSITIONS: ReadonlyMap<
+export const EMPTY_TRANSCRIPT_VERDICTS: ReadonlyMap<
   string,
-  TranscriptDisposition
-> = new Map<string, TranscriptDisposition>();
+  SessionTranscriptVerdict
+> = new Map<string, SessionTranscriptVerdict>();
 
 /** The bounded, page-scoped `main` blob-state lookup the caller injects. */
 export type LoadTranscriptBlobStates = (
@@ -223,8 +288,8 @@ export type LoadTranscriptBlobStates = (
  *   than defaulting `synced` (which would recreate the false state ISS-4647
  *   fixes).
  */
-export type TranscriptDispositionLookup =
-  | { available: true; byId: ReadonlyMap<string, TranscriptDisposition> }
+export type TranscriptVerdictLookup =
+  | { available: true; byId: ReadonlyMap<string, SessionTranscriptVerdict> }
   | { available: false };
 
 /**
@@ -233,10 +298,15 @@ export type TranscriptDispositionLookup =
  * false) is distinguishable from a proven-not-pending / no-verdict result.
  */
 export type OutboxDisclosureInput =
-  | { known: true; pending: boolean }
+  | {
+      known: true;
+      pending: boolean;
+      /** ISS-11427: set when the session lane holds this row set aside. */
+      deadLetter?: DeadLetteredCloudSyncState;
+    }
   | { known: false };
 export type TranscriptDisclosureInput =
-  | { available: true; disposition: TranscriptDisposition | undefined }
+  | { available: true; verdict: SessionTranscriptVerdict | undefined }
   | { available: false };
 
 /**
@@ -251,12 +321,14 @@ export type TranscriptDisclosureInput =
  * the row as unknown and omits the disclosure, instead of stamping an
  * outbox-acked row `synced` on the strength of a read that never completed.
  *
- * A null `computeTargetId` (offline/unauthenticated) skips the lookup for the
- * same reason the pending-outbox lane does: with no target, no cursor can be
- * proven current, so every row would fall through to `syncing` and the list would
- * claim "transcript still uploading" for transcripts uploaded long ago. Saying
- * nothing is the honest answer there — and it is a never-consulted skip, not a
- * failure, so it stays `available: true` with an empty map.
+ * A null `computeTargetId` (offline/unauthenticated) skips the lookup: with no
+ * target, no cursor can be proven current, so every row would fall through to
+ * `syncing` and the list would claim "transcript still uploading" for transcripts
+ * uploaded long ago. It stays `available: true` with an empty map, which reads
+ * differently from the outbox lane's ISS-9004 answer to the same input and is
+ * not a disagreement: under a null target the outbox reports the lane UNKNOWN,
+ * {@link buildLocalCloudSyncDisclosure} omits the whole disclosure on that
+ * alone, and this verdict is never consulted.
  *
  * #4150: extracted here from `shared-agent-sessions-api.ts` (a grandfathered
  * over-ceiling file) — this cohesive transcript-lane lookup belongs with the rest
@@ -264,22 +336,22 @@ export type TranscriptDisclosureInput =
  * monolith. Takes the two fields it needs rather than the whole options object,
  * so the sibling stays free of a back-import of `GetSharedAgentSessionsOptions`.
  */
-export async function loadLocalTranscriptDispositions(
+export async function loadLocalTranscriptVerdicts(
   computeTargetId: string | null,
   loadTranscriptBlobStates: LoadTranscriptBlobStates | undefined,
   externalSessionIds: string[]
-): Promise<TranscriptDispositionLookup> {
+): Promise<TranscriptVerdictLookup> {
   if (
     !(computeTargetId && loadTranscriptBlobStates) ||
     externalSessionIds.length === 0
   ) {
-    return { available: true, byId: EMPTY_TRANSCRIPT_DISPOSITIONS };
+    return { available: true, byId: EMPTY_TRANSCRIPT_VERDICTS };
   }
   try {
     const states = await loadTranscriptBlobStates(externalSessionIds);
     return {
       available: true,
-      byId: buildLocalTranscriptDispositions(states, computeTargetId),
+      byId: buildLocalTranscriptVerdicts(states, computeTargetId),
     };
   } catch {
     return { available: false };

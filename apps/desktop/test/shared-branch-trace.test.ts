@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import { encodeBranchId } from "@repo/api/src/types/branch.js";
 import {
   BranchTraceCompletenessState,
@@ -7,7 +6,17 @@ import {
   BranchTraceUnavailableReason,
   normalizeBranchTraceResult,
 } from "@repo/api/src/types/branch-trace.js";
+import { describe, test } from "vitest";
 import { getSharedBranchTrace } from "../src/main/branch/shared-branch-trace.js";
+// Imported rather than re-typed: the reporter owns this name, so a rename moves
+// the producer and this assertion together instead of leaving the test green
+// against a category nothing emits.
+import {
+  BRANCH_TRACE_ITEMS_UNREADABLE_CATEGORY,
+  resetBranchTraceItemsUnreadableReport,
+} from "../src/main/telemetry/branch-trace-unreadable-items-telemetry.js";
+import { Observability } from "../src/main/telemetry/observability.js";
+import { setTelemetryDeliverable } from "../src/main/telemetry/telemetry-delivery-readiness.js";
 import {
   link,
   makeSource,
@@ -19,6 +28,20 @@ const branchId = encodeBranchId({
   branchName: "feature/x",
 });
 const PRIVATE_IPC_DETAIL_RE = /private IPC detail/;
+
+/** One tool call, as the local sync lane persists it. */
+function toolEvent(
+  externalEventId: string,
+  toolName: string,
+  createdAt: string
+) {
+  return {
+    externalEventId,
+    eventType: "tool_call",
+    toolName,
+    createdAt,
+  };
+}
 
 describe("getSharedBranchTrace", () => {
   test("synthesizes one ordered session start per Session and an idle gap", async () => {
@@ -45,6 +68,148 @@ describe("getSharedBranchTrace", () => {
       ["s1", "s2"]
     );
     assert.ok(idle?.type === "idle" && idle.gapMs >= 120_000);
+  });
+
+  test("ISS-9723: keeps a Session's readable items when one item cannot be parsed", async () => {
+    // The producer bug this ruling is about: a tool run whose LAST call carries
+    // an unparseable stamp, so the projection's `endMs` folds to `NaN` and the
+    // merged-trace contract refuses that item. It used to take the Session with
+    // it.
+    const source = makeSource({
+      links: [link({ session_id: "s1" }), link({ session_id: "s2" })],
+      sessions: [
+        syncedSession({
+          externalSessionId: "s1",
+          startedAt: "2026-06-10T10:00:00.000Z",
+          events: [
+            toolEvent("e1", "read", "2026-06-10T10:00:05.000Z"),
+            toolEvent("e2", "read", "not-a-timestamp"),
+          ],
+        }),
+        syncedSession({
+          externalSessionId: "s2",
+          startedAt: "2026-06-10T12:00:00.000Z",
+        }),
+      ],
+    });
+
+    const result = await getSharedBranchTrace(source, branchId);
+    const partial = result.sessions.find(
+      (session) => session.identity.artifactId === "s1"
+    );
+
+    assert.equal(partial?.state, BranchTraceSessionHydrationState.Loaded);
+    assert.equal(
+      partial?.state === BranchTraceSessionHydrationState.Loaded
+        ? partial.unreadableItemCount
+        : null,
+      1
+    );
+    // Its readable evidence survives, and the unparseable item is gone rather
+    // than repaired into a plausible extent.
+    assert.ok(
+      result.items.some(
+        (item) => item.type === "sessionstart" && item.sessionId === "s1"
+      )
+    );
+    assert.ok(!result.items.some((item) => item.type === "tools"));
+    assert.equal(
+      result.aggregateCompleteness.state,
+      BranchTraceCompletenessState.Incomplete
+    );
+  });
+
+  test("ISS-9723: omits the drop count and stays complete when every item parses", async () => {
+    const source = makeSource({
+      links: [link({ session_id: "s1" })],
+      sessions: [
+        syncedSession({
+          externalSessionId: "s1",
+          startedAt: "2026-06-10T10:00:00.000Z",
+          events: [toolEvent("e1", "read", "2026-06-10T10:00:05.000Z")],
+        }),
+      ],
+    });
+
+    const result = await getSharedBranchTrace(source, branchId);
+
+    assert.ok(
+      result.sessions.every(
+        (session) =>
+          session.state === BranchTraceSessionHydrationState.Loaded &&
+          session.unreadableItemCount === undefined
+      )
+    );
+    assert.equal(
+      result.aggregateCompleteness.state,
+      BranchTraceCompletenessState.Complete
+    );
+  });
+
+  /**
+   * ISS-9723 (#6884 review, codex): the drop must not be silent OFF this
+   * machine. Driven through the real `Observability` emit path — the test's own
+   * sink is the transport — rather than by asserting a mocked reporter was
+   * called, so deleting the call site in `resultFromHydrations` reddens this.
+   */
+  test("ISS-9723: a dropped item reaches the monitored desktop diagnostic", async () => {
+    const events = await captureTelemetry(() =>
+      getSharedBranchTrace(sourceWithUnparseableToolStamp(), branchId)
+    );
+
+    assert.deepEqual(
+      events.map((event) => event.category),
+      [BRANCH_TRACE_ITEMS_UNREADABLE_CATEGORY],
+      "one drop must raise exactly one monitored diagnostic"
+    );
+    assert.equal(
+      events[0]?.severity,
+      "error",
+      "reported at error severity, the field a monitor queries"
+    );
+  });
+
+  /**
+   * The silence half, and the reason the arm above cannot be satisfied by a
+   * reporter that fires on every read: a trace whose every item parses is the
+   * overwhelmingly common case and must never page anyone.
+   */
+  test("ISS-9723: a trace that dropped nothing raises no diagnostic at all", async () => {
+    const events = await captureTelemetry(() =>
+      getSharedBranchTrace(
+        makeSource({
+          links: [link({ session_id: "s1" })],
+          sessions: [
+            syncedSession({
+              externalSessionId: "s1",
+              startedAt: "2026-06-10T10:00:00.000Z",
+              events: [toolEvent("e1", "read", "2026-06-10T10:00:05.000Z")],
+            }),
+          ],
+        }),
+        branchId
+      )
+    );
+
+    assert.deepEqual(events, [], "a clean read must emit nothing");
+  });
+
+  /**
+   * Branch detail is a POLLED read path, so the cadence is the load-bearing half
+   * of the reporter: without the latch, one corrupt Session bills a line per
+   * navigation for as long as the window stays open.
+   */
+  test("ISS-9723: repeated reads of one corrupt branch raise one alert, not one each", async () => {
+    const events = await captureTelemetry(async () => {
+      await getSharedBranchTrace(sourceWithUnparseableToolStamp(), branchId);
+      await getSharedBranchTrace(sourceWithUnparseableToolStamp(), branchId);
+    }, true);
+
+    assert.deepEqual(
+      events.map((event) => event.category),
+      [BRANCH_TRACE_ITEMS_UNREADABLE_CATEGORY],
+      "two corrupt reads in one process must raise one alert"
+    );
   });
 
   test("returns honest empty evidence for missing sources and unmatched branches", async () => {
@@ -244,3 +409,58 @@ describe("getSharedBranchTrace", () => {
     assert.doesNotMatch(JSON.stringify(normalized), PRIVATE_IPC_DETAIL_RE);
   });
 });
+
+/**
+ * The producer defect ISS-9723 is about: a tool run whose LAST call carries an
+ * unparseable stamp, so the projection's `endMs` folds to `NaN` and the
+ * merged-trace contract refuses that one item while the Session survives.
+ *
+ * A factory rather than a shared constant because `makeSource` is stateful per
+ * read, and the latch case needs two independent reads of the same defect.
+ */
+function sourceWithUnparseableToolStamp(): ReturnType<typeof makeSource> {
+  return makeSource({
+    links: [link({ session_id: "s1" })],
+    sessions: [
+      syncedSession({
+        externalSessionId: "s1",
+        startedAt: "2026-06-10T10:00:00.000Z",
+        events: [
+          toolEvent("e1", "read", "2026-06-10T10:00:05.000Z"),
+          toolEvent("e2", "read", "not-a-timestamp"),
+        ],
+      }),
+    ],
+  });
+}
+
+/**
+ * Run `body` with the desktop telemetry transport pointed at a local array, and
+ * return every event it emitted.
+ *
+ * `deliverable` is the lane's send gate, held CLOSED by default so the
+ * reporter's once-per-process latch never sets and each case stays independent
+ * — the emit itself happens either way, because the latch is gated on
+ * acceptance and not on the attempt. The explicit reset covers the one case that
+ * opens the gate on purpose.
+ */
+async function captureTelemetry(
+  body: () => Promise<unknown>,
+  deliverable = false
+): Promise<Array<{ category: string; severity: string }>> {
+  const events: Array<{ category: string; severity: string }> = [];
+  resetBranchTraceItemsUnreadableReport();
+  Observability.init({
+    telemetrySend: (event) =>
+      events.push({ category: event.category, severity: event.severity }),
+  });
+  setTelemetryDeliverable(() => deliverable);
+  try {
+    await body();
+  } finally {
+    setTelemetryDeliverable(null);
+    Observability.initNoOp();
+    resetBranchTraceItemsUnreadableReport();
+  }
+  return events;
+}

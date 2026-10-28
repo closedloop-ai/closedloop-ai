@@ -8,11 +8,10 @@ import type {
 } from "./schema";
 import {
   desktopTelemetryEventSchema,
-  TelemetryCategory,
-  TelemetrySeverity,
   telemetryDiagnosticsSchema,
   telemetryTraceContextSchema,
 } from "./schema";
+import { TelemetryCategory, TelemetrySeverity } from "./telemetry-category";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -174,6 +173,38 @@ function sanitizeDecisionTableVerificationDiagnostics(
 }
 
 /**
+ * ISS-7488 — the scrub for `desktopUpdate.error` / `desktopShutdown.error`.
+ *
+ * Both are built from `err.message` at the producer (`auto-update-wiring.ts`,
+ * `desktop-application-shutdown.ts`) with no producer-side pass — unlike
+ * `rendererHealth.detail`, whose comment above can lean on `exception-sanitizer`
+ * running first. Nothing upstream constrains what an updater or a shutdown
+ * sequence throws, so a token or a home-rooted path can be anywhere in it.
+ *
+ * Until this ticket the `.max()` on each field refused an over-long error and
+ * the whole event with it; clamping instead ADMITS the head of exactly the long
+ * responses and stack traces most likely to carry one, so the scrub `logTail`
+ * already gets has to run here too. Both halves are the existing helpers:
+ * {@link redactHomeRootedPaths} first, so a path is collapsed rather than
+ * dropped with its line, then {@link sanitizeTextTail} for the credential
+ * patterns. Neither adds a marker when nothing matched — a clean error comes
+ * back byte-identical.
+ */
+function sanitizeLifecycleErrorText(value: string): string {
+  return sanitizeTextTail(redactHomeRootedPaths(value));
+}
+
+/** Applies {@link sanitizeLifecycleErrorText} to one lifecycle branch's `error`. */
+function withSanitizedLifecycleError<T extends { error?: string }>(
+  branch: T | undefined
+): T | undefined {
+  if (typeof branch?.error !== "string") {
+    return branch;
+  }
+  return { ...branch, error: sanitizeLifecycleErrorText(branch.error) };
+}
+
+/**
  * Sanitize diagnostics from a desktop-originated event:
  * - Truncate logTail/stderrTail to at most LOG_TAIL_MAX_BYTES bytes
  * - Truncate diagnostics.pluginUpdate.stderrTail with the same credential scrubber
@@ -182,6 +213,7 @@ function sanitizeDecisionTableVerificationDiagnostics(
  * - Keep only descriptor fields for outbound-network diagnostics
  * - Collapse home-rooted absolute paths in decisionTableVerification (server-
  *   side fallback for version-skewed older Desktop clients — FEA-2702)
+ * - Scrub the raw desktopUpdate/desktopShutdown `error` free text (ISS-7488)
  */
 export function sanitizeDesktopTelemetryDiagnostics(
   diagnostics: TelemetryDiagnostics | undefined
@@ -199,6 +231,29 @@ export function sanitizeDesktopTelemetryDiagnostics(
   if (typeof sanitized.stderrTail === "string") {
     sanitized.stderrTail = sanitizeTextTail(sanitized.stderrTail);
   }
+
+  // ISS-6331 — `rendererHealth.detail` is free text derived from a load failure
+  // (a Chromium description plus the failing URL, or a thrown preload message).
+  // The producer already scrubs paths/URLs/emails through `exception-sanitizer`;
+  // this is the same second layer `logTail`/`stderrTail` get, so a producer-side
+  // regression or a version-skewed desktop build cannot put a credential-shaped
+  // line on a Datadog attribute unscrubbed.
+  if (typeof sanitized.rendererHealth?.detail === "string") {
+    sanitized.rendererHealth = {
+      ...sanitized.rendererHealth,
+      detail: sanitizeTextTail(sanitized.rendererHealth.detail),
+    };
+  }
+
+  // ISS-7488 — these two are raw `err.message`, and clamping them instead of
+  // refusing them newly admits the head of a long one. See
+  // `sanitizeLifecycleErrorText`.
+  sanitized.desktopUpdate = withSanitizedLifecycleError(
+    sanitized.desktopUpdate
+  );
+  sanitized.desktopShutdown = withSanitizedLifecycleError(
+    sanitized.desktopShutdown
+  );
 
   if (typeof sanitized.pluginUpdate?.stderrTail === "string") {
     sanitized.pluginUpdate = {

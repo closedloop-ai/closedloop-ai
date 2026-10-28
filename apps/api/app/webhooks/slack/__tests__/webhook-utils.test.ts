@@ -9,7 +9,7 @@
  *   - Use of timingSafeEqual for constant-time comparison
  */
 import { createHmac } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { slackVerifyWebhookSignature } from "../webhook-utils";
 
 // ---------------------------------------------------------------------------
@@ -62,6 +62,37 @@ describe("slackVerifyWebhookSignature — timestamp validation", () => {
 
   it("rejects a request whose timestamp is far in the past", () => {
     const timestamp = timestampSecondsAgo(3600); // 1 hour ago
+    const signature = buildValidSignature(BODY, timestamp, SECRET);
+
+    const result = slackVerifyWebhookSignature(
+      BODY,
+      timestamp,
+      signature,
+      SECRET
+    );
+
+    expect(result).toBe(false);
+  });
+
+  it("rejects a request whose timestamp is exactly 301 seconds in the future", () => {
+    const nowMs = 1_750_000_000_000;
+    const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(nowMs);
+    const timestamp = String(nowMs / 1000 + 301);
+    const signature = buildValidSignature(BODY, timestamp, SECRET);
+
+    const result = slackVerifyWebhookSignature(
+      BODY,
+      timestamp,
+      signature,
+      SECRET
+    );
+    dateNowSpy.mockRestore();
+
+    expect(result).toBe(false);
+  });
+
+  it("rejects a request with a missing timestamp", () => {
+    const timestamp = "";
     const signature = buildValidSignature(BODY, timestamp, SECRET);
 
     const result = slackVerifyWebhookSignature(

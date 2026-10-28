@@ -90,8 +90,17 @@ export function freshHeartbeats(ingestGroups: IngestGroup[]): PresenceGroup[] {
   );
 }
 
-export function policyRow(id: string, sessionSyncPolicyEnabled: boolean) {
-  return { id, sessionSyncPolicyEnabled };
+/**
+ * A row of the sampler's active-org lookup.
+ *
+ * ISS-11449: this used to be `policyRow(id, sessionSyncPolicyEnabled)` and
+ * carried the org session-sync policy, which fed a metric tag. The policy is
+ * gone; what the lookup still decides — and what every case here depends on —
+ * is MEMBERSHIP: an org absent from this result is deactivated or deleted and is
+ * therefore not an ingestion stall.
+ */
+export function activeOrgRow(id: string) {
+  return { id };
 }
 
 /**

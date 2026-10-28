@@ -1,0 +1,32 @@
+{
+  "name": "@repo/realtime-server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./emit-signal": "./src/emit-signal.ts",
+    "./internal-call": "./src/internal-call.ts",
+    "./internal-client": "./src/internal-client.ts"
+  },
+  "scripts": {
+    "clean": "git clean -xdf .cache .turbo dist *.tsbuildinfo node_modules",
+    "typecheck": "tsc --noEmit --emitDeclarationOnly false --incremental --tsBuildInfoFile ./tsconfig.tsbuildinfo",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage --coverage.reporter=json --coverage.reporter=json-summary --coverage.reportOnFailure '--coverage.include=src/**/*.{ts,tsx}'"
+  },
+  "dependencies": {
+    "@opentelemetry/api": "^1.9.0",
+    "@repo/database": "workspace:*",
+    "@repo/observability": "workspace:*",
+    "@repo/realtime-contract": "workspace:*",
+    "@vercel/oidc": "^3.8.9",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@repo/vitest-config": "workspace:*",
+    "@types/node": "^25.3.5",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.2"
+  }
+}

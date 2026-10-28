@@ -1,6 +1,7 @@
 "use client";
 
 import { Badge } from "@repo/design-system/components/ui/badge";
+import { GitHubMark } from "@repo/design-system/components/ui/brand-icons";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Card,
@@ -16,7 +17,7 @@ import {
   ToggleGroup,
   ToggleGroupItem,
 } from "@repo/design-system/components/ui/toggle-group";
-import { CableIcon, GithubIcon, UserIcon, UsersIcon } from "lucide-react";
+import { CableIcon, UserIcon, UsersIcon } from "lucide-react";
 import { useState } from "react";
 import {
   aiImpactMetrics,
@@ -122,26 +123,21 @@ export const Dashboard = ({
               </ToggleGroupItem>
             ))}
           </ToggleGroup>
-          <div className="flex items-center gap-2">
-            <span className="font-medium text-muted-foreground text-xs uppercase tracking-wider">
-              Scope
-            </span>
-            <ToggleGroup
-              aria-label="Scope"
-              onValueChange={(value) => {
-                if (value) {
-                  setScope(value as DashboardScope);
-                }
-              }}
-              size="sm"
-              type="single"
-              value={scope}
-              variant="outline"
-            >
-              <ToggleGroupItem value="me">Me</ToggleGroupItem>
-              <ToggleGroupItem value="org">Organization</ToggleGroupItem>
-            </ToggleGroup>
-          </div>
+          <ToggleGroup
+            aria-label="Scope"
+            onValueChange={(value) => {
+              if (value) {
+                setScope(value as DashboardScope);
+              }
+            }}
+            size="sm"
+            type="single"
+            value={scope}
+            variant="outline"
+          >
+            <ToggleGroupItem value="me">Me</ToggleGroupItem>
+            <ToggleGroupItem value="org">Organization</ToggleGroupItem>
+          </ToggleGroup>
           <Button onClick={onHideDemoData} size="sm" variant="outline">
             Clear demo data
           </Button>
@@ -162,7 +158,7 @@ export const Dashboard = ({
                   size="sm"
                   variant="link"
                 >
-                  <GithubIcon className="size-3" />
+                  <GitHubMark className="size-3" />
                   Connect GitHub
                 </Button>
               }
@@ -249,11 +245,11 @@ const AiImpactCard = ({
           <Separator />
           <div className="flex items-center justify-between gap-4">
             <p className="text-muted-foreground text-sm">
-              Connect GitHub to unlock cost per merged PR, tokens per KLOC, and
+              Connect GitHub to unlock cost per merged PR, tokens per LOC, and
               top repo.
             </p>
             <Button onClick={onConnectGitHub} size="sm" variant="outline">
-              <GithubIcon />
+              <GitHubMark />
               Connect GitHub
             </Button>
           </div>

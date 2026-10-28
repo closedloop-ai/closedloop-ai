@@ -6,6 +6,12 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  stubTrustedOriginEnv,
+  TRUSTED_APP_ORIGIN,
+  TRUSTED_WEB_ORIGIN,
+  UNTRUSTED_ORIGIN,
+} from "@/__tests__/utils/trusted-origin.test-helpers";
+import {
   apiKeysService,
   DesktopManagedKeyRotationConflictError,
 } from "@/app/api-keys/service";
@@ -28,10 +34,6 @@ vi.mock("@repo/analytics/server", () => ({
     isFeatureEnabled: mockIsFeatureEnabled,
   },
 }));
-vi.mock("@/lib/auth/canonical-trusted-origin", () => ({
-  canonicalizeTrustedOrigin: (origin: string) =>
-    origin.startsWith("https://") ? origin : null,
-}));
 vi.mock("@/lib/auth/ed25519-spki-pem", () => ({
   normalizeEd25519SpkiPublicKeyPem: (pem: string) =>
     pem === "valid-pem" ? "normalized-pem" : null,
@@ -42,12 +44,13 @@ describe("POST /desktop/bootstrap/claim", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-23T17:30:00.000Z"));
     vi.clearAllMocks();
+    stubTrustedOriginEnv();
     mockIsFeatureEnabled.mockResolvedValue(true);
     vi.mocked(desktopOnboardingAttemptsService.get).mockResolvedValue({
       attemptId: "attempt-123",
       organizationId: "org-1",
       userId: "user-1",
-      webAppOrigin: "https://app.closedloop.ai",
+      webAppOrigin: TRUSTED_APP_ORIGIN,
       expiresAt: new Date("2026-04-23T18:00:00.000Z"),
       consumedAt: null,
     });
@@ -75,6 +78,7 @@ describe("POST /desktop/bootstrap/claim", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllEnvs();
   });
 
   it("returns the exact modern bound claim response on success", async () => {
@@ -84,7 +88,7 @@ describe("POST /desktop/bootstrap/claim", () => {
         url: "https://api.closedloop.ai/desktop/bootstrap/claim",
         body: {
           onboardingAttemptId: "attempt-123",
-          webAppOrigin: "https://app.closedloop.ai",
+          webAppOrigin: TRUSTED_APP_ORIGIN,
           gatewayId: "550e8400-e29b-41d4-a716-446655440000",
           gatewayPublicKeyPem: "valid-pem",
         },
@@ -115,7 +119,7 @@ describe("POST /desktop/bootstrap/claim", () => {
         method: "POST",
         body: {
           onboardingAttemptId: "attempt-123",
-          webAppOrigin: "https://app.closedloop.ai",
+          webAppOrigin: TRUSTED_APP_ORIGIN,
           gatewayId: "not-a-uuid",
           gatewayPublicKeyPem: "valid-pem",
         },
@@ -136,7 +140,7 @@ describe("POST /desktop/bootstrap/claim", () => {
         method: "POST",
         body: {
           onboardingAttemptId: "attempt-123",
-          webAppOrigin: "https://app.closedloop.ai",
+          webAppOrigin: TRUSTED_APP_ORIGIN,
           gatewayId: "550e8400-e29b-41d4-a716-446655440000",
           gatewayPublicKeyPem: "bad-pem",
         },
@@ -157,7 +161,7 @@ describe("POST /desktop/bootstrap/claim", () => {
         method: "POST",
         body: {
           onboardingAttemptId: "attempt-123",
-          webAppOrigin: "https://app.closedloop.ai",
+          webAppOrigin: TRUSTED_APP_ORIGIN,
           gatewayId: "550e8400-e29b-41d4-a716-446655440000",
         },
       })
@@ -182,7 +186,7 @@ describe("POST /desktop/bootstrap/claim", () => {
         method: "POST",
         body: {
           onboardingAttemptId: "attempt-123",
-          webAppOrigin: "https://app.closedloop.ai",
+          webAppOrigin: TRUSTED_APP_ORIGIN,
           gatewayId: "550e8400-e29b-41d4-a716-446655440000",
           gatewayPublicKey: "bad-pem",
         },
@@ -213,7 +217,7 @@ describe("POST /desktop/bootstrap/claim", () => {
         method: "POST",
         body: {
           onboardingAttemptId: "attempt-123",
-          webAppOrigin: "https://app.closedloop.ai",
+          webAppOrigin: TRUSTED_APP_ORIGIN,
           gatewayId: "550e8400-e29b-41d4-a716-446655440000",
           gatewayPublicKey: "valid-pem",
         },
@@ -237,7 +241,7 @@ describe("POST /desktop/bootstrap/claim", () => {
         method: "POST",
         body: {
           onboardingAttemptId: "attempt-123",
-          webAppOrigin: "https://app.closedloop.ai",
+          webAppOrigin: TRUSTED_APP_ORIGIN,
           gatewayId: "550e8400-e29b-41d4-a716-446655440000",
           gatewayPublicKeyPem: "valid-pem",
         },
@@ -252,12 +256,14 @@ describe("POST /desktop/bootstrap/claim", () => {
   });
 
   it("returns 403 when the attempt origin does not match the claim request", async () => {
+    // The claimed origin is allowlisted but differs from the origin recorded on
+    // the attempt, so only the attempt-mismatch branch can reject this.
     const response = await POST(
       createMockRequest({
         method: "POST",
         body: {
           onboardingAttemptId: "attempt-123",
-          webAppOrigin: "https://admin.closedloop.ai",
+          webAppOrigin: TRUSTED_WEB_ORIGIN,
           gatewayId: "550e8400-e29b-41d4-a716-446655440000",
           gatewayPublicKeyPem: "valid-pem",
         },
@@ -272,12 +278,40 @@ describe("POST /desktop/bootstrap/claim", () => {
     expect(desktopOnboardingAttemptsService.consume).not.toHaveBeenCalled();
   });
 
+  it("rejects a non-allowlisted claim origin before loading the attempt", async () => {
+    // The body is otherwise well-formed, so the 400 cannot come from schema
+    // validation, and the attempt is never loaded — which distinguishes this
+    // from the attempt-origin-mismatch 403 above. Drop the
+    // canonicalizeTrustedOrigin call from the claim service and this request
+    // reaches the attempt lookup instead of being turned away.
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        body: {
+          onboardingAttemptId: "attempt-123",
+          webAppOrigin: UNTRUSTED_ORIGIN,
+          gatewayId: "550e8400-e29b-41d4-a716-446655440000",
+          gatewayPublicKeyPem: "valid-pem",
+        },
+      })
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      code: "INVALID_BOOTSTRAP_CLAIM_REQUEST",
+      retryable: false,
+    });
+    expect(desktopOnboardingAttemptsService.get).not.toHaveBeenCalled();
+    expect(desktopOnboardingAttemptsService.consume).not.toHaveBeenCalled();
+    expect(apiKeysService.rotateDesktopManagedKey).not.toHaveBeenCalled();
+  });
+
   it("returns 403 for bound attempt gateway mismatches before consuming the attempt", async () => {
     vi.mocked(desktopOnboardingAttemptsService.get).mockResolvedValue({
       attemptId: "attempt-123",
       organizationId: "org-1",
       userId: "user-1",
-      webAppOrigin: "https://app.closedloop.ai",
+      webAppOrigin: TRUSTED_APP_ORIGIN,
       expiresAt: new Date("2026-04-23T18:00:00.000Z"),
       consumedAt: null,
       gatewayId: "550e8400-e29b-41d4-a716-446655440001",
@@ -288,7 +322,7 @@ describe("POST /desktop/bootstrap/claim", () => {
         method: "POST",
         body: {
           onboardingAttemptId: "attempt-123",
-          webAppOrigin: "https://app.closedloop.ai",
+          webAppOrigin: TRUSTED_APP_ORIGIN,
           gatewayId: "550e8400-e29b-41d4-a716-446655440000",
           gatewayPublicKeyPem: "valid-pem",
         },
@@ -314,7 +348,7 @@ describe("POST /desktop/bootstrap/claim", () => {
         method: "POST",
         body: {
           onboardingAttemptId: "attempt-123",
-          webAppOrigin: "https://app.closedloop.ai",
+          webAppOrigin: TRUSTED_APP_ORIGIN,
           gatewayId: "550e8400-e29b-41d4-a716-446655440000",
           gatewayPublicKeyPem: "valid-pem",
         },
@@ -342,7 +376,7 @@ describe("POST /desktop/bootstrap/claim", () => {
         method: "POST",
         body: {
           onboardingAttemptId: "attempt-123",
-          webAppOrigin: "https://app.closedloop.ai",
+          webAppOrigin: TRUSTED_APP_ORIGIN,
           gatewayId: "550e8400-e29b-41d4-a716-446655440000",
           gatewayPublicKeyPem: "valid-pem",
         },

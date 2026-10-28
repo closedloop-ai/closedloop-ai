@@ -211,17 +211,24 @@ describe("foldTimeSeriesToMaxSeries aggregate arithmetic", () => {
     ["NaN", Number.NaN],
     ["+Infinity", Number.POSITIVE_INFINITY],
     ["-Infinity", Number.NEGATIVE_INFINITY],
-  ])("reports a bucket as unknown when a folded value is %s, instead of dropping it", (_label, malformed) => {
-    // A present-but-malformed value used to be discarded, letting the one valid
-    // sibling carry the band as a confident subtotal (codex P2). It is not a
-    // measurement of zero and it is not absence — it is a value we cannot add.
-    const series = seriesOf(["a", "b", "c"]);
-    const points = [pointOf("2026-07-01", { a: 100, b: malformed, c: 4 })];
+  ])(
+    "reports a bucket as unknown when a folded value is %s, instead of dropping it",
+    (_label, malformed) => {
+      // A present-but-malformed value used to be discarded, letting the one valid
+      // sibling carry the band as a confident subtotal (codex P2). It is not a
+      // measurement of zero and it is not absence — it is a value we cannot add.
+      const series = seriesOf(["a", "b", "c"]);
+      const points = [pointOf("2026-07-01", { a: 100, b: malformed, c: 4 })];
 
-    const folded = foldTimeSeriesToMaxSeries({ maxSeries: 1, points, series });
+      const folded = foldTimeSeriesToMaxSeries({
+        maxSeries: 1,
+        points,
+        series,
+      });
 
-    expect(folded.points[0].values[CHART_OTHER_SERIES_KEY]).toBeNull();
-  });
+      expect(folded.points[0].values[CHART_OTHER_SERIES_KEY]).toBeNull();
+    }
+  );
 
   it("does not fabricate 0 for a bucket whose folded values are all malformed", () => {
     // The sharpest form of the same defect (whitlockk review): with every folded

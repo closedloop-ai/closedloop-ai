@@ -1,5 +1,5 @@
-import { SESSIONS_SURFACE_DATE_WINDOW_FIELD } from "../../src/main/agent-sync/session-date-window.js";
 import type { SanitizedQuery } from "../../src/main/session/shared-agent-sessions-query.js";
+import { SESSIONS_SURFACE_DATE_WINDOW_FIELD } from "../../src/shared/session-date-window-contract.js";
 
 /**
  * ISS-6270: the neutral `SanitizedQuery` the Sessions sort suites drive
@@ -43,6 +43,7 @@ export function sessionSortQuery(
     costBuckets: [],
     changePresence: [],
     prAssociation: [],
+    priorities: [],
     quality: "all",
     search: null,
     countOnly: false,

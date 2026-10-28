@@ -9,7 +9,8 @@ import {
 import { AgentSessionDetailView } from "../../components/detail/agent-session-detail-view";
 import type { AgentSessionsDataSource } from "../../data-source/agent-sessions-data-source";
 import { AgentSessionsDataSourceProvider } from "../../data-source/provider";
-import { agentSessionKeys, useAgentSessionDetail } from "../use-agent-sessions";
+import { agentSessionKeys } from "../agent-session-keys";
+import { useAgentSessionDetail } from "../use-agent-sessions";
 
 const UNSAFE_DETAIL_TEXT_PATTERN = /Invalid Date|undefined|NaN/;
 

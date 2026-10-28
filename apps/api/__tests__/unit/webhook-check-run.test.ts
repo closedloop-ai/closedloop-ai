@@ -29,8 +29,7 @@ const { mockGetInstallationOctokit, mockOctokit } = vi.hoisted(() => ({
 
 // Mock modules before importing
 vi.mock("@repo/database", () => {
-  const mockWithDb: any = vi.fn();
-  mockWithDb.tx = vi.fn();
+  const mockWithDb = Object.assign(vi.fn(), { tx: vi.fn() });
   const sql = (strings: TemplateStringsArray, ...values: unknown[]) => ({
     strings,
     values,
@@ -76,6 +75,7 @@ vi.mock("@repo/github/installation-auth", () => ({
 
 vi.mock("@repo/observability/log", () => ({
   log: {
+    debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
@@ -94,20 +94,23 @@ import { BranchViewCheckKind } from "@repo/api/src/types/branch-view";
 // Import after mocking
 import { queryStatusCheckRollupWithProviderResult } from "@repo/github";
 import { log } from "@repo/observability/log";
+import {
+  checkRunTerminalLogs,
+  createCheckRunDbDoubles,
+  createCheckRunEvent,
+  makeBranchDetailRow,
+} from "@/__tests__/support/webhooks/github/check-run-handler.test-helpers";
 import { getMockWithDb } from "@/__tests__/utils/db-helpers";
 import {
   GitHubBranchActivityEventName,
   persistGitHubBranchActivity,
 } from "@/app/webhooks/github/handlers/branch-activity-producer";
 import { handleCheckRun } from "@/app/webhooks/github/handlers/check-run-handler";
-import {
-  createCheckRunDbDoubles,
-  createCheckRunEvent,
-  makeBranchDetailRow,
-} from "../utils/check-run-helpers";
 import { providerSuccess, statusRollup } from "../utils/status-check-helpers";
 
 // Type aliases for mocked functions
+type CheckRunDbDoubles = ReturnType<typeof createCheckRunDbDoubles>;
+
 const mockWithDb = getMockWithDb();
 const mockQueryStatusCheckRollupWithProviderResult =
   queryStatusCheckRollupWithProviderResult as unknown as Mock;
@@ -115,15 +118,19 @@ const mockPersistGitHubBranchActivity =
   persistGitHubBranchActivity as unknown as Mock;
 
 // Mock database clients
-let mockDb: any;
-let mockTx: any;
+let mockDb: CheckRunDbDoubles["mockDb"];
+let mockTx: CheckRunDbDoubles["mockTx"];
 
 describe("handleCheckRun", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     ({ mockDb, mockTx } = createCheckRunDbDoubles());
-    mockWithDb.mockImplementation((fn: any) => fn(mockDb));
-    mockWithDb.tx.mockImplementation((fn: any) => fn(mockTx));
+    mockWithDb.mockImplementation((fn: (db: typeof mockDb) => unknown) =>
+      fn(mockDb)
+    );
+    mockWithDb.tx.mockImplementation((fn: (tx: typeof mockTx) => unknown) =>
+      fn(mockTx)
+    );
   });
 
   afterEach(() => {
@@ -228,14 +235,16 @@ describe("handleCheckRun", () => {
 
       const data = await response.json();
       expect(data.ok).toBe(true);
-      expect(log.info).toHaveBeenCalledWith(
-        "[handleCheckRun] Completed check_run webhook handling",
-        expect.objectContaining({
-          checksStatusChanged: true,
-          outcome: "processed_checks_changed",
-          provider: "github",
-        })
-      );
+      expect(checkRunTerminalLogs(log)).toEqual([
+        {
+          level: "debug",
+          fields: expect.objectContaining({
+            checksStatusChanged: true,
+            outcome: "processed_checks_changed",
+            provider: "github",
+          }),
+        },
+      ]);
     });
 
     it("no-writes activity when a head-SHA fallback is ambiguous", async () => {
@@ -384,14 +393,16 @@ describe("handleCheckRun", () => {
 
       const data = await response.json();
       expect(data.ok).toBe(true);
-      expect(log.info).toHaveBeenCalledWith(
-        "[handleCheckRun] Completed check_run webhook handling",
-        expect.objectContaining({
-          checksStatusChanged: false,
-          outcome: "processed",
-          provider: "github",
-        })
-      );
+      expect(checkRunTerminalLogs(log)).toEqual([
+        {
+          level: "debug",
+          fields: expect.objectContaining({
+            checksStatusChanged: false,
+            outcome: "processed",
+            provider: "github",
+          }),
+        },
+      ]);
     });
 
     it("prefers the check suite head branch over another branch with the same head SHA", async () => {
@@ -426,15 +437,17 @@ describe("handleCheckRun", () => {
         owner: "org",
         name: "repo",
       });
-      mockDb.branchDetail.findFirst.mockImplementation(({ where }: any) => {
-        if (where.branchName === "feature/right-branch") {
-          return Promise.resolve(rightBranch);
+      mockDb.branchDetail.findFirst.mockImplementation(
+        ({ where }: { where: { branchName?: string; headSha?: string } }) => {
+          if (where.branchName === "feature/right-branch") {
+            return Promise.resolve(rightBranch);
+          }
+          if (where.headSha === headSha) {
+            return Promise.resolve(wrongBranch);
+          }
+          return Promise.resolve(null);
         }
-        if (where.headSha === headSha) {
-          return Promise.resolve(wrongBranch);
-        }
-        return Promise.resolve(null);
-      });
+      );
       mockQueryStatusCheckRollupWithProviderResult.mockResolvedValue(
         providerSuccess(statusRollup("SUCCESS"))
       );
@@ -519,14 +532,16 @@ describe("handleCheckRun", () => {
 
       const data = await response.json();
       expect(data.ok).toBe(true);
-      expect(log.info).toHaveBeenCalledWith(
-        "[handleCheckRun] Completed check_run webhook handling",
-        expect.objectContaining({
-          checksStatusChanged: false,
-          outcome: "processed",
-          provider: "github",
-        })
-      );
+      expect(checkRunTerminalLogs(log)).toEqual([
+        {
+          level: "debug",
+          fields: expect.objectContaining({
+            checksStatusChanged: false,
+            outcome: "processed",
+            provider: "github",
+          }),
+        },
+      ]);
     });
   });
 
@@ -583,6 +598,12 @@ describe("handleCheckRun", () => {
 
       const data = await response.json();
       expect(data.ok).toBe(true);
+      expect(checkRunTerminalLogs(log)).toEqual([
+        {
+          level: "info",
+          fields: expect.objectContaining({ outcome: "stale_branch" }),
+        },
+      ]);
     });
 
     it("skips rows and events when the guarded current-head write misses", async () => {

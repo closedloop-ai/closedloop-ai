@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useIsomorphicLayoutEffect } from "@closedloop-ai/design-system/hooks/use-isomorphic-layout-effect";
+import { useRef, useState } from "react";
 
 // The leading-edge apply has to land BEFORE paint, or the frame that renders is
 // fitted against the pre-measurement seed and the layout visibly jumps once the
@@ -10,8 +11,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 // effect on the server, so fall back to `useEffect` there; there is nothing to
 // paint without a DOM, and this avoids React's "useLayoutEffect does nothing on
 // the server" warning during SSR.
-const useSettleEffect =
-  globalThis.window === undefined ? useEffect : useLayoutEffect;
+const useSettleEffect = useIsomorphicLayoutEffect;
 
 /**
  * The value, held still until it stops changing (ISS-4906).

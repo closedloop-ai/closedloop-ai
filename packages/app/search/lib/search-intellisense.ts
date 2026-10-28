@@ -1,10 +1,10 @@
 import {
+  OFFERED_STATUS_VALUES,
   PRIORITY_VALUES,
   SEARCH_FILTER_KEYS,
   type SearchFilterKeyMeta,
   type SearchFilterOperator,
   SearchSuggestionSource,
-  STATUS_VALUES,
 } from "@repo/api/src/types/search-query";
 
 /**
@@ -152,8 +152,10 @@ function staticValuesFor(
   }
   // Prefer the live enum tuples over the meta's illustrative `staticValues`
   // sample so status/priority stay in lockstep with the parser's vocabulary.
+  // Status offers only the live vocabulary; the parser still accepts the
+  // retired loop statuses (ISS-12435).
   if (meta.key === "status") {
-    return STATUS_VALUES;
+    return OFFERED_STATUS_VALUES;
   }
   if (meta.key === "priority") {
     return PRIORITY_VALUES;

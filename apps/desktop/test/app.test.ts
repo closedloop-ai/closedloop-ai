@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { afterEach, describe, test } from "node:test";
-import { vi } from "vitest";
+import { afterEach, describe, test, vi } from "vitest";
 import { Observability } from "../src/main/telemetry/observability.js";
 import { createQueueStatsDebounce } from "../src/main/util/queue-stats-debounce.js";
 import { nodeTestTimers } from "./support/node-test-fake-timers.js";

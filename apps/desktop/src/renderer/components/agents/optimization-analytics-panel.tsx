@@ -24,6 +24,9 @@ import type {
   SkillLoadedResponse,
   SubagentFrequencyResponse,
 } from "@repo/api/src/types/agent-component";
+import { ONE_LABEL_PER_METRIC_FLAG_KEY } from "@repo/api/src/types/one-label-per-metric-flag";
+import { TOTAL_ESTIMATED_COST_LABEL } from "@repo/api/src/types/total-estimated-cost-copy";
+import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import { useEffect, useState } from "react";
 
 /** Trailing window used for all trend/frequency queries. */
@@ -38,8 +41,10 @@ export type OptimizationTarget = {
   name: string;
   /**
    * ISS-4403: the FULL content hash the detail page's usage lanes were scoped to
-   * (`AgentComponentDetail.analyticsFingerprint` — the resolver's
-   * `effectiveFingerprint`, NOT `versionId` and NOT the short display badge).
+   * (`AgentComponentDetail.analyticsFingerprint`, NOT `versionId` and NOT the
+   * short display badge). It is the canonical `component_version_hash` the
+   * desktop reader recomputes from the matched row's captured content, NOT the
+   * raw `content_hash` the route's slug carries — the two never agree.
    * When present, the three optimization reads are content-scoped to exactly
    * this version so two same-name/different-content components render their own
    * distinct analytics on their distinct content-hash detail pages (FEA-4335),
@@ -146,6 +151,19 @@ function ModelTrendCard({ target }: { target: OptimizationTarget }) {
     };
   }, [target.kind, target.key, target.fingerprint]);
 
+  // ISS-10691: `cost_usd` is `SUM(te.cost_usd_estimated)` with no billing-mode
+  // filter (`optimization-analytics-queries.ts`), so this column is the governed
+  // quantity and takes the canonical phrase, not the alias. Ruling 7 permits the
+  // alias only where the canonical measurably does not fit, and it fits here:
+  // the phrase is 115px at this table's 12px scale against 1083px of content
+  // width (`window-defaults.ts` — 1400 window, 256 rail, 16 gutter, 13
+  // scrollbar, 32 panel padding), and the header stays one line down to a 420px
+  // container, which is half the narrowest width this shell ships.
+  const estimatedCostLabel = useFeatureFlagEnabledOptional(
+    ONE_LABEL_PER_METRIC_FLAG_KEY
+  )
+    ? TOTAL_ESTIMATED_COST_LABEL
+    : LEGACY_MODEL_TREND_COST_LABEL;
   if (phase === "loading") {
     return <Skeleton className="h-24 w-full" data-testid="trend-loading" />;
   }
@@ -181,7 +199,7 @@ function ModelTrendCard({ target }: { target: OptimizationTarget }) {
               <th className="text-left">Model</th>
               <th className="text-right">In</th>
               <th className="text-right">Out</th>
-              <th className="text-right">Cost</th>
+              <th className="text-right">{estimatedCostLabel}</th>
             </tr>
           </thead>
           <tbody data-testid="trend-rows">
@@ -336,3 +354,5 @@ function resolveSkillBadge(
   }
   return { variant: "warning", label: "Not loading" };
 }
+
+const LEGACY_MODEL_TREND_COST_LABEL = "Cost";

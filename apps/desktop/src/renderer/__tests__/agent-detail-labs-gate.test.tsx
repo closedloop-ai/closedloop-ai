@@ -72,11 +72,17 @@ describe("ISS-5310 Agents detail route under the nested Labs gate", () => {
     expect(screen.queryByTestId(AGENT_DETAIL_TESTID)).toBeNull();
     // The address bar keeps naming the destination that was asked for.
     expect(window.location.hash).toBe(AGENT_DETAIL_HASH);
-    // Labs itself is ON here, so the way back is the in-app Settings row — not
-    // the application-menu checkbox the container-off copy names.
+    // ISS-8753: the panel still owes exactly ONE way back that actually goes
+    // somewhere, and it is now the SAME one the container-off case below gets.
+    // The two used to differ because each closed gate had its own in-app control
+    // to name — the Settings → Labs tab here, the "Enable Labs" menu checkbox
+    // there — and both of those controls are gone. A desktop gate now opens only
+    // if the signed-in user's PostHog assignment carries it, so a panel that
+    // still offered "Open settings" would be pointing at a tab that no longer
+    // exists, which is the way-back lie this assertion exists to catch.
     expect(
-      screen.getByRole("link", { name: "Open settings" }).getAttribute("href")
-    ).toBe("#/settings?tab=labs");
+      screen.getByRole("link", { name: "Go to Dashboard" }).getAttribute("href")
+    ).toBe("#/dashboard");
   });
 
   it("withholds the agent detail when the Labs container gate is off", async () => {
@@ -90,8 +96,8 @@ describe("ISS-5310 Agents detail route under the nested Labs gate", () => {
     expect(await screen.findByText("Agents is turned off")).toBeDefined();
     expect(screen.queryByTestId(AGENT_DETAIL_TESTID)).toBeNull();
     expect(
-      screen.getByRole("link", { name: "Go to Sessions" }).getAttribute("href")
-    ).toBe("#/sessions");
+      screen.getByRole("link", { name: "Go to Dashboard" }).getAttribute("href")
+    ).toBe("#/dashboard");
   });
 
   it("holds the agent detail while the flag snapshot is still in flight", async () => {

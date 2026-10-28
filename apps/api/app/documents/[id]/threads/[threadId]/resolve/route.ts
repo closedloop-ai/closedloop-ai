@@ -1,8 +1,14 @@
+import { OperationKind } from "@repo/api/src/types/attribution-evidence";
 import { Status } from "@repo/api/src/types/result";
+import { threadResolutionReceiptWrite } from "@/app/comments/comment-receipt";
 import { commentsService } from "@/app/comments/service";
 import { documentService } from "@/app/documents/document-service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveDocumentId } from "@/lib/identifier-utils";
+import {
+  withOperationReceipt,
+  withOperationReceipts,
+} from "@/lib/operation-receipts/operation-receipt-recorder";
 import {
   errorResponse,
   forbiddenResponse,
@@ -20,37 +26,48 @@ import {
 export const POST = withAnyAuth<
   { status: string },
   "/documents/[id]/threads/[threadId]/resolve"
->(async ({ user }, _request, params) => {
-  const { id, threadId } = await params;
+>(
+  withOperationReceipts(
+    OperationKind.Comment,
+    async ({ user }, _request, params, receipts) => {
+      const { id, threadId } = await params;
 
-  const resolvedId = await resolveDocumentId(id, user.organizationId);
-  if (!resolvedId) {
-    return notFoundResponse("Artifact");
-  }
+      const resolvedId = await resolveDocumentId(id, user.organizationId);
+      if (!resolvedId) {
+        return notFoundResponse("Artifact");
+      }
 
-  const artifact = await documentService.findByIdSimple(
-    resolvedId,
-    user.organizationId
-  );
-  if (!artifact) {
-    return notFoundResponse("Artifact");
-  }
+      const artifact = await documentService.findByIdSimple(
+        resolvedId,
+        user.organizationId
+      );
+      if (!artifact) {
+        return notFoundResponse("Artifact");
+      }
 
-  try {
-    const result = await commentsService.resolveDocumentThread(
-      user.organizationId,
-      resolvedId,
-      threadId,
-      user.id,
-      new Date()
-    );
-    if (!result.ok) {
-      return result.error === Status.Forbidden
-        ? forbiddenResponse()
-        : notFoundResponse("Thread");
+      try {
+        const result = await commentsService.resolveDocumentThread(
+          user.organizationId,
+          resolvedId,
+          threadId,
+          user.id,
+          new Date(),
+          receipts.whenRecording((tx, resolution) =>
+            receipts.record(
+              tx,
+              threadResolutionReceiptWrite(resolvedId, resolution)
+            )
+          )
+        );
+        if (!result.ok) {
+          return result.error === Status.Forbidden
+            ? forbiddenResponse()
+            : notFoundResponse("Thread");
+        }
+        return successResponse(withOperationReceipt(result.value, receipts));
+      } catch (error) {
+        return errorResponse("Failed to resolve thread", error);
+      }
     }
-    return successResponse(result.value);
-  } catch (error) {
-    return errorResponse("Failed to resolve thread", error);
-  }
-});
+  )
+);

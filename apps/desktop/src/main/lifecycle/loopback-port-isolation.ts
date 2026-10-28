@@ -20,11 +20,18 @@
  * Neither port may move in a real install: the hook commands baked into
  * `~/.claude/settings.json` POST to `127.0.0.1:4820`, and an OTel exporter
  * configured against this machine points at `127.0.0.1:4318`. So this is a
- * TEST-ONLY switch, and — like {@link E2E_NO_REVEAL_ARG} — deliberately an
- * app-level LAUNCH ARGUMENT rather than an env var: an env var can be inherited
- * into a real user's session, where it would take their agent capture off the
- * port their installed hooks already post to. A packaged build ignores it
- * outright, the same posture the reveal suppression takes.
+ * switch for a SECOND, unpackaged instance that runs beside a real install, and
+ * — like {@link E2E_NO_REVEAL_ARG} — deliberately an app-level LAUNCH ARGUMENT
+ * rather than an env var: an env var can be inherited into a real user's
+ * session, where it would take their agent capture off the port their installed
+ * hooks already post to. A packaged build ignores it outright, the same posture
+ * the reveal suppression takes.
+ *
+ * It began as an E2E switch and keeps that name, but three launchers pass it:
+ * the E2E harness (`e2eAppLaunchArgs`), `scripts/onboarding-profile.sh`, and
+ * every vibe profile launch (`scripts/vibe-profile/launch-env.ts`, ISS-12135),
+ * so a vibe Desktop never takes 4820 or 4318 from the operator's installed app
+ * in either start order.
  */
 
 /** Binds this launch's fixed loopback listeners ephemerally. Unpackaged builds only. */

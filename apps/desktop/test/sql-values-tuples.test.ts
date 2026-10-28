@@ -7,7 +7,7 @@
  * INSERT under the SQLite/libSQL bound-variable limit.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { EVENT_INSERT_PARAM_CAP } from "../src/main/database/db-constants.js";
 import {
   buildValuesTuples,
@@ -24,10 +24,34 @@ test("sqlValuesTuple: numbers placeholders from base+1 for `count` params", () =
 test("buildValuesTuples: emits one tuple per row and a flat param array in row order", () => {
   const { tuples, params } = buildValuesTuples([
     ["a", "b"],
-    ["c", "d", "e"],
+    ["c", "d"],
   ]);
-  assert.deepEqual(tuples, ["($1, $2)", "($3, $4, $5)"]);
-  assert.deepEqual(params, ["a", "b", "c", "d", "e"]);
+  assert.deepEqual(tuples, ["($1, $2)", "($3, $4)"]);
+  assert.deepEqual(params, ["a", "b", "c", "d"]);
+});
+
+test("chunkRowsByParamCap: rejects a ragged row with its index", () => {
+  assert.throws(
+    () =>
+      chunkRowsByParamCap(
+        [
+          ["a", "b"],
+          ["c", "d", "e"],
+        ],
+        2
+      ),
+    {
+      name: "SqlValuesRowWidthError",
+      message: "SQL VALUES row at index 1 has 3 columns; expected 2",
+    }
+  );
+});
+
+test("chunkRowsByParamCap: rejects rows that disagree with columnCount", () => {
+  assert.throws(() => chunkRowsByParamCap([["a", "b", "c"]], 2), {
+    name: "SqlValuesRowWidthError",
+    message: "SQL VALUES row at index 0 has 3 columns; expected 2",
+  });
 });
 
 test("chunkRowsByParamCap: caps rows per chunk so total params stay under the variable limit", () => {
@@ -55,8 +79,15 @@ test("chunkRowsByParamCap: caps rows per chunk so total params stay under the va
 
 test("chunkRowsByParamCap: at least one row per chunk even when a single row exceeds the cap", () => {
   // A row wider than the cap can't be split, so the floor is 1 row/chunk.
-  const chunks = chunkRowsByParamCap([[1], [2]], EVENT_INSERT_PARAM_CAP + 1);
-  assert.deepEqual(chunks, [[[1]], [[2]]]);
+  const oversizedRow = Array.from(
+    { length: EVENT_INSERT_PARAM_CAP + 1 },
+    (_, index) => index
+  );
+  const chunks = chunkRowsByParamCap(
+    [oversizedRow, oversizedRow],
+    oversizedRow.length
+  );
+  assert.deepEqual(chunks, [[oversizedRow], [oversizedRow]]);
 });
 
 test("chunkRowsByParamCap: empty input yields no chunks", () => {

@@ -1,11 +1,7 @@
 "use client";
 
 import { addNextjsError } from "@datadog/browser-rum-nextjs";
-
-type RumErrorSource =
-  | "global-error"
-  | "nextjs-error-boundary"
-  | "rum-validation";
+import type { RumErrorSource } from "@/lib/datadog-rum/error-source";
 
 export type DatadogRumErrorContext = {
   digest?: string;

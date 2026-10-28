@@ -13,8 +13,10 @@ import {
 let authContext = createTestAuthContext();
 
 vi.mock("@/lib/auth/with-any-auth", () => ({
-  withAnyAuth: (handler: any) => async (request: any, context: any) =>
-    handler(authContext, request, context?.params ?? Promise.resolve({})),
+  withAnyAuth:
+    (handler: (...args: unknown[]) => Promise<Response>) =>
+    async (request: unknown, context?: { params: Promise<unknown> }) =>
+      handler(authContext, request, context?.params ?? Promise.resolve({})),
 }));
 
 vi.mock("@/lib/desktop-managed-pop-provisioning");

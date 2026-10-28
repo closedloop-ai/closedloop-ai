@@ -1,0 +1,53 @@
+-- ISS-6843: cover the component-detail probe's unresolved-key scan.
+--
+-- `readAgentComponentInvocationPage` (local-invocation-read.ts) opens with a
+-- `SELECT DISTINCT component_key FROM agent_component_invocations
+--  WHERE local_component_id IS NULL AND component_kind = ?` probe, which runs on
+-- EVERY agent-component detail load, inside the heap-capped db-host worker. The
+-- probe exists because the key it is matching is folded through the JS
+-- `normalizeComponentKey` (FEA-3205), so the fold cannot become a SQL predicate
+-- and the candidate keys have to come back to JS first.
+--
+-- `local_component_id` appears in no index that also leads on `component_kind`,
+-- so it was a NON-INDEXED RESIDUAL. Against the real migration DDL with no
+-- `ANALYZE` (matching production, which never runs one), the probe planned as
+--
+--   SEARCH agent_component_invocations USING INDEX idx_aci_kind_key_invoked_at
+--     (component_kind=?)
+--
+-- and the bytecode confirms what that costs: a `Column 0 23` — a rowid TABLE
+-- lookup off the deferred seek, taken once per entry in the kind partition —
+-- purely to evaluate `local_component_id IS NULL`, in order to yield a few dozen
+-- distinct keys. For `component_kind = 'tool'` that partition is essentially the
+-- whole invocations table, the largest-cardinality table in the desktop store.
+--
+-- Partial on the probe's own predicate, so the index holds ONLY the rows the
+-- probe can return and the residual disappears: the plan becomes
+--
+--   SEARCH agent_component_invocations USING INDEX idx_aci_unlinked_kind_key
+--     (component_kind=?)
+--
+-- and the table-cursor read is gone from the bytecode — SQLite's `DeferredSeek`
+-- is never materialized because both columns the probe touches
+-- (`component_kind`, `component_key`) are in the key. Same shape and same
+-- reasoning as `idx_aci_component_invoked_at` (migration 0034), which is partial
+-- on the opposite arm of this same column.
+--
+-- Keyed `(component_kind, component_key)` and NOT `(…, invoked_at)`: the probe
+-- neither orders nor filters on time, and the narrower key is what lets the
+-- DISTINCT walk the index alone.
+--
+-- Write cost is one narrow two-column entry per invocation row that lands with
+-- no local component behind it. That is unavoidable for this fix — any index
+-- that can answer the probe has to hold exactly those rows — and it is strictly
+-- narrower than `idx_aci_kind_key_invoked_at`, which already indexes every row
+-- on a superset of these columns.
+--
+-- Does NOT address the sibling paged read in the same function: its
+-- `ORDER BY invoked_at IS NULL ASC, invoked_at DESC, …` is an expression no
+-- index can supply, over a two-arm `OR`, so it keeps its `MULTI-INDEX OR` plus
+-- `USE TEMP B-TREE FOR ORDER BY` and `AGENT_COMPONENT_INVOCATION_READ_MAX_ROWS`
+-- still caps rows RETURNED rather than sort input. This index does move that
+-- read's unresolved-key arm onto the narrower index; capping the sort input
+-- would change which rows the page returns and is left to its own change.
+CREATE INDEX IF NOT EXISTS "idx_aci_unlinked_kind_key" ON "agent_component_invocations"("component_kind", "component_key") WHERE local_component_id IS NULL;

@@ -89,3 +89,114 @@ export function hasAtMostDecimalPlaces(
 
   return Math.abs(scaledValue - Math.round(scaledValue)) <= epsilon;
 }
+
+/**
+ * Coerces `value` to a non-negative integer, mapping any non-finite input to
+ * `0`. The counting sibling of {@link clampPercent}: a tally has no meaningful
+ * `NaN` or negative position, so a broken producer yields "none" rather than a
+ * nonsense number on screen or on a monitor.
+ *
+ * Three surfaces had each hand-rolled this — the web trace-marker rows, the
+ * desktop renderer's import-progress display, and the desktop main process's
+ * sync-lane health rollup — which is exactly how a small rule drifts when it
+ * lives behind separate platform adapters.
+ *
+ * This is a coercion, not an availability signal: a caller that must tell a real
+ * `0` from a count it could not compute has to carry that distinction itself.
+ */
+export function clampNonNegativeCount(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.floor(value));
+}
+
+/**
+ * Page count for a row total and page size, floored at one.
+ *
+ * The web shell (Sessions, My Tasks), the shared filter/table hooks, the packs
+ * matrix, Branches, the desktop renderer's Sessions and Insights views, the
+ * agent-component page projector, and the agent telemetry analytics view each
+ * carried this expression inline — one rule in ten places behind two platform
+ * adapters. It lives beside {@link clampPercent} rather than in `@repo/app`
+ * because two of those callers deliberately stay off the renderer package's
+ * dependency graph so they can be unit-tested without it.
+ *
+ * The floor at one is the load-bearing part: an empty result still has a single
+ * (empty) page, so a footer reads "Page 1 of 1" rather than "Page 1 of 0".
+ * Callers keep their own page-size clamping — the surfaces disagree on whether a
+ * zero or absent page size is reachable at all, and folding that in here would
+ * change what three of them currently do.
+ */
+export function resolveTotalPages(total: number, pageSize: number): number {
+  return Math.max(1, Math.ceil(total / pageSize));
+}
+
+/**
+ * Highest zero-based page index a read capped at `maxOffset` can still serve.
+ *
+ * The offset a paginator sends is `pageIndex * pageSize`, so the last page it
+ * may offer is the one whose offset is the largest multiple of `pageSize` that
+ * does not exceed the cap.
+ */
+export function resolveMaxPageIndex(
+  maxOffset: number,
+  pageSize: number
+): number {
+  return Math.floor(maxOffset / pageSize);
+}
+
+/**
+ * {@link resolveTotalPages}, narrowed to the pages a capped read can serve.
+ *
+ * ISS-9074: a host whose API rejects an offset past a ceiling must not advertise
+ * pages beyond it — the footer always renders a last-page link, so an uncapped
+ * count turns the tail of a large list into a link that can only ever 400, on a
+ * page that cannot self-repair because the clamp which would rescue it reads a
+ * total the failed query never returned. `maxOffset` is optional because a host
+ * whose source has no ceiling (desktop's local SQLite) is the other half of the
+ * same contract, and must keep advertising every page its rows imply.
+ */
+export function resolveCappedTotalPages(
+  total: number,
+  pageSize: number,
+  maxOffset?: number
+): number {
+  const totalPages = resolveTotalPages(total, pageSize);
+  if (maxOffset === undefined) {
+    return totalPages;
+  }
+  return Math.min(resolveMaxPageIndex(maxOffset, pageSize) + 1, totalPages);
+}
+
+/**
+ * The offset a read can actually serve for a requested one, given the population
+ * it matched: the requested offset, or the start of the last non-empty page when
+ * that overshoots.
+ *
+ * Flooring to a multiple of `limit` is the load-bearing part, not a rounding
+ * preference — it is what guarantees `offset % limit === 0`, so the repaired
+ * value names a PAGE the paginator can hold rather than a row midway through
+ * one. Rounding to the nearest page start would let a repaired offset sit past
+ * the population it was repaired against.
+ *
+ * ISS-9555 lifted this out of `packages/lib/branches/branch-list-page.ts`, where
+ * it was module-private and untested, so it sits with the rest of the page
+ * arithmetic (`resolveMaxPageIndex`, `resolveTotalPages`) and has cases of its
+ * own. Branches is its ONLY caller. Sessions was going to be the second and
+ * deliberately is not: an out-of-range Sessions read reports the page it was
+ * asked for and answers empty rather than moving the reader, so it has no offset
+ * to repair. It repairs against a TOTAL and never against a ceiling: an offset
+ * past a route's `maxOffset` is a request that gets rejected (ISS-8528), not one
+ * that gets quietly moved.
+ */
+export function repairOffset(
+  requested: number,
+  total: number,
+  limit: number
+): number {
+  if (total === 0) {
+    return 0;
+  }
+  return Math.min(requested, Math.floor((total - 1) / limit) * limit);
+}

@@ -9,7 +9,7 @@
  * already-wired services (`new DesktopApplication(options, fakeServices)`).
  *
  * Why a `host` seam: the collaborators are wired with callbacks that reach back
- * into `DesktopApplication` (`onApprove: (fp) => app.approveOrganizationCommandPublicKey(fp)`),
+ * into `DesktopApplication` (`telemetrySend: (event) => host.sendDesktopTelemetry(event)`),
  * and some close over services created *later* in the sequence. Those callbacks
  * are lazy — they only run after construction completes — which is exactly what
  * the original inline `() => this.x` arrows relied on. `DesktopServicesHost` makes
@@ -27,29 +27,56 @@
  * pure field assignment with no dependency on anything the deferred cluster
  * creates.
  */
-import { app, Notification, shell } from "electron";
-import { BUILD_APP_VERSION } from "../../shared/build-info.js";
-import { DesktopAuthStatus } from "../../shared/contracts.js";
 import {
-  DESKTOP_LABS_NAV_FEATURE_FLAG_KEY,
+  app,
+  ipcMain,
+  Notification,
+  session,
+  shell,
+  type WebContents,
+} from "electron";
+import type { AgentMonitorRuntimeStatusKind } from "../../shared/agent-monitor-status.js";
+import {
+  BUILD_APP_VERSION,
+  BUILD_COMMIT_HASH,
+} from "../../shared/build-info.js";
+import type { DesktopAuthState } from "../../shared/contracts.js";
+import { DesktopAuthStatus } from "../../shared/contracts.js";
+import { DesktopDevModeIpcChannel } from "../../shared/desktop-dev-mode-channel.js";
+import {
   DESKTOP_LOCAL_SESSION_AUTHORED_PR_GATE_FEATURE_FLAG_KEY,
-  DESKTOP_SESSIONS_DISPLAYED_STATUS_PARITY_FEATURE_FLAG_KEY,
-} from "../../shared/feature-flags.js";
+  DESKTOP_THREAD_VIEWERSHIP_SIGNAL_FEATURE_FLAG_KEY,
+} from "../../shared/feature-flags-labs-detail.js";
 import { installApplicationMenu } from "../app-menu.js";
 import { ApprovalStore } from "../approvals/approval-store.js";
+import { createFeatureFlagAccountBoundary } from "../auth/desktop-feature-flag-account-boundary.js";
+import {
+  createDesktopMainFeatureFlagAssignmentStore,
+  publishDesktopMainFeatureFlagAssignmentStore,
+} from "../auth/desktop-feature-flag-assignment.js";
+import {
+  createDesktopMainDevMode,
+  publishDesktopMainDevMode,
+} from "../auth/desktop-feature-flag-dev-mode.js";
+import {
+  fetchDesktopFeatureFlags,
+  publishAnonymousDesktopFeatureFlagsSource,
+} from "../auth/desktop-feature-flags-client.js";
+import { fetchDesktopIdentity } from "../auth/desktop-identity-client.js";
 import type {
   DesktopPopHeaders,
   DesktopPopSigningRequest,
 } from "../auth/desktop-pop.js";
+import {
+  createDesktopReplayRecordingFence,
+  installDesktopReplayRequestAuth,
+} from "../auth/desktop-replay-request-auth.js";
 import { LocalSessionStore } from "../auth/local-session-store.js";
-import { AuthorizedCommandKeyStore } from "../command-signing/authorized-command-key-store.js";
-import type { OrganizationCommandPublicKey } from "../command-signing/authorized-public-keys-client.js";
-import { BrowserCommandKeyAppLifecycle } from "../command-signing/command-key-app-lifecycle.js";
-import { CommandKeyReconciler } from "../command-signing/command-key-reconciler.js";
-import type { CommandKeyReconciliationReason } from "../command-signing/command-key-target-context.js";
-import { CommandSignatureVerifier } from "../command-signing/command-signature-verifier.js";
+import {
+  createAuthFailureTelemetry,
+  type DesktopAuthFailureEventInput,
+} from "../cloud/auth-failure-telemetry.js";
 import { GatewaySigningKeyStore } from "../command-signing/gateway-signing-key-store.js";
-import { PendingCommandKeyNotifier } from "../command-signing/pending-command-key-notifier.js";
 import {
   createAnthropicAdminKeyStore,
   createOpenAiAdminKeyStore,
@@ -59,21 +86,20 @@ import { CostReconciliationService } from "../cost/cost-reconciliation-service.j
 import { ReconciliationStore } from "../cost/reconciliation-store.js";
 import type { MeteredUsageRow } from "../cost/reconciliation-worker.js";
 import { ActivityLogStore } from "../diagnostics/activity-log-store.js";
-import type { CommandSigningKeysState } from "../ipc/command-signing-keys-ipc.js";
 import { DESKTOP_EXISTING_USER_RESOLUTION_CHANGED_CHANNEL } from "../ipc/desktop-existing-user-ipc.js";
-import { JobStore } from "../jobs/job-store.js";
+import { registerDesktopReplayRecordingIpcHandler } from "../ipc/desktop-replay-recording-ipc.js";
 import type { RendererReadinessGates } from "../lifecycle/renderer-readiness-gates.js";
 import { gatewayLog } from "../logging/gateway-logger.js";
-import { LoopCompletedNotifier } from "../loop/loop-completed-notifier.js";
-import { LoopTokenStore } from "../loop/loop-token-store.js";
-import type {
-  DesktopAuthState,
-  DesktopDeviceDescriptor,
-} from "../session/desktop-session-manager.js";
+import { startDesktopParsePolicyController } from "../parse-policy/parse-policy-resolver.js";
+import { DesktopRealtimeHost } from "../realtime/desktop-realtime-host.js";
+import { fetchDesktopRealtimeToken } from "../realtime/desktop-realtime-token.js";
+import type { DesktopAccountAdmission } from "../session/desktop-account-admission.js";
 import { DesktopSessionManager } from "../session/desktop-session-manager.js";
+import type { DesktopDeviceDescriptor } from "../session/desktop-session-manager-types.js";
 import { DesktopSessionStore } from "../session/desktop-session-store.js";
-import { setDisplayedStatusParityResolver } from "../session/displayed-status-parity-gate.js";
+import type { DesktopSignInAnalytics } from "../session/desktop-sign-in-analytics.js";
 import { setLocalSessionAuthoredPrGateResolver } from "../session/local-session-pr-gate.js";
+import { setThreadViewershipSignalResolver } from "../session/thread-viewership-gate.js";
 import { ApiKeyStore } from "../settings/api-key-store.js";
 import type { GoldenModeConfig } from "../settings/golden-mode.js";
 import {
@@ -81,6 +107,7 @@ import {
   normalizeWebAppOrigin,
 } from "../settings/origin-policy.js";
 import { SettingsStore } from "../settings/settings-store.js";
+import { createApiOtlpTelemetryTransport } from "../telemetry/api-otlp-telemetry-transport.js";
 import {
   createDesktopOtelRuntime,
   type DesktopOtelRuntime,
@@ -91,13 +118,18 @@ import {
   type DesktopAppOperatingMode,
 } from "../telemetry/app-otel-runtime-lifecycle.js";
 import { resolveDesktopTelemetryEgressEnabled } from "../telemetry/desktop-telemetry-egress.js";
+import { genAiRequestTelemetry } from "../telemetry/gen-ai-request-telemetry.js";
 import {
   Observability,
   type ObservabilityOptions,
   type ProductAnalyticsTransport,
 } from "../telemetry/observability.js";
+import { onboardingDiscardTelemetry } from "../telemetry/onboarding-discard-telemetry.js";
 import { processExceptionTelemetryBridge } from "../telemetry/process-exception-telemetry-bridge.js";
-import { createRelayTelemetryTransport } from "../telemetry/relay-telemetry-transport.js";
+import {
+  createRelayTelemetryTransport,
+  totalDroppedExports,
+} from "../telemetry/relay-telemetry-transport.js";
 import {
   createTelemetryOrgProvider,
   type TelemetryOrgProvider,
@@ -107,6 +139,8 @@ import {
   resolveTranscriptCacheDir,
 } from "../transcript/transcript-read-cache.js";
 import { DesktopTray } from "../tray.js";
+import { resolveDesktopBuildCommit } from "../util/desktop-build-commit.js";
+import { setDesktopClientAttributionResolver } from "../util/desktop-client-attribution-provider.js";
 import { resolveDesktopServiceVersion } from "../util/desktop-service-version.js";
 import { NodeUuidStore } from "../util/node-uuid-store.js";
 import { DesktopWindow } from "../window.js";
@@ -129,6 +163,9 @@ export type DesktopApplicationOptions = {
  * sequence — exactly as the original inline `() => this.x` closures did.
  */
 export type DesktopServicesHost = {
+  beginSignInAnalytics: () => DesktopSignInAnalytics | null;
+  /** Re-publish authoritative event-only renderer state after recreation. */
+  onRendererNavigationReady: () => void;
   /**
    * FEA-3425 (Phase 3): Observability's transports route through the host so
    * the application can select per event between the authenticated HTTP twins
@@ -147,30 +184,11 @@ export type DesktopServicesHost = {
    * an explicit flush before the process exits.
    */
   flushDesktopTelemetry: (options: { timeoutMs: number }) => Promise<void>;
-  /** Show the main window (created later in the sequence). */
-  showDesktopWindow: () => void;
   getActiveGatewayId: () => string;
   getNodeUuidForTelemetry: () => string;
   getAppOperatingModeForTelemetry: () => DesktopAppOperatingMode;
-  getPendingCommandSigningKeysForNotification: () => Promise<
-    OrganizationCommandPublicKey[]
-  >;
-  openBrowserCommandKeysSettings: () => void;
-  approveOrganizationCommandPublicKey: (
-    fingerprint: unknown
-  ) => Promise<CommandSigningKeysState>;
-  rejectOrganizationCommandPublicKey: (
-    fingerprint: unknown
-  ) => Promise<CommandSigningKeysState>;
-  notifyCommandKeysChanged: () => void;
-  fetchOrganizationCommandKeyClassification: (
-    reason: CommandKeyReconciliationReason
-  ) => ReturnType<
-    BrowserCommandKeyAppLifecycle["fetchOrganizationKeyClassification"]
-  >;
-  notifyPendingCommandSigningKeysForOrganizationKeys: (
-    organizationKeys: OrganizationCommandPublicKey[]
-  ) => Promise<void>;
+  /** ISS-9082: the live Agent Monitor capture-runtime verdict for the heartbeat. */
+  getAgentMonitorRuntimeStatusKindForTelemetry: () => AgentMonitorRuntimeStatusKind;
   /** PoP-sign an outbound desktop request (used by the session manager). */
   signDesktopRequest: (
     request: DesktopPopSigningRequest
@@ -179,9 +197,11 @@ export type DesktopServicesHost = {
   resolveDesktopDeviceDescriptor: () => DesktopDeviceDescriptor;
   /** Push the latest desktop auth state to the renderer. */
   publishDesktopAuthState: (state: DesktopAuthState) => void;
+  getDesktopAccountAdmission: () => DesktopAccountAdmission | null;
+  onDesktopAccountChanged: (admission: DesktopAccountAdmission | null) => void;
   /**
    * Auto-provision the DESKTOP_MANAGED relay key after unified-auth sign-in
-   * (PRD-532 §5.5 / M8). Fire-and-forget, flag-gated, single-flight; failures
+   * (PRD-532 §5.5 / M8). Fire-and-forget and single-flight; failures
    * fall back to the manual paste path.
    */
   maybeAutoProvisionManagedKey: () => Promise<void>;
@@ -212,24 +232,19 @@ export type DesktopServices = {
   sessionStore: LocalSessionStore;
   settingsStore: SettingsStore;
   apiKeyStore: ApiKeyStore;
-  authorizedCommandKeys: AuthorizedCommandKeyStore;
-  commandSignatureVerifier: CommandSignatureVerifier;
-  commandKeyLifecycle: BrowserCommandKeyAppLifecycle;
-  pendingCommandKeyNotifier: PendingCommandKeyNotifier;
-  loopCompletedNotifier: LoopCompletedNotifier;
-  commandKeyReconciler: CommandKeyReconciler;
-  loopTokenStore: LoopTokenStore;
   nodeUuidStore: NodeUuidStore;
   appOtelRuntime: DesktopOtelRuntime;
+  /** ISS-6334: report one auth/pairing failure onto the keyless relay pipe. */
+  reportAuthFailure: (input: DesktopAuthFailureEventInput) => void;
   telemetryOrgProvider: TelemetryOrgProvider;
   appLifecycleTelemetry: DesktopAppLifecycleTelemetry;
   gatewaySigningKeyStore: GatewaySigningKeyStore;
   desktopSessionStore: DesktopSessionStore;
   desktopSessionManager: DesktopSessionManager;
+  realtimeHost: DesktopRealtimeHost;
   tray: DesktopTray;
   desktopWindow: DesktopWindow;
   activityLog: ActivityLogStore;
-  jobStore: JobStore;
   approvalStore: ApprovalStore;
   costReconciliation: CostReconciliationService;
   claudeCodeAnalytics: ClaudeCodeAnalyticsService;
@@ -238,8 +253,8 @@ export type DesktopServices = {
 /**
  * Build the desktop application's collaborators. Order mostly matches the
  * original constructor — do not reorder without checking the read-after-construct
- * dependencies (e.g. `CommandSignatureVerifier` takes the key store built above
- * it, and `processExceptionTelemetryBridge` must bind the runtime before use).
+ * dependencies (e.g. `processExceptionTelemetryBridge` must bind the runtime
+ * before use).
  * Two behavior-neutral deltas vs. the original are documented in the file header
  * and inline: tray/window before the session-manager subscriptions, and
  * cost/analytics ahead of the deferred gateway cluster.
@@ -249,6 +264,18 @@ export function createDesktopApplicationServices(
   host: DesktopServicesHost
 ): DesktopServices {
   const sessionStore = new LocalSessionStore();
+  // FEA-2199: prefer the build-time-baked version (authoritative for a
+  // packaged release); fall back to the runtime value, and never emit the
+  // Electron `"0.0"` sentinel or the unpackaged Electron-version bleed.
+  const desktopBuildVersion = resolveDesktopServiceVersion({
+    buildVersion: BUILD_APP_VERSION,
+    runtimeVersion: app.getVersion(),
+    electronVersion: process.versions.electron,
+    logWarning: (message) => gatewayLog.warn("otel", message),
+  });
+  // ISS-10502 (PRD-736 decision #11): built before Observability.init so every
+  // product-analytics event carries the install's node_uuid as `device_id`.
+  const nodeUuidStore = new NodeUuidStore();
   // FEA-3425 (Phase 3): the host owns per-event transport selection between
   // the authenticated HTTP twins and the legacy relay socket.
   Observability.init({
@@ -258,7 +285,16 @@ export function createDesktopApplicationServices(
       send: (event) => host.sendProductAnalytics(event),
       flush: (options) => host.flushProductAnalytics(options),
     },
-    desktopClientVersion: app.getVersion(),
+    // ISS-9743: the SAME resolution the OTel resource and the ISS-8749 request
+    // attribution read, not a third one. A raw `app.getVersion()` here reported
+    // the ELECTRON version on an unpackaged launch — the `43.0.0` seen in the
+    // fleet, matching this app's `electron: ^43.0.0` pin — so telemetry named a
+    // build version that disagreed with both of its own siblings.
+    desktopClientVersion: desktopBuildVersion,
+    // ISS-9743: and the version alone still names no source build — it is the
+    // bare series anchor on everything that is not a release. The commit does.
+    desktopBuildCommit: resolveDesktopBuildCommit(BUILD_COMMIT_HASH),
+    deviceId: nodeUuidStore.getOrCreateNodeUuid(),
   });
   const settingsStore = new SettingsStore();
   // ISS-4922: bind the Local session lane's Authored-PR gate to the Labs flag.
@@ -271,59 +307,12 @@ export function createDesktopApplicationServices(
       DESKTOP_LOCAL_SESSION_AUTHORED_PR_GATE_FEATURE_FLAG_KEY
     )
   );
-  // ISS-4556 / ISS-4559: same shape, same reason — bind the Local lane's
-  // displayed-status SSOT (row status + Status facet) to its Labs flag without
-  // threading a boolean through the grandfathered list hot path. Fails CLOSED to
-  // today's behavior in every caller that runs before or without this root.
-  setDisplayedStatusParityResolver(() =>
-    settingsStore.getFlag(
-      DESKTOP_SESSIONS_DISPLAYED_STATUS_PARITY_FEATURE_FLAG_KEY
-    )
+  // ISS-7830: bind the thread-viewership override to its Labs flag, for the same
+  // reason as the gate above — the sync-source read path owns no settings store.
+  setThreadViewershipSignalResolver(() =>
+    settingsStore.getFlag(DESKTOP_THREAD_VIEWERSHIP_SIGNAL_FEATURE_FLAG_KEY)
   );
   const apiKeyStore = new ApiKeyStore();
-  const authorizedCommandKeys = new AuthorizedCommandKeyStore();
-  const commandSignatureVerifier = new CommandSignatureVerifier({
-    authorizedKeys: authorizedCommandKeys,
-  });
-  const commandKeyLifecycle = new BrowserCommandKeyAppLifecycle({
-    getActiveGatewayId: () => host.getActiveGatewayId(),
-    log: (message) => gatewayLog.info("command-keys", message),
-  });
-  const pendingCommandKeyNotifier = new PendingCommandKeyNotifier({
-    getPendingKeys: () => host.getPendingCommandSigningKeysForNotification(),
-    createNotification: (options) => new Notification(options),
-    supportsActions: () => process.platform === "darwin",
-    onOpenSettings: () => host.openBrowserCommandKeysSettings(),
-    onApprove: async (fingerprint) => {
-      await host.approveOrganizationCommandPublicKey(fingerprint);
-    },
-    onDecline: async (fingerprint) => {
-      await host.rejectOrganizationCommandPublicKey(fingerprint);
-    },
-    onChanged: () => host.notifyCommandKeysChanged(),
-    log: (message) => gatewayLog.debug("command-keys", message),
-  });
-  const loopCompletedNotifier = new LoopCompletedNotifier({
-    createNotification: (options) => new Notification(options),
-    supportsActions: () => process.platform === "darwin",
-    onViewLoop: () => host.showDesktopWindow(),
-    log: (message) => gatewayLog.debug("loop-completed-notification", message),
-  });
-  const commandKeyReconciler = new CommandKeyReconciler({
-    hasApiKey: () => Boolean(apiKeyStore.getApiKey()),
-    fetchOrganizationKeyClassification: (reason) =>
-      host.fetchOrganizationCommandKeyClassification(reason),
-    reconcileOrganizationKeys: (fingerprints, options) =>
-      authorizedCommandKeys.reconcileOrganizationKeys(fingerprints, options),
-    notifyPendingKeys: (organizationKeys) =>
-      host.notifyPendingCommandSigningKeysForOrganizationKeys(organizationKeys),
-    onChanged: () => host.notifyCommandKeysChanged(),
-    log: (level, message) => {
-      gatewayLog[level]("command-keys", message);
-    },
-  });
-  const loopTokenStore = new LoopTokenStore();
-  const nodeUuidStore = new NodeUuidStore();
   // FEA-1996: resolves the authenticated org id from the API key for
   // multiplayer telemetry attribution. Gated on key presence, so single-player
   // telemetry can never carry org identity.
@@ -340,37 +329,71 @@ export function createDesktopApplicationServices(
     isPackaged: app.isPackaged,
     env: process.env,
   });
+  // ISS-12211: keyless OTLP egress over HTTPS to the API host's
+  // /desktop/otlp route, falling back to the relay /telemetry lane (FEA-1993,
+  // its own isolated socket) when that route answers 404. The runtime owns
+  // start/stop; this is inert when OTEL_SDK_DISABLED is set. FEA-2199: omitted
+  // entirely off-prod so the always-on local SDK runs without any network
+  // egress. Held in a local rather than inlined because ISS-6334 also reads its
+  // delivery counters — reaching the SDK is not reaching the ingress.
+  const relayTelemetryTransport = telemetryEgressEnabled
+    ? createApiOtlpTelemetryTransport({
+        getApiOrigin: () => settingsStore.getApiOrigin(),
+        fallback: createRelayTelemetryTransport({
+          getRelayOrigin: () => settingsStore.getRelayOrigin(),
+        }),
+      })
+    : undefined;
+  // ISS-8749: publish the build identity every first-party cloud request
+  // attests to. Hoisted off the OTel resource above rather than resolved a
+  // second time, so the version a desktop record carries and the version the
+  // API span records for the request that produced it are the same string by
+  // construction — two resolutions could disagree and nothing would say so.
+  // Deferred, like every other reader of the installation id: the store behind
+  // it is assigned from THIS function's return value, so an eager read throws
+  // and kills startup.
+  setDesktopClientAttributionResolver(() => ({
+    installationId: host.getNodeUuidForTelemetry(),
+    clientVersion: desktopBuildVersion,
+  }));
   const appOtelRuntime = createDesktopOtelRuntime({
-    // FEA-2199: prefer the build-time-baked version (authoritative for a
-    // packaged release); fall back to the runtime value, and never emit the
-    // Electron `"0.0"` sentinel or the unpackaged Electron-version bleed.
-    appVersion: resolveDesktopServiceVersion({
-      buildVersion: BUILD_APP_VERSION,
-      runtimeVersion: app.getVersion(),
-      electronVersion: process.versions.electron,
-      logWarning: (message) => gatewayLog.warn("otel", message),
-    }),
+    appVersion: desktopBuildVersion,
     env: process.env,
     getAppInstallationId: () => host.getNodeUuidForTelemetry(),
     getDeviceId: () => host.getNodeUuidForTelemetry(),
     getOperatingMode: () => host.getAppOperatingModeForTelemetry(),
     getOrganizationId: () => telemetryOrgProvider.getOrganizationId(),
     isPackaged: app.isPackaged,
-    // FEA-1993: keyless OTLP egress over the relay (its own isolated socket,
-    // independent of CloudSocketService). The runtime owns start/stop; this is
-    // inert when OTEL_SDK_DISABLED is set. FEA-2199: omitted entirely off-prod
-    // so the always-on local SDK runs without any network egress.
-    telemetryTransport: telemetryEgressEnabled
-      ? createRelayTelemetryTransport({
-          getRelayOrigin: () => settingsStore.getRelayOrigin(),
-        })
-      : undefined,
+    telemetryTransport: relayTelemetryTransport,
   });
   processExceptionTelemetryBridge.bindRuntime(appOtelRuntime);
+  genAiRequestTelemetry.bindRuntime(appOtelRuntime);
+  onboardingDiscardTelemetry.bindRuntime(appOtelRuntime);
+  // ISS-6334: ONE instance shared by all three auth-failure reporters, so the
+  // dedupe window bounds the lane as a whole rather than per call site.
+  const authFailureTelemetry = createAuthFailureTelemetry({
+    emit: (input) => appOtelRuntime.emitAuthFailureEvent(input),
+    getDeliveryCounters: relayTelemetryTransport
+      ? () => {
+          const diagnostics = relayTelemetryTransport.getDiagnostics();
+          return {
+            sent: diagnostics.sent,
+            dropped: totalDroppedExports(diagnostics),
+          };
+        }
+      : undefined,
+  });
   const appLifecycleTelemetry = createDesktopAppLifecycleTelemetry({
     runtime: appOtelRuntime,
     getOperatingMode: () => host.getAppOperatingModeForTelemetry(),
     getOrganizationId: () => telemetryOrgProvider.getOrganizationId(),
+    getAgentMonitorRuntimeStatus: () =>
+      host.getAgentMonitorRuntimeStatusKindForTelemetry(),
+    // ISS-11866 (R4): no transport on an egress-disabled launch, so its
+    // heartbeat omits the counts instead of reporting zeros.
+    getTelemetryExportCounts: relayTelemetryTransport
+      ? () => relayTelemetryTransport.getDiagnostics()
+      : undefined,
     logWarning: (tag, message) => gatewayLog.warn(tag, message),
   });
   const gatewaySigningKeyStore = new GatewaySigningKeyStore();
@@ -399,6 +422,8 @@ export function createDesktopApplicationServices(
     waitForInitialRevealReadiness: () =>
       host.rendererGates.waitForInitialWindowRevealReadiness(),
     onRendererMounted: () => host.rendererGates.notifyRendererMounted(),
+    onRendererReleased: () => host.rendererGates.resetRendererMounted(),
+    onRendererNavigationReady: () => host.onRendererNavigationReady(),
   });
   // ISS-5037: own the native application menu (the app previously inherited
   // Electron's default one) so it can carry the "Enable Labs" checkbox. Wired
@@ -420,16 +445,10 @@ export function createDesktopApplicationServices(
       installApplicationMenu({
         appName: app.getName(),
         platform: process.platform,
-        isLabsNavEnabled: () =>
-          settingsStore.getFlag(DESKTOP_LABS_NAV_FEATURE_FLAG_KEY),
-        setLabsNavEnabled: (enabled) => {
-          settingsStore.setFlag(DESKTOP_LABS_NAV_FEATURE_FLAG_KEY, enabled);
-          desktopWindow.sendToRenderer("desktop:flags-changed");
-        },
       })
     )
     // A menu that fails to install must never take the whole boot down; the
-    // app is fully usable without the easter egg (Labs simply stays hidden).
+    // app is fully usable with Electron's default menu.
     .catch((error: unknown) => {
       gatewayLog.warn(
         "app-menu",
@@ -437,7 +456,6 @@ export function createDesktopApplicationServices(
       );
     });
   const activityLog = new ActivityLogStore();
-  const jobStore = new JobStore();
   const approvalStore = new ApprovalStore({
     onChange: (pendingCount) => tray.setPendingApprovals(pendingCount),
     onNewApproval: (approval) => {
@@ -446,14 +464,14 @@ export function createDesktopApplicationServices(
         body: approval.reason,
       });
       notification.on("click", () => {
-        desktopWindow.show();
-        desktopWindow.sendToRenderer("desktop:navigate-tab", "approvals");
+        desktopWindow.showRoute("approvals");
       });
       notification.show();
     },
   });
   const desktopSessionManager = new DesktopSessionManager({
     store: desktopSessionStore,
+    beginSignInAnalytics: host.beginSignInAnalytics,
     popSigner: (request) => host.signDesktopRequest(request),
     resolveApiOrigin: () =>
       normalizeAndValidateOrigin(settingsStore.getApiOrigin()),
@@ -467,7 +485,6 @@ export function createDesktopApplicationServices(
       // server-supplied URL to allowlist before shell.openExternal; the
       // loopback redirect_uri is a 127.0.0.1 URL the manager owns.
       openExternal: (url) => shell.openExternal(url),
-      logDiagnostic: (message) => gatewayLog.error("desktop-auth", message),
     },
     // Existing-user resolution (PRD-532 §8 / M6): read API-key presence +
     // one-time-prompt dismissal from the ApiKeyStore so the manager can derive
@@ -478,6 +495,12 @@ export function createDesktopApplicationServices(
       hasDismissedPrompt: () => apiKeyStore.hasDismissedSyncPrompt(),
       persistDismissal: () => apiKeyStore.dismissSyncPrompt(),
     },
+    reportAuthFailure: (input) => authFailureTelemetry.report(input),
+    // One sink for every auth cause the closed telemetry enums cannot carry:
+    // sign-in start/exchange failures and a `restore()` that could not settle
+    // both report here. The browser-sign-in ports fall back to it rather than
+    // wiring `gatewayLog` a second time.
+    logDiagnostic: (message) => gatewayLog.error("desktop-auth", message),
   });
   desktopSessionManager.subscribeExistingUserResolution((resolution) => {
     desktopWindow.sendToRenderer(
@@ -485,14 +508,117 @@ export function createDesktopApplicationServices(
       resolution
     );
   });
+  const replayRecordingFence = createDesktopReplayRecordingFence(
+    () => desktopSessionManager.isAuthenticated(),
+    () => desktopSessionManager.getState().authGeneration
+  );
+  registerDesktopReplayRecordingIpcHandler(ipcMain, {
+    isTrustedSender: (sender) =>
+      desktopWindow.isTrustedSender(sender as WebContents),
+    report: replayRecordingFence.report,
+  });
+  // `session.defaultSession` throws before `ready` (Electron 43), and this
+  // composition root runs before it (see the menu note above).
+  app
+    .whenReady()
+    .then(() =>
+      installDesktopReplayRequestAuth({
+        session: session.defaultSession,
+        getAccessToken: (origin) =>
+          desktopSessionManager.getAccessTokenIssuedBy(origin),
+        resolveApiOrigin: () =>
+          normalizeAndValidateOrigin(settingsStore.getApiOrigin()),
+        isRecordingSignInCurrent: replayRecordingFence.isCurrent,
+      })
+    )
+    .catch((error: unknown) => {
+      gatewayLog.warn(
+        "replay-request-auth",
+        `Replay request auth install failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    });
   // Purge the cloud-transcript disk cache whenever the signed-in identity
   // changes — sign-out, refresh failure, or account/org switch (and any
   // signed-out emission, which also clears bytes orphaned by a prior session
   // that quit without signing out). A same-user restore (null-sentinel → X)
   // does not purge, so its cache survives a relaunch (FEA-3324 follow-up).
   let lastTranscriptIdentityKey: string | null = null;
+  // ISS-9437: main's OWN PostHog flag assignment, resolved on main's OWN auth
+  // lifecycle. Main gates its own decisions on it — the Branches server page's
+  // status ordering today — and must not wait on the renderer's IPC pull to have
+  // happened, which is a race main loses silently.
+  const featureFlagAssignment = createDesktopMainFeatureFlagAssignmentStore({
+    fetchAssignment: () =>
+      fetchDesktopFeatureFlags({
+        getAccessToken: () => desktopSessionManager.getAccessToken(),
+        getApiOrigin: () => settingsStore.getApiOrigin(),
+      }),
+  });
+  publishDesktopMainFeatureFlagAssignmentStore(featureFlagAssignment);
+  // ISS-12048: Dev Tools overrides for main's own reads, applied only under
+  // main's own eligibility check (its assignment's `dev-mode` plus a staff
+  // email from its own identity fetch), re-checked on every account boundary
+  // below.
+  const featureFlagDevMode = createDesktopMainDevMode({
+    assignment: featureFlagAssignment,
+    fetchIdentity: () =>
+      fetchDesktopIdentity({
+        getAccessToken: () => desktopSessionManager.getAccessToken(),
+        getApiOrigin: () => settingsStore.getApiOrigin(),
+      }),
+  });
+  publishDesktopMainDevMode(featureFlagDevMode);
+  featureFlagDevMode.subscribeChecked(() => {
+    desktopWindow.sendToRenderer(
+      DesktopDevModeIpcChannel.CheckedFeatureFlagsChanged
+    );
+  });
+  // ISS-12552 (PRD-800 "Rollout"): main's parse policy, from the persisted
+  // verdict until the flag answers. Started here, before any collector or the
+  // db host, so both begin under it; a settled flip reaches the agent runtime.
+  startDesktopParsePolicyController({
+    settings: settingsStore,
+    readOrganization: () =>
+      desktopSessionManager.getAccountAdmission()?.organizationId ?? null,
+  });
+  // ISS-11945: the signed-out flag read is unauthenticated egress, so it takes
+  // the same FEA-2199 policy as pre-auth analytics: packaged builds only.
+  publishAnonymousDesktopFeatureFlagsSource(
+    telemetryEgressEnabled
+      ? {
+          getApiOrigin: () => settingsStore.getApiOrigin(),
+          getNodeUuid: () => host.getNodeUuidForTelemetry(),
+        }
+      : null
+  );
+  const realtimeHost = new DesktopRealtimeHost({
+    getAccountAdmission: () => host.getDesktopAccountAdmission(),
+    clientVersion: desktopBuildVersion,
+    fetchToken: () =>
+      fetchDesktopRealtimeToken({
+        getAccessToken: () => desktopSessionManager.getAccessToken(),
+        getApiOrigin: () =>
+          normalizeAndValidateOrigin(settingsStore.getApiOrigin()),
+        onUnauthorized: (token) =>
+          desktopSessionManager.invalidateAccessToken(token),
+      }),
+  });
+  const followFeatureFlagAccountBoundary = createFeatureFlagAccountBoundary({
+    assignment: featureFlagAssignment,
+    devMode: featureFlagDevMode,
+  });
+  let lastCloudAdmissionKey: string | null = null;
   desktopSessionManager.subscribe((state) => {
     host.publishDesktopAuthState(state);
+    const cloudAdmission = desktopSessionManager.getAccountAdmission();
+    const cloudAdmissionKey = cloudAdmission
+      ? `${cloudAdmission.organizationId}\u0000${cloudAdmission.userId}\u0000${cloudAdmission.generation}`
+      : null;
+    if (cloudAdmissionKey !== lastCloudAdmissionKey) {
+      lastCloudAdmissionKey = cloudAdmissionKey;
+      host.onDesktopAccountChanged(cloudAdmission);
+    }
+    followFeatureFlagAccountBoundary(state);
     const identityKey = state.userId
       ? `${state.userId}:${state.organizationId ?? ""}`
       : null;
@@ -506,10 +632,9 @@ export function createDesktopApplicationServices(
         resolveTranscriptCacheDir(app.getPath("userData"))
       ).catch(() => undefined);
     }
-    // PRD-532 §5.5 (PR-K / M8): once signed in via the unified auth flow,
-    // auto-provision the DESKTOP_MANAGED relay key so the user never pastes a
-    // key. Flag-gated (off = today's paste behavior). Fire-and-forget; failures
-    // fall back to the existing manual paste path.
+    // PRD-532 §5.5: every authenticated transition may provision a fresh
+    // managed key; the controller is single-flight and manual paste remains the
+    // fallback when provisioning fails.
     if (state.status === DesktopAuthStatus.Authenticated) {
       host.maybeAutoProvisionManagedKey().catch(() => undefined);
     }
@@ -551,24 +676,18 @@ export function createDesktopApplicationServices(
     sessionStore,
     settingsStore,
     apiKeyStore,
-    authorizedCommandKeys,
-    commandSignatureVerifier,
-    commandKeyLifecycle,
-    pendingCommandKeyNotifier,
-    loopCompletedNotifier,
-    commandKeyReconciler,
-    loopTokenStore,
     nodeUuidStore,
     appOtelRuntime,
+    reportAuthFailure: (input) => authFailureTelemetry.report(input),
     telemetryOrgProvider,
     appLifecycleTelemetry,
     gatewaySigningKeyStore,
     desktopSessionStore,
     desktopSessionManager,
+    realtimeHost,
     tray,
     desktopWindow,
     activityLog,
-    jobStore,
     approvalStore,
     costReconciliation,
     claudeCodeAnalytics,

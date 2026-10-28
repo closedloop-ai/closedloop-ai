@@ -40,20 +40,34 @@
  * whether the emitted `id >` term is sargable or not. That the term actually
  * plans as an index range is a separate, mechanical claim, pinned by
  * `billing-mode-heal-scan.test.ts` with a real `EXPLAIN QUERY PLAN`.
+ *
+ * This file covers the drain when its statements SUCCEED. The branches where the
+ * pass gives up — a rejected chunk read, and the consecutive-failure cap — are
+ * `billing-mode-heal-bailout.test.ts`, and the seed and log patterns both files
+ * share are `billing-mode-heal-test-helpers.ts`.
  */
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { healUnknownBillingModes } from "../src/main/database/billing-mode-heal.js";
 import type { PrismaClient } from "../src/main/database/generated/client.js";
 import type { DesktopPrisma } from "../src/main/database/prisma-client.js";
 import type { WriteQueueRunOptions } from "../src/main/database/write-queue.js";
 import { openTestDb } from "./agent-db-test-utils.js";
+import {
+  HEAL_COMPLETE_RE,
+  HEAL_FAILED_COPILOT_RE,
+  HEAL_T0,
+  HEAL_T1,
+  type HealTestDb,
+  insertSession,
+  LOCKED_REASON_RE,
+  RESTAMPED_ONE_RE,
+  readBillingMode,
+} from "./billing-mode-heal-test-helpers.js";
 
-const T0 = "2026-06-01T00:00:00.000Z";
-const T1 = "2026-06-01T01:00:00.000Z";
 /** A cursor position already PAST the historical rows, as on a real install. */
 const CURSOR_AFTER_IMPORT = "2026-06-02T00:00:00.000Z";
 /**
@@ -64,56 +78,10 @@ const INTERLOPER_ID = "s-zz-interloper";
 /** Unambiguously later than the pass's own `new Date()` start stamp. */
 const INTERLOPER_UPDATED_AT = "2099-01-01T00:00:00.000Z";
 
-type TestDb = Awaited<ReturnType<typeof openTestDb>>;
-
-/**
- * ISS-5259 review: settle the fire-and-forget boot-maintenance chain BEFORE any
- * fixture is seeded.
- *
- * `openSqliteAgentDatabase` calls `startBootMaintenance` unconditionally, and
- * that chain runs the REAL `healUnknownBillingModes` — `billing-mode-heal.ts`
- * imports the production `detectBillingMode`, not the `openTestDb` stub, so a
- * `copilot` fixture resolves definitely for the background pass too. Every test
- * here seeds after the open and then asserts on what an EXPLICIT pass did, so
- * racing that chain would let the boot pass heal the fixtures and leave the
- * assertions passing VACUOUSLY. The sibling billing-mode suites
- * (`billing-mode-read-path-parity`, `branch-reads-billing-parity`) settle for
- * the same reason.
- */
-async function openSettledTestDb(dir: string): Promise<TestDb> {
-  const db = await openTestDb(dir);
-  try {
-    await db.whenBootMaintenanceSettled();
-  } catch (error) {
-    await db.close();
-    throw error;
-  }
-  return db;
-}
-
-async function insertSession(
-  db: TestDb,
-  input: { id: string; harness: string | null; billingMode: string | null }
-): Promise<void> {
-  await db.run(
-    `INSERT INTO sessions (id, status, started_at, ended_at, updated_at, billing_mode, harness)
-     VALUES ($1, 'completed', $2, $3, $3, $4, $5)`,
-    input.id,
-    T0,
-    T1,
-    input.billingMode,
-    input.harness
-  );
-}
-
-async function readBillingMode(db: TestDb, id: string): Promise<string | null> {
-  const [row] = await db.prisma.client.$queryRawUnsafe<
-    { billing_mode: string | null }[]
-  >("SELECT billing_mode FROM sessions WHERE id = $1", id);
-  return row.billing_mode;
-}
-
-async function readUpdatedAt(db: TestDb, id: string): Promise<string | null> {
+async function readUpdatedAt(
+  db: HealTestDb,
+  id: string
+): Promise<string | null> {
   const [row] = await db.prisma.client.$queryRawUnsafe<
     { updated_at: string | null }[]
   >("SELECT updated_at FROM sessions WHERE id = $1", id);
@@ -205,16 +173,12 @@ function failFirstWrite(prisma: DesktopPrisma): DesktopPrisma {
   };
 }
 
-const RESTAMPED_ONE_RE = /re-stamped 1 session\(s\)/;
 const RESTAMPED_TWO_RE = /re-stamped 2 session\(s\)/;
 const RESTAMPED_THREE_RE = /re-stamped 3 session\(s\)/;
-const HEAL_FAILED_COPILOT_RE = /billing-mode heal failed for copilot/;
-const LOCKED_REASON_RE = /database is locked/;
-const HEAL_COMPLETE_RE = /heal complete/;
 
 test("ISS-4869: the heal re-stamps unknown rows and re-queues them past the cursor", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "billing-heal-"));
-  const db = await openSettledTestDb(dir);
+  const db = await openTestDb(dir);
   try {
     await insertSession(db, {
       id: "s-legacy",
@@ -269,7 +233,7 @@ test("ISS-4869: the heal re-stamps unknown rows and re-queues them past the curs
 
 test("ISS-4869: the heal is convergent — a second pass re-queues nothing", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "billing-heal-idem-"));
-  const db = await openSettledTestDb(dir);
+  const db = await openTestDb(dir);
   try {
     await insertSession(db, {
       id: "s-legacy",
@@ -312,7 +276,7 @@ test("ISS-4869: the heal is convergent — a second pass re-queues nothing", asy
 
 test("ISS-4869: a row whose harness cannot be classified is left eligible", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "billing-heal-skip-"));
-  const db = await openSettledTestDb(dir);
+  const db = await openTestDb(dir);
   try {
     // An unrecognized harness detects as `unknown`. Re-stamping it would be a
     // lie, and bumping updated_at anyway would churn the cursor every boot.
@@ -351,7 +315,7 @@ test("ISS-4869: a row whose harness cannot be classified is left eligible", asyn
 
 test("ISS-4869: each harness is stamped with its OWN detected mode in one pass", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "billing-heal-multi-"));
-  const db = await openSettledTestDb(dir);
+  const db = await openTestDb(dir);
   try {
     // Two harnesses that BOTH resolve definitely, so the per-harness loop runs
     // its write body more than once in a single pass. `copilot` is a constant
@@ -412,7 +376,7 @@ test("ISS-4869: each harness is stamped with its OWN detected mode in one pass",
 
 test("ISS-4869/FEA-3485: a multi-chunk heal drains the set and staggers each chunk", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "billing-heal-chunk-"));
-  const db = await openSettledTestDb(dir);
+  const db = await openTestDb(dir);
   try {
     for (const id of ["s-a", "s-b", "s-c"]) {
       await insertSession(db, {
@@ -462,7 +426,7 @@ test("ISS-4869/FEA-3485: a multi-chunk heal drains the set and staggers each chu
 
 test("ISS-4869: a failed chunk leaves its rows eligible and uncounted", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "billing-heal-fail-"));
-  const db = await openSettledTestDb(dir);
+  const db = await openTestDb(dir);
   try {
     await insertSession(db, {
       id: "s-legacy",
@@ -505,7 +469,7 @@ test("ISS-4869: a failed chunk leaves its rows eligible and uncounted", async ()
 
 test("ISS-5259: a row inserted BETWEEN chunks is outside the pass's bounded set", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "billing-heal-interloper-"));
-  const db = await openSettledTestDb(dir);
+  const db = await openTestDb(dir);
   try {
     for (const id of ["s-a", "s-b", "s-c"]) {
       await insertSession(db, {
@@ -525,7 +489,7 @@ test("ISS-5259: a row inserted BETWEEN chunks is outside the pass's bounded set"
         `INSERT INTO sessions (id, status, started_at, ended_at, updated_at, billing_mode, harness)
          VALUES ($1, 'running', $2, NULL, $3, 'unknown', 'copilot')`,
         INTERLOPER_ID,
-        T0,
+        HEAL_T0,
         INTERLOPER_UPDATED_AT
       );
 
@@ -562,7 +526,7 @@ test("ISS-5259: a row inserted BETWEEN chunks is outside the pass's bounded set"
 
 test("ISS-5259: the drain never re-visits a row behind its keyset bound", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "billing-heal-keyset-"));
-  const db = await openSettledTestDb(dir);
+  const db = await openTestDb(dir);
   try {
     for (const id of ["s-a", "s-b", "s-c"]) {
       await insertSession(db, {
@@ -581,7 +545,7 @@ test("ISS-5259: the drain never re-visits a row behind its keyset bound", async 
     const reopenLowestRow = () =>
       db.run(
         "UPDATE sessions SET billing_mode = 'unknown', updated_at = $1 WHERE id = $2",
-        T1,
+        HEAL_T1,
         "s-a"
       );
 
@@ -617,7 +581,7 @@ test("ISS-5259: the drain never re-visits a row behind its keyset bound", async 
 
 test("ISS-5259: a failed chunk is skipped, not left blocking the rows behind it", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "billing-heal-starve-"));
-  const db = await openSettledTestDb(dir);
+  const db = await openTestDb(dir);
   try {
     for (const id of ["s-a", "s-b", "s-c"]) {
       await insertSession(db, {
@@ -672,7 +636,7 @@ test("ISS-5259: a failed chunk is skipped, not left blocking the rows behind it"
 
 test("ISS-5259: a row that moves between the chunk read and its write is skipped", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "billing-heal-window-"));
-  const db = await openSettledTestDb(dir);
+  const db = await openTestDb(dir);
   try {
     for (const id of ["s-a", "s-b", "s-c"]) {
       await insertSession(db, {
@@ -732,7 +696,7 @@ test("ISS-5259: a row that moves between the chunk read and its write is skipped
 
 test("ISS-5259: a legacy row with a NULL updated_at is inside the bounded set", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "billing-heal-nullts-"));
-  const db = await openSettledTestDb(dir);
+  const db = await openTestDb(dir);
   try {
     // A pre-`updated_at` legacy row: invisible to the durable sync cursor, which
     // compares `updated_at` as a raw string, so it is exactly the row this pass
@@ -742,8 +706,8 @@ test("ISS-5259: a legacy row with a NULL updated_at is inside the bounded set", 
       `INSERT INTO sessions (id, status, started_at, ended_at, updated_at, billing_mode, harness)
        VALUES ($1, 'completed', $2, $3, NULL, 'unknown', 'copilot')`,
       "s-null-updated-at",
-      T0,
-      T1
+      HEAL_T0,
+      HEAL_T1
     );
     // A same-harness row WITH a stamp, so a regression that dropped the NULL
     // disjunct from only the chunk select (or only the write) still shows up as

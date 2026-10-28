@@ -18,6 +18,7 @@
  * The store keeps the execution: the factory, the queries, the write turns.
  */
 
+import type { TranscriptSkipReason } from "@repo/api/src/types/transcript-skip-reason-constants";
 import { TranscriptSyncStatus } from "../../shared/transcript-sync-status-contract.js";
 import { redactedArchiveCursorTargetId } from "../transcript-sync/transcript-sync-types.js";
 import type { Prisma } from "./generated/client.js";
@@ -51,6 +52,33 @@ export type TranscriptFailureInput = {
   dead: boolean;
   nextAttemptAt: string | null;
   lastError: string;
+  /**
+   * ISS-7097: the start of the unbroken LANE-WIDE failure run this outcome
+   * belongs to, or `null` when it does not belong to one. A lane-wide failure
+   * (5xx/429 — the cloud is down, not this row) does not advance `retryCount`,
+   * so this timestamp carries the wall-clock bound that keeps the terminal path
+   * reachable in its place. A row-attributable failure passes `null`: the server
+   * answered, so whatever stall was running is over.
+   */
+  laneStalledSince: string | null;
+  /**
+   * ISS-9884: the {@link TranscriptSkipReason} the cloud ACKNOWLEDGED for this
+   * row's terminal skip, when `dead` is true — `null` otherwise, and ignored
+   * when it is. It is the reason the server reported PERSISTING, not the one
+   * requested (the two differ when the version-skew fallback fired or the
+   * server's precedence rule kept a hard reason already on the row), so the
+   * local column and the cloud's `permanentFailureReason` describe the same
+   * terminal rather than two guesses at it. Also `null` when the cloud settled
+   * it as a label this build cannot name.
+   */
+  terminalSkipReason: TranscriptSkipReason | null;
+  /**
+   * ISS-9884: the compute target whose cloud acknowledged that terminal skip,
+   * when `dead` is true — `null` otherwise, and ignored when it is. The lane
+   * recovery revives an `environment_unavailable` row only under this target,
+   * so a pause one identity recorded is never uploaded under another.
+   */
+  terminalSkipComputeTargetId: string | null;
   now: string;
 };
 
@@ -86,13 +114,7 @@ export type TranscriptSettle =
        */
       computeTargetId: string | null;
     }
-  | {
-      kind: "dead";
-      externalSessionId: string;
-      fileKey: string;
-      reason: string;
-      now: string;
-    };
+  | ({ kind: "dead" } & TranscriptDeadInput);
 
 /**
  * ISS-4815: clear BOTH halves of a cloud acknowledgement. Every settle that
@@ -105,19 +127,65 @@ export const CLEARED_CLOUD_ACK = {
   cloudUploadedComputeTargetId: null,
 } as const;
 
+/**
+ * ISS-7097: release the durable upload claim. EVERY settle spreads this, without
+ * exception: a settle is the end of the attempt `markUploading` opened, so a
+ * lease that outlives it describes an upload that is no longer running. Leaving
+ * one behind would make the reclaim predicate wait a full lease window before
+ * re-arming a row that was already free — the same silent-drift failure mode
+ * {@link CLEARED_CLOUD_ACK} exists to prevent on the acknowledgement pair.
+ */
+export const CLEARED_UPLOAD_LEASE = {
+  uploadingSince: null,
+} as const;
+
+/**
+ * ISS-7097: end the current lane-wide stall run. Spread by every settle EXCEPT
+ * `failure`, which decides for itself (a lane-wide failure carries the run
+ * forward, a row-attributable one ends it — a 4xx is proof the lane answered).
+ */
+export const CLEARED_LANE_STALL = {
+  laneStalledSince: null,
+} as const;
+
+/**
+ * ISS-9884: forget WHY this row last died. Spread by every settle that is NOT
+ * itself a terminal — an uploaded/idle/acknowledged row is demonstrably not
+ * dead, so a reason surviving into it would let the desktop-local verdict read
+ * a give-up off a row that has since recovered. `failure` decides for itself
+ * (its dead arm stamps one), and `dead` is the one settle that writes one.
+ *
+ * The reason and the target whose cloud acknowledged it are one fact, cleared as
+ * a pair for the reason {@link CLEARED_CLOUD_ACK} clears its own: a surviving
+ * target would scope a revival to a terminal the row no longer has. The one
+ * exception is a REVIVED pause still owed its upload: the revival keeps the
+ * target as the row's upload scope, and the states between that revival and the
+ * row's next idle or terminal settle (a retryable failure, a partial window, a
+ * revoked attempt) keep it too — see {@link scopeKeepingRevivedRowData}.
+ */
+export const CLEARED_TERMINAL_SKIP_REASON = {
+  terminalSkipReason: null,
+  terminalSkipComputeTargetId: null,
+} as const;
+
+/**
+ * The canonical `data` payload for reviving a `dead` row back to `queued` —
+ * shared by `redriveDeadLettered` (FEA-3932) and `reviveForForcedSync`
+ * (FEA-3489). Both mutations mean the same thing by "revived" (clear the failure
+ * counters + backoff + last error and re-queue), so keeping the literal in one
+ * place stops the two call sites from drifting if what "revived" means ever
+ * changes (e.g. an added counter). Typed as the Prisma update input so a schema
+ * rename fails typecheck at this single site.
+ */
 export function revivedRowData(
   now: string
 ): Prisma.TranscriptSyncStateUpdateManyMutationInput {
   return {
-    status: TranscriptSyncStatus.Queued,
-    retryCount: 0,
-    missingSourceCount: 0,
-    nextAttemptAt: null,
-    lastError: null,
-    updatedAt: now,
-    // ISS-4815: a revived row is about to be re-attempted from scratch, so any
-    // prior cloud acknowledgement no longer describes what the lane will do.
-    ...CLEARED_CLOUD_ACK,
+    ...scopeKeepingRevivedRowData(now),
+    // ISS-9884: a revived row is no longer terminal, so neither the reason it
+    // died of nor the target that acknowledged it may survive into the state it
+    // no longer describes — same discipline as the cleared acknowledgement.
+    ...CLEARED_TERMINAL_SKIP_REASON,
   };
 }
 
@@ -165,6 +233,14 @@ export function settleUpdateData(
         lastError: null,
         updatedAt: settle.now,
         ...CLEARED_CLOUD_ACK,
+        ...CLEARED_UPLOAD_LEASE,
+        ...CLEARED_LANE_STALL,
+        // ISS-9884: an upload is never a terminal, so the reason always goes.
+        // The target goes only once the row is caught up: a partial window
+        // leaves it queued, still owed to a revived pause's own target.
+        ...(settle.caughtUp
+          ? CLEARED_TERMINAL_SKIP_REASON
+          : { terminalSkipReason: null }),
       };
     case "idle":
       return {
@@ -173,6 +249,9 @@ export function settleUpdateData(
         missingSourceCount: 0,
         updatedAt: settle.now,
         ...CLEARED_CLOUD_ACK,
+        ...CLEARED_UPLOAD_LEASE,
+        ...CLEARED_LANE_STALL,
+        ...CLEARED_TERMINAL_SKIP_REASON,
       };
     case "cloudUploaded":
       return {
@@ -196,16 +275,24 @@ export function settleUpdateData(
         // switch to a different compute target re-arms the row instead of
         // treating another cloud's archive as proof this one holds the file.
         cloudUploadedComputeTargetId: settle.computeTargetId,
+        ...CLEARED_UPLOAD_LEASE,
+        ...CLEARED_LANE_STALL,
+        ...CLEARED_TERMINAL_SKIP_REASON,
       };
     case "dead":
       return {
         status: TranscriptSyncStatus.Dead,
         nextAttemptAt: null,
         lastError: settle.reason,
+        // ISS-9884: the machine-readable half of the same terminal.
+        terminalSkipReason: settle.terminalSkipReason,
+        terminalSkipComputeTargetId: settle.terminalSkipComputeTargetId,
         // FEA-3555: terminal row; the missing run is over.
         missingSourceCount: 0,
         updatedAt: settle.now,
         ...CLEARED_CLOUD_ACK,
+        ...CLEARED_UPLOAD_LEASE,
+        ...CLEARED_LANE_STALL,
       };
     case "failure":
       return {
@@ -216,8 +303,25 @@ export function settleUpdateData(
         missingSourceCount: settle.missingSourceCount,
         nextAttemptAt: settle.nextAttemptAt,
         lastError: settle.lastError,
+        // ISS-9884: a reason is written ONLY on the arm that actually
+        // dead-letters. A retryable failure is not terminal, so stamping one
+        // there would make the local verdict read a give-up off a row still on
+        // the ladder, and a row re-armed after an earlier terminal must not
+        // carry that terminal's reason forward. The dead arm writes its target
+        // with it; a retryable failure leaves the column alone, because on a
+        // revived pause it is the upload scope the row is still owed under.
+        terminalSkipReason: settle.dead ? settle.terminalSkipReason : null,
+        ...(settle.dead
+          ? { terminalSkipComputeTargetId: settle.terminalSkipComputeTargetId }
+          : {}),
         updatedAt: settle.now,
         ...CLEARED_CLOUD_ACK,
+        ...CLEARED_UPLOAD_LEASE,
+        // ISS-7097: the ONE arm that does not blanket-clear the stall run — a
+        // lane-wide failure carries it forward so the wall-clock ceiling can see
+        // how long this row has been stalled. `dead` is terminal, so the run
+        // ends there regardless of what the caller passed.
+        laneStalledSince: settle.dead ? null : settle.laneStalledSince,
       };
     default: {
       const exhaustive: never = settle;
@@ -310,3 +414,58 @@ export const TRANSCRIPT_ROW_SELECT = {
   externalSessionId: true,
   fileKey: true,
 } as const;
+
+/**
+ * A deliberate terminal skip (`markDead`). Named fields, like
+ * {@link TranscriptFailureInput}, because `terminalSkipComputeTargetId` and
+ * `now` are both strings a positional call could transpose without a type error.
+ */
+export type TranscriptDeadInput = {
+  externalSessionId: string;
+  fileKey: string;
+  /** The free-text operator message written to `lastError`. */
+  reason: string;
+  /**
+   * ISS-9884: the acknowledged {@link TranscriptSkipReason}, persisted so the
+   * desktop-local verdict can tell an environmental give-up from a hard
+   * terminal. `null` when the cloud acknowledged a terminal this build cannot
+   * name, which every read maps to the conservative `failedPermanent` — the
+   * same verdict the cloud derives from an unrecognized label.
+   */
+  terminalSkipReason: TranscriptSkipReason | null;
+  /**
+   * ISS-9884: the compute target whose cloud acknowledged this skip — the scope
+   * the lane recovery's revival matches on. `null` when unknown, which no
+   * revival matches.
+   */
+  terminalSkipComputeTargetId: string | null;
+  now: string;
+};
+
+/**
+ * ISS-9884: {@link revivedRowData} WITHOUT clearing
+ * `terminalSkipComputeTargetId`, for the two re-queues whose row may be a revived
+ * `environment_unavailable` pause: the lane recovery's own revival, and a revoked
+ * attempt. Such a row is owed its upload only under the target whose cloud
+ * acknowledged the pause, and that column is the only record of which target
+ * that is, so clearing it would hand the transcript to whichever target drains
+ * next.
+ */
+export function scopeKeepingRevivedRowData(
+  now: string
+): Prisma.TranscriptSyncStateUpdateManyMutationInput {
+  return {
+    status: TranscriptSyncStatus.Queued,
+    retryCount: 0,
+    missingSourceCount: 0,
+    nextAttemptAt: null,
+    lastError: null,
+    updatedAt: now,
+    terminalSkipReason: null,
+    // ISS-4815: a revived row is about to be re-attempted from scratch, so any
+    // prior cloud acknowledgement no longer describes what the lane will do.
+    ...CLEARED_CLOUD_ACK,
+    ...CLEARED_UPLOAD_LEASE,
+    ...CLEARED_LANE_STALL,
+  };
+}

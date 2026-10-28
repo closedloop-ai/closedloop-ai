@@ -2,8 +2,9 @@ import {
   BranchDataState,
   BranchTagAvailability,
 } from "@repo/api/src/types/branch";
+import { UNIVERSAL_ARTIFACT_STATUS_FLAG_KEY } from "@repo/api/src/types/universal-artifact-status-flag";
+import { BranchesListToolbarV2 } from "@repo/app/branches/components/branches-list-toolbar-v2";
 import { BranchesTable } from "@repo/app/branches/components/branches-table";
-import { BranchesToolbar } from "@repo/app/branches/components/branches-toolbar";
 import { useBranchFilterState } from "@repo/app/branches/hooks/use-branch-filter-state";
 import { useBranchViewState } from "@repo/app/branches/hooks/use-branch-view-state";
 import {
@@ -25,12 +26,13 @@ import { useMemo } from "react";
 /**
  * Presentational branches table shared by the web `/branches` page and the
  * desktop Branches view. Callers supply display-ready `BranchRow` items;
- * `BranchesToolbar` drives Filter (status/owner/repository) + View (group by /
- * columns), and column headers drive sorting.
+ * `BranchesListToolbarV2` drives Filter (status/owner/repository) and Columns
+ * (show/hide), and column headers drive sorting.
  */
 const meta = {
-  title: "App Core/Branches/Branches Table",
+  title: "Composites v1.0/Branches/Branches Table",
   component: BranchesTable,
+  tags: ["deprecated", "autodocs"],
   parameters: {
     layout: "fullscreen",
   },
@@ -49,11 +51,24 @@ export const Default: Story = {
   ),
 };
 
+/** Enabled adoption: each row renders the canonical Branch status champion. */
+export const UniversalArtifactStatus: Story = {
+  args: { items: BRANCH_SAMPLE_ROWS },
+  parameters: {
+    appCore: { enabledFlags: [UNIVERSAL_ARTIFACT_STATUS_FLAG_KEY] },
+  },
+  render: (args) => (
+    <main className="h-[400px] overflow-auto">
+      <BranchesTable {...args} />
+    </main>
+  ),
+};
+
 const APPROVED_ROW: BranchRow = {
   ...BRANCH_SAMPLE_ROWS[0]!,
   id: "approved-default",
   branchName: "codex/branches-list-ui",
-  repo: "closedloop-ai/example-repo",
+  repo: "closedloop-ai/closedloop-ai",
   owner: "Daveth Oakhurst",
   ownerKey: "github:daveth",
   collaborators: [
@@ -65,12 +80,13 @@ const APPROVED_ROW: BranchRow = {
 };
 
 export const ApprovedDefault: Story = {
-  args: { approved: true, items: [APPROVED_ROW] },
+  args: { approved: true, includePriorityColumn: true, items: [APPROVED_ROW] },
 };
 
 export const ApprovedAwaitingSync: Story = {
   args: {
     approved: true,
+    includePriorityColumn: true,
     items: [
       {
         ...APPROVED_ROW,
@@ -91,6 +107,7 @@ export const ApprovedAwaitingSync: Story = {
 export const ApprovedUnenriched: Story = {
   args: {
     approved: true,
+    includePriorityColumn: true,
     items: [
       {
         ...APPROVED_ROW,
@@ -110,6 +127,7 @@ export const ApprovedUnenriched: Story = {
 export const ApprovedManyCollaborators: Story = {
   args: {
     approved: true,
+    includePriorityColumn: true,
     items: [
       {
         ...APPROVED_ROW,
@@ -122,7 +140,12 @@ export const ApprovedManyCollaborators: Story = {
 };
 
 export const ApprovedTagsReadOnly: Story = {
-  args: { approved: true, items: [APPROVED_ROW], tagsReadOnly: true },
+  args: {
+    approved: true,
+    includePriorityColumn: true,
+    items: [APPROVED_ROW],
+    tagsReadOnly: true,
+  },
 };
 
 // A net-new local branch with no GitHub enrichment: repo identity, PR, checks,
@@ -159,7 +182,7 @@ export const MissingGitHubData: Story = {
   ),
 };
 
-/** Table driven by the shared `BranchesToolbar` (Filter + View) + header sort. */
+/** Table driven by the shared `BranchesListToolbarV2` (Filter + Columns) + header sort. */
 export const WithToolbar: Story = {
   args: { items: BRANCH_SAMPLE_ROWS },
   render: () => <WithToolbarStory />,
@@ -187,7 +210,7 @@ function WithToolbarStory() {
 
   return (
     <div className="flex flex-col gap-3 p-3">
-      <BranchesToolbar
+      <BranchesListToolbarV2
         dateRange={dateRange}
         filters={filters}
         onDateRangeChange={setDateRange}

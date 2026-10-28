@@ -170,7 +170,7 @@ const COHORTS: { label: string; filters: FacetFilters }[] = [
       harnesses: ["claude"],
       models: ["claude-opus-4"],
       changePresence: ["has_changes"],
-      repositories: ["closedloop-ai/example-repo"],
+      repositories: ["closedloop-ai/closedloop-ai"],
     },
   },
 ];

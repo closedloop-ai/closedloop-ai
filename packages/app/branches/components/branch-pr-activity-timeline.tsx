@@ -1,9 +1,25 @@
 "use client";
 
-import type { BranchPageDetail } from "@repo/api/src/types/branch";
 import { resolveAttributedBranchCost } from "@repo/api/src/types/branch-cost";
+import type { SessionTimelineDetail } from "@repo/api/src/types/document-sessions";
+// ISS-12665: the Session Timeline's peak-column fact, shared so both timeline
+// headers state the peak with one label and one format.
+import { TimelinePeakBucketFact } from "@repo/app/agents/components/detail/timeline-peak-bucket-fact";
+import {
+  TIMELINE_SCALE_OPTIONS,
+  TimelineScale,
+} from "@repo/app/agents/lib/session-timeline-scale";
+import { formatBranchDurationMs } from "@repo/app/branches/lib/format-branch-duration-ms";
+import { TimelineGroupByControl } from "@repo/app/shared/components/timeline-group-by-control";
+import {
+  TimelinePositionScrubber,
+  TimelineScaleControl,
+} from "@repo/app/shared/components/timeline-scale-control";
 import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
-import { BRANCH_TIMELINE_COST_FALLBACK_MARKER_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
+import {
+  BRANCH_DETAIL_METRIC_HONESTY_FEATURE_FLAG_KEY,
+  BRANCH_TIMELINE_COST_FALLBACK_MARKER_FEATURE_FLAG_KEY,
+} from "@repo/app/shared/lib/feature-flags";
 import { formatDurationMs } from "@repo/app/shared/lib/format-duration-ms";
 import {
   formatCostPrecise,
@@ -14,13 +30,12 @@ import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { cn } from "@repo/design-system/lib/utils";
 import { ActivityIcon } from "lucide-react";
 import { memo, type ReactNode, useId, useMemo, useState } from "react";
-import {
-  type BranchActorColorDomain,
-  BranchActorTurnSide,
-} from "../lib/branch-actor-domain";
 import { locPerDollar } from "../lib/branch-derivations";
 import {
+  BRANCH_TIMELINE_GROUPING_OPTIONS,
   buildSessionTimeline,
+  DEFAULT_BRANCH_TIMELINE_GROUPING,
+  type SessionTimeline,
   type TimelineColumn,
 } from "../lib/branch-session-buckets";
 import { formatClock } from "../lib/branch-timeline-range";
@@ -34,10 +49,14 @@ import {
   formatTimelineEvidenceValue,
   formatTimelineSegmentCost,
   formatTimelineTokens,
+  hasLocPerDollarRatio,
   resolveTimelineCostEvidence,
   resolveTimelineNoBarsMessage,
   resolveTimelineTraceEvidence,
   TIMELINE_TOKEN_PARTS,
+  type TimelineCostEvidence,
+  type TimelineLegendEntry,
+  type TimelineTraceEvidence,
   timelineBarHeightPercent,
 } from "./branch-pr-activity-timeline-helpers";
 import { buildTimelineHumanActorDomain } from "./branch-timeline-human-domain";
@@ -65,7 +84,7 @@ import {
  * Sessions-driven (not `usage.hourBuckets`): in v1 the usage rollup is
  * unattributed (`owner: null`) and underpopulated, so E1 reads the same
  * sessions + merged trace the swimlane/trace use, keeping the page consistent and
- * attributed. Purely presentational over `BranchPageDetail`.
+ * attributed. Purely presentational over `SessionTimelineDetail`.
  *
  * Degraded states (sessions exist but timing cannot produce bars) keep the
  * section header and its cost/LOC/duration stats and swap only the bars area for
@@ -112,19 +131,38 @@ function resolveNoSessionsState({
  */
 export const BranchPrActivityTimeline = memo(function BranchPrActivityTimeline({
   detail,
+  showBranchContext = true,
   traceState,
   isLoading = false,
   actorDomain,
   activeHourStart,
   activeFraction,
+  grouping = DEFAULT_BRANCH_TIMELINE_GROUPING,
+  scale = TimelineScale.OneHour,
+  windowStart = 0,
+  onGroupingChange,
+  onPositionChange,
+  onScaleChange,
+  onWindowStartChange,
   onScrubHour,
+  positionColumn,
   loc,
   children,
   className,
 }: BranchPrActivityTimelineProps) {
+  // ISS-5951 / ISS-5747 (ISS-4779 closed-by-default). Read above the early
+  // returns so hook order is stable, and through the optional port because this
+  // shared component also mounts in Storybook and tests that wire no flag
+  // adapter; there it resolves off, matching the shipped default.
+  const fallbackCostMarkerEnabled = useFeatureFlagEnabledOptional(
+    BRANCH_TIMELINE_COST_FALLBACK_MARKER_FEATURE_FLAG_KEY
+  );
   const renderedDetail = useMemo(
-    () => detailForLoadedTimelineSessions(detail, traceState),
-    [detail, traceState]
+    () =>
+      detailForLoadedTimelineSessions(detail, traceState, {
+        requireKnownLoadedCost: fallbackCostMarkerEnabled,
+      }),
+    [detail, fallbackCostMarkerEnabled, traceState]
   );
   const domain = useMemo(
     () =>
@@ -132,18 +170,25 @@ export const BranchPrActivityTimeline = memo(function BranchPrActivityTimeline({
     [actorDomain, renderedDetail, traceState]
   );
   const timeline = useMemo(
-    () => buildSessionTimeline(renderedDetail, domain),
-    [renderedDetail, domain]
+    () =>
+      buildSessionTimeline(renderedDetail, domain, grouping, {
+        scale,
+        windowStart,
+      }),
+    [renderedDetail, domain, grouping, scale, windowStart]
   );
+  const {
+    chartableCostUsd,
+    columns,
+    maxTotal,
+    nonBucketableSessions,
+    truncatedSessions,
+    startMs,
+    endMs,
+    fullStartMs,
+    fullEndMs,
+  } = timeline;
   const timingDisclosureId = useId();
-  // ISS-5951 (ISS-4779 closed-by-default). Read above the early returns so the
-  // hook order is stable, and through the OPTIONAL port because this shared
-  // component also mounts in Storybook and in tests that wire no flag adapter —
-  // there it resolves off, which is this gate's honest default.
-  const fallbackCostMarkerEnabled = useFeatureFlagEnabledOptional(
-    BRANCH_TIMELINE_COST_FALLBACK_MARKER_FEATURE_FLAG_KEY
-  );
-
   if (isLoading) {
     return <Skeleton className={cn("h-[140px] w-full", className)} />;
   }
@@ -155,23 +200,16 @@ export const BranchPrActivityTimeline = memo(function BranchPrActivityTimeline({
   // session repeated across two links (FEA-4269 review, whitlockk). The true-empty
   // guard stays a raw-length boolean: zero rows ⇔ zero distinct sessions.
   const sessionCount = timeline.distinctSessionCount;
-  const noSessionsState = resolveNoSessionsState({
-    className,
-    sessionCount: detail.sessions.length,
-  });
+  const noSessionsState = showBranchContext
+    ? resolveNoSessionsState({
+        className,
+        sessionCount: detail.sessions.length,
+      })
+    : null;
   if (noSessionsState) {
     return noSessionsState;
   }
 
-  const {
-    chartableCostUsd,
-    columns,
-    maxTotal,
-    nonBucketableSessions,
-    truncatedSessions,
-    startMs,
-    endMs,
-  } = timeline;
   // Sessions exist but timing cannot produce a bucketizable duration. Keep the
   // section + stats and swap only the bars area for this message.
   const noBarsMessage = resolveTimelineNoBarsMessage({
@@ -181,6 +219,7 @@ export const BranchPrActivityTimeline = memo(function BranchPrActivityTimeline({
     ).size,
     sessionCount,
     traceCompleteness: traceState?.aggregateCompleteness.state,
+    showBranchContext,
   });
   const authoritativeCost = resolveAttributedBranchCost(renderedDetail);
   // whitlockk review: `detailForLoadedTimelineSessions` rewrites a legacy Branch's
@@ -205,15 +244,34 @@ export const BranchPrActivityTimeline = memo(function BranchPrActivityTimeline({
   const traceEvidence = resolveTimelineTraceEvidence(traceState);
   // Prefer the Branch-level authoritative cost when it exists and every loaded
   // Session can be charted. Otherwise use the defensible rendered subtotal so
-  // the headline still reconciles with priced bars; LOC/$ remains Branch-level.
+  // the headline still reconciles with priced bars.
+  //
+  // ISS-7180 ruled `BranchMetricId.DetailLocPerDollar` — the headline card's
+  // Branch-lifetime ratio — canonical for Branch detail. This stat is the OTHER
+  // estimand and still renders the bare metric name: the approved vocabulary
+  // separates LOC/$ by basis, never by scope (ISS-10667 R4a), so no human-authored
+  // phrase distinguishing the two exists yet. Do not compose one here.
+  //
+  // LOC/$ mixes populations, so do not read it as Branch-level: `churn` below is
+  // taken from the UNREWRITTEN `detail`, while its denominator is
+  // `authoritativeCost` off `renderedDetail`, which
+  // `detailForLoadedTimelineSessions` may already have rewritten to the
+  // loaded-Session subtotal. Which population both ends should share is ISS-7836.
   //
   // ISS-5951: the figure, its marker, and the sentence explaining the marker all
   // come from this ONE call. The selection rule used to live here while the
   // marker was decided separately at the render site, and the two disagreed for
   // the no-authoritative-cost arm — a fallback figure with nothing saying so.
+  // ISS-5747: when the loaded-cost projection resolved to unknown, the charted
+  // subtotal cannot resurrect unavailable rows as zero.
+  const chartableCostForEvidence =
+    (fallbackCostMarkerEnabled || !showBranchContext) &&
+    renderedDetail.estimatedCostUsd === null
+      ? null
+      : chartableCostUsd;
   const costEvidence = resolveTimelineCostEvidence({
     authoritativeCostUsd: authoritativeCost,
-    chartableCostUsd,
+    chartableCostUsd: chartableCostForEvidence,
     discloseFallbackReasons: fallbackCostMarkerEnabled,
     sourceCostUnpriced,
     timingIncomplete,
@@ -240,125 +298,34 @@ export const BranchPrActivityTimeline = memo(function BranchPrActivityTimeline({
     churn,
     totalCostUsd: authoritativeCost,
   });
-  const wallClockMs = startMs != null && endMs != null ? endMs - startMs : null;
+  const wallClockMs =
+    fullStartMs != null && fullEndMs != null ? fullEndMs - fullStartMs : null;
 
-  // Distinct users (with summed cost) for the legend.
   const legend = buildTimelineLegend(columns);
+  const handlePositionChange = onPositionChange ?? onWindowStartChange;
 
   return (
     <section className={cn("bq-act", className)}>
-      <div className="bq-act-head">
-        <span className="bq-act-title">
-          PR timeline
-          <span className="bq-act-sub">
-            {" "}
-            · {timelineSessionLabel(sessionCount, detail.sessions)}
-          </span>
-        </span>
-        <div className="bq-act-legend">
-          {legend.map((entry) => (
-            <span
-              className="bq-lg"
-              key={entry.key}
-              title={`${domain.labelFor(entry.owner)} · ${formatCostPrecise(entry.total)}`}
-            >
-              <span
-                className="bq-lg-sw"
-                style={{
-                  background: domain.colorForTurn(
-                    entry.owner,
-                    BranchActorTurnSide.Human
-                  ),
-                }}
-              />
-              <span className="bq-lg-name">{domain.labelFor(entry.owner)}</span>
-            </span>
-          ))}
-        </div>
-        <div className="bq-stats">
-          <span className="bq-stat">
-            {/* whitlockk review (ISS-4919): the SAME precise formatter the bars'
-                tooltips and the legend use. Fixed-2dp `formatCost` rendered this
-                headline as "$0.00" for a sub-cent branch total while the tooltips
-                directly beneath it read "< $0.0001" — one total, two claims, on
-                one panel. */}
-            <b
-              aria-describedby={
-                costEvidence.incomplete ? disclosureId : undefined
-              }
-              className="font-mono"
-            >
-              {formatTimelineEvidenceValue(
-                costEvidence.value == null
-                  ? "—"
-                  : formatCostPrecise(costEvidence.value),
-                traceEvidence,
-                {
-                  incomplete: costEvidence.incomplete,
-                  unavailable:
-                    costEvidence.evidenceMissing || costEvidence.value == null,
-                }
-              )}
-            </b>
-            cost
-          </span>
-          <span className="bq-stat">
-            {/* LOC/$ takes its marker from the same predicate the cost does, so
-                it owes the reader the same footnote — the asterisk and the
-                description come from the one answer.
-
-                Its denominator IS `authoritativeCost`: the same rewritten
-                stand-in total `unpricedBranchFallback` exists to disclose. Read
-                only from aggregate trace incompleteness, this stat rendered a
-                bare unqualified ratio beside a cost figure marked `$5.00*` for
-                that very substitution — one denominator making two different
-                claims on one row. */}
-            <b
-              aria-describedby={
-                costEvidence.incompleteTraceEvidence ||
-                costEvidence.unpricedBranchFallback
-                  ? disclosureId
-                  : undefined
-              }
-              className="font-mono"
-            >
-              {/* ISS-4667: the SAME shared formatter the headline card uses, so
-                  one branch value can't read two different ways on one page
-                  (e.g. `0.0088` here vs the card) or floor a small real value. */}
-              {formatTimelineEvidenceValue(
-                formatLocPerDollar(locPerDollarValue),
-                traceEvidence,
-                {
-                  incomplete: costEvidence.unpricedBranchFallback,
-                  unavailable: costEvidence.evidenceMissing,
-                }
-              )}
-            </b>
-            LOC/$
-          </span>
-          <span className="bq-stat">
-            <b
-              aria-describedby={
-                timingIncomplete || costEvidence.incompleteTraceEvidence
-                  ? disclosureId
-                  : undefined
-              }
-              className="font-mono"
-            >
-              {formatTimelineEvidenceValue(
-                wallClockMs == null ? "—" : formatDurationMs(wallClockMs),
-                traceEvidence,
-                {
-                  incomplete: timingIncomplete,
-                  unavailable:
-                    costEvidence.evidenceMissing ||
-                    (wallClockMs == null && timingIncomplete),
-                }
-              )}
-            </b>
-          </span>
-        </div>
-      </div>
+      <TimelineHeader
+        costEvidence={costEvidence}
+        detail={detail}
+        disclosureId={disclosureId}
+        grouping={grouping}
+        legend={legend}
+        locPerDollarValue={locPerDollarValue}
+        onGroupingChange={onGroupingChange}
+        onScaleChange={onScaleChange}
+        peakColumnCostUsd={resolvePeakColumnCost(costEvidence, timeline)}
+        scale={scale}
+        sessionCount={sessionCount}
+        showBranchContext={showBranchContext}
+        timingIncomplete={timingIncomplete}
+        totalSessionCount={
+          showBranchContext ? undefined : traceState?.qualifyingSessionCount
+        }
+        traceEvidence={traceEvidence}
+        wallClockMs={wallClockMs}
+      />
 
       {noBarsMessage ? (
         <p className="bq-act-nobars">{noBarsMessage}</p>
@@ -367,7 +334,6 @@ export const BranchPrActivityTimeline = memo(function BranchPrActivityTimeline({
           activeFraction={activeFraction}
           activeHourStart={activeHourStart}
           columns={columns}
-          domain={domain}
           endMs={endMs}
           maxTotal={maxTotal}
           onScrubHour={onScrubHour}
@@ -376,6 +342,19 @@ export const BranchPrActivityTimeline = memo(function BranchPrActivityTimeline({
           {children}
         </TimelineChart>
       )}
+      {!noBarsMessage && timeline.maxWindowStart > 0 && handlePositionChange ? (
+        <TimelinePositionScrubber
+          className="mt-3 flex items-center gap-3"
+          leadingLabel={showBranchContext ? "Branch" : "Sessions"}
+          onPositionChange={handlePositionChange}
+          position={clampScrubberColumn(
+            positionColumn ?? timeline.windowStart,
+            timeline.totalColumns
+          )}
+          title={showBranchContext ? "Branch timeline position" : "Sessions"}
+          totalColumns={timeline.totalColumns}
+        />
+      ) : null}
       {timingDisclosure ? (
         <p
           className="mt-2 text-muted-foreground text-xs"
@@ -388,6 +367,259 @@ export const BranchPrActivityTimeline = memo(function BranchPrActivityTimeline({
   );
 });
 
+function clampScrubberColumn(column: number, totalColumns: number): number {
+  if (!(Number.isFinite(column) && totalColumns > 0)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(totalColumns - 1, Math.round(column)));
+}
+
+function TimelineHeader({
+  costEvidence,
+  showBranchContext,
+  detail,
+  disclosureId,
+  grouping,
+  legend,
+  locPerDollarValue,
+  onGroupingChange,
+  onScaleChange,
+  peakColumnCostUsd,
+  scale,
+  sessionCount,
+  totalSessionCount,
+  timingIncomplete,
+  traceEvidence,
+  wallClockMs,
+}: {
+  costEvidence: TimelineCostEvidence;
+  showBranchContext: boolean;
+  detail: SessionTimelineDetail;
+  disclosureId?: string;
+  grouping: BranchPrActivityTimelineProps["grouping"];
+  legend: readonly TimelineLegendEntry[];
+  locPerDollarValue: number | null;
+  onGroupingChange?: BranchPrActivityTimelineProps["onGroupingChange"];
+  onScaleChange?: BranchPrActivityTimelineProps["onScaleChange"];
+  peakColumnCostUsd: number | null;
+  scale: TimelineScale;
+  sessionCount: number;
+  totalSessionCount?: number | null;
+  timingIncomplete: boolean;
+  traceEvidence: TimelineTraceEvidence;
+  wallClockMs: number | null;
+}) {
+  return (
+    <div className="bq-act-head">
+      <div className="bq-act-head-left">
+        <div className="bq-act-title-row">
+          <span className="bq-act-title">
+            {showBranchContext ? "PR timeline" : "Sessions"}
+            {showBranchContext || totalSessionCount !== null ? (
+              <span className="bq-act-sub">
+                {" "}
+                ·{" "}
+                {timelineSessionLabel(
+                  sessionCount,
+                  detail.sessions,
+                  totalSessionCount
+                )}
+              </span>
+            ) : null}
+          </span>
+          <TimelineLegend legend={legend} />
+        </div>
+        {onScaleChange ? (
+          <TimelineScaleControl
+            className="bq-act-scale"
+            itemClassName="px-2.5"
+            onValueChange={onScaleChange}
+            options={TIMELINE_SCALE_OPTIONS}
+            title="Timeline scale"
+            value={scale}
+          />
+        ) : null}
+      </div>
+      <div className="bq-act-head-right">
+        <TimelineHeaderStats
+          costEvidence={costEvidence}
+          disclosureId={disclosureId}
+          locPerDollarValue={locPerDollarValue}
+          peakColumnCostUsd={peakColumnCostUsd}
+          scale={scale}
+          showBranchContext={showBranchContext}
+          timingIncomplete={timingIncomplete}
+          traceEvidence={traceEvidence}
+          wallClockMs={wallClockMs}
+        />
+        {onGroupingChange ? (
+          <TimelineGroupByControl
+            onValueChange={onGroupingChange}
+            options={BRANCH_TIMELINE_GROUPING_OPTIONS}
+            title={
+              showBranchContext ? "Group branch timeline bars by" : "Group by"
+            }
+            triggerClassName="h-[34px] w-[184px]"
+            value={grouping ?? DEFAULT_BRANCH_TIMELINE_GROUPING}
+          />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function TimelineLegend({
+  legend,
+}: {
+  legend: readonly TimelineLegendEntry[];
+}) {
+  return (
+    <div className="bq-act-legend">
+      {legend.map((entry) => (
+        <span
+          className="bq-lg"
+          key={entry.key}
+          title={`${entry.label} · ${formatCostPrecise(entry.total)}`}
+        >
+          <span
+            className="bq-lg-sw"
+            style={{
+              background: entry.color,
+            }}
+          />
+          <span className="bq-lg-name">{entry.label}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function TimelineHeaderStats({
+  costEvidence,
+  showBranchContext,
+  disclosureId,
+  locPerDollarValue,
+  peakColumnCostUsd,
+  scale,
+  timingIncomplete,
+  traceEvidence,
+  wallClockMs,
+}: {
+  costEvidence: TimelineCostEvidence;
+  showBranchContext: boolean;
+  disclosureId?: string;
+  locPerDollarValue: number | null;
+  /** ISS-12665: the costliest column across the whole span at `scale`. */
+  peakColumnCostUsd: number | null;
+  scale: TimelineScale;
+  timingIncomplete: boolean;
+  traceEvidence: TimelineTraceEvidence;
+  wallClockMs: number | null;
+}) {
+  // ISS-6958 (ISS-4779 closed-by-default): this strip is where a 53-hour cycle
+  // rendered "3180m 0s". Optional port because the component also mounts in
+  // Storybook and tests that wire no adapter; off there, matching the default.
+  const honest = useFeatureFlagEnabledOptional(
+    BRANCH_DETAIL_METRIC_HONESTY_FEATURE_FLAG_KEY
+  );
+  const format = honest ? formatBranchDurationMs : formatDurationMs;
+  const locPerDollarLabel = formatTimelineEvidenceValue(
+    formatLocPerDollar(locPerDollarValue),
+    traceEvidence,
+    {
+      incomplete: costEvidence.unpricedBranchFallback,
+      unavailable: costEvidence.evidenceMissing,
+    }
+  );
+  // Agreed design: ISS-8358 prototype,
+  // `packages/app/branches/components/prototype-preview/components/branch-sessions-timeline.tsx` (ISS-12207).
+  return (
+    <div className="bq-stats">
+      <span className="bq-stat">
+        <b
+          aria-describedby={costEvidence.incomplete ? disclosureId : undefined}
+        >
+          {formatTimelineEvidenceValue(
+            costEvidence.value == null
+              ? "—"
+              : formatCostPrecise(costEvidence.value),
+            traceEvidence,
+            {
+              incomplete: costEvidence.incomplete,
+              unavailable:
+                costEvidence.evidenceMissing || costEvidence.value == null,
+            }
+          )}
+        </b>{" "}
+        cost
+      </span>
+      {/* ISS-12665: the span is a Branch's sessions, not one session, so the
+          prototype's "across the full session" explanation is not carried. The
+          peak is read off the same rendered columns as duration, so it carries
+          duration's marker and disclosure (#9008 review, whitlockk). */}
+      <span className="bq-stat">
+        <TimelinePeakBucketFact
+          costUsd={peakColumnCostUsd}
+          describedBy={
+            timingIncomplete || costEvidence.incompleteTraceEvidence
+              ? disclosureId
+              : undefined
+          }
+          explainsFullSession={false}
+          markValue={(formatted) =>
+            formatTimelineEvidenceValue(formatted, traceEvidence, {
+              incomplete: timingIncomplete,
+            })
+          }
+          scale={scale}
+        />
+      </span>
+      {showBranchContext ? (
+        <span className="bq-stat bq-stat-loc">
+          <b
+            aria-describedby={
+              costEvidence.incompleteTraceEvidence ||
+              costEvidence.unpricedBranchFallback
+                ? disclosureId
+                : undefined
+            }
+          >
+            {locPerDollarLabel}
+          </b>
+          {hasLocPerDollarRatio(
+            locPerDollarValue,
+            traceEvidence,
+            costEvidence.evidenceMissing
+          )
+            ? " LOC/$"
+            : null}
+        </span>
+      ) : null}
+      <span className="bq-stat">
+        <span className="sr-only">Duration: </span>
+        <b
+          aria-describedby={
+            timingIncomplete || costEvidence.incompleteTraceEvidence
+              ? disclosureId
+              : undefined
+          }
+        >
+          {formatTimelineEvidenceValue(
+            wallClockMs == null ? "—" : format(wallClockMs),
+            traceEvidence,
+            {
+              incomplete: timingIncomplete,
+              unavailable:
+                costEvidence.evidenceMissing ||
+                (wallClockMs == null && timingIncomplete),
+            }
+          )}
+        </b>
+      </span>
+    </div>
+  );
+}
+
 /**
  * The drawable chart region — the "you are here" line, the interactive bars +
  * hover card, the event-dot rail (`children`), and the time axis. Owns the hover
@@ -396,7 +628,6 @@ export const BranchPrActivityTimeline = memo(function BranchPrActivityTimeline({
  */
 function TimelineChart({
   columns,
-  domain,
   maxTotal,
   startMs,
   endMs,
@@ -406,7 +637,6 @@ function TimelineChart({
   children,
 }: {
   columns: TimelineColumn[];
-  domain: BranchActorColorDomain;
   maxTotal: number;
   startMs: number | null;
   endMs: number | null;
@@ -421,6 +651,10 @@ function TimelineChart({
   } | null>(null);
   const hoverIndex = hover?.index ?? null;
   const hoverColumn = hoverIndex == null ? null : columns[hoverIndex];
+  const barRenderData = useMemo(
+    () => columns.map((column) => buildTimelineBarRenderData(column, maxTotal)),
+    [columns, maxTotal]
+  );
 
   return (
     <>
@@ -437,24 +671,26 @@ function TimelineChart({
         {/* biome-ignore lint/a11y/noStaticElementInteractions: container only clears the hover tooltip; bars carry the interactivity */}
         {/* biome-ignore lint/a11y/noNoninteractiveElementInteractions: container only clears the hover tooltip; bars carry the interactivity */}
         <div className="bq-bars" onMouseLeave={() => setHover(null)}>
-          {columns.map((column, index) => (
+          {barRenderData.map((bar, index) => (
             <TimelineBar
               active={
-                activeHourStart != null && column.hourStart === activeHourStart
+                activeHourStart != null &&
+                bar.column.hourStart === activeHourStart
               }
-              ariaLabel={formatTimelineBarLabel(column, domain)}
-              column={column}
+              ariaLabel={bar.ariaLabel}
+              column={bar.column}
+              heightPercent={bar.heightPercent}
               hovered={hoverIndex === index}
-              key={column.hourStart}
-              maxTotal={maxTotal}
+              key={bar.column.hourStart}
               onHover={(anchor) => setHover({ anchor, index })}
               onLeave={() => setHover(null)}
               onScrubHour={onScrubHour}
+              segmentHeights={bar.segmentHeights}
             />
           ))}
         </div>
         {hover && hoverColumn && !hoverColumn.isGap ? (
-          <BarTip anchor={hover.anchor} column={hoverColumn} domain={domain} />
+          <BarTip anchor={hover.anchor} column={hoverColumn} />
         ) : null}
       </div>
 
@@ -480,11 +716,9 @@ function TimelineChart({
  *  the sticky chrome. */
 function BarTip({
   column,
-  domain,
   anchor,
 }: {
   column: TimelineColumn;
-  domain: BranchActorColorDomain;
   anchor: BranchTipAnchor;
 }) {
   return (
@@ -497,16 +731,18 @@ function BarTip({
         <div className="bq-tip-srow" key={segment.key}>
           <div className="bq-tip-row">
             <span className="bq-tip-sw" style={{ background: segment.color }} />
-            <span className="bq-tip-name">
-              {domain.labelFor(segment.owner)}
-            </span>
+            <span className="bq-tip-name">{segment.label}</span>
             <span className="bq-tip-tok font-mono">
               {formatTimelineSegmentCost(segment)}
             </span>
           </div>
           <div className="bq-tip-split">
             {/* Unit boundary: everything above is USD, the rows below are TOKENS.
-                The caption keeps the eye from reading them as cents. */}
+                The caption keeps the eye from reading them as cents.
+
+                ISS-10691: deliberately outside the canonical metric vocabulary
+                (ruling of 2026-09-19) — that vocabulary governs a label naming
+                ONE measured figure, and a unit caption names none. */}
             <span className="bq-tip-splitlabel">Tokens</span>
             {TIMELINE_TOKEN_PARTS.map((part) => (
               <span className="bq-tip-sp" key={part.key}>
@@ -529,24 +765,25 @@ function BarTip({
 
 function TimelineBar({
   column,
-  maxTotal,
+  heightPercent,
   hovered,
   active,
   ariaLabel,
+  segmentHeights,
   onScrubHour,
   onHover,
   onLeave,
 }: {
   column: TimelineColumn;
-  maxTotal: number;
+  heightPercent: number;
   hovered: boolean;
   active: boolean;
   ariaLabel: string;
+  segmentHeights: readonly TimelineSegmentRenderData[];
   onScrubHour?: (hourStart: string) => void;
   onHover: (anchor: BranchTipAnchor) => void;
   onLeave: () => void;
 }) {
-  const height = timelineBarHeightPercent(column, maxTotal);
   // Concurrency is already legible from a bar's stacked multi-actor colors, so it
   // carries no extra border (only the semantic `data-concurrent` hook remains).
   const classes = cn(
@@ -554,16 +791,18 @@ function TimelineBar({
     column.isGap && "idle",
     (hovered || active) && "hot"
   );
-  const segments = column.segments.map((segment) => (
-    <i
-      data-actor-key={segment.key}
-      key={segment.key}
-      style={{
-        height: `${segmentHeightPercent(segment, column)}%`,
-        background: segment.color,
-      }}
-    />
-  ));
+  const segments = segmentHeights.map(
+    ({ heightPercent: segmentHeight, segment }) => (
+      <i
+        data-actor-key={segment.key}
+        key={segment.key}
+        style={{
+          height: `${segmentHeight}%`,
+          background: segment.color,
+        }}
+      />
+    )
+  );
   const dataConcurrent = column.hasConcurrency ? "true" : undefined;
   const dataGap = column.isGap ? "true" : undefined;
 
@@ -580,7 +819,7 @@ function TimelineBar({
         onMouseEnter={(event) =>
           onHover(tipAnchorFromElement(event.currentTarget))
         }
-        style={{ height: `${height}%` }}
+        style={{ height: `${heightPercent}%` }}
         type="button"
       >
         {segments}
@@ -593,7 +832,7 @@ function TimelineBar({
       className={classes}
       data-concurrent={dataConcurrent}
       data-gap={dataGap}
-      style={{ height: `${height}%` }}
+      style={{ height: `${heightPercent}%` }}
     >
       {segments}
     </div>
@@ -602,11 +841,9 @@ function TimelineBar({
 
 function segmentHeightPercent(
   segment: TimelineColumn["segments"][number],
-  column: TimelineColumn
+  column: TimelineColumn,
+  activityOnlyCount: number
 ): number {
-  const activityOnlyCount = column.segments.filter(
-    (candidate) => candidate.value <= 0
-  ).length;
   if (column.total > 0 && activityOnlyCount > 0) {
     const reservedPercent = Math.min(
       MAX_ACTIVITY_ONLY_RESERVE_PERCENT,
@@ -626,14 +863,68 @@ function segmentHeightPercent(
 const ACTIVITY_ONLY_SEGMENT_PERCENT = 8;
 const MAX_ACTIVITY_ONLY_RESERVE_PERCENT = 50;
 
+function buildTimelineBarRenderData(
+  column: TimelineColumn,
+  maxTotal: number
+): TimelineBarRenderData {
+  const activityOnlyCount = countActivityOnlySegments(column);
+  return {
+    ariaLabel: formatTimelineBarLabel(column),
+    column,
+    heightPercent: timelineBarHeightPercent(column, maxTotal),
+    segmentHeights: column.segments.map((segment) => ({
+      heightPercent: segmentHeightPercent(segment, column, activityOnlyCount),
+      segment,
+    })),
+  };
+}
+
+function countActivityOnlySegments(column: TimelineColumn): number {
+  let count = 0;
+  for (const segment of column.segments) {
+    if (segment.value <= 0) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
 function timelineSessionLabel(
   renderedCount: number,
-  sourceSessions: BranchPageDetail["sessions"]
+  sourceSessions: SessionTimelineDetail["sessions"],
+  qualifyingSessionCount?: number | null
 ): string {
-  const totalCount = new Set(sourceSessions.map(({ sessionId }) => sessionId))
-    .size;
+  const totalCount =
+    qualifyingSessionCount ??
+    new Set(sourceSessions.map(({ sessionId }) => sessionId)).size;
   if (renderedCount === totalCount) {
     return `${renderedCount} session${renderedCount === 1 ? "" : "s"}`;
   }
   return `${renderedCount} of ${totalCount} sessions`;
+}
+
+type TimelineBarRenderData = {
+  ariaLabel: string;
+  column: TimelineColumn;
+  heightPercent: number;
+  segmentHeights: readonly TimelineSegmentRenderData[];
+};
+
+type TimelineSegmentRenderData = {
+  heightPercent: number;
+  segment: TimelineColumn["segments"][number];
+};
+
+/**
+ * ISS-12665: the header's peak column publishes a figure only when the cost stat
+ * beside it does, so an unavailable Branch cost cannot sit next to a priced peak.
+ */
+function resolvePeakColumnCost(
+  costEvidence: TimelineCostEvidence,
+  timeline: Pick<SessionTimeline, "peakColumnCostUsd">
+): number | null {
+  if (costEvidence.evidenceMissing || costEvidence.value == null) {
+    return null;
+  }
+  return timeline.peakColumnCostUsd;
 }

@@ -2,6 +2,7 @@ import { FEATURE_FLAG_SETTLE_TIMEOUT_MS as FLAG_SETTLE_TIMEOUT_MS } from "@repo/
 import { act, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { WebFeatureFlagProvider } from "@/__tests__/helpers/web-feature-flag-provider";
 import { FeatureFlagRouteGate } from "../feature-flag-route-gate";
 
 const PAST_SETTLE_DEADLINE_MS = FLAG_SETTLE_TIMEOUT_MS + 1;
@@ -111,7 +112,8 @@ function renderGate() {
       pending={<div>{PENDING_CHROME_TEXT}</div>}
     >
       <GatedChild />
-    </FeatureFlagRouteGate>
+    </FeatureFlagRouteGate>,
+    { wrapper: WebFeatureFlagProvider }
   );
 }
 
@@ -390,7 +392,8 @@ describe("FeatureFlagRouteGate", () => {
     render(
       <FeatureFlagRouteGate flag={TEST_FLAG}>
         <GatedChild />
-      </FeatureFlagRouteGate>
+      </FeatureFlagRouteGate>,
+      { wrapper: WebFeatureFlagProvider }
     );
 
     expect(

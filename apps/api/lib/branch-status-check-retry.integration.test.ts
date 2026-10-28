@@ -117,6 +117,7 @@ describeWithDatabase("check_run retry recovery integration", () => {
       claimed: 1,
       deadLettered: 0,
       discarded: 0,
+      failures: [],
       missing: 0,
       rescheduled: 0,
       succeeded: 1,
@@ -256,6 +257,7 @@ async function seedDueRetry(options: { attempts?: number } = {}) {
       await tx.branchDetail.update({
         where: { artifactId: seeded.branchArtifactId },
         data: { checkRunRetryAttempts: options.attempts },
+        select: { artifactId: true },
       });
     }
   });
@@ -292,6 +294,7 @@ async function insertSeededGraph(
       name: "Retry Integration Org",
       slug: `retry-integration-${ids.suffix}`,
     },
+    select: { id: true },
   });
   await tx.user.create({
     data: {
@@ -300,6 +303,7 @@ async function insertSeededGraph(
       id: ids.userId,
       organizationId: ids.organizationId,
     },
+    select: { id: true },
   });
   await tx.project.create({
     data: {
@@ -310,6 +314,7 @@ async function insertSeededGraph(
       slug: `retry-project-${ids.suffix}`,
       status: ProjectStatus.IN_PROGRESS,
     },
+    select: { id: true },
   });
   await tx.gitHubInstallation.create({
     data: {
@@ -323,6 +328,7 @@ async function insertSeededGraph(
       senderLogin: "octocat",
       status: GitHubInstallationStatus.ACTIVE,
     },
+    select: { id: true },
   });
   await tx.gitHubInstallationRepository.create({
     data: {
@@ -334,6 +340,7 @@ async function insertSeededGraph(
       owner: "acme",
       private: false,
     },
+    select: { id: true },
   });
   await tx.artifact.create({
     data: {
@@ -344,6 +351,7 @@ async function insertSeededGraph(
       status: "OPEN",
       type: ArtifactType.BRANCH,
     },
+    select: { id: true },
   });
   await tx.branchDetail.create({
     data: {
@@ -355,6 +363,7 @@ async function insertSeededGraph(
       repositoryFullName: "acme/widgets",
       repositoryId: ids.repositoryId,
     },
+    select: { artifactId: true },
   });
 }
 

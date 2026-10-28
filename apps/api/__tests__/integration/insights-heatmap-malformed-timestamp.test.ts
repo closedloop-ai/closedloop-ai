@@ -94,8 +94,8 @@ async function seedSessionWithMessages(input: {
         harness: "claude",
         model: "claude-opus-4",
         sessionStartedAt: SESSION_STARTED_AT,
+        lastActivityAt: SESSION_STARTED_AT,
         sessionUpdatedAt: SESSION_UPDATED_AT,
-        userId: input.userId,
         // The heatmap reads turns straight out of metadata.messages[]. Cast to
         // the Prisma JSON input type — the array-of-objects shape is valid JSON
         // but TS can't infer the structural index signature Prisma requires.

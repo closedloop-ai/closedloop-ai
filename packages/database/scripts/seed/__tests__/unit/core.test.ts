@@ -13,7 +13,7 @@
  * All Prisma calls are mocked; no database connection is required.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ArtifactSubtype,
   ArtifactType,
@@ -31,13 +31,9 @@ import { baselineContext } from "../fixtures/baseline-org";
 import { countBy } from "../fixtures/count-by";
 import { createMockPrisma } from "../fixtures/mock-prisma";
 
-// Shorthand: access the mock's call records without fighting Prisma's fluent types.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnyDelegate = any;
-
 function buildReadyMock() {
   const prisma = createMockPrisma();
-  const p = prisma as AnyDelegate;
+  const p = vi.mocked(prisma, true);
 
   p.team.findUnique.mockResolvedValue(null);
   p.teamMember.findUnique.mockResolvedValue(null);
@@ -47,19 +43,27 @@ function buildReadyMock() {
   p.gitHubInstallation.findUnique.mockResolvedValue(null);
   p.gitHubInstallationRepository.findUnique.mockResolvedValue(null);
 
-  p.team.upsert.mockImplementation((args: AnyDelegate) =>
+  vi.mocked(prisma.team.upsert, { partial: true }).mockImplementation((args) =>
     Promise.resolve({ id: args.create.id as string })
   );
-  p.teamMember.upsert.mockResolvedValue({ id: "tm1" });
-  p.project.upsert.mockImplementation((args: AnyDelegate) =>
-    Promise.resolve({ id: args.create.id as string })
+  vi.mocked(prisma.teamMember.upsert, { partial: true }).mockResolvedValue({
+    id: "tm1",
+  });
+  vi.mocked(prisma.project.upsert, { partial: true }).mockImplementation(
+    (args) => Promise.resolve({ id: args.create.id as string })
   );
-  p.slugCounter.upsert.mockResolvedValue({ id: "sc1" });
-  p.artifact.upsert.mockImplementation((args: AnyDelegate) =>
-    Promise.resolve({ id: args.create.id as string })
+  vi.mocked(prisma.slugCounter.upsert, { partial: true }).mockResolvedValue({
+    id: "sc1",
+  });
+  vi.mocked(prisma.artifact.upsert, { partial: true }).mockImplementation(
+    (args) => Promise.resolve({ id: args.create.id as string })
   );
-  p.gitHubInstallation.upsert.mockResolvedValue({ id: "gh-inst" });
-  p.gitHubInstallationRepository.upsert.mockResolvedValue({ id: "gh-repo" });
+  vi.mocked(prisma.gitHubInstallation.upsert, {
+    partial: true,
+  }).mockResolvedValue({ id: "gh-inst" });
+  vi.mocked(prisma.gitHubInstallationRepository.upsert, {
+    partial: true,
+  }).mockResolvedValue({ id: "gh-repo" });
 
   return { prisma, p };
 }
@@ -68,24 +72,24 @@ function buildReadyMock() {
 describe("seedCoreEntities — Team, Projects, SlugCounters (TS-U.3)", () => {
   it("upserts exactly one Team row", async () => {
     const { prisma, p } = buildReadyMock();
-    await seedCoreEntities(prisma as any, baselineContext);
+    await seedCoreEntities(prisma, baselineContext);
     expect(p.team.upsert).toHaveBeenCalledOnce();
   });
 
   it("upserts at least 2 Project rows", async () => {
     const { prisma, p } = buildReadyMock();
-    await seedCoreEntities(prisma as any, baselineContext);
+    await seedCoreEntities(prisma, baselineContext);
     expect(p.project.upsert.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
   it("upserts a SlugCounter for every required prefix", async () => {
     const { prisma, p } = buildReadyMock();
-    await seedCoreEntities(prisma as any, baselineContext);
+    await seedCoreEntities(prisma, baselineContext);
 
     const requiredPrefixes = ["PRO", "PRD", "PLN", "FEA"];
-    const calledPrefixes = (
-      p.slugCounter.upsert.mock.calls as AnyDelegate[]
-    ).map((call: AnyDelegate) => call[0].create.typePrefix as string);
+    const calledPrefixes = p.slugCounter.upsert.mock.calls.map(
+      (call) => call[0].create.typePrefix as string
+    );
 
     for (const prefix of requiredPrefixes) {
       expect(calledPrefixes).toContain(prefix);
@@ -94,14 +98,14 @@ describe("seedCoreEntities — Team, Projects, SlugCounters (TS-U.3)", () => {
 
   it("scopes all Team and Project rows to the baseline organizationId", async () => {
     const { prisma, p } = buildReadyMock();
-    await seedCoreEntities(prisma as any, baselineContext);
+    await seedCoreEntities(prisma, baselineContext);
 
-    for (const call of p.team.upsert.mock.calls as AnyDelegate[]) {
+    for (const call of p.team.upsert.mock.calls) {
       expect(call[0].create.organizationId).toBe(
         baselineContext.organizationId
       );
     }
-    for (const call of p.project.upsert.mock.calls as AnyDelegate[]) {
+    for (const call of p.project.upsert.mock.calls) {
       expect(call[0].create.organizationId).toBe(
         baselineContext.organizationId
       );
@@ -110,7 +114,7 @@ describe("seedCoreEntities — Team, Projects, SlugCounters (TS-U.3)", () => {
 
   it("returns teamId and local profile projectIds by default", async () => {
     const { prisma } = buildReadyMock();
-    const result = await seedCoreEntities(prisma as any, baselineContext);
+    const result = await seedCoreEntities(prisma, baselineContext);
     expect(result.teamId).toBeDefined();
     expect(result.projectIds).toHaveLength(
       SEED_PROFILES[DEFAULT_SEED_PROFILE].projects
@@ -121,7 +125,7 @@ describe("seedCoreEntities — Team, Projects, SlugCounters (TS-U.3)", () => {
   it("creates exactly one project for the minimal profile", async () => {
     const { prisma } = buildReadyMock();
     const result = await seedCoreEntities(
-      prisma as any,
+      prisma,
       baselineContext,
       resolveSeedRunPlan({ profile: SeedProfileName.Minimal })
     );
@@ -133,11 +137,11 @@ describe("seedCoreEntities — Team, Projects, SlugCounters (TS-U.3)", () => {
 describe("seedCoreEntities — Artifacts (TS-U.5)", () => {
   it("creates artifact upserts covering every ArtifactType value", async () => {
     const { prisma, p } = buildReadyMock();
-    await seedCoreEntities(prisma as any, baselineContext);
+    await seedCoreEntities(prisma, baselineContext);
 
     const allTypes = Object.values(ArtifactType);
-    const seededTypes = (p.artifact.upsert.mock.calls as AnyDelegate[]).map(
-      (call: AnyDelegate) => call[0].create.type as ArtifactType
+    const seededTypes = p.artifact.upsert.mock.calls.map(
+      (call) => call[0].create.type as ArtifactType
     );
     const seededTypeSet = new Set(seededTypes);
 
@@ -148,16 +152,14 @@ describe("seedCoreEntities — Artifacts (TS-U.5)", () => {
 
   it("creates DOCUMENT artifacts covering every DocumentStatus value", async () => {
     const { prisma, p } = buildReadyMock();
-    await seedCoreEntities(prisma as any, baselineContext);
+    await seedCoreEntities(prisma, baselineContext);
 
     const allStatuses = Object.values(DocumentStatus);
-    const documentCalls = (
-      p.artifact.upsert.mock.calls as AnyDelegate[]
-    ).filter(
-      (call: AnyDelegate) => call[0].create.type === ArtifactType.DOCUMENT
+    const documentCalls = p.artifact.upsert.mock.calls.filter(
+      (call) => call[0].create.type === ArtifactType.DOCUMENT
     );
     const seededStatuses = documentCalls.map(
-      (call: AnyDelegate) => call[0].create.status as DocumentStatus
+      (call) => call[0].create.status as DocumentStatus
     );
     const seededStatusSet = new Set(seededStatuses);
 
@@ -168,7 +170,7 @@ describe("seedCoreEntities — Artifacts (TS-U.5)", () => {
 
   it("creates DOCUMENT artifacts covering every persisted ArtifactSubtype value", async () => {
     const { prisma, p } = buildReadyMock();
-    await seedCoreEntities(prisma as any, baselineContext);
+    await seedCoreEntities(prisma, baselineContext);
 
     // ArtifactSubtype.ISSUE is the FEA-3956 canonical input alias for the
     // persisted `FEATURE` subtype. It never persists
@@ -177,13 +179,11 @@ describe("seedCoreEntities — Artifacts (TS-U.5)", () => {
     const persistedSubtypes = Object.values(ArtifactSubtype).filter(
       (s) => s !== ArtifactSubtype.ISSUE
     );
-    const documentCalls = (
-      p.artifact.upsert.mock.calls as AnyDelegate[]
-    ).filter(
-      (call: AnyDelegate) => call[0].create.type === ArtifactType.DOCUMENT
+    const documentCalls = p.artifact.upsert.mock.calls.filter(
+      (call) => call[0].create.type === ArtifactType.DOCUMENT
     );
     const seededSubtypes = documentCalls.map(
-      (call: AnyDelegate) => call[0].create.subtype as ArtifactSubtype
+      (call) => call[0].create.subtype as ArtifactSubtype
     );
     const seededSubtypeSet = new Set(seededSubtypes);
 
@@ -194,31 +194,29 @@ describe("seedCoreEntities — Artifacts (TS-U.5)", () => {
 
   it("creates at least one BRANCH artifact", async () => {
     const { prisma, p } = buildReadyMock();
-    await seedCoreEntities(prisma as any, baselineContext);
+    await seedCoreEntities(prisma, baselineContext);
 
-    const branchCalls = (p.artifact.upsert.mock.calls as AnyDelegate[]).filter(
-      (call: AnyDelegate) => call[0].create.type === ArtifactType.BRANCH
+    const branchCalls = p.artifact.upsert.mock.calls.filter(
+      (call) => call[0].create.type === ArtifactType.BRANCH
     );
     expect(branchCalls.length).toBeGreaterThanOrEqual(1);
   });
 
   it("creates at least one DEPLOYMENT artifact", async () => {
     const { prisma, p } = buildReadyMock();
-    await seedCoreEntities(prisma as any, baselineContext);
+    await seedCoreEntities(prisma, baselineContext);
 
-    const deploymentCalls = (
-      p.artifact.upsert.mock.calls as AnyDelegate[]
-    ).filter(
-      (call: AnyDelegate) => call[0].create.type === ArtifactType.DEPLOYMENT
+    const deploymentCalls = p.artifact.upsert.mock.calls.filter(
+      (call) => call[0].create.type === ArtifactType.DEPLOYMENT
     );
     expect(deploymentCalls.length).toBeGreaterThanOrEqual(1);
   });
 
   it("scopes all artifact rows to the baseline organizationId", async () => {
     const { prisma, p } = buildReadyMock();
-    await seedCoreEntities(prisma as any, baselineContext);
+    await seedCoreEntities(prisma, baselineContext);
 
-    for (const call of p.artifact.upsert.mock.calls as AnyDelegate[]) {
+    for (const call of p.artifact.upsert.mock.calls) {
       expect(call[0].create.organizationId).toBe(
         baselineContext.organizationId
       );
@@ -239,13 +237,13 @@ describe("seedCoreEntities — Artifacts (TS-U.5)", () => {
       targetRanges: getSeedTargetRanges(targets),
       transaction: { ...basePlan.transaction, batchSize: 25 },
     };
-    const result = await seedCoreEntities(prisma as any, baselineContext, plan);
+    const result = await seedCoreEntities(prisma, baselineContext, plan);
 
-    const documentCreates = (p.artifact.upsert.mock.calls as AnyDelegate[])
-      .map((call: AnyDelegate) => call[0].create)
-      .filter((create: AnyDelegate) => create.type === ArtifactType.DOCUMENT);
+    const documentCreates = p.artifact.upsert.mock.calls
+      .map((call) => call[0].create)
+      .filter((create) => create.type === ArtifactType.DOCUMENT);
     const projectCounts = countBy(
-      documentCreates.map((create: AnyDelegate) => create.projectId as string)
+      documentCreates.map((create) => create.projectId as string)
     );
 
     expect(projectCounts.get(result.projectIds[0]) ?? 0).toBeGreaterThan(

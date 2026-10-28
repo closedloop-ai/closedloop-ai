@@ -1,6 +1,6 @@
 /**
  * ISS-6451: the SQLite read behind `getPullRequests`, extracted from
- * `dashboard-queries.ts` (a grandfathered over-ceiling file) so the windowed
+ * `dashboard-queries.ts` so the windowed
  * query can carry its ordering/paging contract without growing it. The consumer
  * keeps only the JS map from a row to a `DashboardPullRequestSummary`.
  */
@@ -17,7 +17,6 @@ export type SqlitePullRequestRow = {
   pr_number: bigint | null;
   repo_full_name: string | null;
   branch_name: string | null;
-  head_sha: string | null;
   title: string | null;
   harness: string | null;
   observed_at: string | null;
@@ -77,7 +76,8 @@ export function buildDashboardPullRequestSql(
       ranked.repo_full_name AS repo_full_name,
       -- Branch is sourced from the AUTHORITATIVE pull_requests row of the
       -- winning link's session: the head ref for a PR that session created,
-      -- or null for a merely-referenced PR. That column is import-authoritative
+      -- or null for a merely-referenced PR, and the head GitHub confirmed once
+      -- the cloud reports one (ISS-12344). That column is import-authoritative
       -- and is deleted+re-derived per session on a DATA_REVISION rebuild, so it
       -- self-corrects on upgrade. The COALESCE-accumulated artifacts.branch_name
       -- can retain a stale pre-fix value a re-derive won't clear, so it is used
@@ -87,7 +87,6 @@ export function buildDashboardPullRequestSql(
         WHEN pr.session_id IS NOT NULL THEN pr.branch_name
         ELSE ranked.artifact_branch_name
       END                   AS branch_name,
-      ranked.head_sha       AS head_sha,
       ranked.title          AS title,
       ranked.harness        AS harness,
       ranked.observed_at    AS observed_at
@@ -100,7 +99,6 @@ export function buildDashboardPullRequestSql(
         a.pr_number       AS pr_number,
         a.repo_full_name  AS repo_full_name,
         a.branch_name     AS artifact_branch_name,
-        a.head_sha        AS head_sha,
         a.title           AS title,
         a.harness         AS harness,
         a.observed_at     AS observed_at,

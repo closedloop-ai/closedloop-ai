@@ -10,7 +10,8 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SessionTrace, type SessionTraceItem } from "../session-trace";
+import { SessionTrace } from "../session-trace";
+import type { SessionTraceItem } from "../session-trace-groups";
 
 // The inline trace composer pulls org members for its @-mention picker; stub it
 // so the sub-agent trace under test mounts without a live users query.

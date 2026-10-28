@@ -4,6 +4,7 @@ import {
   LinkType,
 } from "@repo/api/src/types/artifact";
 import { DocumentType } from "@repo/api/src/types/document";
+import { Status } from "@repo/api/src/types/result";
 import {
   GitHubPRState,
   ArtifactType as PrismaArtifactType,
@@ -11,6 +12,8 @@ import {
 } from "@repo/database";
 import { keys } from "@repo/database/keys";
 import { describe, expect, it } from "vitest";
+import { unwrapCreatedLink } from "@/__tests__/support/artifact-links/create-link.test-helpers";
+import { windowForCursor } from "@/app/artifact-links/resolved-page";
 import { artifactLinksService } from "@/app/artifact-links/service";
 import { documentService } from "@/app/documents/document-service";
 import {
@@ -141,6 +144,71 @@ function createBranchArtifact(
 }
 
 describe.skipIf(!hasDatabase)("Artifact Links Integration", () => {
+  // ISS-7536. The unit suite proves the P2002 branch against a hand-built error
+  // object, which cannot show what THIS adapter puts in `meta.target`. Only a
+  // real unique-constraint violation does, so this is the test that would go red
+  // if the adapter reported a shape `isDuplicateArtifactLinkViolation` misses
+  // and a duplicate silently regressed from 409 back to 500.
+  it("reports a repeated link as Conflict rather than throwing", async () => {
+    await autoRollbackTransaction(async () => {
+      const { testOrgId, testProjectId, testUser } = await setupTestData();
+
+      const source = await createDocumentArtifact(
+        testOrgId,
+        testUser.id,
+        testProjectId,
+        { type: DocumentType.Prd, title: "Duplicate source" }
+      );
+      const target = await createDocumentArtifact(
+        testOrgId,
+        testUser.id,
+        testProjectId,
+        { type: DocumentType.ImplementationPlan, title: "Duplicate target" }
+      );
+
+      const input = {
+        sourceId: source.id,
+        targetId: target.id,
+        linkType: LinkType.Produces,
+      };
+      unwrapCreatedLink(
+        await artifactLinksService.createLink(testOrgId, input)
+      );
+
+      // The retry hits `@@unique([sourceId, targetId, linkType])` in Postgres.
+      await expect(
+        artifactLinksService.createLink(testOrgId, input)
+      ).resolves.toEqual({ ok: false, error: Status.Conflict });
+    });
+  });
+
+  it("rejects a self-link against a real artifact row", async () => {
+    await autoRollbackTransaction(async () => {
+      const { testOrgId, testProjectId, testUser } = await setupTestData();
+
+      const artifact = await createDocumentArtifact(
+        testOrgId,
+        testUser.id,
+        testProjectId,
+        { type: DocumentType.Prd, title: "Self link" }
+      );
+
+      await expect(
+        artifactLinksService.createLink(testOrgId, {
+          sourceId: artifact.id,
+          targetId: artifact.id,
+          linkType: LinkType.Produces,
+        })
+      ).resolves.toEqual({ ok: false, error: Status.BadRequest });
+
+      const links = await artifactLinksService.findLinks(
+        testOrgId,
+        artifact.id
+      );
+      expect(links).toHaveLength(0);
+    });
+  });
+
   it("creates and finds bidirectional links", async () => {
     await autoRollbackTransaction(async () => {
       const { testOrgId, testProjectId, testUser } = await setupTestData();
@@ -158,11 +226,13 @@ describe.skipIf(!hasDatabase)("Artifact Links Integration", () => {
         { type: DocumentType.ImplementationPlan, title: "Implementation Plan" }
       );
 
-      const link = await artifactLinksService.createLink(testOrgId, {
-        sourceId: artifact1.id,
-        targetId: artifact2.id,
-        linkType: LinkType.Produces,
-      });
+      const link = unwrapCreatedLink(
+        await artifactLinksService.createLink(testOrgId, {
+          sourceId: artifact1.id,
+          targetId: artifact2.id,
+          linkType: LinkType.Produces,
+        })
+      );
 
       expect(link.id).toBeDefined();
       expect(link.sourceId).toBe(artifact1.id);
@@ -262,11 +332,13 @@ describe.skipIf(!hasDatabase)("Artifact Links Integration", () => {
         }
       );
 
-      const link = await artifactLinksService.createLink(testOrgId, {
-        sourceId: artifact.id,
-        targetId: prArtifact.id,
-        linkType: LinkType.Produces,
-      });
+      const link = unwrapCreatedLink(
+        await artifactLinksService.createLink(testOrgId, {
+          sourceId: artifact.id,
+          targetId: prArtifact.id,
+          linkType: LinkType.Produces,
+        })
+      );
 
       // Bidirectional lookup works across artifact types
       const fromDoc = await artifactLinksService.findLinks(
@@ -308,17 +380,83 @@ describe.skipIf(!hasDatabase)("Artifact Links Integration", () => {
         linkType: LinkType.Produces,
       });
 
-      const resolved = await artifactLinksService.findResolvedLinks(
-        testOrgId,
-        prd.id,
-        LinkDirection.Both
-      );
+      const { items: resolved } =
+        await artifactLinksService.findResolvedLinksPage(
+          testOrgId,
+          prd.id,
+          LinkDirection.Both,
+          windowForCursor()
+        );
 
       expect(resolved).toHaveLength(1);
       expect(resolved[0].source.id).toBe(prd.id);
       expect(resolved[0].source.type).toBe(ArtifactType.Document);
       expect(resolved[0].target.id).toBe(plan.id);
       expect(resolved[0].target.type).toBe(ArtifactType.Document);
+    });
+  });
+
+  // ISS-7732: the unit tests hand the projection a pre-built row from a mocked
+  // db, so they cannot prove the `assignee` relation/include is valid Prisma.
+  // This one exercises the real join, and covers the assigned and unassigned
+  // cases in one link so a hardcoded value fails one of them.
+  it("hydrates the endpoint assignee from the real assignee relation", async () => {
+    await autoRollbackTransaction(async () => {
+      const { testOrgId, testProjectId, testUser } = await setupTestData();
+
+      const prd = await createDocumentArtifact(
+        testOrgId,
+        testUser.id,
+        testProjectId,
+        { type: DocumentType.Prd, title: "Assigned PRD" }
+      );
+      const plan = await createDocumentArtifact(
+        testOrgId,
+        testUser.id,
+        testProjectId,
+        { type: DocumentType.ImplementationPlan, title: "Unassigned Plan" }
+      );
+
+      // `documentService.create` defaults `assigneeId` to the CREATOR when the
+      // caller passes none, so the plan is NOT unassigned as created. Clear it
+      // explicitly — otherwise "unassigned" is really the creator's own id, and
+      // the null half of this test could never fail. Both sides are set
+      // explicitly for the same reason: neither should ride that default.
+      await withDb((db) =>
+        db.artifact.update({
+          where: { id: plan.id },
+          data: { assigneeId: null },
+        })
+      );
+      await withDb((db) =>
+        db.artifact.update({
+          where: { id: prd.id },
+          data: { assigneeId: testUser.id },
+        })
+      );
+
+      await artifactLinksService.createLink(testOrgId, {
+        sourceId: prd.id,
+        targetId: plan.id,
+        linkType: LinkType.Produces,
+      });
+
+      const { items: resolved } =
+        await artifactLinksService.findResolvedLinksPage(
+          testOrgId,
+          prd.id,
+          LinkDirection.Both,
+          windowForCursor()
+        );
+
+      expect(resolved).toHaveLength(1);
+      expect(resolved[0].source.assigneeId).toBe(testUser.id);
+      expect(resolved[0].source.assignee).toMatchObject({
+        id: testUser.id,
+        email: testUser.email,
+      });
+      expect(resolved[0].target.assigneeId).toBeNull();
+      expect(resolved[0].target.assignee).toBeNull();
     });
   });
 
@@ -339,11 +477,13 @@ describe.skipIf(!hasDatabase)("Artifact Links Integration", () => {
         { type: DocumentType.ImplementationPlan, title: "Plan" }
       );
 
-      const link = await artifactLinksService.createLink(testOrgId, {
-        sourceId: artifact1.id,
-        targetId: artifact2.id,
-        linkType: LinkType.Produces,
-      });
+      const link = unwrapCreatedLink(
+        await artifactLinksService.createLink(testOrgId, {
+          sourceId: artifact1.id,
+          targetId: artifact2.id,
+          linkType: LinkType.Produces,
+        })
+      );
 
       await artifactLinksService.deleteLink(link.id, testOrgId);
 
@@ -352,56 +492,6 @@ describe.skipIf(!hasDatabase)("Artifact Links Integration", () => {
         artifact1.id
       );
       expect(links).toHaveLength(0);
-    });
-  });
-
-  it("deletes all links for an artifact", async () => {
-    await autoRollbackTransaction(async () => {
-      const { testOrgId, testProjectId, testUser } = await setupTestData();
-
-      const artifact1 = await createDocumentArtifact(
-        testOrgId,
-        testUser.id,
-        testProjectId,
-        { type: DocumentType.Prd, title: "PRD" }
-      );
-      const artifact2 = await createDocumentArtifact(
-        testOrgId,
-        testUser.id,
-        testProjectId,
-        { type: DocumentType.ImplementationPlan, title: "Plan" }
-      );
-      const artifact3 = await createDocumentArtifact(
-        testOrgId,
-        testUser.id,
-        testProjectId,
-        { type: DocumentType.ImplementationPlan, title: "Another Plan" }
-      );
-
-      await artifactLinksService.createLink(testOrgId, {
-        sourceId: artifact1.id,
-        targetId: artifact2.id,
-        linkType: LinkType.Produces,
-      });
-      await artifactLinksService.createLink(testOrgId, {
-        sourceId: artifact1.id,
-        targetId: artifact3.id,
-        linkType: LinkType.Produces,
-      });
-
-      const before = await artifactLinksService.findLinks(
-        testOrgId,
-        artifact1.id
-      );
-      expect(before).toHaveLength(2);
-
-      await artifactLinksService.deleteAllLinks(testOrgId, artifact1.id);
-
-      const after = await artifactLinksService.findLinks(
-        testOrgId,
-        artifact1.id
-      );
-      expect(after).toHaveLength(0);
     });
   });
 

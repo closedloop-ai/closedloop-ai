@@ -4,6 +4,7 @@ import {
   KpiDeltaBasis,
   KpiFormat,
 } from "@repo/api/src/types/insights";
+import { TOTAL_ESTIMATED_COST_COPY } from "@repo/api/src/types/total-estimated-cost-copy";
 import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
 import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
 import { render, screen } from "@testing-library/react";
@@ -130,7 +131,9 @@ describe("Dashboard KPI row no-comparison reason (ISS-4995)", () => {
       }),
     ]);
 
-    expect(placeholderFor("Cost")).toHaveTextContent(KPI_NOT_COMPUTED_REASON);
+    expect(placeholderFor(TOTAL_ESTIMATED_COST_COPY.label)).toHaveTextContent(
+      KPI_NOT_COMPUTED_REASON
+    );
   });
 
   it("keeps the range copy on the Cost card for a compared metric", () => {
@@ -145,7 +148,7 @@ describe("Dashboard KPI row no-comparison reason (ISS-4995)", () => {
       }),
     ]);
 
-    const placeholder = placeholderFor("Cost");
+    const placeholder = placeholderFor(TOTAL_ESTIMATED_COST_COPY.label);
     expect(placeholder).toHaveTextContent(NO_COMPARISON_LABEL);
     expect(placeholder).not.toHaveTextContent(KPI_NOT_COMPUTED_REASON);
   });

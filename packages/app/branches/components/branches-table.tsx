@@ -1,6 +1,9 @@
 "use client";
 
+import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { ARTIFACT_CELL_PRIMITIVES_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { Chip } from "@repo/design-system/components/ui/chip";
+import { CountCell } from "@repo/design-system/components/ui/count-cell";
 import {
   buildGridTableCardFields,
   GridEmptyValue,
@@ -12,7 +15,6 @@ import {
   ROW_ACTIONS_COLUMN_ID,
 } from "@repo/design-system/components/ui/grid-table";
 import type { SortDirection } from "@repo/design-system/components/ui/sortable-column-header";
-import { ToneLabel } from "@repo/design-system/components/ui/tone-label";
 import {
   COLLAPSE_EMPTY,
   type CollapseCellKey,
@@ -24,6 +26,7 @@ import {
   mergeColumnOrder,
   orderColumns,
 } from "@repo/design-system/lib/column-order";
+import type { CountNoun } from "@repo/design-system/lib/count-noun";
 import { Link } from "@repo/navigation/link";
 import {
   FolderGit2Icon,
@@ -34,26 +37,29 @@ import {
 } from "lucide-react";
 import { type ReactNode, useMemo } from "react";
 import { ProvenanceChip } from "../../shared/components/provenance-chip";
+import { branchColumnLabel } from "../lib/branch-column-view-model";
 import {
   type BranchRow,
   RENDER_MISSING,
   RENDER_UNATTRIBUTED,
   shortRepoName,
 } from "../lib/branch-row";
-import { CHECKS_STATUS_VARIANT } from "../lib/checks-status-display";
 import { ApprovedBranchesTable } from "./approved-branches-table";
 import { BranchChangesBar } from "./branch-changes-bar";
+import {
+  BranchChecksStatusValue,
+  hasBranchChecksCount,
+} from "./branch-checks-status-value";
 import { BranchPRBadge } from "./branch-pr-badge";
 import { BranchRowActionsMenu } from "./branch-row-actions-menu";
 import { renderBranchStatus } from "./branch-status";
 
 /**
  * Branches table — shared by the web `/branches` page and the desktop Branches
- * view, rendered through the design system's generic `GridTable`. The column set
- * and order match the Branches mock
- * (`apps/prototypes/app/p/branches/components/branches-table.tsx`): Name (lead),
- * Owner, Repository, Status, Last active, Linked Sessions, Changes, Pull
- * request, and Checks (FEA-4066). The agent-detail-only inline "Version" column
+ * view, rendered through the design system's generic `GridTable`. The canonical
+ * column set is Name (lead), Owner, Repository, Status, Last active, Linked
+ * sessions, Changes, Pull request, and Checks (FEA-4066). The
+ * agent-detail-only inline "Version" column
  * is the trailing `extra` column (data-gated; see `detail-branches-tab.tsx`).
  * GitHub-live cells degrade to the empty-value affordance when enrichment is
  * absent — never a fabricated value.
@@ -62,20 +68,49 @@ import { renderBranchStatus } from "./branch-status";
 const LEAD_WIDTH = "minmax(260px, 1fr)";
 
 // Each data column carries its grid width so the columns show/hide menu (B5a)
-// can drop a column AND its track in lockstep. Order mirrors the prototype's
-// `BRANCH_COLUMNS`.
+// can drop a column AND its track in lockstep.
 const OWNER_COLUMN_ID = "owner";
 
-const COLUMN_SPECS: readonly (GridTableColumn & { width: string })[] = [
+export const BRANCHES_TABLE_COLUMN_SPECS: readonly (GridTableColumn & {
+  width: string;
+})[] = [
   // Owner: the branch actor. Shown by default (no feature flag); hideable via
   // the View menu like any other column. Not sortable: no server owner-sort key.
-  { id: OWNER_COLUMN_ID, label: "Owner", width: "150px" },
-  { id: "repo", label: "Repository", width: "160px", sortable: true },
-  { id: "status", label: "Status", width: "140px", sortable: true },
-  { id: "lastActivity", label: "Last active", width: "110px", sortable: true },
-  { id: "sessions", label: "Linked Sessions", width: "130px", sortable: true },
-  { id: "changes", label: "Changes", width: "130px", sortable: true },
-  { id: "pr", label: "Pull request", width: "150px" },
+  { id: OWNER_COLUMN_ID, label: branchColumnLabel("owner"), width: "150px" },
+  {
+    id: "repo",
+    label: branchColumnLabel("repo"),
+    width: "160px",
+    sortable: true,
+  },
+  {
+    id: "status",
+    label: branchColumnLabel("status"),
+    width: "140px",
+    sortable: true,
+  },
+  {
+    id: "lastActivity",
+    label: branchColumnLabel("lastActivity"),
+    width: "110px",
+    sortable: true,
+  },
+  {
+    id: "sessions",
+    label: branchColumnLabel("sessions"),
+    width: "130px",
+    sortable: true,
+  },
+  {
+    id: "changes",
+    label: branchColumnLabel("changes"),
+    width: "130px",
+    sortable: true,
+  },
+  // ISS-8422: kept in step with the approved table's `pr` track, which had to
+  // grow so the unobserved state's word sits beside the number without clipping.
+  // See the comment there for why this parts from ISS-7362's 150px.
+  { id: "pr", label: branchColumnLabel("pr"), width: "200px" },
   // FEA-4066: the checks rollup ("N/N passing"). Trailing position mirrors the
   // prototype's `COLUMN_SPECS`. Not sortable — like Owner and Pull request,
   // there is no server-side checks sort key, so the header stays static rather
@@ -89,7 +124,7 @@ const COLUMN_SPECS: readonly (GridTableColumn & { width: string })[] = [
 // FEA-4021: every data column in canonical natural order. A reorder of the
 // currently-visible subset merges back into THIS list so a hidden/collapsed
 // column keeps its remembered slot instead of jumping to the end when re-shown.
-const ALL_DATA_COLUMN_IDS: readonly string[] = COLUMN_SPECS.map(
+const ALL_DATA_COLUMN_IDS: readonly string[] = BRANCHES_TABLE_COLUMN_SPECS.map(
   (spec) => spec.id
 );
 
@@ -100,11 +135,15 @@ const ALL_DATA_COLUMN_IDS: readonly string[] = COLUMN_SPECS.map(
 // resize base's `Number.isFinite` guards.
 const NATURAL_COLUMN_WIDTHS: Readonly<Record<string, number>> =
   Object.fromEntries(
-    COLUMN_SPECS.map((spec) => [spec.id, Number.parseInt(spec.width, 10)])
+    BRANCHES_TABLE_COLUMN_SPECS.map((spec) => [
+      spec.id,
+      Number.parseInt(spec.width, 10),
+    ])
   );
 
 // Always-rendered row-actions column (B5c) — not toggleable, so it's appended
-// after the visible data columns rather than living in COLUMN_SPECS.
+// after the visible data columns rather than living in
+// BRANCHES_TABLE_COLUMN_SPECS.
 const ACTIONS_SPEC: GridTableColumn & { width: string } = {
   ...ROW_ACTIONS_COLUMN,
   width: "52px",
@@ -119,6 +158,16 @@ type BranchRowActions = {
    * Absent (or a 0-count row) → the count renders as a plain, non-link value.
    */
   getSessionsHref?: (item: BranchRow) => string;
+  /**
+   * ISS-6384: render the Linked Sessions count through the shared `CountCell`
+   * instead of this file's hand-rolled chip. Behaviour-identical here by
+   * construction — this cell's 0-count rule is the one the shared cell was
+   * built around — so the gate exists to keep the four converging surfaces
+   * flipping together, not because this one changes.
+   */
+  sharedCells: boolean;
+  /** Host connection state used by mutation-capable row policy entries. */
+  tagsReadOnly: boolean;
 };
 
 export type BranchLeadRenderInput = {
@@ -150,6 +199,7 @@ export function BranchesTable({
   approved = false,
   allRows,
   tagsReadOnly = false,
+  includePriorityColumn = false,
 }: {
   items: BranchRow[];
   /** When provided, only these data-column ids render (B5a columns show/hide). */
@@ -215,7 +265,16 @@ export function BranchesTable({
   allRows?: BranchRow[];
   /** Cached Desktop rows expose tags read-only while offline. */
   tagsReadOnly?: boolean;
+  /** ISS-10332 @see ApprovedBranchesTable — read only by the `approved` table. */
+  includePriorityColumn?: boolean;
 }) {
+  // ISS-6384. Read before the `approved` early return below, so this stays an
+  // unconditional hook call. `…Optional` because this table also mounts in
+  // Storybook and in tests that wrap no flag provider; there it degrades to OFF
+  // — today's hand-rolled chip — rather than crashing.
+  const sharedCells = useFeatureFlagEnabledOptional(
+    ARTIFACT_CELL_PRIMITIVES_FEATURE_FLAG_KEY
+  );
   // FEA-3968: drop a low-variance categorical column (Status/Repository/Owner)
   // that is constant across every visible row — a filled chip repeated down a
   // whole column conveys nothing. The column AND its grid track drop in lockstep
@@ -224,16 +283,20 @@ export function BranchesTable({
   const dataSpecs = useMemo(() => {
     const visibleSpecs = (
       visibleColumns
-        ? COLUMN_SPECS.filter((spec) => visibleColumns.has(spec.id))
-        : COLUMN_SPECS
+        ? BRANCHES_TABLE_COLUMN_SPECS.filter((spec) =>
+            visibleColumns.has(spec.id)
+          )
+        : BRANCHES_TABLE_COLUMN_SPECS
     )
       // FEA-4066: data-gate the Checks column (like the agent-detail Version
       // column) — drop it entirely when NO visible row carries a checks rollup,
       // so an all-empty column never renders a header + 120px track over a wall
-      // of em-dashes. No producer emits the passed count today (web BFF sends
-      // `checksPassed: null`; desktop sends both counts null), so today it is
-      // always gated out; it re-materializes automatically once the count is
-      // plumbed upstream. The table runs the FEA-3968 collapse with
+      // of em-dashes. No LIST producer emits the passed count (the web BFF's
+      // list select deliberately omits the check rows an aggregate would have
+      // to count; desktop sends both counts null), so today it is always gated
+      // out; it re-materializes automatically once a list producer counts them.
+      // ISS-12203 gave the count to the DETAIL read, which reads those rows
+      // already. The table runs the FEA-3968 collapse with
       // `collapseEmptyColumns: false` (so a single filtered row can't drop a
       // column), which is why the empty-column drop lives here, not in
       // `branchCollapseKey`.
@@ -312,8 +375,8 @@ export function BranchesTable({
   // non-collapsed subset. Persisting that subset as the whole order would drop a
   // hidden/collapsed column's remembered position (showing it again would append
   // it at the end). Merge the reordered visible ids back into the COMPLETE data
-  // order (every `COLUMN_SPECS` id) so hidden columns keep their slot. Wrapped
-  // only when the caller wired a change handler.
+  // order (every `BRANCHES_TABLE_COLUMN_SPECS` id) so hidden columns keep their
+  // slot. Wrapped only when the caller wired a change handler.
   const handleColumnOrderChange = onColumnOrderChange
     ? (visibleOrder: string[]) =>
         onColumnOrderChange(mergeColumnOrder(ALL_DATA_COLUMN_IDS, visibleOrder))
@@ -325,6 +388,7 @@ export function BranchesTable({
         allRows={allRows}
         getBranchHref={getBranchHref}
         getSessionsHref={getSessionsHref}
+        includePriorityColumn={includePriorityColumn}
         items={items}
         onSort={onSort}
         renderBranchLink={renderBranchLink}
@@ -342,6 +406,8 @@ export function BranchesTable({
       : renderBranchCell(columnId, item, {
           onOpenDetail,
           getSessionsHref,
+          sharedCells,
+          tagsReadOnly,
         });
   return (
     <GridTable
@@ -512,7 +578,7 @@ function renderBranchCell(
         </Chip>
       );
     case "status":
-      return renderBranchStatus(item.status);
+      return renderBranchStatus(item, item.artifactId ?? item.id);
     case OWNER_COLUMN_ID:
       // FEA-3432: a null owner renders the shared em-dash empty-value
       // affordance (`GridEmptyValue`), consistent with the Sessions owner
@@ -533,7 +599,11 @@ function renderBranchCell(
         </span>
       );
     case "sessions":
-      return renderBranchSessions(item, actions.getSessionsHref);
+      return renderBranchSessions(
+        item,
+        actions.getSessionsHref,
+        actions.sharedCells
+      );
     case "changes":
       return (
         <BranchChangesBar
@@ -589,11 +659,46 @@ function renderBranchCell(
  * (a raw `<a>` is a dead click on the desktop renderer; mirrors the branch lead's
  * FEA-4051 fix). A 0-count row is always the shared empty-value affordance —
  * never a dead link.
+ *
+ * ISS-6384: that 0-count rule is why the ticket named this cell the reference
+ * for the shared `CountCell`, and `sharedCells` is the switch onto it. The
+ * shared cell keeps every property this branch has — the same `Chip asChild
+ * interactive` construction, the same `Link`, the same singular/plural
+ * accessible name, the same empty value at zero — so on every value the type
+ * admits, the two render the same thing.
+ *
+ * The one behavioural gain is at the boundary the type does not police.
+ * `sessionCount` is declared `number`, but it is built from an API response, so
+ * a `-1` or a `NaN` can reach here at runtime; the `<= 0` branch below reports
+ * both as "no sessions", which is a count the row does not have. The shared
+ * cell degrades them to "sessions unavailable" instead.
+ *
+ * The hand-roll stays as the flag-OFF branch; deleting it would make the gate
+ * un-flippable.
  */
 function renderBranchSessions(
   item: BranchRow,
-  getSessionsHref?: (item: BranchRow) => string
+  getSessionsHref?: (item: BranchRow) => string,
+  sharedCells = false
 ): ReactNode {
+  if (sharedCells) {
+    return (
+      <CountCell
+        count={item.sessionCount}
+        icon={<UsersIcon aria-hidden className="size-3 shrink-0" />}
+        noun={LINKED_SESSIONS_NOUN}
+        renderLink={
+          getSessionsHref
+            ? (content, accessibleName) => (
+                <Link aria-label={accessibleName} href={getSessionsHref(item)}>
+                  {content}
+                </Link>
+              )
+            : undefined
+        }
+      />
+    );
+  }
   if (item.sessionCount <= 0) {
     return <GridEmptyValue />;
   }
@@ -658,35 +763,43 @@ function branchCollapseKey(columnId: string, item: BranchRow): CollapseCellKey {
  * FEA-4066: does any visible row carry a renderable checks rollup? The Checks
  * column is data-gated on this (like the agent-detail Version column) so an
  * all-empty column never renders a header + track over a wall of em-dashes. A
- * rollup is renderable only when BOTH counts are present — mirrors the
- * `renderBranchChecks` guard so the gate and the cell agree.
+ * rollup is renderable only when BOTH counts are present — the same predicate
+ * `renderBranchChecks` guards on, so the gate and the cell agree.
  */
 function hasAnyChecksRollup(items: readonly BranchRow[]): boolean {
-  return items.some(
-    (item) => item.checksPassed != null && item.checksTotal != null
-  );
+  return items.some(hasBranchChecksCount);
 }
 
 /**
  * FEA-4066 checks rollup cell. The count only renders when BOTH `checksPassed`
  * and `checksTotal` are present — absence degrades to the shared empty-value
- * affordance, never a fabricated `0/N passing`. No producer emits the passed
- * count today (the web BFF sends `checksPassed: null` with a non-null
- * `checksTotal`; desktop sends both null), so this stays empty until the passed
- * count is plumbed upstream — the `hasAnyChecksRollup` data-gate in `dataSpecs`
- * then hides the empty column entirely. When present, the value is toned by
- * `checksStatus` so red/green/pending reads differently, not one flat gray.
+ * affordance, never a fabricated `0/N passing`. No LIST producer emits the
+ * passed count (the web BFF sends `checksPassed: null` with a non-null
+ * `checksTotal`; desktop sends both null), so this stays empty until one does —
+ * the `hasAnyChecksRollup` data-gate in `dataSpecs` then hides the empty column
+ * entirely. ISS-12203 gave the count to the Branch DETAIL read only. The toned
+ * value is
+ * `BranchChecksStatusValue`, shared with the Branch Details row (PLN-2169 M4).
  */
 function renderBranchChecks(item: BranchRow): ReactNode {
-  if (item.checksPassed == null || item.checksTotal == null) {
+  if (!hasBranchChecksCount(item)) {
     return <GridEmptyValue />;
   }
-  const variant = item.checksStatus
-    ? CHECKS_STATUS_VARIANT[item.checksStatus]
-    : "default";
   return (
-    <ToneLabel className="tabular-nums" variant={variant}>
-      {item.checksPassed}/{item.checksTotal} passing
-    </ToneLabel>
+    <BranchChecksStatusValue
+      checksPassed={item.checksPassed}
+      checksStatus={item.checksStatus}
+      checksTotal={item.checksTotal}
+    />
   );
 }
+
+/**
+ * ISS-6384. Singular AND plural: `CountCell` names a count of one with the
+ * singular, and this cell already asserted "1 linked session" before it was
+ * shared — a primitive that says "1 linked sessions" could not have absorbed it.
+ */
+const LINKED_SESSIONS_NOUN: CountNoun = {
+  one: "linked session",
+  other: "linked sessions",
+};

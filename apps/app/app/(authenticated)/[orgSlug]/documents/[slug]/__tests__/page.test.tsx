@@ -1,38 +1,18 @@
-import { DocumentType } from "@repo/api/src/types/document";
 import { render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-// ISS-4382: /documents/[slug] serves two roles — it renders the DOC editor for
-// a DOC-subtype artifact, and redirects a non-DOC slug to that type's own
-// detail route (the pre-existing Liveblocks inbox-URL fallback). These tests
-// drive the real async server component and assert both branches.
-//
-// notFound()/redirect() are hoisted so the next/navigation mock factory can
-// close over initialized values; each throws a sentinel so a wrong branch
-// surfaces as a thrown error rather than a silent pass.
-const { notFound, redirect } = vi.hoisted(() => ({
-  notFound: vi.fn(() => {
-    throw new Error("NEXT_NOT_FOUND");
-  }),
-  redirect: vi.fn((_dest: string) => {
-    throw new Error("NEXT_REDIRECT");
-  }),
+// ISS-12855: /documents/[slug] is the one detail page for every document. It
+// does no server fetch: it parses `?version` (an invalid value falls back to
+// the latest version on every type, PLN-2217 Q-002) and mounts the client
+// container, which loads the document and picks the editor by its type.
+
+const { resolveOgMetadata } = vi.hoisted(() => ({
+  resolveOgMetadata: vi.fn(() => Promise.resolve({ title: "meta" })),
 }));
+vi.mock("@/lib/og-metadata", () => ({ resolveOgMetadata }));
 
-vi.mock("next/navigation", () => ({ notFound, redirect }));
-
-const { getToken } = vi.hoisted(() => ({ getToken: vi.fn() }));
-vi.mock("@repo/auth/server", () => ({
-  auth: () => Promise.resolve({ getToken }),
-}));
-
-vi.mock("@/lib/api-origin", () => ({
-  resolveApiOrigin: () => "http://api",
-}));
-
-// The client container is a leaf marker — the page test asserts the routing
-// decision, not the editor internals (those have their own coverage) and needs
-// no query/data providers.
+// The client container is a leaf marker — the page test asserts what the page
+// hands it, not the editor internals (those have their own coverage).
 vi.mock("../document-editor-container", () => ({
   DocumentEditorContainer: ({
     slug,
@@ -49,22 +29,7 @@ vi.mock("../document-editor-container", () => ({
   ),
 }));
 
-import DocumentPage from "../page";
-
-const RE_STATUS_500 = /status 500/;
-
-function mockFetchArtifact(artifact: unknown, status = 200) {
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(() =>
-      Promise.resolve({
-        ok: status >= 200 && status < 300,
-        status,
-        json: () => Promise.resolve({ success: true, data: artifact }),
-      })
-    )
-  );
-}
+import DocumentPage, { generateMetadata } from "../page";
 
 function makeParams(slug: string, version?: string) {
   return {
@@ -76,26 +41,17 @@ function makeParams(slug: string, version?: string) {
 describe("DocumentPage (/documents/[slug])", () => {
   afterEach(() => {
     vi.clearAllMocks();
-    vi.unstubAllGlobals();
-    getToken.mockReset();
   });
 
-  it("renders the DOC editor for a DOC-subtype artifact", async () => {
-    getToken.mockResolvedValue("tok");
-    mockFetchArtifact({ type: DocumentType.Doc, slug: "onboarding" });
-
+  it("mounts the container for the slug at the latest version", async () => {
     render(await DocumentPage(makeParams("onboarding")));
 
     const editor = screen.getByTestId("doc-editor");
     expect(editor).toHaveAttribute("data-slug", "onboarding");
-    expect(redirect).not.toHaveBeenCalled();
-    expect(notFound).not.toHaveBeenCalled();
+    expect(editor).toHaveAttribute("data-version", "");
   });
 
-  it("passes a valid version through to the DOC editor", async () => {
-    getToken.mockResolvedValue("tok");
-    mockFetchArtifact({ type: DocumentType.Doc, slug: "onboarding" });
-
+  it("passes a valid version through to the container", async () => {
     render(await DocumentPage(makeParams("onboarding", "3")));
 
     expect(screen.getByTestId("doc-editor")).toHaveAttribute(
@@ -104,92 +60,28 @@ describe("DocumentPage (/documents/[slug])", () => {
     );
   });
 
-  it("ignores an invalid version param for a DOC and falls back to the latest version", async () => {
-    getToken.mockResolvedValue("tok");
-    mockFetchArtifact({ type: DocumentType.Doc, slug: "onboarding" });
+  it.each([
+    ["zero", "0"],
+    ["non-numeric", "not-a-number"],
+    ["trailing-garbage", "2junk"],
+    ["past int4 max", "3000000000"],
+    ["decimal", "2.5"],
+  ])(
+    "ignores a %s version param and falls back to the latest version",
+    async (_label, version) => {
+      render(await DocumentPage(makeParams("onboarding", version)));
 
-    // A junk `?version` on a document that genuinely exists must render the
-    // editor (latest version), not 404 as if the document were missing.
-    render(await DocumentPage(makeParams("onboarding", "0")));
+      expect(screen.getByTestId("doc-editor")).toHaveAttribute(
+        "data-version",
+        ""
+      );
+    }
+  );
 
-    const editor = screen.getByTestId("doc-editor");
-    expect(editor).toHaveAttribute("data-slug", "onboarding");
-    expect(editor).toHaveAttribute("data-version", "");
-    expect(notFound).not.toHaveBeenCalled();
-  });
+  it("serves OG metadata for the document from /documents/<slug>", async () => {
+    const metadata = await generateMetadata(makeParams("ISS-42"));
 
-  it("ignores a non-numeric version param for a DOC and falls back to the latest version", async () => {
-    getToken.mockResolvedValue("tok");
-    mockFetchArtifact({ type: DocumentType.Doc, slug: "onboarding" });
-
-    render(await DocumentPage(makeParams("onboarding", "not-a-number")));
-
-    expect(screen.getByTestId("doc-editor")).toHaveAttribute(
-      "data-version",
-      ""
-    );
-    expect(notFound).not.toHaveBeenCalled();
-  });
-
-  it("redirects a non-DOC artifact to its type-specific detail route", async () => {
-    getToken.mockResolvedValue("tok");
-    mockFetchArtifact({ type: DocumentType.Prd, slug: "checkout" });
-
-    await expect(DocumentPage(makeParams("checkout"))).rejects.toThrow(
-      "NEXT_REDIRECT"
-    );
-    expect(redirect).toHaveBeenCalledWith("/acme/prds/checkout");
-    expect(notFound).not.toHaveBeenCalled();
-  });
-
-  it("404s when the API returns a genuine 404 for the slug", async () => {
-    getToken.mockResolvedValue("tok");
-    mockFetchArtifact(null, 404);
-
-    await expect(DocumentPage(makeParams("ghost"))).rejects.toThrow(
-      "NEXT_NOT_FOUND"
-    );
-    expect(notFound).toHaveBeenCalledTimes(1);
-    expect(redirect).not.toHaveBeenCalled();
-  });
-
-  it("propagates a transient backend failure to the error boundary instead of 404ing", async () => {
-    getToken.mockResolvedValue("tok");
-    // A 500 is a transient failure, not a missing document — it must throw so the
-    // route error boundary renders, rather than lying with a permanent 404.
-    mockFetchArtifact(null, 500);
-
-    await expect(DocumentPage(makeParams("onboarding"))).rejects.toThrow(
-      RE_STATUS_500
-    );
-    expect(notFound).not.toHaveBeenCalled();
-    expect(redirect).not.toHaveBeenCalled();
-  });
-
-  it("ignores a trailing-garbage version param and falls back to the latest version", async () => {
-    getToken.mockResolvedValue("tok");
-    mockFetchArtifact({ type: DocumentType.Doc, slug: "onboarding" });
-
-    // parseInt would read "2junk" as 2; strict validation rejects it.
-    render(await DocumentPage(makeParams("onboarding", "2junk")));
-
-    expect(screen.getByTestId("doc-editor")).toHaveAttribute(
-      "data-version",
-      ""
-    );
-    expect(notFound).not.toHaveBeenCalled();
-  });
-
-  it("ignores a decimal version param and falls back to the latest version", async () => {
-    getToken.mockResolvedValue("tok");
-    mockFetchArtifact({ type: DocumentType.Doc, slug: "onboarding" });
-
-    render(await DocumentPage(makeParams("onboarding", "2.5")));
-
-    expect(screen.getByTestId("doc-editor")).toHaveAttribute(
-      "data-version",
-      ""
-    );
-    expect(notFound).not.toHaveBeenCalled();
+    expect(resolveOgMetadata).toHaveBeenCalledWith("acme/documents/ISS-42");
+    expect(metadata).toEqual({ title: "meta" });
   });
 });

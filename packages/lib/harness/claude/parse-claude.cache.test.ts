@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { parseClaudeTranscript } from "./parse-claude";
 import { ASSISTANT_LINE, USER_LINE } from "./parse-claude.test-fixtures";
-import { parseClaudeTranscript } from "./parse-claude-core";
 
 // FEA-3496: the detailed `cache_creation` breakdown (ephemeral 5m vs 1h TTL) is
 // captured into `usageExtras`, aggregated over the SAME deduped per-turn usage
@@ -94,8 +94,10 @@ describe("parseClaudeTranscript cache_creation breakdown (FEA-3496)", () => {
       expect.objectContaining({ cacheWriteTtl: { fiveM: 10, oneH: 20 } }),
     ]);
     // The blob is gone: exactly one source of truth for the split.
+    expect(session).toBeDefined();
     expect(
-      (session?.usageExtras as Record<string, unknown>).cache_creation
+      (session as { usageExtras: Record<string, unknown> }).usageExtras
+        .cache_creation
     ).toBeUndefined();
   });
 

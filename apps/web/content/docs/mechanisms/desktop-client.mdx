@@ -9,8 +9,8 @@ The desktop client is the single Electron process that runs three logical planes
 
 | Plane | Purpose |
 |---|---|
-| UI plane (renderer) | Onboarding overlay, Dashboard, Approvals, Activity Log, Settings. Rendered from a single preload bridge. |
-| Local gateway plane (main + HTTP server) | The localhost HTTP API on `127.0.0.1:19432` with NDJSON and SSE streaming, CORS, challenge-token auth, and approval gates. |
+| UI plane (renderer) | Dashboard, Approvals, Activity Log, Settings. Rendered from a single preload bridge. |
+| Local gateway plane (main + HTTP server) | The localhost HTTP API on `127.0.0.1:19432` with NDJSON and SSE streaming, CORS, token auth, and approval gates. |
 | Cloud control plane (main + Socket.IO client) | Outbound Socket.IO connection to the relay; receives `desktop.command` envelopes, dispatches into the local gateway, and streams events back. |
 
 ## Tray UI
@@ -44,8 +44,6 @@ The client uses `electron-store` under `app.getPath("userData")`:
 | `desktop-secrets` | API key encrypted via `safeStorage`. |
 | `desktop-approvals` | Pending approval queue. |
 | `desktop-activity-log` | 200-entry ring buffer of gateway requests (8 KiB body truncation). |
-| `desktop-job-store` | Symphony loop job records, including terminal history. |
-| `desktop-loop-tokens` | Per-loop auth tokens, encrypted. |
 
 Plus:
 
@@ -80,7 +78,6 @@ The preload script exposes `window.desktopApi` with over 35 methods including:
 - Debug: `getDangerousAutoApprove` / `setDangerousAutoApprove`, `isDebugAuthEnabled`, `mintDebugToken`
 - Updates: `checkForUpdate`, `applyUpdate`
 - Diagnostics: `getLogFilePath`, `openLogFile`
-- Jobs: `listRunningJobs`, `listCompletedJobs`, `getJob`, `getJobLogTail`
 - Binary paths: `getBinaryPaths`, `patchBinaryPaths`, `detectCliTools`
 - Saved configs: `saveConfig`, `listConfigs`, `deleteConfig`, `renameConfig`, `applyConfig`, `findMatchingConfig`
 
@@ -102,7 +99,7 @@ Packaged builds use `electron-updater` against the ClosedLoop update service at 
 - Initial check on boot, then every 5 minutes
 - `update-available` and `download-progress` are logged but do not show the restart banner.
 - The renderer shows **Update & restart** only after `update-downloaded`, so `applyUpdate` can call `quitAndInstall` immediately.
-- Critical packaged updater and shutdown failures emit bounded `desktop.telemetry` records for Datadog through the existing relay path: `electron_update.initiated`, `electron_update.failed`, and `desktop.shutdown_failed`. These records include sanitized diagnostics only; raw log contents are not uploaded.
+- Critical packaged updater and shutdown failures emit bounded telemetry records for Datadog through `POST /desktop/telemetry`: `electron_update.initiated`, `electron_update.failed`, and `desktop.shutdown_failed`. These records include sanitized diagnostics only; raw log contents are not uploaded.
 
 Dev builds (`!app.isPackaged`) compare `origin/main` commit hashes via `git fetch` and offer to pull and rebuild.
 

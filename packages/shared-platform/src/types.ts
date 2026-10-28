@@ -44,7 +44,6 @@ export type GatewayDetectionState = {
 export type RoutingSelection = {
   mode: EngineerRoutingMode;
   computeTargetId: string | null;
-  source: "auto" | "manual";
   updatedAt: number;
 };
 
@@ -61,7 +60,6 @@ export type SurfaceRoutingAdapter = {
 
   /**
    * Dispatch a gateway request through the surface-specific transport.
-   * On web: fetch interceptor rewriting to localhost or relay.
    * On desktop: IPC dispatch to the local gateway process.
    */
   dispatchGatewayRequest(path: string, init?: RequestInit): Promise<Response>;

@@ -7,17 +7,22 @@
  * byte-size helper are one cohesive concern — "how many bytes of definition text
  * may cross `POST /desktop/components/sync`, and how is that measured" — shared
  * verbatim by the desktop packer, the desktop transport chunker, and the cloud
- * ingest Zod schema. They are not session shapes, and `agent-session.ts` is a
- * grandfathered over-ceiling module, so they live here instead.
+ * ingest Zod schema. They are not session shapes, so they live here instead.
  */
 
 /**
  * Upper bound on a synced definition's `content` length (characters). The
  * detail Prompt panel needs the file text, but org-wide sync of unbounded
  * definition bodies is a memory/egress risk (this repo has a db-host OOM
- * history, FEA-3132). The desktop truncates beyond this before sending; the
- * cloud ingest Zod schema rejects anything larger. 256 KiB comfortably covers
- * real agent/skill/command definitions while capping pathological files.
+ * history, FEA-3132). 256 KiB comfortably covers real agent/skill/command
+ * definitions while capping pathological files.
+ *
+ * This is a PRODUCER clamp: the desktop truncates beyond it before sending.
+ * ISS-8051 removed the matching cloud-side reject, so the cloud ingest Zod
+ * schema no longer refuses a larger body — a `.max()` there 400'd the whole
+ * 200-session batch rather than truncating one field. Nothing re-imposes this
+ * bound at the boundary; treat it as what the desktop sends, not as what the
+ * cloud will accept.
  */
 export const SYNCED_COMPONENT_CONTENT_MAX_CHARS = 262_144;
 
@@ -144,6 +149,8 @@ export type SyncedComponentVariant = {
   firstSeenAt?: string | null;
   /** ISO; when this exact hash was last observed locally. */
   lastSeenAt?: string | null;
+  /** ISS-4965: as `SyncedComponent.usageScopeHash`, for this revision's body. */
+  usageScopeHash?: string;
 };
 
 /**
@@ -212,10 +219,9 @@ export const SYNCED_COMPONENT_VARIANTS_BUDGET_HEADROOM_BYTES = 4096; // 4 KiB
  *
  * Kept here rather than inline on `SyncedComponent` (`agent-session.ts`) for the
  * reason stated at the top of this file: these are the retained-variant wire
- * concern, not a session shape, and `agent-session.ts` is a grandfathered
- * over-ceiling module. `SyncedComponent` intersects this, so the two fields —
- * "which extra revisions ride along" and "were there more we could not send" —
- * live together, next to the budget constants that decide both.
+ * concern, not a session shape. `SyncedComponent` intersects this, so the two
+ * fields — "which extra revisions ride along" and "were there more we could not
+ * send" — live together, next to the budget constants that decide both.
  */
 export type SyncedComponentVariantsEnvelope = {
   /**

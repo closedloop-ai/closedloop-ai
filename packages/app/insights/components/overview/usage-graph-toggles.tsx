@@ -1,6 +1,10 @@
 "use client";
 
 import type { TimeSeries } from "@repo/api/src/types/insights";
+import { ONE_LABEL_PER_METRIC_FLAG_KEY } from "@repo/api/src/types/one-label-per-metric-flag";
+import { TOTAL_ESTIMATED_COST_LABEL } from "@repo/api/src/types/total-estimated-cost-copy";
+import { TOTAL_TOKENS_LABEL } from "@repo/api/src/types/total-tokens-copy";
+import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import {
   ToggleGroup,
   ToggleGroupItem,
@@ -81,6 +85,23 @@ const METRIC_PRESENTATION: Record<
   },
 };
 
+/**
+ * ISS-10667: the toggle words, as two whole sets rather than a gate threaded
+ * into the render loop. Both name the same two quantities — the estimated,
+ * subscription-inclusive dollar figure and the four-counter token sum
+ * (`token-trend-chart-data.ts` states that basis) — so the gate picks a
+ * vocabulary, never a meaning.
+ */
+const LEGACY_TOGGLE_LABELS: Record<UsageMetric, string> = {
+  [UsageMetric.Cost]: METRIC_PRESENTATION[UsageMetric.Cost].label,
+  [UsageMetric.Tokens]: METRIC_PRESENTATION[UsageMetric.Tokens].label,
+};
+
+const ONE_LABEL_PER_METRIC_TOGGLE_LABELS: Record<UsageMetric, string> = {
+  [UsageMetric.Cost]: TOTAL_ESTIMATED_COST_LABEL,
+  [UsageMetric.Tokens]: TOTAL_TOKENS_LABEL,
+};
+
 // Ordered metric list for rendering the toggle group (Spend, then Tokens).
 const METRICS: UsageMetric[] = [UsageMetric.Cost, UsageMetric.Tokens];
 
@@ -134,6 +155,15 @@ export function UsageGraphControls({
   grouping: UsageGrouping;
   onGroupingChange: (grouping: UsageGrouping) => void;
 }) {
+  // ISS-10667: read where the toggles swap their own words. `METRIC_PRESENTATION`
+  // is a module const, so the gate cannot live beside the string; this is the one
+  // component both the dashboard graph and the Agents token-trend chart render,
+  // so one read serves both and neither passes a boolean on.
+  const metricToggleLabels = useFeatureFlagEnabledOptional(
+    ONE_LABEL_PER_METRIC_FLAG_KEY
+  )
+    ? ONE_LABEL_PER_METRIC_TOGGLE_LABELS
+    : LEGACY_TOGGLE_LABELS;
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 pb-3">
       <ToggleGroup
@@ -148,7 +178,8 @@ export function UsageGraphControls({
         variant="outline"
       >
         {METRICS.map((key) => {
-          const { label, Icon } = METRIC_PRESENTATION[key];
+          const { Icon } = METRIC_PRESENTATION[key];
+          const label = metricToggleLabels[key];
           return (
             <ToggleGroupItem aria-label={label} key={key} value={key}>
               <Icon className="size-3.5" />

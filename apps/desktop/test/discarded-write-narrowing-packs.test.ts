@@ -17,7 +17,7 @@
  * cloud batches' `select: { id: true }` does not compile against any of them.
  */
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import {
   applyFetchResult,
   upsertCatalogSeed,

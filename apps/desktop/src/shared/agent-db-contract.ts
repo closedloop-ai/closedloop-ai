@@ -169,7 +169,6 @@ export type WorkflowQueryData = {
     avgDurationSec: number;
     totalCompactions: number;
     avgCompactions: number;
-    topFlow: { source: string; target: string; count: number } | null;
   };
   orchestration: {
     sessionCount: number;
@@ -180,13 +179,8 @@ export type WorkflowQueryData = {
       completed: number;
       errors: number;
     }>;
-    edges: Array<{ source: string; target: string; weight: number }>;
     outcomes: Array<{ status: string; count: number }>;
     compactions: { total: number; sessions: number };
-  };
-  toolFlow: {
-    transitions: Array<{ source: string; target: string; value: number }>;
-    toolCounts: Array<{ toolName: string; count: number }>;
   };
   effectiveness: Array<{
     subagentType: string;
@@ -198,7 +192,6 @@ export type WorkflowQueryData = {
     avgDuration: number | null;
     trend: number[];
   }>;
-  cooccurrence: Array<{ source: string; target: string; weight: number }>;
 };
 
 export type AgentHierarchyNode = {
@@ -320,7 +313,6 @@ export type CatalogEntry = {
   installNotes: string | null;
   placeholderReason: string | null;
   verified: boolean;
-  readmeExcerpt: string | null;
   stars: number | null;
   forks: number | null;
   lastRelease: string | null;
@@ -349,7 +341,7 @@ export type CatalogContentsConfig = {
 export type CatalogContentItem = {
   name: string;
   type: string;
-  description?: string;
+  description?: string | null;
   content?: string;
   path?: string;
 };

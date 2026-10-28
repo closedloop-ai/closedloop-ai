@@ -14,4 +14,16 @@ describe("branchCandidateStatusClause", () => {
     expect(clause.sql).toMatch(MERGED_NO_PR_FALLBACK_PATTERN);
     expect(clause.values).toContain(GitHubPRState.Merged);
   });
+
+  it("matches selected PR ownership by stable provider repository id", () => {
+    const clause = branchCandidateStatusClause(BranchStatus.Merged);
+
+    expect(clause.sql).toContain("resolved.repository_github_id IS NOT NULL");
+    expect(clause.sql).toContain("owning_repository.github_repo_id");
+    expect(clause.sql).toContain("selected_repository.github_repo_id");
+    expect(clause.sql).toContain("resolved.repository_github_id =");
+    expect(clause.sql).not.toContain(
+      "resolved.repository_id = b.repository_id"
+    );
+  });
 });

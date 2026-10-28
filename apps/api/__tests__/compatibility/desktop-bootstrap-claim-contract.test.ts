@@ -4,7 +4,12 @@
  * Verifies the route rejects the obsolete bootstrap-JWT payload while still
  * tolerating safe legacy field variations and null-bound managed keys.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  stubTrustedOriginEnv,
+  TRUSTED_APP_ORIGIN,
+  UNTRUSTED_ORIGIN,
+} from "@/__tests__/utils/trusted-origin.test-helpers";
 import { apiKeysService } from "@/app/api-keys/service";
 import { POST } from "@/app/desktop/bootstrap/claim/route";
 import { desktopOnboardingAttemptsService } from "@/app/desktop/onboarding-attempt/service";
@@ -39,20 +44,17 @@ vi.mock("@/app/users/service", () => ({
 vi.mock("@/lib/auth/ed25519-spki-pem", () => ({
   normalizeEd25519SpkiPublicKeyPem: vi.fn(),
 }));
-vi.mock("@/lib/auth/canonical-trusted-origin", () => ({
-  canonicalizeTrustedOrigin: (origin: string) =>
-    origin.startsWith("https://") ? origin : null,
-}));
 
 describe("POST /desktop/bootstrap/claim contract compatibility", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    stubTrustedOriginEnv();
     mockIsFeatureEnabled.mockResolvedValue(true);
     vi.mocked(desktopOnboardingAttemptsService.get).mockResolvedValue({
       attemptId: "attempt-123",
       organizationId: "org-1",
       userId: "user-1",
-      webAppOrigin: "https://app.closedloop.ai",
+      webAppOrigin: TRUSTED_APP_ORIGIN,
       expiresAt: new Date("2099-04-23T18:00:00.000Z"),
       consumedAt: null,
     });
@@ -71,6 +73,10 @@ describe("POST /desktop/bootstrap/claim contract compatibility", () => {
     );
   });
 
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("rejects the obsolete bootstrapJwt payload shape with the new 400 contract", async () => {
     const response = await POST(
       createMockRequest({
@@ -79,7 +85,7 @@ describe("POST /desktop/bootstrap/claim contract compatibility", () => {
         body: {
           bootstrapJwt: "old-token",
           gatewayId: "550e8400-e29b-41d4-a716-446655440000",
-          webAppOrigin: "https://app.closedloop.ai",
+          webAppOrigin: TRUSTED_APP_ORIGIN,
           gatewayPublicKey: "old-key",
         },
       })
@@ -100,7 +106,7 @@ describe("POST /desktop/bootstrap/claim contract compatibility", () => {
         body: {
           onboardingAttemptId: "attempt-123",
           gatewayId: "550e8400-e29b-41d4-a716-446655440000",
-          webAppOrigin: "https://app.closedloop.ai",
+          webAppOrigin: TRUSTED_APP_ORIGIN,
           gatewayPublicKey: "valid-pem",
         },
       })
@@ -123,7 +129,7 @@ describe("POST /desktop/bootstrap/claim contract compatibility", () => {
         body: {
           onboardingAttemptId: "attempt-123",
           gatewayId: "550e8400-e29b-41d4-a716-446655440000",
-          webAppOrigin: "https://app.closedloop.ai",
+          webAppOrigin: TRUSTED_APP_ORIGIN,
           gatewayPublicKey: "bad-pem",
         },
       })
@@ -142,6 +148,34 @@ describe("POST /desktop/bootstrap/claim contract compatibility", () => {
     });
   });
 
+  it("does not let a tolerated legacy field shape carry a non-allowlisted origin", async () => {
+    // Legacy-field tolerance is deliberately generous, but it must not extend to
+    // the origin. The body parses and the legacy alias is accepted elsewhere in
+    // this suite, so only the allowlist can reject this claim — and the attempt
+    // is never loaded and no managed key is ever minted.
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        url: "https://api.closedloop.ai/desktop/bootstrap/claim",
+        body: {
+          onboardingAttemptId: "attempt-123",
+          gatewayId: "550e8400-e29b-41d4-a716-446655440000",
+          webAppOrigin: UNTRUSTED_ORIGIN,
+          gatewayPublicKey: "valid-pem",
+        },
+      })
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      code: "INVALID_BOOTSTRAP_CLAIM_REQUEST",
+      retryable: false,
+    });
+    expect(desktopOnboardingAttemptsService.get).not.toHaveBeenCalled();
+    expect(desktopOnboardingAttemptsService.consume).not.toHaveBeenCalled();
+    expect(apiKeysService.rotateDesktopManagedKey).not.toHaveBeenCalled();
+  });
+
   it("accepts missing public keys and falls back to a null binding", async () => {
     const response = await POST(
       createMockRequest({
@@ -150,7 +184,7 @@ describe("POST /desktop/bootstrap/claim contract compatibility", () => {
         body: {
           onboardingAttemptId: "attempt-123",
           gatewayId: "550e8400-e29b-41d4-a716-446655440000",
-          webAppOrigin: "https://app.closedloop.ai",
+          webAppOrigin: TRUSTED_APP_ORIGIN,
         },
       })
     );

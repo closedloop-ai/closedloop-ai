@@ -7,6 +7,10 @@ import {
 } from "@repo/api/src/types/electron";
 import { ApiKeySource, withDb } from "@repo/database";
 import { usableApiKeyWhere } from "@/lib/auth/usable-api-key-where";
+import {
+  type RecordWriteInTransaction,
+  writeRecorded,
+} from "@/lib/record-write-in-transaction";
 
 export const DESKTOP_ONBOARDING_ATTEMPT_TTL_MS = 60 * 60 * 1000;
 
@@ -104,25 +108,32 @@ export const desktopOnboardingAttemptsService = {
    * Persists a new onboarding attempt with a fixed 60 minute TTL.
    */
   async create(
-    input: CreateDesktopOnboardingAttemptInput
+    input: CreateDesktopOnboardingAttemptInput,
+    recordWrite?: RecordWriteInTransaction<{ onboardingAttemptId: string }>
   ): Promise<{ onboardingAttemptId: string; expiresAt: Date }> {
     const onboardingAttemptId = createAttemptId();
     const expiresAt = new Date(Date.now() + DESKTOP_ONBOARDING_ATTEMPT_TTL_MS);
 
-    await withDb((db) =>
-      db.desktopOnboardingAttempt.create({
-        data: {
-          attemptId: onboardingAttemptId,
-          userId: input.userId,
-          organizationId: input.organizationId,
-          webAppOrigin: input.webAppOrigin,
-          expiresAt,
-          consumedAt: null,
-          flowType: input.flowType ?? null,
-          computeTargetId: input.computeTargetId ?? null,
-          gatewayId: input.gatewayId ?? null,
-        },
-      })
+    await writeRecorded(
+      recordWrite,
+      () =>
+        withDb((db) =>
+          db.desktopOnboardingAttempt.create({
+            data: {
+              attemptId: onboardingAttemptId,
+              userId: input.userId,
+              organizationId: input.organizationId,
+              webAppOrigin: input.webAppOrigin,
+              expiresAt,
+              consumedAt: null,
+              flowType: input.flowType ?? null,
+              computeTargetId: input.computeTargetId ?? null,
+              gatewayId: input.gatewayId ?? null,
+            },
+            select: { attemptId: true },
+          })
+        ),
+      () => ({ onboardingAttemptId })
     );
 
     return { onboardingAttemptId, expiresAt };
@@ -178,6 +189,7 @@ export const desktopOnboardingAttemptsService = {
           organizationId,
           userId,
         },
+        select: ATTEMPT_STATUS_SELECT,
       })
     );
     if (!attempt) {
@@ -244,3 +256,20 @@ export const desktopOnboardingAttemptsService = {
     };
   },
 };
+
+/** The columns `getStatus` folds into a provisioning-status response. */
+type AttemptStatusRow = {
+  attemptId: string;
+  expiresAt: Date;
+  consumedAt: Date | null;
+  computeTargetId: string | null;
+  gatewayId: string | null;
+};
+
+const ATTEMPT_STATUS_SELECT = {
+  attemptId: true,
+  expiresAt: true,
+  consumedAt: true,
+  computeTargetId: true,
+  gatewayId: true,
+} as const satisfies Record<keyof AttemptStatusRow, true>;

@@ -9,12 +9,19 @@ import type { Meta, StoryObj } from "@storybook/react";
  * Accessible resizable panel groups and layouts with keyboard support.
  */
 const meta: Meta<typeof ResizablePanelGroup> = {
-  title: "Design System/Layout/Resizable Panel Group",
+  title: "Composites v1.0/Layout/Resizable Panel Group",
   component: ResizablePanelGroup,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   argTypes: {
-    onLayout: {
+    onLayoutChange: {
       control: false,
+    },
+    onLayoutChanged: {
+      control: false,
+    },
+    direction: {
+      control: { type: "inline-radio" },
+      options: ["horizontal", "vertical"],
     },
   },
   args: {

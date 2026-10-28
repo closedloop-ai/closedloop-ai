@@ -1,9 +1,11 @@
 import path from "node:path";
+import babel from "@rolldown/plugin-babel";
 import tailwindcss from "@tailwindcss/vite";
-import react from "@vitejs/plugin-react";
+import react, { reactCompilerPreset } from "@vitejs/plugin-react";
 import { type Alias as AliasEntry, defineConfig, type Plugin } from "vite";
-import { CONTENT_SECURITY_POLICY_META } from "./src/shared/content-security-policy";
-import { isProfilingRendererBuildEnabled } from "./src/shared/profiling";
+import { trustedLabelPlugin } from "../../scripts/analytics/trusted-label-transform.mjs";
+import { CONTENT_SECURITY_POLICY_META } from "./src/shared/content-security-policy.ts";
+import { isProfilingRendererBuildEnabled } from "./src/shared/profiling.ts";
 
 // ISS-5278 — render-commit capture needs a PROFILING React DOM, not a launch flag.
 //
@@ -84,12 +86,15 @@ export default defineConfig({
   root: "src/renderer",
   base: "./",
   plugins: [
+    trustedLabelPlugin(),
     tailwindcss(),
-    react({
-      babel: {
-        plugins: [["babel-plugin-react-compiler", { target: "19" }]],
-      },
-    }),
+    react(),
+    // plugin-react 6 has no `babel` option and silently ignores one, so React
+    // Compiler runs through @rolldown/plugin-babel. This keeps the Babel
+    // compiler the renderer has always shipped rather than the experimental oxc
+    // port behind `react({ compiler })`, which would change what gets memoized.
+    // Guarded by test/renderer-react-compiler.test.ts.
+    babel({ presets: [reactCompilerPreset({ target: "19" })] }),
     stripCrossorigin(),
     injectContentSecurityPolicyMeta(),
   ],
@@ -113,6 +118,11 @@ export default defineConfig({
       // no-`exports` `.ts`-only shape as `@repo/api`, so alias to source so the
       // renderer bundles it (mirrors the main/preload `workspaceAlias`).
       { find: "@repo/lib", replacement: path.resolve("../../packages/lib") },
+      // ISS-11944: the keyless replay client. Same no-`exports` shape.
+      {
+        find: "@repo/analytics",
+        replacement: path.resolve("../../packages/analytics"),
+      },
       // `@closedloop-ai/design-system` is source-consumed with NO `exports` map (it was
       // de-published from `@closedloop-ai/design-system`, dropping the dist
       // `exports` the renderer previously resolved through). Its deep subpath

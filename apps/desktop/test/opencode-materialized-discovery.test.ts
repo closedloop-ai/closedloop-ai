@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { test } from "node:test";
+import { afterAll, test } from "vitest";
 import { listOpencodeMaterializedFiles } from "../src/main/transcript-sync/opencode-materialized-discovery.js";
 import { opencodeMaterializedRoot } from "../src/main/transcript-sync/opencode-materializer.js";
 import { opencodeRefsFromSessions } from "../src/main/transcript-sync/transcript-discovery.js";
@@ -50,4 +50,4 @@ test("listOpencodeMaterializedFiles returns empty when the root is absent", () =
   assert.deepEqual(files, []);
 });
 
-test.after(() => cleanupTempDirs());
+afterAll(() => cleanupTempDirs());

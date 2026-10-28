@@ -50,13 +50,10 @@ import {
   recordBatchViolation,
   recordSessionContent,
 } from "./soak-cloud-content";
+import { MOCK_ORGANIZATION_ID, MOCK_USER_ID } from "./soak-cloud-fixture";
 
 export const MOCK_ACCESS_TOKEN = "soak-harness-access-token";
-export const MOCK_REFRESH_TOKEN = "soak-harness-refresh-token";
 export const MOCK_ROTATED_REFRESH_TOKEN = "soak-harness-rotated-refresh-token";
-export const MOCK_USER_ID = "soak-harness-user";
-export const MOCK_ORGANIZATION_ID = "soak-harness-organization";
-export const MOCK_GATEWAY_ID = "50a45047-50a4-4507-8a45-50a450475047";
 const TOKEN_EXPIRY = "2027-12-31T00:00:00.000Z";
 /**
  * The wire schema version this mock — standing in for the CLOUD — requires, read
@@ -327,7 +324,7 @@ export async function startMockCloudServer(options: {
       state = freshState();
     },
     close: async () => {
-      io.close();
+      await io.close();
       await closeServer(relayHttpServer);
       await closeServer(httpServer);
     },
@@ -720,8 +717,6 @@ function handleIdentity(response: ServerResponse, state: MockState): void {
     lastName: "Harness",
     organizationName: "Soak Org",
     organizationSlug: "soak-org",
-    sessionSyncPolicyEnabled: true,
-    sessionSyncPolicySupported: true,
   });
 }
 
@@ -834,8 +829,11 @@ async function handleUnknownPath(
 /**
  * Is `declared` a revision the CLOUD would treat as a real one?
  *
- * Production bounds the field with `.int().min(1).max(MAX_SUPPORTED_DATA_REVISION)`
- * and `.nullish()`, so ABSENT is legal but any other unusable value is not. This
+ * Production accepts any integer on the wire since ISS-8271 but treats only
+ * `[1, MAX_SUPPORTED_DATA_REVISION]` as a real revision (`wire-data-revision.ts`:
+ * sentinel `0` folds to absent, `-1`/too-new are held per session and never
+ * committed), so ABSENT is legal but any other unusable value never becomes a
+ * real revision. This
  * is the same floor `resolveDataRevision` applies on the content side; it is
  * stated as a predicate here rather than left implicit, because the envelope
  * oracle deriving its own looser notion of "real" is exactly how the two halves

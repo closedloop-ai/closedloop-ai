@@ -16,6 +16,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ElectronApplication } from "@playwright/test";
+import type { ListQueryExpression } from "@repo/api/src/types/list-query-expression.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -26,9 +27,35 @@ const GATE_KEY = "__clE2eSessionsPageDataGate";
 type SessionsPageDataGate = {
   dispatched: number;
   settled: number;
+  filters: unknown[];
+  nonFiniteRowName?: string;
   arm: () => number;
+  hold: () => number;
   release: () => number;
+  resume: () => number;
 };
+
+/** Stage non-finite values in MAIN, before Electron structured-clones pageData. */
+export function enableSessionsPageDataNonFiniteRow(
+  app: ElectronApplication,
+  rowName: string
+): Promise<void> {
+  return app.evaluate(
+    (_electron, request) => {
+      const gate: SessionsPageDataGate | undefined = Reflect.get(
+        globalThis,
+        request.key
+      );
+      if (!gate) {
+        throw new Error(
+          "the Sessions pageData gate preload was never installed"
+        );
+      }
+      gate.nonFiniteRowName = request.rowName;
+    },
+    { key: GATE_KEY, rowName }
+  );
+}
 
 /**
  * `MAX_TRANSIENT_QUERY_RETRIES` (`@repo/app/shared/query/query-client`), pinned as a
@@ -55,6 +82,18 @@ const LONGEST_RECOVERY_BACKOFF_MS = 2000;
  * the hook dispatches within that window of the previous attempt settling, and once its
  * attempt is held nothing else can reach the handler (the poll dedupes onto the
  * in-flight fetch), so the counter is stable from then on.
+ *
+ * ISS-7949 (canceled, not fixed — PR #5982): the WINDOW, not merely "something is
+ * held", is what keeps the desktop `pageData` poll out of the race — so do not replace
+ * this with "the first held invocation". Outlasting the longest backoff is what makes
+ * the release answer the recovery's attempt whichever contender arrived first: by the
+ * time the counter has been still that long, each has either been held or deduped onto
+ * the in-flight held fetch, and `release` answers everything held. A wait that returned
+ * on the first held read released whichever arrived first instead, and that is a coin
+ * flip — the poll's interval floors at 2s (`sessions-poll-service-time.ts`), tied with
+ * the final 2s backoff, and the gate cannot tell a poll from a recovery refetch (same
+ * channel, same arguments). It released the poll and left the real attempt held: the
+ * spec went red 1 CI run in 3 on that branch.
  */
 const QUIESCENT_MS = LONGEST_RECOVERY_BACKOFF_MS + 2500;
 
@@ -76,7 +115,13 @@ export function sessionsPageDataGateEnv(
 }
 
 /** The gate operations the spec can drive from the test process. */
-type GateOperation = "arm" | "dispatched" | "release" | "settled";
+type GateOperation =
+  | "arm"
+  | "dispatched"
+  | "hold"
+  | "release"
+  | "resume"
+  | "settled";
 
 /**
  * Run one gate operation in the MAIN process. Written as a single `evaluate` over an
@@ -102,8 +147,14 @@ function callGate(
       if (request.operation === "arm") {
         return gate.arm();
       }
+      if (request.operation === "hold") {
+        return gate.hold();
+      }
       if (request.operation === "release") {
         return gate.release();
+      }
+      if (request.operation === "resume") {
+        return gate.resume();
       }
       return request.operation === "settled" ? gate.settled : gate.dispatched;
     },
@@ -150,7 +201,7 @@ export function releaseHeldPageDataReads(
  * Settle-detection, not a sleep-then-assert: it returns as soon as the counter has
  * moved past `after` AND then stayed put for longer than the longest backoff. That
  * combination is what identifies the held invocation as the hook's attempt — React
- * Query's 2s `refetchInterval` poll cannot reach the handler while a fetch is in
+ * Query's `refetchInterval` poll cannot reach the handler while a fetch is in
  * flight (it dedupes), while the hook's `refetch({ cancelRefetch: true })` always
  * starts a new one, so a quiet gate with something held means the hook has dispatched.
  *
@@ -182,4 +233,88 @@ export async function waitForHeldRecoveryAttempt(
   throw new Error(
     `the usage recovery never dispatched an attempt past #${after} (gate saw ${observed})`
   );
+}
+
+/**
+ * ISS-6382: hold every `pageData` response from the next one onward, WITHOUT
+ * failing the usage half — the plain "read in flight" window a spec needs in
+ * order to assert what the surface renders while it waits. Distinct from
+ * {@link armSessionsUsageFailure}, which also flips the usage half to a
+ * transient failure.
+ */
+export function holdPageDataReads(app: ElectronApplication): Promise<number> {
+  return callGate(app, "hold");
+}
+
+/**
+ * ISS-6382: the query object of every `pageData` invocation the gate has seen,
+ * in order. There is no HTTP on this path, so this is the local analogue of
+ * reading `page.route`'s request URLs — and the restore gate's claim is about
+ * WHICH view the first read paginates under, which only the request can answer.
+ *
+ * ISS-8198 names `limit`/`offset` alongside the sort pair. The recorder always
+ * carried them — `SessionsView` builds ONE filters object — so this widens what
+ * a caller may READ, not what is captured. A pagination spec needs them for the
+ * same reason the restore gate needs the sort: a rows-per-page control and a
+ * pager both move a visible label, and only the outgoing request says whether
+ * the read moved with them.
+ */
+export function readPageDataFilters(
+  app: ElectronApplication
+): Promise<SessionsPageDataRequest[]> {
+  return app
+    .evaluate((_electron, key) => {
+      const gate: { filters?: unknown[] } | undefined = Reflect.get(
+        globalThis,
+        key
+      );
+      if (!gate) {
+        throw new Error(
+          "the Sessions pageData gate preload was never installed"
+        );
+      }
+      return (gate.filters ?? []).map((entry) =>
+        entry && typeof entry === "object"
+          ? (entry as SessionsPageDataRequest)
+          : {}
+      );
+    }, GATE_KEY)
+    .then((filters) => filters.map(withLegacySort));
+}
+
+/** The fields of a recorded `pageData` query a spec may assert on. */
+export type SessionsPageDataRequest = {
+  limit?: number;
+  offset?: number;
+  sortBy?: string;
+  sortDir?: string;
+  listQuery?: ListQueryExpression;
+};
+
+/**
+ * The recorded read's sort wherever the grid put it: the legacy
+ * `sortBy`/`sortDir`, or (PRD-721, #9126) the first `listQuery` sort rule,
+ * which names the same column and direction. A Sessions field id is the
+ * legacy `sortBy` value.
+ */
+function withLegacySort(
+  request: SessionsPageDataRequest
+): SessionsPageDataRequest {
+  const rule = request.listQuery?.sorts?.[0];
+  if (request.sortBy !== undefined || rule === undefined) {
+    return request;
+  }
+  return { ...request, sortBy: rule.field, sortDir: rule.direction };
+}
+
+/**
+ * ISS-6382: answer everything held AND lift the hold, leaving the handler fully
+ * open. {@link releaseHeldPageDataReads} deliberately re-holds the next response
+ * (ISS-4561 walks the recovery one attempt at a time and needs that); a spec
+ * that only wanted to observe the in-flight window needs this instead, or
+ * FEA-3639's stall detector eventually fires and its escape-hatch
+ * `refetch({ cancelRefetch: true })` discards the response just let through.
+ */
+export function resumePageDataReads(app: ElectronApplication): Promise<number> {
+  return callGate(app, "resume");
 }

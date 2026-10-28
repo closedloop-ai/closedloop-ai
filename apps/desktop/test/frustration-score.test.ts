@@ -16,11 +16,11 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import {
   FRUSTRATION_RAW_MAX,
   FRUSTRATION_SCORE_VERSION,
 } from "@repo/api/src/frustration-score-contract";
+import { test } from "vitest";
 import {
   type ComputeFrustrationRawInput,
   computeFrustrationRaw,

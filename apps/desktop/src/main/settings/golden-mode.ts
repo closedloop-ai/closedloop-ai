@@ -62,15 +62,11 @@ export function resolveGoldenModeConfig(
 
   const corpusDirRaw = env[GOLDEN_CORPUS_DIR_ENV_VAR]?.trim();
   if (!corpusDirRaw) {
-    throw new GoldenModeConfigError(
-      `${GOLDEN_MODE_ENV_VAR} is enabled but ${GOLDEN_CORPUS_DIR_ENV_VAR} is not set.`
-    );
+    throw new GoldenModeConfigError(goldenModeConfigErrors.corpusDirNotSet());
   }
   const userDataDirRaw = env[GOLDEN_USER_DATA_DIR_ENV_VAR]?.trim();
   if (!userDataDirRaw) {
-    throw new GoldenModeConfigError(
-      `${GOLDEN_MODE_ENV_VAR} is enabled but ${GOLDEN_USER_DATA_DIR_ENV_VAR} is not set.`
-    );
+    throw new GoldenModeConfigError(goldenModeConfigErrors.userDataDirNotSet());
   }
 
   // Absolute paths only: dev-launch runs Electron with cwd=apps/desktop, so a
@@ -78,13 +74,13 @@ export function resolveGoldenModeConfig(
   const corpusExpanded = expandHomePath(corpusDirRaw);
   if (!path.isAbsolute(corpusExpanded)) {
     throw new GoldenModeConfigError(
-      `${GOLDEN_CORPUS_DIR_ENV_VAR} must be an absolute path (got: ${corpusDirRaw})`
+      goldenModeConfigErrors.corpusDirNotAbsolute(corpusDirRaw)
     );
   }
   const userDataExpanded = expandHomePath(userDataDirRaw);
   if (!path.isAbsolute(userDataExpanded)) {
     throw new GoldenModeConfigError(
-      `${GOLDEN_USER_DATA_DIR_ENV_VAR} must be an absolute path (got: ${userDataDirRaw})`
+      goldenModeConfigErrors.userDataDirNotAbsolute(userDataDirRaw)
     );
   }
 
@@ -94,12 +90,12 @@ export function resolveGoldenModeConfig(
     corpusStat = fs.statSync(corpusDir);
   } catch {
     throw new GoldenModeConfigError(
-      `${GOLDEN_CORPUS_DIR_ENV_VAR} does not exist: ${corpusDir}`
+      goldenModeConfigErrors.corpusDirMissing(corpusDir)
     );
   }
   if (!corpusStat.isDirectory()) {
     throw new GoldenModeConfigError(
-      `${GOLDEN_CORPUS_DIR_ENV_VAR} is not a directory: ${corpusDir}`
+      goldenModeConfigErrors.corpusDirNotADirectory(corpusDir)
     );
   }
 
@@ -113,12 +109,15 @@ export function resolveGoldenModeConfig(
 
   if (pathsOverlap(userDataDir, realUserData)) {
     throw new GoldenModeConfigError(
-      `${GOLDEN_USER_DATA_DIR_ENV_VAR} (${userDataDir}) must not equal, contain, or be contained by the real user data directory (${realUserData}).`
+      goldenModeConfigErrors.userDataDirOverlapsRealProfile(
+        userDataDir,
+        realUserData
+      )
     );
   }
   if (pathsOverlap(userDataDir, corpusDir)) {
     throw new GoldenModeConfigError(
-      `${GOLDEN_USER_DATA_DIR_ENV_VAR} (${userDataDir}) must not overlap ${GOLDEN_CORPUS_DIR_ENV_VAR} (${corpusDir}).`
+      goldenModeConfigErrors.userDataDirOverlapsCorpus(userDataDir, corpusDir)
     );
   }
 
@@ -127,7 +126,7 @@ export function resolveGoldenModeConfig(
   } catch (error) {
     const reason = error instanceof Error ? error.message : "unknown error";
     throw new GoldenModeConfigError(
-      `${GOLDEN_USER_DATA_DIR_ENV_VAR} could not be created (${userDataDir}): ${reason}`
+      goldenModeConfigErrors.userDataDirNotCreatable(userDataDir, reason)
     );
   }
 
@@ -144,3 +143,30 @@ function isContainedBy(child: string, parent: string): boolean {
   const prefix = parent.endsWith(path.sep) ? parent : `${parent}${path.sep}`;
   return child.startsWith(prefix);
 }
+
+/**
+ * The exact rejection message per guard, so a test can pin the branch it names
+ * instead of accepting any `GoldenModeConfigError` (ISS-7589). Every throw site
+ * above reads from here, making this the single source of truth the tests
+ * import rather than re-typing the literals.
+ */
+export const goldenModeConfigErrors = {
+  corpusDirNotSet: () =>
+    `${GOLDEN_MODE_ENV_VAR} is enabled but ${GOLDEN_CORPUS_DIR_ENV_VAR} is not set.`,
+  userDataDirNotSet: () =>
+    `${GOLDEN_MODE_ENV_VAR} is enabled but ${GOLDEN_USER_DATA_DIR_ENV_VAR} is not set.`,
+  corpusDirNotAbsolute: (rawValue: string) =>
+    `${GOLDEN_CORPUS_DIR_ENV_VAR} must be an absolute path (got: ${rawValue})`,
+  userDataDirNotAbsolute: (rawValue: string) =>
+    `${GOLDEN_USER_DATA_DIR_ENV_VAR} must be an absolute path (got: ${rawValue})`,
+  corpusDirMissing: (corpusDir: string) =>
+    `${GOLDEN_CORPUS_DIR_ENV_VAR} does not exist: ${corpusDir}`,
+  corpusDirNotADirectory: (corpusDir: string) =>
+    `${GOLDEN_CORPUS_DIR_ENV_VAR} is not a directory: ${corpusDir}`,
+  userDataDirOverlapsRealProfile: (userDataDir: string, realUserData: string) =>
+    `${GOLDEN_USER_DATA_DIR_ENV_VAR} (${userDataDir}) must not equal, contain, or be contained by the real user data directory (${realUserData}).`,
+  userDataDirOverlapsCorpus: (userDataDir: string, corpusDir: string) =>
+    `${GOLDEN_USER_DATA_DIR_ENV_VAR} (${userDataDir}) must not overlap ${GOLDEN_CORPUS_DIR_ENV_VAR} (${corpusDir}).`,
+  userDataDirNotCreatable: (userDataDir: string, reason: string) =>
+    `${GOLDEN_USER_DATA_DIR_ENV_VAR} could not be created (${userDataDir}): ${reason}`,
+};

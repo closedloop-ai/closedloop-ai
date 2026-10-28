@@ -15,7 +15,7 @@
  * this bridge cannot drift on the precondition.
  */
 
-import { DATA_REVISION } from "../../src/main/collectors/engine/data-revision.js";
+import { effectiveDataRevision } from "../../src/main/collectors/engine/effective-data-revision.js";
 
 /** The slice of the SQLite database handle this helper drives. */
 type StoredRebuildDb = {
@@ -26,7 +26,7 @@ type StoredRebuildDb = {
   ): Promise<{
     rebuilt: boolean;
     activeRace: boolean;
-    contentChanged?: boolean;
+    needsResync?: boolean;
   }>;
 };
 
@@ -37,7 +37,7 @@ export function markStaleForRebuild(
 ): Promise<unknown> {
   return db.run(
     "UPDATE sessions SET data_revision = $1 WHERE id = $2",
-    DATA_REVISION - 1,
+    effectiveDataRevision() - 1,
     sessionId
   );
 }
@@ -49,11 +49,11 @@ export async function staleRebuildFromStoredRows(
 ): Promise<{
   rebuilt: boolean;
   activeRace: boolean;
-  contentChanged?: boolean;
+  needsResync?: boolean;
 }> {
   await markStaleForRebuild(db, sessionId);
   return await db.rebuildComponentInvocationsFromStoredRows(
     sessionId,
-    DATA_REVISION
+    effectiveDataRevision()
   );
 }

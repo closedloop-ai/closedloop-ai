@@ -1,8 +1,11 @@
 import {
+  type ComputeTarget,
+  HarnessType,
   HEALTH_CHECK_REPAIR_OPERATION_ID,
   HEALTH_CHECK_REPAIR_PATH,
 } from "@repo/api/src/types/compute-target";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { makeStoredCommand } from "@/__tests__/support/compute-targets/compute-target.test-fixtures";
 import { POST as commandsPOST } from "@/app/compute-targets/[id]/commands/route";
 import { computeTargetsService } from "@/app/compute-targets/service";
 import { env } from "@/env";
@@ -30,11 +33,11 @@ import {
  * It lives in its own file rather than in compute-targets-relay.test.ts, which
  * is already over the 1,000-line ceiling and is grandfathered shrink-only.
  *
- * The app's gateway-relay forwarder refuses a Repair against someone else's
- * target, but that is UX only. This route authorizes with `findAccessibleById`,
- * which intentionally includes org-shared targets, and its validator accepts any
- * `/api/gateway/*` path in the body, so anyone holding a session token could
- * otherwise POST the command directly. This is the check that actually holds.
+ * This route authorizes with `findAccessibleById`, owner-only since ISS-12617
+ * retired target sharing, and its validator accepts any `/api/gateway/*` path in
+ * the body. The route's own owner check stays as defense in depth while
+ * installed Desktops still serve Repair (ISS-12749), so this suite drives it
+ * with a mocked lookup that returns another member's target.
  */
 
 let mockAuthContext: AuthContext;
@@ -46,8 +49,8 @@ vi.mock("@repo/analytics/server", () => ({
 
 vi.mock("@/lib/auth/with-any-auth", () => ({
   withAnyAuth:
-    // biome-ignore lint/suspicious/noExplicitAny: test double for the auth wrapper
-    (handler: any) => async (request: any, context: any) =>
+    (handler: (...args: unknown[]) => Promise<Response>) =>
+    async (request: unknown, context: { params: Promise<unknown> }) =>
       handler(mockAuthContext, request, context.params),
 }));
 
@@ -109,7 +112,7 @@ vi.mock("@/lib/browser-command-public-key-enforcement", () => ({
 
 const OWNER_USER_ID = "user-1";
 
-const mockTarget = {
+const mockTarget: ComputeTarget = {
   id: "target-1",
   organizationId: "org-1",
   userId: OWNER_USER_ID,
@@ -120,6 +123,8 @@ const mockTarget = {
   gatewayId: "gateway-1",
   lastSeenAt: new Date(),
   isOnline: true,
+  isSharedWithOrg: false,
+  selectedHarness: HarnessType.Claude,
   createdAt: new Date(),
   updatedAt: new Date(),
 };
@@ -153,22 +158,21 @@ describe("POST /compute-targets/:id/commands System Check Repair ownership", () 
     });
     vi.mocked(computeTargetsService.findById).mockResolvedValue({
       ...mockTarget,
-      user: { clerkId: "clerk-user-1" },
-      // biome-ignore lint/suspicious/noExplicitAny: partial Prisma row fixture
-    } as any);
+      user: { clerkId: "clerk-user-1", firstName: null, lastName: null },
+    });
     vi.mocked(relayEventBus.publishOperation).mockReturnValue({
       deliveredToSubscriber: true,
     });
     vi.mocked(desktopCommandStore.createCommand).mockResolvedValue({
-      commandId: "cmd-1",
-      // biome-ignore lint/suspicious/noExplicitAny: partial command fixture
-    } as any);
+      command: makeStoredCommand(),
+      deduped: false,
+    });
     mockAuthContext = createTestAuthContext({
       user: {
+        ...createTestAuthContext().user,
         id: OWNER_USER_ID,
         organizationId: "org-1",
-        // biome-ignore lint/suspicious/noExplicitAny: partial auth user fixture
-      } as any,
+      },
     });
     if (env.RELAY_API_URL) {
       vi.stubGlobal(
@@ -187,8 +191,7 @@ describe("POST /compute-targets/:id/commands System Check Repair ownership", () 
     vi.mocked(computeTargetsService.findAccessibleById).mockResolvedValue({
       ...mockTarget,
       userId: "someone-else",
-      // biome-ignore lint/suspicious/noExplicitAny: partial Prisma row fixture
-    } as any);
+    });
 
     const response = await postRepair();
 
@@ -202,8 +205,7 @@ describe("POST /compute-targets/:id/commands System Check Repair ownership", () 
 
   it("allows a Repair against a target the caller owns", async () => {
     vi.mocked(computeTargetsService.findAccessibleById).mockResolvedValue(
-      // biome-ignore lint/suspicious/noExplicitAny: partial Prisma row fixture
-      mockTarget as any
+      mockTarget
     );
 
     const response = await postRepair();

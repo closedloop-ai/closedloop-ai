@@ -1,7 +1,7 @@
 import type * as ReviewThreadLookupModule from "@repo/github/review-thread-lookup";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type * as CommentsGithubProjectionModule from "@/app/comments/github-projection";
-import type * as CommentsServiceModule from "@/app/comments/service";
+import type * as CommentsGithubProjectionModule from "@/app/comments/service/github/github-projection-review-thread-read";
+import type * as ThreadResolutionModule from "@/app/comments/service/thread-resolution";
 
 const {
   MockGitHubReviewThreadResolutionAttributionKind,
@@ -22,7 +22,7 @@ const {
     ConnectedUser: "connected_user",
     ExternalUnconnected: "external_unconnected",
     LegacyMissing: "legacy_missing",
-  } as const satisfies typeof CommentsServiceModule.GitHubReviewThreadResolutionAttributionKind;
+  } as const satisfies typeof ThreadResolutionModule.GitHubReviewThreadResolutionAttributionKind;
   const MockGitHubReviewThreadResolutionProjectionStatus = {
     Eligible: "eligible",
     UnknownReviewThread: "unknown_review_thread",
@@ -53,8 +53,7 @@ const {
     MockReviewThreadResolutionRetryableReason,
     MockReviewThreadResolutionTerminalReason,
     mockCommentsService: {
-      resolveThread: vi.fn(),
-      unresolveThread: vi.fn(),
+      applyExternal: vi.fn(),
     },
     mockFetchReviewThreadResolutionByNodeId: vi.fn(),
     mockFindGitHubReviewThreadResolutionProjection: vi.fn(),
@@ -91,9 +90,12 @@ vi.mock("@repo/github/installation-auth", () => ({
 }));
 
 vi.mock("@/app/comments/service", () => ({
+  commentsService: mockCommentsService,
+}));
+
+vi.mock("@/app/comments/service/thread-resolution", () => ({
   GitHubReviewThreadResolutionAttributionKind:
     MockGitHubReviewThreadResolutionAttributionKind,
-  commentsService: mockCommentsService,
 }));
 
 vi.mock("@/app/comments/external-authors", () => ({
@@ -101,12 +103,15 @@ vi.mock("@/app/comments/external-authors", () => ({
     mockResolveExternalGitHubAuthorInTransaction,
 }));
 
-vi.mock("@/app/comments/github-projection", () => ({
-  GitHubReviewThreadResolutionProjectionStatus:
-    MockGitHubReviewThreadResolutionProjectionStatus,
-  findGitHubReviewThreadResolutionProjection:
-    mockFindGitHubReviewThreadResolutionProjection,
-}));
+vi.mock(
+  "@/app/comments/service/github/github-projection-review-thread-read",
+  () => ({
+    GitHubReviewThreadResolutionProjectionStatus:
+      MockGitHubReviewThreadResolutionProjectionStatus,
+    findGitHubReviewThreadResolutionProjection:
+      mockFindGitHubReviewThreadResolutionProjection,
+  })
+);
 
 vi.mock("@/app/webhooks/github/comment-owner-resolver", () => ({
   resolveGitHubCommentOwner: mockResolveGitHubCommentOwner,
@@ -126,16 +131,21 @@ vi.mock("@/app/webhooks/github/handlers/branch-activity-producer", () => ({
   }),
 }));
 
+import { CommentSyncProvider } from "@repo/api/src/types/comment-thread-dto";
 import {
   ReviewThreadResolutionResultStatus,
   ReviewThreadResolutionRetryableReason,
   ReviewThreadResolutionTerminalReason,
 } from "@repo/github/review-thread-lookup";
-import { GitHubReviewThreadResolutionProjectionStatus } from "@/app/comments/github-projection";
+import {
+  ApplyExternalOutcome,
+  GitHubExternalEventKind,
+} from "@/app/comments/service/github/apply-external-events";
+import { GitHubReviewThreadResolutionProjectionStatus } from "@/app/comments/service/github/github-projection-review-thread-read";
 import {
   type GitHubReviewThreadResolutionAttribution,
   GitHubReviewThreadResolutionAttributionKind,
-} from "@/app/comments/service";
+} from "@/app/comments/service/thread-resolution";
 import {
   GitHubBranchActivityEventName,
   persistGitHubBranchActivity,
@@ -207,13 +217,9 @@ describe("handlePullRequestReviewThread", () => {
       source: "github_user_connection",
       user: { id: "user-1" },
     });
-    mockCommentsService.resolveThread.mockResolvedValue({
-      kind: "transition",
-      thread: { id: "thread-1" },
-    });
-    mockCommentsService.unresolveThread.mockResolvedValue({
-      kind: "transition",
-      thread: { id: "thread-1" },
+    mockCommentsService.applyExternal.mockResolvedValue({
+      outcomes: [ApplyExternalOutcome.Applied],
+      changedThreadIds: ["thread-1"],
     });
   });
 
@@ -226,7 +232,7 @@ describe("handlePullRequestReviewThread", () => {
 
     expect(response.status).toBe(200);
     expect(mockFetchReviewThreadResolutionByNodeId).not.toHaveBeenCalled();
-    expect(mockCommentsService.resolveThread).not.toHaveBeenCalled();
+    expect(mockCommentsService.applyExternal).not.toHaveBeenCalled();
     expect(mockPersistGitHubBranchActivity).not.toHaveBeenCalled();
   });
 
@@ -239,7 +245,7 @@ describe("handlePullRequestReviewThread", () => {
 
     expect(response.status).toBe(200);
     expect(mockFetchReviewThreadResolutionByNodeId).not.toHaveBeenCalled();
-    expect(mockCommentsService.resolveThread).not.toHaveBeenCalled();
+    expect(mockCommentsService.applyExternal).not.toHaveBeenCalled();
     expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
   });
 
@@ -281,8 +287,7 @@ describe("handlePullRequestReviewThread", () => {
       handlePullRequestReviewThread(reviewThreadPayload())
     ).resolves.toHaveProperty("status", 200);
     expect(mockFetchReviewThreadResolutionByNodeId).not.toHaveBeenCalled();
-    expect(mockCommentsService.resolveThread).not.toHaveBeenCalled();
-    expect(mockCommentsService.unresolveThread).not.toHaveBeenCalled();
+    expect(mockCommentsService.applyExternal).not.toHaveBeenCalled();
   });
 
   it("returns 400 for missing installation before local or provider work", async () => {
@@ -324,8 +329,7 @@ describe("handlePullRequestReviewThread", () => {
     const response = await handlePullRequestReviewThread(reviewThreadPayload());
 
     expect(response.status).toBe(502);
-    expect(mockCommentsService.resolveThread).not.toHaveBeenCalled();
-    expect(mockCommentsService.unresolveThread).not.toHaveBeenCalled();
+    expect(mockCommentsService.applyExternal).not.toHaveBeenCalled();
     expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
   });
 
@@ -352,7 +356,7 @@ describe("handlePullRequestReviewThread", () => {
     await expect(
       handlePullRequestReviewThread(reviewThreadPayload())
     ).resolves.toHaveProperty("status", 200);
-    expect(mockCommentsService.resolveThread).not.toHaveBeenCalled();
+    expect(mockCommentsService.applyExternal).not.toHaveBeenCalled();
 
     mockFetchReviewThreadResolutionByNodeId.mockResolvedValueOnce({
       status: ReviewThreadResolutionResultStatus.Ok,
@@ -362,7 +366,7 @@ describe("handlePullRequestReviewThread", () => {
     await expect(
       handlePullRequestReviewThread(reviewThreadPayload())
     ).resolves.toHaveProperty("status", 200);
-    expect(mockCommentsService.resolveThread).not.toHaveBeenCalled();
+    expect(mockCommentsService.applyExternal).not.toHaveBeenCalled();
 
     mockFetchReviewThreadResolutionByNodeId.mockResolvedValueOnce({
       status: ReviewThreadResolutionResultStatus.Ok,
@@ -372,8 +376,7 @@ describe("handlePullRequestReviewThread", () => {
     await expect(
       handlePullRequestReviewThread(reviewThreadPayload("unresolved"))
     ).resolves.toHaveProperty("status", 200);
-    expect(mockCommentsService.resolveThread).not.toHaveBeenCalled();
-    expect(mockCommentsService.unresolveThread).not.toHaveBeenCalled();
+    expect(mockCommentsService.applyExternal).not.toHaveBeenCalled();
   });
 
   it("does not write when revalidation changes document context", async () => {
@@ -397,7 +400,7 @@ describe("handlePullRequestReviewThread", () => {
 
     expect(response.status).toBe(200);
     expect(mockFetchReviewThreadResolutionByNodeId).toHaveBeenCalledTimes(1);
-    expect(mockCommentsService.resolveThread).not.toHaveBeenCalled();
+    expect(mockCommentsService.applyExternal).not.toHaveBeenCalled();
     expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
   });
 
@@ -424,7 +427,7 @@ describe("handlePullRequestReviewThread", () => {
       handlePullRequestReviewThread(reviewThreadPayload())
     ).resolves.toHaveProperty("status", 200);
     expect(mockFetchReviewThreadResolutionByNodeId).toHaveBeenCalledTimes(1);
-    expect(mockCommentsService.resolveThread).not.toHaveBeenCalled();
+    expect(mockCommentsService.applyExternal).not.toHaveBeenCalled();
     expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
   });
 
@@ -457,11 +460,10 @@ describe("handlePullRequestReviewThread", () => {
         pullRequestDetailId: "pr-detail-1",
       },
     });
-    expect(mockCommentsService.resolveThread).toHaveBeenCalledWith(
-      "org-1",
-      "github-pr-thread:pr-detail-1:review-thread:PRRT_thread",
-      expect.any(Date),
-      expect.objectContaining({
+    expect(mockCommentsService.applyExternal).toHaveBeenCalledWith(
+      threadStatusWrite({
+        resolved: true,
+        resolvedAt: expect.any(Date),
         resolvedById: "user-1",
         attribution: expect.objectContaining({
           kind: GitHubReviewThreadResolutionAttributionKind.ConnectedUser,
@@ -479,11 +481,10 @@ describe("handlePullRequestReviewThread", () => {
 
     await handlePullRequestReviewThread(reviewThreadPayload());
 
-    expect(mockCommentsService.resolveThread).toHaveBeenCalledWith(
-      "org-1",
-      "github-pr-thread:pr-detail-1:review-thread:PRRT_thread",
-      expect.any(Date),
-      expect.objectContaining({
+    expect(mockCommentsService.applyExternal).toHaveBeenCalledWith(
+      threadStatusWrite({
+        resolved: true,
+        resolvedAt: expect.any(Date),
         resolvedById: null,
         attribution: expect.objectContaining({
           kind: GitHubReviewThreadResolutionAttributionKind.ExternalUnconnected,
@@ -505,11 +506,28 @@ describe("handlePullRequestReviewThread", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(mockCommentsService.unresolveThread).toHaveBeenCalledWith(
-      "org-1",
-      "github-pr-thread:pr-detail-1:review-thread:PRRT_thread"
+    expect(mockCommentsService.applyExternal).toHaveBeenCalledTimes(1);
+    expect(mockCommentsService.applyExternal).toHaveBeenCalledWith(
+      threadStatusWrite({ resolved: false, resolvedAt: expect.any(Date) })
     );
-    expect(mockCommentsService.resolveThread).not.toHaveBeenCalled();
     expect(mockResolveExternalGitHubAuthorInTransaction).not.toHaveBeenCalled();
   });
 });
+
+/** The one `applyExternal` call a confirmed resolution makes, for the eligible thread. */
+function threadStatusWrite(status: Record<string, unknown>) {
+  return {
+    provider: CommentSyncProvider.Github,
+    organizationId: "org-1",
+    branchArtifactId: "branch-1",
+    pullRequestDetailId: "pr-detail-1",
+    events: [
+      {
+        kind: GitHubExternalEventKind.ThreadStatus,
+        threadExternalId:
+          "github-pr-thread:pr-detail-1:review-thread:PRRT_thread",
+        ...status,
+      },
+    ],
+  };
+}

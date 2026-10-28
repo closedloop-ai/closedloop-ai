@@ -1,5 +1,6 @@
 "use client";
 
+import { COMPUTE_TARGETS_QUERY_OPTIONS } from "@repo/app/compute/hooks/compute-target-query-options";
 import type { MemberComputeTarget } from "@repo/app/packs/lib/member-targets";
 import { useCurrentUser } from "@repo/app/users/hooks/use-users";
 import { useMemo } from "react";
@@ -54,7 +55,10 @@ export function useMemberPackTargets(isAdmin: boolean): MemberPackTargetsState {
     error: currentUserError,
     isLoading: currentUserLoading,
   } = useCurrentUser({ enabled: !isAdmin });
-  const computeTargets = useComputeTargets({ enabled: !isAdmin });
+  const computeTargets = useComputeTargets({
+    ...COMPUTE_TARGETS_QUERY_OPTIONS,
+    enabled: !isAdmin,
+  });
 
   const targets = useMemo<MemberComputeTarget[] | undefined>(() => {
     if (isAdmin) {

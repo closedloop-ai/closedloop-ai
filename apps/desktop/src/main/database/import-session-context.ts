@@ -3,8 +3,8 @@
  * @description The pure, pre-transaction state every import phase shares, and
  * the write-side dependency bundle the import entry points take.
  *
- * Extracted from `write-core.ts` (ISS-6168) so that file stays under its
- * grandfathered size while the owner-identity binding is threaded through it.
+ * Extracted from `write-core.ts` (ISS-6168) so that file does not grow while
+ * the owner-identity binding is threaded through it.
  * Nothing here touches the database: the derivations read the parsed session and
  * (for artifact refs) the filesystem, which is exactly why they can be computed
  * once up front and then reused by phases running in separate transactions.
@@ -22,6 +22,7 @@ import { extractLaunchMetadataRefs } from "../collectors/parsing/artifact-ref-la
 import { resolveSessionObservedAt } from "../collectors/parsing/artifact-ref-observed-at.js";
 import type { ArtifactRefRecord } from "../collectors/parsing/artifact-ref-record.js";
 import type { Harness, NormalizedSession } from "../collectors/types.js";
+import type { ParsePolicy } from "../parse-policy/parse-policy.js";
 import type { PullRequestPreservedFields } from "../pull-requests/pr-store.js";
 import { RECENT_ACTIVITY_MS } from "./db-constants.js";
 import { buildImportMetadata } from "./import-metadata-builders.js";
@@ -43,6 +44,16 @@ export type ImportSessionWriteDeps = {
   detectBillingMode: (harness: string, model?: string | null) => string;
   /** ISS-6168: resolves the signed-in owner stamped on a newly imported session. */
   getUserIdentity?: SessionIdentityProvider;
+  /**
+   * ISS-8757: the ISS-4591 row-digest probe, so the incremental import can fold
+   * its event-content bracket with the real SHA3 digest where the build supports
+   * it. Memoized by the probe itself and awaited OUTSIDE any transaction.
+   *
+   * Absent (tests, paths with no db host) degrades to the legacy checksum over
+   * the same projection — still strictly stronger than the row count it replaced,
+   * never a crash, and never a silently-narrower gate than ISS-8699 shipped.
+   */
+  supportsRowDigest?: () => Promise<boolean>;
   log: (message: string) => void;
 };
 
@@ -59,6 +70,11 @@ export type ImportSessionContext = {
   session: NormalizedSession;
   harness: Harness;
   now: string;
+  /**
+   * ISS-12552 (PRD-800 "Rollout"): the policy the session was parsed
+   * under, so the import gates and stamps the revision by the same answer.
+   */
+  parsePolicy: ParsePolicy;
   recentlyActive: boolean;
   mainId: string;
   tokenSeries: NormalizedSession["tokenSeries"];
@@ -89,6 +105,7 @@ export function buildImportSessionContext(
   harness: Harness,
   now: string,
   attributionCache: SessionAttributionResolverCache,
+  parsePolicy: ParsePolicy,
   pullRequestPreserved?: ReadonlyMap<string, PullRequestPreservedFields>
 ): ImportSessionContext {
   const nowMs = Date.parse(now);
@@ -161,6 +178,7 @@ export function buildImportSessionContext(
     session,
     harness,
     now,
+    parsePolicy,
     recentlyActive,
     mainId,
     tokenSeries,

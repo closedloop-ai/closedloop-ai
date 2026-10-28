@@ -63,7 +63,9 @@ import {
   endQuietly,
   quoteIdentifier,
   type SqlClient,
+  stripConcurrentlyKeyword,
 } from "./db-utils";
+import { defaultListMigrationDirs } from "./preview-at-head";
 import { PREVIEW_PLAIN_BUILD_CONCURRENT_INDEX_MIGRATIONS } from "./preview-heavy-migrations";
 import { isPreviewSchema } from "./preview-schema";
 
@@ -79,12 +81,17 @@ const CONCURRENT_UNIQUE_INDEX_STATEMENT_REGEX =
 // Captures the quoted index name from such a statement.
 const CONCURRENT_INDEX_NAME_REGEX =
   /^create\s+(?:unique\s+)?index\s+concurrently\s+(?:if\s+not\s+exists\s+)?"([^"]+)"/i;
-// The `CONCURRENTLY` keyword to strip (with its leading whitespace).
-const CONCURRENTLY_KEYWORD_REGEX = /\s+concurrently\b/i;
 const IF_NOT_EXISTS_REGEX = /\bif\s+not\s+exists\b/i;
 // Every double-quoted identifier in a statement — in a CREATE INDEX these are, in
 // order, [index name, table name, ...key columns], so the columns are the rest.
 const QUOTED_IDENTIFIER_REGEX = /"([^"]+)"/g;
+// The quoted table after `ON`. An unquoted one throws: the key-column split
+// above assumes identifier [1] is the table.
+const ON_TABLE_REGEX = /\son\s+"([^"]+)"/i;
+// A `DROP TABLE [IF EXISTS] a, b [CASCADE]` statement's table list.
+const DROP_TABLE_REGEX = /\bdrop\s+table\s+(?:if\s+exists\s+)?([^;]+)/gi;
+const DROP_TABLE_OPTION_REGEX = /\s+(?:cascade|restrict)\s*$/i;
+const SCHEMA_QUALIFIER_REGEX = /^.*\./;
 // Captures the key-column list from a `pg_get_indexdef` string — the group after
 // `USING <method> (...)`, e.g. `USING btree (organization_id, entity_type)`. Used
 // so the column check reads the ACTUAL indexed columns, not tokens that also
@@ -102,6 +109,8 @@ export type PlainIndexDeps = {
   createClient?: (databaseUrl: string) => SqlClient;
   /** Reads a migration's `migration.sql`; defaults to the on-disk read. Injected in tests. */
   readMigrationSql?: (migrationName: string) => string;
+  /** Lists the migration directory names; read for later `DROP TABLE`s. Injected in tests. */
+  listMigrationDirs?: () => string[];
   logger?: PlainIndexLogger;
   /**
    * Upper bound (ms) on the lock acquire + each build, threaded from the caller's
@@ -121,6 +130,8 @@ export type PlainIndexBuild = {
   sql: string;
   /** True for `CREATE UNIQUE INDEX` — verified `indisunique` after the build. */
   unique: boolean;
+  /** The indexed table; an index whose table a later migration drops is not built. */
+  table: string;
   /** The key column identifiers — verified present in the built index's definition. */
   columns: string[];
 };
@@ -148,11 +159,8 @@ type IndexValidityRow = {
  * CONCURRENTLY-index statement's name cannot be parsed. Pure; unit-testable.
  */
 export function parsePlainIndexBuilds(sql: string): PlainIndexBuild[] {
-  const code = sql
-    .replace(SQL_BLOCK_COMMENT_REGEX, " ")
-    .replace(SQL_LINE_COMMENT_REGEX, " ");
   const builds: PlainIndexBuild[] = [];
-  for (const fragment of code.split(";")) {
+  for (const fragment of stripSqlComments(sql).split(";")) {
     const statement = fragment.trim();
     if (statement.length === 0) {
       continue;
@@ -168,10 +176,7 @@ export function parsePlainIndexBuilds(sql: string): PlainIndexBuild[] {
         `preview-plain-index: cannot parse index name from statement: ${statement.slice(0, 80)}`
       );
     }
-    const plainNoConcurrently = statement.replace(
-      CONCURRENTLY_KEYWORD_REGEX,
-      " "
-    );
+    const plainNoConcurrently = stripConcurrentlyKeyword(statement);
     const plain = IF_NOT_EXISTS_REGEX.test(plainNoConcurrently)
       ? plainNoConcurrently
       : plainNoConcurrently.replace(
@@ -181,10 +186,17 @@ export function parsePlainIndexBuilds(sql: string): PlainIndexBuild[] {
     const identifiers = [...statement.matchAll(QUOTED_IDENTIFIER_REGEX)].map(
       (m) => m[1]
     );
+    const table = statement.match(ON_TABLE_REGEX)?.[1];
+    if (!table) {
+      throw new Error(
+        `preview-plain-index: cannot parse a quoted table name from statement: ${statement.slice(0, 80)}`
+      );
+    }
     builds.push({
       name: nameMatch[1],
       sql: plain,
       unique: CONCURRENT_UNIQUE_INDEX_STATEMENT_REGEX.test(statement),
+      table,
       // [0]=index name, [1]=table name, rest = key columns.
       columns: identifiers.slice(2),
     });
@@ -336,10 +348,23 @@ export async function plainBuildPreviewConcurrentIndexes(
 
   const createClient = deps.createClient ?? createSqlClient;
   const readMigrationSql = deps.readMigrationSql ?? defaultReadMigrationSql;
+  const listMigrationDirs = deps.listMigrationDirs ?? defaultListMigrationDirs;
   const logger = deps.logger ?? { log: console.log, warn: console.warn };
 
-  const builds = PREVIEW_PLAIN_BUILD_CONCURRENT_INDEX_MIGRATIONS.flatMap(
-    (migrationName) => parsePlainIndexBuilds(readMigrationSql(migrationName))
+  const declared = PREVIEW_PLAIN_BUILD_CONCURRENT_INDEX_MIGRATIONS.map(
+    (migrationName) => ({
+      migrationName,
+      builds: parsePlainIndexBuilds(readMigrationSql(migrationName)),
+    })
+  );
+  if (declared.every((d) => d.builds.length === 0)) {
+    return;
+  }
+  const builds = withoutDroppedTables(
+    declared,
+    listMigrationDirs(),
+    readMigrationSql,
+    (message) => logger.log(`${message} (ISS-12752, ${schema})`)
   );
   if (builds.length === 0) {
     return;
@@ -394,4 +419,59 @@ export async function plainBuildPreviewConcurrentIndexes(
   } finally {
     await endQuietly(client);
   }
+}
+
+function stripSqlComments(sql: string): string {
+  return sql
+    .replace(SQL_BLOCK_COMMENT_REGEX, " ")
+    .replace(SQL_LINE_COMMENT_REGEX, " ");
+}
+
+/** The table names a migration's `DROP TABLE` statements drop. */
+function droppedTables(sql: string): string[] {
+  return [...stripSqlComments(sql).matchAll(DROP_TABLE_REGEX)].flatMap(
+    (match) =>
+      match[1]
+        .replace(DROP_TABLE_OPTION_REGEX, "")
+        .split(",")
+        .map((item) =>
+          item.trim().replace(SCHEMA_QUALIFIER_REGEX, "").replaceAll('"', "")
+        )
+  );
+}
+
+/**
+ * Removes the builds whose table a LATER migration drops. At head that table and
+ * its indexes are gone, so the build can only fail: PRD-797 (#8961) dropped
+ * `routine_runs`, and its ISS-9671 unique index then failed every preview here
+ * (ISS-12752). Read from the migration set, not the catalog, so an index whose
+ * table should exist at head is still built and fails closed when it is absent.
+ */
+function withoutDroppedTables(
+  declared: { migrationName: string; builds: PlainIndexBuild[] }[],
+  migrationDirs: string[],
+  readMigrationSql: (migrationName: string) => string,
+  log: (message: string) => void
+): PlainIndexBuild[] {
+  const earliest = declared.map((d) => d.migrationName).sort()[0];
+  const lastDropByTable = new Map<string, string>();
+  for (const name of migrationDirs.filter((dir) => dir > earliest).sort()) {
+    for (const table of droppedTables(readMigrationSql(name))) {
+      lastDropByTable.set(table, name);
+    }
+  }
+  const kept: PlainIndexBuild[] = [];
+  for (const { migrationName, builds } of declared) {
+    for (const build of builds) {
+      const droppedBy = lastDropByTable.get(build.table);
+      if (droppedBy !== undefined && droppedBy > migrationName) {
+        log(
+          `↪ Skipped plain build of ${build.name}: ${droppedBy} drops table ${build.table}`
+        );
+      } else {
+        kept.push(build);
+      }
+    }
+  }
+  return kept;
 }

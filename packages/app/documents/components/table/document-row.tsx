@@ -2,34 +2,25 @@
 
 import type { Artifact } from "@repo/api/src/types/artifact";
 import type { ProjectWithDetails } from "@repo/api/src/types/project";
+import type { ArtifactHierarchyState } from "@repo/api/src/types/project-tree";
+import { resolveBranchDetailsNavigation } from "@repo/app/branches/lib/branch-details-navigation";
 import { FavoriteButton } from "@repo/app/documents/components/favorite-button";
-import {
-  AssigneeCell,
-  DueDateCell,
-  PriorityCell,
-} from "@repo/app/documents/components/table/cells/edit-cells";
+import { CELL_RENDERERS } from "@repo/app/documents/components/table/cells/cell-renderers";
 import { NameCell } from "@repo/app/documents/components/table/cells/name-cell";
 import { buildRankSlot } from "@repo/app/documents/components/table/cells/rank-slot";
-import { ScoreCell } from "@repo/app/documents/components/table/cells/score-cell";
-import {
-  ParentCell,
-  ProjectCell,
-  TypeCell,
-  UpdatedCell,
-} from "@repo/app/documents/components/table/cells/static-cells";
-import { TagsCell } from "@repo/app/documents/components/table/cells/tags-cell";
 import {
   RowEditContext,
   type RowEditHandlers,
 } from "@repo/app/documents/components/table/row-edit-context";
 import { getRowTypeConfig } from "@repo/app/documents/components/table/row-type-registry";
 import type { RankInteractionMode } from "@repo/app/documents/components/table/sort-keys";
+import type { DocumentRowSelectionChange } from "@repo/app/documents/hooks/use-documents-legacy-row-selection";
 import type { DocumentRowData } from "@repo/app/documents/lib/artifact-row-adapter";
+import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { useResponsiveNarrowGridviewEnabled } from "@repo/app/shared/feature-flags/use-responsive-narrow-gridview";
 import type { DocumentColumn } from "@repo/app/shared/hooks/use-column-visibility";
-import {
-  ARTIFACT_COLUMN_LABELS,
-  DocumentColumn as Col,
-} from "@repo/app/shared/hooks/use-column-visibility";
+import { ARTIFACT_COLUMN_LABELS } from "@repo/app/shared/hooks/use-column-visibility";
+import { ELIGIBLE_BRANCH_NAVIGATION_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import {
   GridTableCard,
   type GridTableCardField,
@@ -48,16 +39,14 @@ import { getStringRouteParam } from "@repo/navigation/route-param";
 import { useOrgPath } from "@repo/navigation/use-org-path";
 import { useRouteParams } from "@repo/navigation/use-route-params";
 import { EllipsisIcon } from "lucide-react";
-import type { ReactNode } from "react";
+import type { ComponentPropsWithoutRef, ReactNode } from "react";
 
 // FEA-3866: below CARD_FALLBACK_BREAKPOINT the Documents tree falls back to a
-// stacked card per row (the grid's `minmax(350px, 1fr)` lead + N×124px tracks
-// can't collapse to a phone width). ISS-4788: this used to re-declare the 768
+// stacked card per row (the grid's `minmax(350px, 1fr)` lead + bounded metadata
+// tracks can't collapse to a phone width). ISS-4788: this used to re-declare the 768
 // literal locally "to match the GridTable card fallback"; it now imports the
 // shared constant, so the Documents tree cannot silently drift away from the
 // primitive it is deliberately mirroring (whitlockk review).
-
-// ---- Unified row item type ----
 
 /**
  * Discriminated union keyed on the row's actual artifact type (FEA-1763 /
@@ -73,44 +62,33 @@ export type DocumentRowItem =
       kind: "document";
       data: DocumentRowData;
       children?: DocumentRowItem[];
+      hierarchy?: ArtifactHierarchyState;
     }
-  | { kind: "project"; data: ProjectWithDetails; children?: DocumentRowItem[] }
+  | {
+      kind: "project";
+      data: ProjectWithDetails;
+      children?: DocumentRowItem[];
+      hierarchy?: ArtifactHierarchyState;
+    }
   | {
       kind: "branch";
       data: Artifact;
       children?: DocumentRowItem[];
+      hierarchy?: ArtifactHierarchyState;
     }
   | {
       kind: "session";
       data: Artifact;
       children?: DocumentRowItem[];
+      hierarchy?: ArtifactHierarchyState;
     };
-
-// ---- Column to cell mapping ----
-
-const CELL_RENDERERS: Record<
-  DocumentColumn,
-  React.ComponentType<{ item: DocumentRowItem }>
-> = {
-  [Col.Type]: TypeCell,
-  [Col.Parent]: ParentCell,
-  [Col.DueDate]: DueDateCell,
-  [Col.Assignee]: AssigneeCell,
-  [Col.Priority]: PriorityCell,
-  [Col.Score]: ScoreCell,
-  [Col.Tags]: TagsCell,
-  [Col.Updated]: UpdatedCell,
-  [Col.Project]: ProjectCell,
-};
-
-// ---- Main row component ----
 
 export type DocumentRowProps = {
   item: DocumentRowItem;
   visibleColumns: DocumentColumn[];
   showCheckbox?: boolean;
   isSelected?: boolean;
-  onSelectionChange?: (id: string, checked: boolean) => void;
+  onSelectionChange?: DocumentRowSelectionChange;
   /**
    * Row overflow ("More actions") menu. Each row supplies its own self-contained
    * menu (FEA-4242) — see `DocumentRowActions` / `ProjectRowActions`. Falls back
@@ -154,7 +132,7 @@ export type DocumentRowProps = {
    * Controls whether the rank slot at the start of the name cell is reserved
    * and, if so, what it renders:
    *  - `Enabled`         — render the `dragHandle` slot content (the parent
-   *                        wraps the group in `<SortableTreeGroup>` and passes
+   *                        wraps the group in `<SortableSubtree>` and passes
    *                        the handle to the root row here).
    *  - `DisabledGrouped` — render a greyed handle with an explanatory tooltip.
    *  - `Hidden`          — column sort is active; show no rank slot.
@@ -165,10 +143,14 @@ export type DocumentRowProps = {
   rankInteractionMode?: RankInteractionMode;
   /**
    * Element rendered into the rank slot when `rankInteractionMode === Enabled`.
-   * Supplied by `<SortableTreeGroup>` and wires `@dnd-kit` listeners /
+   * Supplied by `<SortableSubtree>` and wires `@dnd-kit` listeners /
    * attributes to the grip-vertical button.
    */
   dragHandle?: React.ReactNode;
+  /** Manual hierarchy rows reserve one slug track; cards give the title its own line. */
+  placementLayout?: "manual";
+  /** Pointer drag binding for approved row/title whitespace outside nested controls. */
+  rowDragTargetProps?: Pick<ComponentPropsWithoutRef<"div">, "onPointerDown">;
   /**
    * ISS-4761: render this row with the shared `GridTable` ARIA table semantics
    * (ISS-4672) — `role="row"` on the grid, `role="cell"` plus the track's
@@ -181,6 +163,13 @@ export type DocumentRowProps = {
    * worse than no roles at all. Off ⇒ the prior role-less markup, byte for byte.
    */
   insideAriaTable?: boolean;
+  /**
+   * A project hierarchy keeps its horizontally scrollable, indented rows at
+   * narrow widths and never becomes cards (Daveth, 2026-10-21 "prototype
+   * decides", PRD-595 / ISS-6560 `project-hierarchy-spec.ts`). Hierarchy
+   * bodies pass `false`; flat lists keep the captured-main card fallback.
+   */
+  cardFallback?: boolean;
 };
 
 export function DocumentRow({
@@ -202,13 +191,12 @@ export function DocumentRow({
   showBottomBorder = true,
   rankInteractionMode,
   dragHandle,
+  placementLayout,
+  rowDragTargetProps,
   insideAriaTable = false,
+  cardFallback = true,
 }: DocumentRowProps) {
-  const params = useRouteParams();
-  const buildOrgPath = useOrgPath();
-  // Empty string (param absent or not a single string) falls through to the
-  // row's own team id in computeHref().
-  const activeTeamId = getStringRouteParam(params, "teamId") || undefined;
+  const resolveHref = useDocumentRowHref();
 
   const rankSlot = buildRankSlot(
     rankInteractionMode,
@@ -219,31 +207,21 @@ export function DocumentRow({
     visibleColumns.length
   );
 
-  function computeHref(): string | null {
-    // Project rows are not artifacts: their route needs the team context, so
-    // they stay outside the row-type registry.
-    if (item.kind === "project") {
-      const teamId = activeTeamId ?? item.data.teams[0]?.id;
-      return teamId
-        ? buildOrgPath(`/teams/${teamId}/projects/${item.data.id}`)
-        : null;
-    }
-    const route = getRowTypeConfig(item)?.route ?? null;
-    return route ? buildOrgPath(route) : null;
-  }
+  const href = resolveHref(item);
 
-  const href = computeHref();
-
-  // FEA-3866: measure the row's own container so the tree falls back to a card
-  // below the `md` width. `useContainerWidth` defaults to a wide box pre-measure
-  // (and under SSR / jsdom), so the desktop grid is the first paint and never
-  // flashes a card. The same NameCell cluster (checkbox, chevron/expand, rank
-  // handle, status control, title link) and the same CELL_RENDERERS feed both
-  // layouts, so grouping/tree/rank/inline-edit and the rendered content never
-  // drift between the grid and the card.
+  // FEA-3866: the default-off compatibility path measures this row's container
+  // and falls back to the captured-main card below the `md` width.
+  // `useContainerWidth` defaults to a wide box before measurement, including
+  // SSR and jsdom, so the desktop grid is the first paint and never flashes a
+  // card. PRD-727 disables that card projection while its rollout flag is on;
+  // the shared viewport-aware grid then owns the one-column narrow list.
   const { ref: containerRef, width: containerWidth } =
     useContainerWidth<HTMLDivElement>();
-  const showCard = containerWidth < CARD_FALLBACK_BREAKPOINT;
+  const responsiveNarrowGridviewEnabled = useResponsiveNarrowGridviewEnabled();
+  const showCard =
+    cardFallback &&
+    !responsiveNarrowGridviewEnabled &&
+    containerWidth < CARD_FALLBACK_BREAKPOINT;
 
   const nameCell = (
     <NameCell
@@ -254,6 +232,8 @@ export function DocumentRow({
       item={item}
       onSelectionChange={onSelectionChange}
       onToggleExpand={onToggleExpand}
+      placementCard={placementLayout === "manual" && showCard}
+      placementSlug={placementLayout === "manual"}
       rankSlot={rankSlot}
       reserveChevronSlot={reserveChevronSlot}
       selectMode={selectMode}
@@ -295,7 +275,20 @@ export function DocumentRow({
           host still scrolls horizontally to the grid's intrinsic width while this
           wrapper reports the real available width. The card path is full-width
           and never scrolls sideways. Mirrors the GridTable fallback wrapper. */}
-      <div className="w-full" ref={containerRef}>
+      <div
+        className="w-full"
+        onPointerDown={(event) => {
+          if (!isManualTitleDragTarget(placementLayout, event.target)) {
+            rowDragTargetProps?.onPointerDown?.(event);
+          }
+        }}
+        onPointerDownCapture={(event) => {
+          if (isManualTitleDragTarget(placementLayout, event.target)) {
+            rowDragTargetProps?.onPointerDown?.(event);
+          }
+        }}
+        ref={containerRef}
+      >
         {showCard ? (
           <DocumentCardRow
             insideAriaTable={insideAriaTable}
@@ -331,7 +324,7 @@ export function DocumentRow({
  * card and the grid row never drift. Built on the shared `GridTableCard` so the
  * radius/border/padding match the Agents, Sessions, and Branches cards.
  *
- * Grouping is untouched: `TreeGroupRows` still wraps rows in its group sections
+ * The ungrouped tree adapter composes rows from the shared lineage walk
  * and renders one `DocumentRow` per node, so the same cards nest under the same
  * collapsible group + tree structure the grid shows.
  *
@@ -359,11 +352,15 @@ export function DocumentCard({
       value: <CellRenderer item={item} />,
     };
   });
+  // `group/row` keeps the NameCell's hover-reveal checkbox behaving as it does
+  // in the grid; the checkbox itself carries `touch:opacity-100`. A selected
+  // row tints the ring to match the grid's `bg-accent/40` selection state.
   return (
-    // `group/row` keeps the NameCell's hover-reveal checkbox behaving as it does
-    // in the grid; the checkbox itself carries `touch:opacity-100`. A selected
-    // row tints the ring to match the grid's `bg-accent/40` selection state.
-    <div className={cn("group/row", isSelected && "rounded-xl bg-accent/40")}>
+    <div
+      className={cn("group/row", isSelected && "rounded-xl bg-accent/40")}
+      data-grid-card-id={item.data.id}
+      data-state={isSelected ? "selected" : undefined}
+    >
       <GridTableCard
         fields={fields}
         header={
@@ -382,7 +379,7 @@ export function getDocumentRowGridTemplateColumns(
 ): string {
   return [
     "minmax(350px, 1fr)",
-    ...Array.from({ length: visibleColumnCount }, () => "124px"),
+    ...Array.from({ length: visibleColumnCount }, () => "minmax(80px, 124px)"),
     "88px",
   ].join(" ");
 }
@@ -444,7 +441,10 @@ function DocumentGridRow({
 }) {
   return (
     <div
-      className={`group/row relative grid min-h-11 min-w-fit ${isSelected ? "bg-accent/40 hover:bg-accent/60" : "bg-background hover:bg-muted/40"}`}
+      className={`group/row relative grid min-h-11 min-w-fit [[data-dragging=true]_&]:bg-accent/40 ${isSelected ? "bg-accent/40 hover:bg-accent/60" : "bg-background hover:bg-muted/40"}`}
+      data-grid-row=""
+      data-grid-row-id={item.data.id}
+      data-state={isSelected ? "selected" : undefined}
       {...ariaRowProps(insideAriaTable)}
       style={{ gridTemplateColumns }}
     >
@@ -549,5 +549,67 @@ function DocumentCardRow({
         {card}
       </div>
     </div>
+  );
+}
+
+/**
+ * Where one artifact row's title links, for every row kind the board renders.
+ *
+ * Shared with the grid body (ISS-9335), because a SECOND renderer of the same
+ * rows now exists — the shared-grid body, whose identity cell is a `renderLead`
+ * callback rather than a row component — and a row that links one place in one
+ * body and elsewhere in the other is the drift this package's AGENTS.md calls
+ * two implementations of one contract. The hooks it needs (route params, the
+ * org-path builder, the branch-eligibility gate) are the reason it is a hook
+ * and not a pure helper.
+ *
+ * It stays in THIS module rather than a hook file of its own so the
+ * `ELIGIBLE_BRANCH_NAVIGATION_FEATURE_FLAG_KEY` read stays where
+ * `scripts/lint/source-gate-allowlist.json` already registers it: moving that
+ * read would register the same pre-existing violation against a new path, which
+ * the shrink-only ratchet reads as new debt.
+ */
+export function useDocumentRowHref(): (item: DocumentRowItem) => string | null {
+  const params = useRouteParams();
+  const buildOrgPath = useOrgPath();
+  const branchNavigationEnabled = useFeatureFlagEnabledOptional(
+    ELIGIBLE_BRANCH_NAVIGATION_FEATURE_FLAG_KEY
+  );
+  // Empty string (param absent or not a single string) falls through to the
+  // row's own team id below.
+  const activeTeamId = getStringRouteParam(params, "teamId") || undefined;
+
+  return (item: DocumentRowItem) => {
+    // Project rows are not artifacts: their route needs the team context, so
+    // they stay outside the row-type registry.
+    if (item.kind === "project") {
+      const teamId = activeTeamId ?? item.data.teams[0]?.id;
+      return teamId
+        ? buildOrgPath(`/teams/${teamId}/projects/${item.data.id}`)
+        : null;
+    }
+    if (item.kind === "branch") {
+      const navigation = resolveBranchDetailsNavigation({
+        branchArtifactId: item.data.id,
+        hasCompatibilityProviderFallback:
+          item.data.hasCompatibilityProviderFallback,
+        productEligibility: item.data.productEligibility,
+        rolloutEnabled: branchNavigationEnabled,
+      });
+      return navigation.href ? buildOrgPath(navigation.href) : null;
+    }
+    const route = getRowTypeConfig(item)?.route ?? null;
+    return route ? buildOrgPath(route) : null;
+  };
+}
+
+function isManualTitleDragTarget(
+  placementLayout: "manual" | undefined,
+  target: EventTarget | null
+): boolean {
+  return (
+    placementLayout === "manual" &&
+    target instanceof Element &&
+    target.closest('a[draggable="false"]') !== null
   );
 }

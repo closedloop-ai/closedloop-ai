@@ -3,441 +3,30 @@ import {
   BranchLifecycleBoundaryKind,
   BranchParticipationKind,
 } from "./branch.js";
-import { BranchActivityEvidenceCompleteness } from "./branch-activity.js";
 import {
   ArtifactRefConfidence,
   ArtifactRefMethod,
   ArtifactRefRelation,
   ArtifactRefTargetKind,
+  allowsUniqueBranchPrFallback,
+  classifySessionPrMetadata,
   deriveBranchParticipationFromEvidence,
   deriveBranchParticipationFromMetadata,
   deriveSessionPrPurposeFromMetadata,
+  deriveSessionPrPurposeFromRelationTypes,
+  hasSessionPrLinkKind,
   isKnownArtifactRefKind,
   isLifecycleBranchReadOnlyRelation,
   isLifecycleBranchWriteRelation,
   KNOWN_ARTIFACT_REF_KINDS,
-  PR_INT_MAX,
   parseSessionPrLinkMetadata,
   SessionArtifactLinkKind,
+  SessionPrMetadataClassificationKind,
   SessionPrPurpose,
   SessionPrRelationType,
-  syncedArtifactRefSchema,
+  sessionPrRefsFromMetadata,
   syncedBranchLifecycleEventSchema,
-  syncedSessionPrRefSchema,
 } from "./session-artifact-link.js";
-import {
-  MAX_SYNCED_MONITORED_SESSION_ACTIVITY_EVENTS,
-  MonitoredSessionActivityEventKind,
-} from "./session-monitored-activity.js";
-
-const MONITORED_EVENT = {
-  kind: MonitoredSessionActivityEventKind.AgentRead,
-  sourceEventId: "monitored_session_v1:event-1",
-  occurredAt: "2026-08-12T12:00:00.000Z",
-  completeness: BranchActivityEvidenceCompleteness.Complete,
-};
-
-describe("syncedArtifactRefSchema", () => {
-  it.each([
-    ["FEA-1", "FEA-1"],
-    ["PRD-42", "PRD-42"],
-    ["WRK-12", "WRK-12"],
-    ["SES-999", "SES-999"],
-    ["PLN-100", "PLN-100"],
-    ["PRO-99999", "PRO-99999"],
-    // Unbounded digit run: the contract gates the family prefix, not the width,
-    // so numbering that outgrows five digits does not start failing sync.
-    ["FEA-123456", "FEA-123456"],
-  ])("accepts valid slug %s", (_label, slug) => {
-    const result = syncedArtifactRefSchema.safeParse({
-      slug,
-      isPrimary: true,
-      method: "mcp_tool_call",
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it.each([
-    ["unknown prefix", "TASK-10"],
-    ["lowercase prefix", "fea-123"],
-    ["empty string", ""],
-    ["no dash", "FEA1"],
-    ["no number", "FEA-"],
-    ["only digits", "12345"],
-  ])("rejects invalid slug: %s", (_label, slug) => {
-    const result = syncedArtifactRefSchema.safeParse({
-      slug,
-      isPrimary: false,
-      method: "slug_in_message",
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it("requires method to be a non-empty string", () => {
-    const result = syncedArtifactRefSchema.safeParse({
-      slug: "FEA-1",
-      isPrimary: true,
-      method: "",
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it("requires isPrimary to be a boolean", () => {
-    const result = syncedArtifactRefSchema.safeParse({
-      slug: "FEA-1",
-      isPrimary: "true",
-      method: "mcp_tool_call",
-    });
-    expect(result.success).toBe(false);
-  });
-});
-
-describe("syncedArtifactRefSchema — kind-discriminated union (FEA-2729)", () => {
-  it("normalizes a legacy ref with no kind to closedloop_artifact", () => {
-    const result = syncedArtifactRefSchema.safeParse({
-      slug: "FEA-1",
-      isPrimary: true,
-      method: ArtifactRefMethod.McpToolCall,
-    });
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.kind).toBe(ArtifactRefTargetKind.ClosedloopArtifact);
-    }
-  });
-
-  it("carries relation and observedAt on a closedloop ref", () => {
-    const result = syncedArtifactRefSchema.safeParse({
-      kind: ArtifactRefTargetKind.ClosedloopArtifact,
-      slug: "FEA-1",
-      isPrimary: false,
-      method: ArtifactRefMethod.SlugInBranch,
-      relation: ArtifactRefRelation.Workspace,
-      observedAt: "2026-07-08T12:00:00.000Z",
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("accepts a branch ref with repo identity, method, and relation", () => {
-    const result = syncedArtifactRefSchema.safeParse({
-      kind: ArtifactRefTargetKind.Branch,
-      repositoryFullName: "closedloop-ai/example-repo",
-      branchName: "feat/x",
-      method: "git_command",
-      relation: ArtifactRefRelation.Created,
-      observedAt: "2026-07-08T12:00:00.000Z",
-    });
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.kind).toBe(ArtifactRefTargetKind.Branch);
-    }
-  });
-
-  it("accepts optional explicit branch participation on branch refs", () => {
-    const result = syncedArtifactRefSchema.safeParse({
-      kind: ArtifactRefTargetKind.Branch,
-      repositoryFullName: "closedloop-ai/example-repo",
-      branchName: "feat/x",
-      method: "git_push",
-      relation: ArtifactRefRelation.Created,
-      branchParticipation: BranchParticipationKind.Wrote,
-      observedAt: "2026-07-08T12:00:00.000Z",
-    });
-    expect(result.success).toBe(true);
-    if (result.success && result.data.kind === ArtifactRefTargetKind.Branch) {
-      expect(result.data.branchParticipation).toBe(
-        BranchParticipationKind.Wrote
-      );
-    }
-  });
-
-  it("retains valid monitored-activity siblings and marks malformed/future/date-only siblings partial", () => {
-    const result = syncedArtifactRefSchema.safeParse({
-      kind: ArtifactRefTargetKind.Branch,
-      repositoryFullName: "closedloop-ai/example-repo",
-      branchName: "feat/iss-6060",
-      method: ArtifactRefMethod.McpToolCall,
-      relation: ArtifactRefRelation.Reviewed,
-      monitoredSessionActivity: {
-        completeness: BranchActivityEvidenceCompleteness.Complete,
-        events: [
-          MONITORED_EVENT,
-          { ...MONITORED_EVENT, kind: "future_activity_kind" },
-          {
-            ...MONITORED_EVENT,
-            sourceEventId: "monitored_session_v1:date-only",
-            occurredAt: "2026-08-12",
-          },
-          { sourceEventId: "missing-kind-and-time" },
-        ],
-      },
-    });
-
-    expect(result.success).toBe(true);
-    if (result.success && result.data.kind === ArtifactRefTargetKind.Branch) {
-      expect(result.data.monitoredSessionActivity).toEqual({
-        completeness: BranchActivityEvidenceCompleteness.Partial,
-        events: [
-          {
-            ...MONITORED_EVENT,
-            completeness: BranchActivityEvidenceCompleteness.Partial,
-          },
-        ],
-      });
-    }
-  });
-
-  it("sorts validated monitored activity newest-first before the retained cap", () => {
-    const eventCount = MAX_SYNCED_MONITORED_SESSION_ACTIVITY_EVENTS + 10;
-    const result = syncedArtifactRefSchema.safeParse({
-      kind: ArtifactRefTargetKind.Branch,
-      repositoryFullName: "closedloop-ai/example-repo",
-      branchName: "feat/iss-6060",
-      method: ArtifactRefMethod.McpToolCall,
-      relation: ArtifactRefRelation.Reviewed,
-      monitoredSessionActivity: {
-        completeness: BranchActivityEvidenceCompleteness.Complete,
-        events: Array.from({ length: eventCount }, (_, index) => ({
-          ...MONITORED_EVENT,
-          sourceEventId: `monitored_session_v1:event-${index}`,
-          occurredAt: new Date(
-            Date.parse(MONITORED_EVENT.occurredAt) + index * 1000
-          ).toISOString(),
-        })),
-      },
-    });
-
-    expect(result.success).toBe(true);
-    if (result.success && result.data.kind === ArtifactRefTargetKind.Branch) {
-      expect(result.data.monitoredSessionActivity?.events).toHaveLength(
-        MAX_SYNCED_MONITORED_SESSION_ACTIVITY_EVENTS
-      );
-      expect(
-        result.data.monitoredSessionActivity?.events[0]?.sourceEventId
-      ).toBe(`monitored_session_v1:event-${eventCount - 1}`);
-      expect(result.data.monitoredSessionActivity?.completeness).toBe(
-        BranchActivityEvidenceCompleteness.Partial
-      );
-      expect(
-        result.data.monitoredSessionActivity?.events.every(
-          (event) =>
-            event.completeness === BranchActivityEvidenceCompleteness.Partial
-        )
-      ).toBe(true);
-    }
-  });
-
-  it("drops a conflicting source identity while preserving independent valid events", () => {
-    const independent = {
-      ...MONITORED_EVENT,
-      sourceEventId: "monitored_session_v1:event-2",
-      occurredAt: "2026-08-12T12:01:00.000Z",
-    };
-    const result = syncedArtifactRefSchema.safeParse({
-      kind: ArtifactRefTargetKind.PullRequest,
-      repositoryFullName: "closedloop-ai/example-repo",
-      prNumber: 6060,
-      method: ArtifactRefMethod.McpToolCall,
-      relation: ArtifactRefRelation.Reviewed,
-      monitoredSessionActivity: {
-        completeness: BranchActivityEvidenceCompleteness.Complete,
-        events: [
-          MONITORED_EVENT,
-          { ...MONITORED_EVENT, occurredAt: "2026-08-12T13:00:00.000Z" },
-          independent,
-        ],
-      },
-    });
-
-    expect(result.success).toBe(true);
-    if (
-      result.success &&
-      result.data.kind === ArtifactRefTargetKind.PullRequest
-    ) {
-      expect(result.data.monitoredSessionActivity).toEqual({
-        completeness: BranchActivityEvidenceCompleteness.Partial,
-        events: [
-          {
-            ...independent,
-            completeness: BranchActivityEvidenceCompleteness.Partial,
-          },
-        ],
-      });
-    }
-  });
-
-  it("drops unknown branch participation values without rejecting the ref", () => {
-    const result = syncedArtifactRefSchema.safeParse({
-      kind: ArtifactRefTargetKind.Branch,
-      repositoryFullName: "closedloop-ai/example-repo",
-      branchName: "feat/x",
-      method: "git_push",
-      relation: ArtifactRefRelation.Created,
-      branchParticipation: "future-participation",
-    });
-    expect(result.success).toBe(true);
-    if (result.success && result.data.kind === ArtifactRefTargetKind.Branch) {
-      expect(result.data.branchParticipation).toBeUndefined();
-    }
-  });
-
-  it("accepts optional branch lifecycle events on branch refs", () => {
-    const result = syncedArtifactRefSchema.safeParse({
-      kind: ArtifactRefTargetKind.Branch,
-      repositoryFullName: "closedloop-ai/example-repo",
-      branchName: "feat/x",
-      method: "git_push",
-      relation: ArtifactRefRelation.Created,
-      branchLifecycleEvents: [
-        {
-          kind: BranchLifecycleBoundaryKind.BranchWrite,
-          observedAt: "2026-07-08T12:00:00.000Z",
-          evidenceId: "desktop-artifact-link:link-1",
-        },
-      ],
-    });
-    expect(result.success).toBe(true);
-    if (result.success && result.data.kind === ArtifactRefTargetKind.Branch) {
-      expect(result.data.branchLifecycleEvents?.[0]?.kind).toBe(
-        BranchLifecycleBoundaryKind.BranchWrite
-      );
-    }
-  });
-
-  it("accepts a branch ref without observedAt (optional)", () => {
-    const result = syncedArtifactRefSchema.safeParse({
-      kind: ArtifactRefTargetKind.Branch,
-      repositoryFullName: "closedloop-ai/example-repo",
-      branchName: "main",
-      method: "git_command",
-      relation: ArtifactRefRelation.Workspace,
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("rejects a branch ref missing relation (relation is required)", () => {
-    const result = syncedArtifactRefSchema.safeParse({
-      kind: ArtifactRefTargetKind.Branch,
-      repositoryFullName: "closedloop-ai/example-repo",
-      branchName: "feat/x",
-      method: "git_command",
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it("rejects a branch ref missing branchName", () => {
-    const result = syncedArtifactRefSchema.safeParse({
-      kind: ArtifactRefTargetKind.Branch,
-      repositoryFullName: "closedloop-ai/example-repo",
-      method: "git_command",
-      relation: ArtifactRefRelation.Created,
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it("rejects a branch ref with an unknown relation value", () => {
-    const result = syncedArtifactRefSchema.safeParse({
-      kind: ArtifactRefTargetKind.Branch,
-      repositoryFullName: "closedloop-ai/example-repo",
-      branchName: "feat/x",
-      method: "git_command",
-      relation: "merged",
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it("accepts a pull_request ref carried for FEA-2732", () => {
-    const result = syncedArtifactRefSchema.safeParse({
-      kind: ArtifactRefTargetKind.PullRequest,
-      repositoryFullName: "closedloop-ai/example-repo",
-      prNumber: 42,
-      method: "pr_create_output",
-      relation: ArtifactRefRelation.Created,
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("accepts optional branch lifecycle events on pull_request refs", () => {
-    const result = syncedArtifactRefSchema.safeParse({
-      kind: ArtifactRefTargetKind.PullRequest,
-      repositoryFullName: "closedloop-ai/example-repo",
-      prNumber: 42,
-      method: ArtifactRefMethod.PrReviewFeedbackCommand,
-      relation: ArtifactRefRelation.Reviewed,
-      branchLifecycleEvents: [
-        {
-          kind: BranchLifecycleBoundaryKind.ReviewFeedback,
-          observedAt: "2026-07-08T12:30:00.000Z",
-          evidenceId: "desktop-artifact-link:link-2",
-        },
-      ],
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("accepts a commit ref carried for FEA-2731 (abbreviated sha + branch)", () => {
-    const result = syncedArtifactRefSchema.safeParse({
-      kind: ArtifactRefTargetKind.Commit,
-      repositoryFullName: "closedloop-ai/example-repo",
-      branchName: "feat/x",
-      sha: "1a2b3c4",
-      method: "git_command",
-      relation: ArtifactRefRelation.Created,
-      message: "feat: add thing",
-      committedAt: "2026-07-08T12:00:00.000Z",
-      linesAdded: 10,
-      linesRemoved: 2,
-      filesChanged: 3,
-    });
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.kind).toBe(ArtifactRefTargetKind.Commit);
-    }
-  });
-
-  it("rejects a commit ref whose LOC count exceeds int4 (FEA-3206 — mirrors the PR schema's PR_INT_MAX bound, prevents commit_detail overflow aborting the batch)", () => {
-    for (const field of [
-      "linesAdded",
-      "linesRemoved",
-      "filesChanged",
-    ] as const) {
-      const result = syncedArtifactRefSchema.safeParse({
-        kind: ArtifactRefTargetKind.Commit,
-        repositoryFullName: "closedloop-ai/example-repo",
-        branchName: "feat/x",
-        sha: "1a2b3c4",
-        method: "git_command",
-        relation: ArtifactRefRelation.Created,
-        [field]: PR_INT_MAX + 1,
-      });
-      expect(result.success).toBe(false);
-    }
-  });
-
-  it("accepts a commit ref whose LOC count is exactly int4 max (FEA-3206 boundary)", () => {
-    const result = syncedArtifactRefSchema.safeParse({
-      kind: ArtifactRefTargetKind.Commit,
-      repositoryFullName: "closedloop-ai/example-repo",
-      branchName: "feat/x",
-      sha: "1a2b3c4",
-      method: "git_command",
-      relation: ArtifactRefRelation.Created,
-      linesAdded: PR_INT_MAX,
-      linesRemoved: PR_INT_MAX,
-      filesChanged: PR_INT_MAX,
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("rejects a ref whose explicit kind is unknown to this contract version", () => {
-    const result = syncedArtifactRefSchema.safeParse({
-      kind: "deployment_ref_from_the_future",
-      repositoryFullName: "closedloop-ai/example-repo",
-      method: "git_command",
-      relation: ArtifactRefRelation.Created,
-    });
-    expect(result.success).toBe(false);
-  });
-});
 
 describe("isKnownArtifactRefKind / KNOWN_ARTIFACT_REF_KINDS (FEA-2729)", () => {
   it("recognizes the persistable/forwardable kinds (incl. commit — FEA-2731)", () => {
@@ -475,112 +64,156 @@ describe("SessionArtifactLinkKind (FEA-2729)", () => {
   });
 });
 
-describe("syncedSessionPrRefSchema", () => {
-  const validPrRef = {
-    repositoryFullName: "closedloop-ai/example-repo",
-    prNumber: 42,
-    prUrl: "https://github.com/closedloop-ai/example-repo/pull/42",
-    relationType: SessionPrRelationType.Created,
-  };
+describe("session PR purpose metadata", () => {
+  it("keeps canonical empty and invalid shapes out of legacy fallback", () => {
+    const legacy = { linkKind: SessionArtifactLinkKind.SessionPr };
+    const canonicalEmpty = {
+      ...legacy,
+      repositoryFullName: "stale/repo",
+      prNumber: 99,
+      prRefs: [],
+    };
+    // ISS-8051 retired a third shape here: an over-500 `prRefs` array, which
+    // this case asserted was `Invalid`. That classification was the defect —
+    // it discarded the whole stored PR set of a link the cloud had already
+    // accepted — so the expectation itself changed rather than being weakened.
+    // Its replacement is the readback coverage in
+    // `session-pr-link-metadata.test.ts`, which asserts all 501 survive.
+    const invalidShapes = [
+      { ...legacy, prRefs: "invalid" },
+      {
+        linkKind: SessionArtifactLinkKind.SessionBranch,
+        linkKinds: [SessionArtifactLinkKind.SessionPrSet],
+      },
+    ];
 
-  it("accepts a valid PR ref", () => {
-    expect(syncedSessionPrRefSchema.safeParse(validPrRef).success).toBe(true);
-  });
-
-  it("accepts relationType Referenced", () => {
-    const result = syncedSessionPrRefSchema.safeParse({
-      ...validPrRef,
-      relationType: SessionPrRelationType.Referenced,
+    expect(allowsUniqueBranchPrFallback(legacy)).toBe(true);
+    expect(classifySessionPrMetadata(canonicalEmpty)).toMatchObject({
+      kind: SessionPrMetadataClassificationKind.Canonical,
+      refs: [],
     });
-    expect(result.success).toBe(true);
+    expect(allowsUniqueBranchPrFallback(canonicalEmpty)).toBe(false);
+    for (const metadata of invalidShapes) {
+      expect(classifySessionPrMetadata(metadata).kind).toBe(
+        SessionPrMetadataClassificationKind.Invalid
+      );
+      expect(sessionPrRefsFromMetadata(metadata)).toEqual([]);
+      expect(allowsUniqueBranchPrFallback(metadata)).toBe(false);
+    }
   });
 
-  it("accepts relationType Reviewed (FEA-3585)", () => {
-    const result = syncedSessionPrRefSchema.safeParse({
-      ...validPrRef,
-      relationType: SessionPrRelationType.Reviewed,
-    });
-    expect(result.success).toBe(true);
+  it("classifies a large persisted prRefs array as canonical, not invalid (ISS-8064)", () => {
+    // This shape used to sit in `invalidShapes` above, because the persisted
+    // read schema carried `.max(500)`. That was the defect, not the contract:
+    // a stored link past the bound read back as Invalid with zero refs, so its
+    // PRs vanished with no error and no log. Count and identity, not silence.
+    const prRefs = Array.from({ length: 501 }, (_, index) => ({
+      repositoryFullName: "acme/web",
+      prNumber: index + 1,
+      relationTypes: [],
+    }));
+    const metadata = { linkKind: SessionArtifactLinkKind.SessionPr, prRefs };
+
+    expect(classifySessionPrMetadata(metadata).kind).toBe(
+      SessionPrMetadataClassificationKind.Canonical
+    );
+    expect(sessionPrRefsFromMetadata(metadata)).toHaveLength(501);
+    expect(sessionPrRefsFromMetadata(metadata)).toEqual(prRefs);
+    expect(allowsUniqueBranchPrFallback(metadata)).toBe(false);
   });
 
-  it("accepts a reviewed PR ref with no prUrl (bare-number review)", () => {
-    const { prUrl: _prUrl, ...noUrl } = validPrRef;
-    const result = syncedSessionPrRefSchema.safeParse({
-      ...noUrl,
-      relationType: SessionPrRelationType.Reviewed,
-    });
-    expect(result.success).toBe(true);
+  it("rejects scalar session_pr_set while accepting the set marker in linkKinds", () => {
+    expect(
+      parseSessionPrLinkMetadata({
+        linkKind: SessionArtifactLinkKind.SessionPrSet,
+      })
+    ).toBeNull();
+    expect(
+      hasSessionPrLinkKind({
+        linkKind: SessionArtifactLinkKind.SessionPrSet,
+      })
+    ).toBe(false);
+    expect(
+      hasSessionPrLinkKind({
+        linkKind: SessionArtifactLinkKind.SessionBranch,
+        linkKinds: [SessionArtifactLinkKind.SessionPrSet],
+        prRefs: [],
+      })
+    ).toBe(true);
   });
 
-  it("accepts optional branch lifecycle events on prRefs", () => {
-    const result = syncedSessionPrRefSchema.safeParse({
-      ...validPrRef,
-      relationType: SessionPrRelationType.Reviewed,
-      branchLifecycleEvents: [
+  it("prefers the canonical PR set over stale scalar identity", () => {
+    const metadata = parseSessionPrLinkMetadata({
+      linkKind: SessionArtifactLinkKind.SessionBranch,
+      linkKinds: [SessionArtifactLinkKind.SessionPrSet],
+      repositoryFullName: "stale/repo",
+      prNumber: 99,
+      relationTypes: [SessionPrRelationType.Created],
+      prRefs: [
         {
-          kind: BranchLifecycleBoundaryKind.ReviewFeedback,
-          evidenceId: "desktop-artifact-link:link-2",
+          repositoryFullName: "acme/web",
+          prNumber: 1,
+          relationTypes: [SessionPrRelationType.Referenced],
+        },
+        {
+          repositoryFullName: "acme/web",
+          prNumber: 2,
+          relationTypes: [SessionPrRelationType.Created],
         },
       ],
     });
-    expect(result.success).toBe(true);
+
+    expect(hasSessionPrLinkKind(metadata)).toBe(true);
+    expect(sessionPrRefsFromMetadata(metadata)).toEqual([
+      {
+        repositoryFullName: "acme/web",
+        prNumber: 1,
+        relationTypes: [SessionPrRelationType.Referenced],
+      },
+      {
+        repositoryFullName: "acme/web",
+        prNumber: 2,
+        relationTypes: [SessionPrRelationType.Created],
+      },
+    ]);
+    expect(
+      deriveSessionPrPurposeFromRelationTypes(
+        sessionPrRefsFromMetadata(metadata)[0]?.relationTypes ?? []
+      )
+    ).toBe(SessionPrPurpose.Referenced);
+    expect(
+      deriveSessionPrPurposeFromRelationTypes(
+        sessionPrRefsFromMetadata(metadata)[1]?.relationTypes ?? []
+      )
+    ).toBe(SessionPrPurpose.Authored);
   });
 
-  it("rejects negative prNumber", () => {
-    const result = syncedSessionPrRefSchema.safeParse({
-      ...validPrRef,
-      prNumber: -1,
+  it("projects legacy scalar identity only when the canonical set is absent", () => {
+    const metadata = parseSessionPrLinkMetadata({
+      linkKind: SessionArtifactLinkKind.SessionPr,
+      repositoryFullName: "acme/web",
+      prNumber: 7,
+      relationTypes: [SessionPrRelationType.Reviewed],
     });
-    expect(result.success).toBe(false);
+
+    expect(sessionPrRefsFromMetadata(metadata)).toEqual([
+      {
+        repositoryFullName: "acme/web",
+        prNumber: 7,
+        relationTypes: [SessionPrRelationType.Reviewed],
+      },
+    ]);
+    expect(
+      sessionPrRefsFromMetadata(
+        parseSessionPrLinkMetadata({
+          repositoryFullName: "stale/repo",
+          prNumber: 8,
+          prRefs: [],
+        })
+      )
+    ).toEqual([]);
   });
 
-  it("rejects zero prNumber", () => {
-    const result = syncedSessionPrRefSchema.safeParse({
-      ...validPrRef,
-      prNumber: 0,
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it("rejects fractional prNumber", () => {
-    const result = syncedSessionPrRefSchema.safeParse({
-      ...validPrRef,
-      prNumber: 1.5,
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it("rejects empty repositoryFullName", () => {
-    const result = syncedSessionPrRefSchema.safeParse({
-      ...validPrRef,
-      repositoryFullName: "",
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it("rejects invalid prUrl", () => {
-    const result = syncedSessionPrRefSchema.safeParse({
-      ...validPrRef,
-      prUrl: "not-a-url",
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it("accepts a PR ref without prUrl (derived server-side)", () => {
-    const { prUrl: _omit, ...withoutUrl } = validPrRef;
-    expect(syncedSessionPrRefSchema.safeParse(withoutUrl).success).toBe(true);
-  });
-
-  it("rejects unknown relationType", () => {
-    const result = syncedSessionPrRefSchema.safeParse({
-      ...validPrRef,
-      relationType: "MERGED",
-    });
-    expect(result.success).toBe(false);
-  });
-});
-
-describe("session PR purpose metadata", () => {
   it("parses branch lifecycle events from metadata and maps future kinds to unknown", () => {
     const event = syncedBranchLifecycleEventSchema.parse({
       kind: "future_boundary",
@@ -834,5 +467,67 @@ describe("const-object enum values", () => {
       "slug_match_in_branch"
     );
     expect(ArtifactRefConfidence.HarnessRecord).toBe("harness_record");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ISS-8070. The branch writer stores the widened ref `method` verbatim into
+// `artifact_links.metadata.method`, and `parseSessionPrLinkMetadata` is the
+// READER for that stored JSON. A `.max()` there is not a wire guard — it
+// rejects a value this repo already accepted and persisted. The parse is
+// whole-object, so the failure returns `null` and takes every sibling field
+// with it for all six consumers of the parser (attribution, session-pr-status,
+// provenance-eligibility, session-usage-window, loc-branch-identity,
+// branch-links).
+// ---------------------------------------------------------------------------
+
+/** Past the retired 200-char `method` bound, and not adjacent to it. */
+const PERSISTED_METHOD_CHARS_PAST_RETIRED_BOUND = 512;
+
+describe("parseSessionPrLinkMetadata reads back a widened persisted method (ISS-8070)", () => {
+  it("keeps the fixture above the bound it is written to defeat", () => {
+    expect(PERSISTED_METHOD_CHARS_PAST_RETIRED_BOUND).toBeGreaterThan(200);
+  });
+
+  it("returns the stored method and its sibling lifecycle event, not null", () => {
+    const method = "m".repeat(PERSISTED_METHOD_CHARS_PAST_RETIRED_BOUND);
+
+    const metadata = parseSessionPrLinkMetadata({
+      method,
+      relation: ArtifactRefRelation.Output,
+      branchParticipation: BranchParticipationKind.Wrote,
+      branchLifecycleEvents: [
+        {
+          kind: BranchLifecycleBoundaryKind.ReviewFeedback,
+          evidenceId: "desktop-artifact-link:1",
+        },
+      ],
+    });
+
+    expect(metadata).not.toBeNull();
+    expect(metadata?.method).toBe(method);
+    expect(metadata?.branchLifecycleEvents).toEqual([
+      {
+        kind: BranchLifecycleBoundaryKind.ReviewFeedback,
+        evidenceId: "desktop-artifact-link:1",
+      },
+    ]);
+  });
+
+  it("still derives participation from the sibling event a bound would have dropped", () => {
+    expect(
+      deriveBranchParticipationFromMetadata(
+        parseSessionPrLinkMetadata({
+          method: "m".repeat(PERSISTED_METHOD_CHARS_PAST_RETIRED_BOUND),
+          branchLifecycleEvents: [
+            { kind: BranchLifecycleBoundaryKind.ReviewFeedback },
+          ],
+        })
+      )
+    ).toBe(BranchParticipationKind.Reviewed);
+  });
+
+  it("still rejects an empty method (the min(1) bound is unchanged)", () => {
+    expect(parseSessionPrLinkMetadata({ method: "" })).toBeNull();
   });
 });

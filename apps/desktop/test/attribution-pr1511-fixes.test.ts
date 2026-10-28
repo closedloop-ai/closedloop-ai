@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { parseSessionFile as parseClaudeFile } from "../src/main/collectors/claude/claude-parser.js";
 import { parseRolloutFile } from "../src/main/collectors/codex/codex-parser.js";
 import { InvalidTokenCountError } from "../src/main/cost/token-counts.js";

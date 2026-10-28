@@ -1,43 +1,59 @@
 "use client";
 
-import type {
-  ArtifactStatus,
-  DocumentStatus,
-  IssueStatus,
-} from "@repo/api/src/types/document";
+import { ArtifactStatusEditSurface } from "@repo/api/src/types/artifact-status-contract";
+import type { ArtifactStatus } from "@repo/api/src/types/document";
+import { DocumentType } from "@repo/api/src/types/document";
+import { DocumentStatusMutationOperation } from "@repo/api/src/types/document-status-mutation";
 import {
-  DOCUMENT_STATUS_OPTIONS,
-  DocumentType,
-  ISSUE_STATUS_OPTIONS,
-} from "@repo/api/src/types/document";
+  type DisplayedSessionStatus,
+  isRecognizedSessionStatus,
+} from "@repo/api/src/types/session-status";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
-import { DocumentStatusIcon } from "@repo/app/documents/components/document-status-icon";
-import { IssueStatusIcon } from "@repo/app/documents/components/issue-status-icon";
+import { UNIVERSAL_ARTIFACT_STATUS_FLAG_KEY } from "@repo/api/src/types/universal-artifact-status-flag";
+import {
+  ArtifactStatusIconFor,
+  ArtifactStatusMenu,
+  ArtifactStatusTooltip,
+} from "@repo/app/documents/components/artifact-field-menus";
 import { TruncatedTitle } from "@repo/app/documents/components/table/cells/cell-tooltip";
 import type { DocumentRowItem } from "@repo/app/documents/components/table/document-row";
 import { RowEditContext } from "@repo/app/documents/components/table/row-edit-context";
-import { getRowTypeConfig } from "@repo/app/documents/components/table/row-type-registry";
+import {
+  getRowTypeConfig,
+  normalizeBranchStatus,
+  resolveServedSessionDisplayStatus,
+} from "@repo/app/documents/components/table/row-type-registry";
+import type { DocumentRowSelectionChange } from "@repo/app/documents/hooks/use-documents-legacy-row-selection";
+import { documentRowStatusEvidence } from "@repo/app/documents/lib/artifact-row-adapter";
+import { documentArtifactStatusCapability } from "@repo/app/documents/lib/artifact-status-capability";
 import {
   ARTIFACT_STATUS_LABELS,
   formatProjectCompletionSummary,
   PROJECT_COMPLETION_EMPTY_SUMMARY,
 } from "@repo/app/projects/lib/project-constants";
+import { ArtifactStatus as UniversalArtifactStatus } from "@repo/app/shared/components/artifact-status/artifact-status";
+import { artifactStatusLabel } from "@repo/app/shared/components/artifact-status/artifact-status-presentation";
 import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
-import { PROJECT_COMPLETION_EMPTY_STATE_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
-import { Checkbox } from "@repo/design-system/components/ui/checkbox";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@repo/design-system/components/ui/dropdown-menu";
+  branchPullRequestStatusView,
+  documentStatusView,
+  sessionStatusView,
+} from "@repo/app/shared/lib/artifact-status-adapter";
+import { ArtifactStatusVariant } from "@repo/app/shared/lib/artifact-status-view-contract";
+import {
+  ARTIFACT_TABLE_DISPLAYED_SESSION_STATUS_FEATURE_FLAG_KEY,
+  FAILED_SESSION_STATUS_ICON_FEATURE_FLAG_KEY,
+} from "@repo/app/shared/lib/feature-flags";
+import { Checkbox } from "@repo/design-system/components/ui/checkbox";
 import { StatusIcon } from "@repo/design-system/components/ui/status-icon";
+import { StatusDash } from "@repo/design-system/components/ui/status-icon-primitives";
 import { StatusPercentageIcon } from "@repo/design-system/components/ui/status-percentage-icon";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@repo/design-system/components/ui/tooltip";
+import { formatGridCardSelectionLabel } from "@repo/design-system/lib/grid-table-aria";
 import { cn } from "@repo/design-system/lib/utils";
 import { Link } from "@repo/navigation/link";
 import { ChevronRightIcon } from "lucide-react";
@@ -60,7 +76,7 @@ type NameCellProps = {
   item: DocumentRowItem;
   showCheckbox: boolean;
   isSelected: boolean;
-  onSelectionChange?: (id: string, checked: boolean) => void;
+  onSelectionChange?: DocumentRowSelectionChange;
   isExpanded?: boolean;
   onToggleExpand?: () => void;
   indentDepth?: number;
@@ -68,6 +84,15 @@ type NameCellProps = {
   rankSlot?: React.ReactNode;
   reserveChevronSlot?: boolean;
   selectMode?: boolean;
+  narrow?: boolean;
+  placementCard?: boolean;
+  placementSlug?: boolean;
+  /**
+   * Layout delta from the default cluster (ISS-9335). The padding here is right
+   * for a host that owns the whole lead track itself; a host whose grid cell
+   * already pads the track passes `px-0` so the gutters are not stated twice.
+   */
+  className?: string;
 };
 
 /**
@@ -83,35 +108,47 @@ export function NameCell(props: NameCellProps) {
   if (item.kind === "branch" || item.kind === "session") {
     return (
       <ArtifactNameCell
+        className={props.className}
         hasChevron={props.isExpanded !== undefined}
         href={props.href}
         indentDepth={props.indentDepth}
         isExpanded={props.isExpanded}
+        isSelected={props.isSelected}
         item={item}
+        narrow={props.narrow}
+        onSelectionChange={props.onSelectionChange}
         onToggleExpand={props.onToggleExpand}
+        placementCard={props.placementCard}
+        placementSlug={props.placementSlug}
         rankSlot={props.rankSlot}
         reserveChevronSlot={props.reserveChevronSlot}
+        selectMode={props.selectMode}
+        showCheckbox={props.showCheckbox}
       />
     );
   }
   return <DocumentNameCell {...props} item={item} />;
 }
 
-// ---- Per-kind name cells (extracted from NameCell for readability) ----
+// Per-kind name cells (extracted from NameCell for readability)
 
 /** Selection checkbox shared by the project and document name cells. */
 function SelectionCheckbox({
   id,
+  label,
   showCheckbox,
   isSelected,
   selectMode,
   onSelectionChange,
+  focusReveal = false,
 }: {
   id: string;
+  label: string;
   showCheckbox: boolean;
   isSelected: boolean;
   selectMode?: boolean;
-  onSelectionChange?: (id: string, checked: boolean) => void;
+  onSelectionChange?: DocumentRowSelectionChange;
+  focusReveal?: boolean;
 }) {
   if (!showCheckbox) {
     return null;
@@ -124,31 +161,45 @@ function SelectionCheckbox({
         // touch pointer (`touch:opacity-100`) — there is no hover to reveal it.
         isSelected || selectMode
           ? "opacity-100"
-          : "opacity-0 touch:opacity-100 group-hover/row:opacity-100"
+          : cn(
+              "opacity-0 touch:opacity-100 group-hover/row:opacity-100",
+              focusReveal && "focus-within:opacity-100"
+            )
       )}
     >
       <Checkbox
+        aria-label={formatGridCardSelectionLabel(label, isSelected)}
         checked={isSelected}
-        onCheckedChange={(checked) => onSelectionChange?.(id, checked === true)}
+        onClick={(event) => onSelectionChange?.(id, !isSelected, event)}
       />
     </div>
   );
 }
 
 /** Title link shared by the project and document name cells. */
-function NameLink({ href, text }: { href?: string | null; text: string }) {
+function NameLink({
+  disableNativeDrag,
+  href,
+  text,
+}: {
+  disableNativeDrag?: boolean;
+  href?: string | null;
+  text: string;
+}) {
+  const title = <TruncatedTitle text={text} />;
   if (href) {
     return (
-      <Link className="ml-1.5 min-w-0 flex-1" href={href} prefetch={false}>
-        <TruncatedTitle text={text} />
+      <Link
+        className="ml-1.5 min-w-0 flex-1"
+        draggable={disableNativeDrag ? false : undefined}
+        href={href}
+        prefetch={false}
+      >
+        {title}
       </Link>
     );
   }
-  return (
-    <div className="ml-1.5 min-w-0 flex-1">
-      <TruncatedTitle text={text} />
-    </div>
-  );
+  return <div className="ml-1.5 min-w-0 flex-1">{title}</div>;
 }
 
 const NAME_CELL_CLASS_NAME =
@@ -156,6 +207,7 @@ const NAME_CELL_CLASS_NAME =
 
 // Project rows: folder icon + optional slug + completion % + name.
 function ProjectNameCell({
+  className,
   item,
   showCheckbox,
   isSelected,
@@ -163,6 +215,7 @@ function ProjectNameCell({
   selectMode,
   href,
   rankSlot,
+  narrow,
 }: Omit<NameCellProps, "item"> & {
   item: Extract<DocumentRowItem, { kind: "project" }>;
 }) {
@@ -171,39 +224,35 @@ function ProjectNameCell({
   // (ISS-4835) rather than any ring, so it separates from both a solid 0% and
   // the Backlog dashed ring on the issue rows directly below it. The wire keeps
   // `completionPercentage` numeric
-  // for version-skew safety, so the empty case is carried by the flag, not by a
-  // null percentage. One string drives both the visible tooltip and the icon's
-  // accessible name, so a screen reader hears the same population the sighted
-  // user reads.
-  //
-  // ISS-4792 (ISS-4779 closed-by-default): the empty-population state is gated on
-  // the `project-completion-empty-state` flag (default OFF). With it off, an
-  // empty population falls through to the PRIOR behavior — a solid 0% ring named
-  // "0% of documents and issues complete" — so the surface is unchanged. Uses the
-  // optional flag hook so a mount site without a flag provider (Storybook,
-  // mini-table tests) degrades to OFF rather than crashing.
-  const emptyStateEnabled = useFeatureFlagEnabledOptional(
-    PROJECT_COMPLETION_EMPTY_STATE_FEATURE_FLAG_KEY
-  );
+  // for version-skew safety, so the empty case is carried by
+  // `completionPopulationEmpty`, not by a null percentage. One string drives
+  // both the visible tooltip and the icon's accessible name, so a screen reader
+  // hears the same population the sighted user reads.
   const completionPercentage = item.data.completionPercentage;
-  const isEmpty =
-    emptyStateEnabled === true && item.data.completionPopulationEmpty === true;
+  const isEmpty = item.data.completionPopulationEmpty === true;
   const completionSummary = isEmpty
     ? PROJECT_COMPLETION_EMPTY_SUMMARY
     : formatProjectCompletionSummary(completionPercentage);
   return (
-    <div className={NAME_CELL_CLASS_NAME}>
+    <div
+      className={cn(
+        NAME_CELL_CLASS_NAME,
+        showCheckbox && SELECTABLE_NAME_CELL_INSET_CLASS_NAME,
+        className
+      )}
+    >
       {rankSlot}
       <SelectionCheckbox
         id={item.data.id}
         isSelected={isSelected}
+        label={item.data.name}
         onSelectionChange={onSelectionChange}
         selectMode={selectMode}
         showCheckbox={showCheckbox}
       />
-      <span className="mr-1.5 ml-1 inline-block min-w-[7ch] shrink-0 font-mono text-muted-foreground text-xs">
-        {isDisplayableSlug(item.data.slug) ? item.data.slug : null}
-      </span>
+      {narrow ? null : (
+        <DisplayableSlug className="ml-1" slug={item.data.slug} />
+      )}
       <Tooltip>
         <TooltipTrigger asChild>
           {/*
@@ -233,6 +282,7 @@ function ProjectNameCell({
 
 // Document rows: indent + chevron + type icon + slug + status + title.
 function DocumentNameCell({
+  className,
   item,
   showCheckbox,
   isSelected,
@@ -244,117 +294,288 @@ function DocumentNameCell({
   rankSlot,
   reserveChevronSlot,
   selectMode,
+  narrow,
+  placementCard,
+  placementSlug,
 }: Omit<NameCellProps, "item"> & {
   item: Extract<DocumentRowItem, { kind: "document" }>;
 }) {
   const { onUpdateStatus } = useContext(RowEditContext);
 
   return (
-    <div className={NAME_CELL_CLASS_NAME}>
+    <div
+      className={cn(
+        NAME_CELL_CLASS_NAME,
+        narrow && "h-auto overflow-visible",
+        placementCard && "h-auto flex-wrap overflow-visible",
+        showCheckbox && SELECTABLE_NAME_CELL_INSET_CLASS_NAME,
+        className
+      )}
+    >
       {rankSlot}
       <SelectionCheckbox
+        focusReveal={placementSlug}
         id={item.data.id}
         isSelected={isSelected}
+        label={item.data.title}
         onSelectionChange={onSelectionChange}
         selectMode={selectMode}
         showCheckbox={showCheckbox}
       />
-      <IndentSpacer depth={indentDepth} />
-      <ChevronSlot
-        hasChevron={isExpanded !== undefined}
-        indented={indentDepth > 0}
-        isExpanded={isExpanded}
-        onToggleExpand={onToggleExpand}
-        reserveSlot={reserveChevronSlot}
-      />
-      <TypeIcon item={item} />
-      <span className="mr-1.5 inline-block min-w-[7ch] shrink-0 font-mono text-muted-foreground text-xs">
-        {isDisplayableSlug(item.data.slug) ? item.data.slug : null}
-      </span>
-      <DocumentStatusControl item={item} onUpdateStatus={onUpdateStatus} />
-      <NameLink href={href} text={item.data.title} />
+      {narrow ? null : (
+        <>
+          <IndentSpacer depth={indentDepth} />
+          <ChevronSlot
+            hasChevron={isExpanded !== undefined}
+            indented={indentDepth > 0}
+            isExpanded={isExpanded}
+            onToggleExpand={onToggleExpand}
+            reserveSlot={reserveChevronSlot}
+          />
+          <TypeIcon item={item} />
+        </>
+      )}
+      {narrow && (
+        <>
+          <ArtifactStatusControl item={item} onUpdateStatus={onUpdateStatus} />
+          <NameLink href={href} text={item.data.title} />
+        </>
+      )}
+      {!narrow && placementCard && (
+        <>
+          <ArtifactStatusControl item={item} onUpdateStatus={onUpdateStatus} />
+          <div className="flex w-full min-w-0 items-center">
+            <IndentSpacer depth={indentDepth} />
+            <DisplayableSlug
+              placementSlug={placementSlug}
+              slug={item.data.slug}
+            />
+            <NameLink
+              disableNativeDrag={placementSlug}
+              href={href}
+              text={item.data.title}
+            />
+          </div>
+        </>
+      )}
+      {!(narrow || placementCard) && (
+        <>
+          <DisplayableSlug
+            placementSlug={placementSlug}
+            slug={item.data.slug}
+          />
+          <ArtifactStatusControl item={item} onUpdateStatus={onUpdateStatus} />
+          <NameLink
+            disableNativeDrag={placementSlug}
+            href={href}
+            text={item.data.title}
+          />
+        </>
+      )}
     </div>
   );
 }
 
-/**
- * Status icon for one status of a document row, in that row's vocabulary
- * (Documents and Features carry disjoint status sets — PRD-495).
- */
-function RowStatusIcon({
-  isFeature,
-  status,
+/** Status icon for a document row: an edit dropdown when editable, else a tooltip. */
+function ArtifactStatusControl({
+  item,
+  onUpdateStatus,
 }: {
-  isFeature: boolean;
-  status: ArtifactStatus;
+  item: DocumentRowItem;
+  onUpdateStatus?: (
+    id: string,
+    status: ArtifactStatus,
+    surface: ArtifactStatusEditSurface
+  ) => void;
 }) {
-  return isFeature ? (
-    <IssueStatusIcon size={16} status={status as IssueStatus} />
-  ) : (
-    <DocumentStatusIcon size={16} status={status as DocumentStatus} />
+  const champion = useFeatureFlagEnabledOptional(
+    UNIVERSAL_ARTIFACT_STATUS_FLAG_KEY
+  );
+  const displayedSessionStatusEnabled = useFeatureFlagEnabledOptional(
+    ARTIFACT_TABLE_DISPLAYED_SESSION_STATUS_FEATURE_FLAG_KEY
+  );
+  const sessionDisplayedStatus =
+    displayedSessionStatusEnabled && item.kind === "session"
+      ? resolveServedSessionDisplayStatus(item)
+      : undefined;
+  if (item.kind === "project") {
+    return null;
+  }
+  if (champion) {
+    return (
+      <UniversalStatusControl
+        item={item}
+        onUpdateStatus={onUpdateStatus}
+        sessionDisplayedStatus={sessionDisplayedStatus}
+      />
+    );
+  }
+  if (item.kind === "document") {
+    return (
+      <LegacyDocumentStatusControl
+        item={item}
+        onUpdateStatus={onUpdateStatus}
+      />
+    );
+  }
+  return (
+    <LegacyArtifactNameCellStatus
+      item={item}
+      sessionDisplayedStatus={sessionDisplayedStatus}
+    />
   );
 }
 
-/** Status icon for a document row: an edit dropdown when editable, else a tooltip. */
-function DocumentStatusControl({
+function LegacyDocumentStatusControl({
   item,
   onUpdateStatus,
 }: {
   item: Extract<DocumentRowItem, { kind: "document" }>;
-  onUpdateStatus?: (id: string, status: ArtifactStatus) => void;
+  onUpdateStatus?: (
+    id: string,
+    status: ArtifactStatus,
+    surface: ArtifactStatusEditSurface
+  ) => void;
 }) {
   const isFeature = item.data.type === DocumentType.Feature;
   const label = ARTIFACT_STATUS_LABELS[item.data.status];
-
   if (!onUpdateStatus) {
     return (
       <ArtifactStatusTooltip label={label}>
         <div className="flex h-7 w-7 shrink-0 items-center justify-center">
-          <RowStatusIcon isFeature={isFeature} status={item.data.status} />
+          <ArtifactStatusIconFor
+            isFeature={isFeature}
+            status={item.data.status}
+          />
         </div>
       </ArtifactStatusTooltip>
     );
   }
-  // Offer the vocabulary that matches this row's artifact kind (PRD-495).
-  // Features expose the full set including TRIAGE — humans may move a row to any
-  // status; TRIAGE is only excluded as the human-create default, not as an option.
-  const statusOptions = isFeature
-    ? ISSUE_STATUS_OPTIONS
-    : DOCUMENT_STATUS_OPTIONS;
   return (
-    <DropdownMenu>
-      <ArtifactStatusTooltip label={label}>
-        <DropdownMenuTrigger asChild>
-          <button
-            aria-label={label}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md hover:bg-muted"
-            type="button"
-          >
-            <RowStatusIcon isFeature={isFeature} status={item.data.status} />
-          </button>
-        </DropdownMenuTrigger>
-      </ArtifactStatusTooltip>
-      <DropdownMenuContent align="start">
-        {statusOptions.map((value) => (
-          <DropdownMenuItem
-            key={value}
-            onClick={() => {
-              onUpdateStatus(item.data.id, value);
-            }}
-          >
-            <RowStatusIcon isFeature={isFeature} status={value} />
-            {ARTIFACT_STATUS_LABELS[value]}
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <ArtifactStatusMenu
+      isFeature={isFeature}
+      onSelect={(value) => {
+        onUpdateStatus(
+          item.data.id,
+          value,
+          ArtifactStatusEditSurface.InlineCell
+        );
+      }}
+      tooltipLabel={label}
+      trigger={
+        <button
+          aria-label={label}
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md hover:bg-muted"
+          type="button"
+        >
+          <ArtifactStatusIconFor
+            isFeature={isFeature}
+            status={item.data.status}
+          />
+        </button>
+      }
+    />
   );
 }
 
-// ---- Non-document artifact name cell (extracted to keep NameCell cognitive complexity in bounds) ----
+function UniversalStatusControl({
+  item,
+  onUpdateStatus,
+  sessionDisplayedStatus,
+}: {
+  item: DocumentRowItem;
+  onUpdateStatus?: (
+    id: string,
+    status: ArtifactStatus,
+    surface: ArtifactStatusEditSurface
+  ) => void;
+  sessionDisplayedStatus?: DisplayedSessionStatus;
+}) {
+  if (item.kind === "document") {
+    const rawStatus = documentRowStatusEvidence(item.data);
+    const view = documentStatusView(item.data.id, item.data.type, rawStatus);
+    if (!onUpdateStatus) {
+      return (
+        <div className="flex h-7 w-7 shrink-0 items-center justify-center">
+          <UniversalArtifactStatus
+            variant={ArtifactStatusVariant.Icon}
+            view={view}
+          />
+        </div>
+      );
+    }
+    return (
+      <UniversalArtifactStatus
+        capability={documentArtifactStatusCapability({
+          documentType: item.data.type,
+          operation: DocumentStatusMutationOperation.Single,
+          rawStatus,
+          statusMutation: item.data.statusMutation,
+        })}
+        onCommit={(commit) => {
+          onUpdateStatus(
+            commit.artifactId,
+            commit.to as ArtifactStatus,
+            ArtifactStatusEditSurface.InlineCell
+          );
+        }}
+        surface={ArtifactStatusEditSurface.InlineCell}
+        variant={ArtifactStatusVariant.Editor}
+        view={view}
+      />
+    );
+  }
+
+  const rowTypeConfig = getRowTypeConfig(item, { sessionDisplayedStatus });
+  const rawSessionStatus = item.data.status.toLowerCase();
+  const view =
+    item.kind === "branch"
+      ? branchPullRequestStatusView(
+          item.data.id,
+          normalizeBranchStatus(item.data.status) ?? item.data.status
+        )
+      : sessionStatusView(
+          item.data.id,
+          sessionDisplayedStatus ?? rawSessionStatus,
+          isRecognizedSessionStatus(rawSessionStatus)
+            ? rawSessionStatus
+            : item.data.status
+        );
+  const statusLabel = artifactStatusLabel(view);
+  const statusDescription = rowTypeConfig?.statusDescription;
+  const statusTooltip = statusDescription
+    ? `${statusLabel}. ${statusDescription}`
+    : statusLabel;
+  return (
+    <ArtifactStatusTooltip label={statusTooltip}>
+      {statusDescription ? (
+        <button
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          type="button"
+        >
+          <UniversalArtifactStatus
+            variant={ArtifactStatusVariant.Icon}
+            view={view}
+          />
+        </button>
+      ) : (
+        <div className="flex h-7 w-7 shrink-0 items-center justify-center">
+          <UniversalArtifactStatus
+            variant={ArtifactStatusVariant.Icon}
+            view={view}
+          />
+        </div>
+      )}
+    </ArtifactStatusTooltip>
+  );
+}
+
+// Non-document artifact name cell (extracted to keep NameCell cognitive complexity in bounds)
 
 function ArtifactNameCell({
+  className,
   item,
+  isSelected,
   hasChevron,
   isExpanded,
   onToggleExpand,
@@ -362,8 +583,16 @@ function ArtifactNameCell({
   href,
   rankSlot,
   reserveChevronSlot,
+  narrow,
+  onSelectionChange,
+  selectMode,
+  showCheckbox,
+  placementCard,
+  placementSlug,
 }: {
+  className?: string;
   item: Extract<DocumentRowItem, { kind: "branch" | "session" }>;
+  isSelected: boolean;
   hasChevron: boolean;
   isExpanded?: boolean;
   onToggleExpand?: () => void;
@@ -371,70 +600,84 @@ function ArtifactNameCell({
   href?: string | null;
   rankSlot?: React.ReactNode;
   reserveChevronSlot?: boolean;
+  narrow?: boolean;
+  onSelectionChange?: DocumentRowSelectionChange;
+  selectMode?: boolean;
+  showCheckbox: boolean;
+  placementCard?: boolean;
+  placementSlug?: boolean;
 }) {
-  const className =
-    "flex h-full w-full min-w-0 items-center overflow-hidden pr-3 pl-2";
-  const rowTypeConfig = getRowTypeConfig(item);
-  const statusIcon = rowTypeConfig?.statusIcon ?? "in-progress";
-  const statusLabel = rowTypeConfig?.statusLabel;
-
   return (
-    <div className={className}>
+    <div
+      className={cn(
+        NAME_CELL_CLASS_NAME,
+        narrow && "h-auto overflow-visible",
+        placementCard && "h-auto flex-wrap overflow-visible",
+        showCheckbox && SELECTABLE_NAME_CELL_INSET_CLASS_NAME,
+        className
+      )}
+    >
       {rankSlot}
-      <IndentSpacer depth={indentDepth} />
-      <ChevronSlot
-        hasChevron={hasChevron}
-        indented={indentDepth > 0}
-        isExpanded={isExpanded}
-        onToggleExpand={onToggleExpand}
-        reserveSlot={reserveChevronSlot}
+      <SelectionCheckbox
+        focusReveal={placementSlug}
+        id={item.data.id}
+        isSelected={isSelected}
+        label={item.data.name}
+        onSelectionChange={onSelectionChange}
+        selectMode={selectMode}
+        showCheckbox={showCheckbox}
       />
-      <TypeIcon item={item} />
-      <span className="mr-1.5 inline-block min-w-[7ch] shrink-0 font-mono text-muted-foreground text-xs">
-        {isDisplayableSlug(item.data.slug) ? item.data.slug : null}
-      </span>
-      <ArtifactStatusTooltip label={statusLabel}>
-        <div className="flex h-7 w-7 shrink-0 items-center justify-center">
-          <StatusIcon
-            {...(statusLabel ? { "aria-label": statusLabel } : {})}
-            size={16}
-            status={statusIcon}
+      {narrow ? null : (
+        <>
+          <IndentSpacer depth={indentDepth} />
+          <ChevronSlot
+            hasChevron={hasChevron}
+            indented={indentDepth > 0}
+            isExpanded={isExpanded}
+            onToggleExpand={onToggleExpand}
+            reserveSlot={reserveChevronSlot}
           />
-        </div>
-      </ArtifactStatusTooltip>
-      {href ? (
-        <Link className="ml-1.5 min-w-0 flex-1" href={href} prefetch={false}>
-          <TruncatedTitle text={item.data.name} />
-        </Link>
-      ) : (
-        <div className="ml-1.5 min-w-0 flex-1">
-          <TruncatedTitle text={item.data.name} />
-        </div>
+          <TypeIcon item={item} />
+        </>
+      )}
+      {narrow && (
+        <>
+          <ArtifactStatusControl item={item} />
+          <NameLink href={href} text={item.data.name} />
+        </>
+      )}
+      {!narrow && placementCard && (
+        <>
+          <ArtifactStatusControl item={item} />
+          <div className="flex w-full min-w-0 items-center">
+            <IndentSpacer depth={indentDepth} />
+            <DisplayableSlug
+              placementSlug={placementSlug}
+              slug={item.data.slug}
+            />
+            <NameLink
+              disableNativeDrag={placementSlug}
+              href={href}
+              text={item.data.name}
+            />
+          </div>
+        </>
+      )}
+      {!(narrow || placementCard) && (
+        <>
+          <DisplayableSlug
+            placementSlug={placementSlug}
+            slug={item.data.slug}
+          />
+          <ArtifactStatusControl item={item} />
+          <NameLink
+            disableNativeDrag={placementSlug}
+            href={href}
+            text={item.data.name}
+          />
+        </>
       )}
     </div>
-  );
-}
-
-/**
- * Shared hover tooltip for every status icon in the table: document rows
- * (read-only and the editable dropdown trigger) and branch/session rows.
- * Renders children unwrapped when no label is available.
- */
-function ArtifactStatusTooltip({
-  children,
-  label,
-}: {
-  children: React.ReactElement;
-  label?: string;
-}) {
-  if (!label) {
-    return children;
-  }
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>{children}</TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
-    </Tooltip>
   );
 }
 
@@ -494,3 +737,86 @@ function ChevronSlot({
   }
   return null;
 }
+
+function LegacyArtifactNameCellStatus({
+  item,
+  sessionDisplayedStatus,
+}: {
+  item: Extract<DocumentRowItem, { kind: "branch" | "session" }>;
+  sessionDisplayedStatus?: DisplayedSessionStatus;
+}) {
+  const rowTypeConfig = getRowTypeConfig(item, { sessionDisplayedStatus });
+  const mappedStatusIcon = rowTypeConfig?.statusIcon ?? "in-progress";
+  const statusLabel = rowTypeConfig?.statusLabel;
+  const statusDescription = rowTypeConfig?.statusDescription;
+  const failedStatusIconEnabled = useFeatureFlagEnabledOptional(
+    FAILED_SESSION_STATUS_ICON_FEATURE_FLAG_KEY
+  );
+  const statusIcon =
+    mappedStatusIcon === "failed" && !failedStatusIconEnabled
+      ? "wont-do"
+      : mappedStatusIcon;
+  const statusAccessibleName =
+    statusLabel && statusDescription
+      ? `${statusLabel}, ${statusDescription}`
+      : statusLabel;
+  const statusTooltip =
+    statusLabel && statusDescription
+      ? `${statusLabel}. ${statusDescription}`
+      : statusLabel;
+
+  return (
+    <ArtifactStatusTooltip label={statusTooltip}>
+      {statusDescription ? (
+        <button
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          type="button"
+        >
+          <StatusDash label={statusAccessibleName ?? ""} size={16} />
+        </button>
+      ) : (
+        <div className="flex h-7 w-7 shrink-0 items-center justify-center">
+          <StatusIcon
+            {...(statusLabel ? { "aria-label": statusLabel } : {})}
+            size={16}
+            status={statusIcon}
+          />
+        </div>
+      )}
+    </ArtifactStatusTooltip>
+  );
+}
+
+function DisplayableSlug({
+  slug,
+  className,
+  placementSlug = false,
+}: {
+  slug: string | null | undefined;
+  className?: string;
+  placementSlug?: boolean;
+}) {
+  const displayable = isDisplayableSlug(slug);
+  if (!(displayable || placementSlug)) {
+    return null;
+  }
+  return (
+    <span
+      aria-hidden={displayable ? undefined : true}
+      className={cn(
+        "mr-1.5 inline-block min-w-[7ch] shrink-0 font-mono text-muted-foreground text-xs",
+        placementSlug && "w-20 truncate",
+        className
+      )}
+    >
+      {displayable ? slug : null}
+    </span>
+  );
+}
+
+// ISS-11412: `TableGridHeaderV2` opens its select-all slot at the lead cell's
+// `pl-3`, so a row that renders its selection slot opens it at the same inset
+// and the two `size-7` slots centre their checkboxes on one x. Scoped to
+// selectable rows so the Projects list, whose slug already sits under the Name
+// label at `pl-2`, does not move. A host passing `px-0` still overrides it.
+const SELECTABLE_NAME_CELL_INSET_CLASS_NAME = "pl-3";

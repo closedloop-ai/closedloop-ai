@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { isBuiltin } from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -24,7 +24,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
  * that wrong-but-present copy through. Preferring what the importer declares
  * is what makes this correct rather than merely permissive.
  *
- * Runs on the loader thread; `node:` builtins only.
+ * Synchronous `registerHooks` hooks, run in-thread; `node:` builtins only.
  */
 
 /** `name` or `@scope/name`, with an optional subpath — never relative or a URL. */
@@ -35,7 +35,7 @@ const RESOLUTION_ANCHOR = "__esm-store-resolver-anchor.mjs";
 
 /** @type {Array<{ dir: string, name: string, major: number, version: string }>} */
 let storeEntries = [];
-/** @type {Map<string, Promise<Record<string, unknown> | null>>} */
+/** @type {Map<string, Record<string, unknown> | null>} */
 const manifestByDir = new Map();
 
 /**
@@ -67,12 +67,15 @@ export function initialize({ storeDirs }) {
 /**
  * @param {string} specifier
  * @param {{ parentURL?: string, conditions: string[], importAttributes: object }} context
- * @param {(specifier: string, context?: object) => Promise<{ url: string }>} nextResolve
+ * @param {(specifier: string, context?: object) => { url: string }} nextResolve
  */
-export async function resolve(specifier, context, nextResolve) {
+export function resolve(specifier, context, nextResolve) {
   const match = BARE_SPECIFIER.exec(specifier);
+  // `registerHooks` also sees CommonJS `require`s, which `NODE_PATH` already
+  // serves (ISS-6728); this resolver's contract is ES-module imports only.
   if (
     !match ||
+    context.conditions.includes("require") ||
     isBuiltin(specifier) ||
     URL.canParse(specifier) ||
     !context.parentURL?.startsWith("file:")
@@ -86,7 +89,7 @@ export async function resolve(specifier, context, nextResolve) {
     return nextResolve(specifier, context);
   }
 
-  const declaredMajor = await declaredDependencyMajor(
+  const declaredMajor = declaredDependencyMajor(
     fileURLToPath(context.parentURL),
     packageName
   );
@@ -94,14 +97,14 @@ export async function resolve(specifier, context, nextResolve) {
   const fromStore = (entries) =>
     resolveFromAny(entries, specifier, context, nextResolve);
 
-  const declared = await fromStore(preferred);
+  const declared = fromStore(preferred);
   if (declared) {
     return declared;
   }
   try {
-    return await nextResolve(specifier, context);
+    return nextResolve(specifier, context);
   } catch (error) {
-    const fallback = await fromStore(candidates);
+    const fallback = fromStore(candidates);
     if (fallback) {
       return fallback;
     }
@@ -113,14 +116,14 @@ export async function resolve(specifier, context, nextResolve) {
  * The first store entry from which `specifier` resolves, highest version
  * first, or `null` when none does.
  */
-async function resolveFromAny(entries, specifier, context, nextResolve) {
+function resolveFromAny(entries, specifier, context, nextResolve) {
   const ordered = [...entries].sort((a, b) =>
     compareVersionsDesc(a.version, b.version)
   );
   for (const entry of ordered) {
     const anchor = pathToFileURL(path.join(entry.dir, RESOLUTION_ANCHOR)).href;
     try {
-      return await nextResolve(specifier, { ...context, parentURL: anchor });
+      return nextResolve(specifier, { ...context, parentURL: anchor });
     } catch {
       // Not resolvable from this store entry — try the next.
     }
@@ -135,8 +138,8 @@ async function resolveFromAny(entries, specifier, context, nextResolve) {
  * apart the two majors a store can hold, which is the ISS-6781 case, without
  * carrying a semver implementation onto the loader thread.
  */
-async function declaredDependencyMajor(importerPath, packageName) {
-  const manifest = await nearestManifest(path.dirname(importerPath));
+function declaredDependencyMajor(importerPath, packageName) {
+  const manifest = nearestManifest(path.dirname(importerPath));
   if (!manifest) {
     return null;
   }
@@ -154,25 +157,20 @@ async function declaredDependencyMajor(importerPath, packageName) {
  * one of them would otherwise re-read the same handful of manifests.
  */
 function nearestManifest(dir) {
-  const cached = manifestByDir.get(dir);
-  if (cached) {
-    return cached;
+  if (manifestByDir.has(dir)) {
+    return manifestByDir.get(dir) ?? null;
   }
-  const lookup = readManifest(dir).then((manifest) => {
-    if (manifest) {
-      return manifest;
-    }
-    const parent = path.dirname(dir);
-    return parent === dir ? null : nearestManifest(parent);
-  });
-  manifestByDir.set(dir, lookup);
-  return lookup;
+  const parent = path.dirname(dir);
+  const manifest =
+    readManifest(dir) ?? (parent === dir ? null : nearestManifest(parent));
+  manifestByDir.set(dir, manifest);
+  return manifest;
 }
 
-async function readManifest(dir) {
+function readManifest(dir) {
   try {
     const manifest = JSON.parse(
-      await readFile(path.join(dir, "package.json"), "utf8")
+      readFileSync(path.join(dir, "package.json"), "utf8")
     );
     return typeof manifest?.name === "string" ? manifest : null;
   } catch {

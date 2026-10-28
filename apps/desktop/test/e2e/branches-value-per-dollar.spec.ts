@@ -1,36 +1,24 @@
 /**
- * PRD-601 LIST-012 requires the exact "LOC per $" label and refuses to combine
- * lifetime LOC/cost when trustworthy event-time complete pairs are absent. This
- * launched-Desktop test proves that a nonempty seeded cohort never revives the
- * legacy lifetime ratio when those pairs are missing.
- *
- * It asserts a DIFFERENT absent-state per window, because the metric reports two
- * different claims and the difference is the point (`calculateLocPerDollar` in
- * `packages/lib/branches/branch-list-metrics.ts`):
- *
- *   - ALL TIME  → `NotApplicable` → "N/A". There is no history outside the
- *     window, so "no qualifying pair exists" is a complete statement about the
- *     cohort: the metric genuinely does not apply to it.
- *   - A BOUNDED WINDOW → `Unavailable` → the em-dash. A finite window cannot
- *     distinguish "no work happened here" from "the event-time evidence needed
- *     to place work here was never captured", so the metric fails CLOSED and
- *     says it cannot measure, rather than asserting inapplicability it has not
- *     established.
- *
- * Pinning one string across both windows (as this spec did through ISS-4472)
- * asserts the weaker contract and can only pass while the narrowed window's card
- * still shows the previous window's value — i.e. it passes on a stale read and
- * fails once the re-derivation lands. Asserting each state separately pins the
- * settled value and keeps the two claims from being collapsed into one.
+ * PRD-601 LIST-012 requires the exact "LOC per $" label and a ratio of
+ * independently windowed publication LOC and qualifying Session cost. This
+ * guest-shell test keeps the local rows and phase attribution visible while
+ * refusing a ratio without account-backed default-branch authority (ISS-10574).
+ * `desktop-default-branch-production-wiring.test.ts` covers the numeric SQLite
+ * producer with an explicit fresh authority source.
  */
 
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { expect, type Page, test } from "@playwright/test";
+import { BranchMetricAvailability } from "@repo/api/src/types/branch-metrics.ts";
 import { createBranchesListParityData } from "../../../../e2e/helpers/branches-list-parity-data";
-import { gotoNav, launchDesktopApp } from "./helpers/desktop-app";
-import { startFakeGitHubAuthorityServer } from "./helpers/fake-github-authority-server";
+import {
+  clickDesktopDateRange,
+  DesktopDateRangeLabel,
+  gotoNav,
+  launchDesktopApp,
+} from "./helpers/desktop-app";
 import { waitForBranchesSchema } from "./helpers/seed-branches-db";
 import {
   type SharedSessionLocPerDollarSeed,
@@ -42,12 +30,17 @@ import {
 // extension-less `@repo/*` TS subpath, which aborts the WHOLE Electron suite at
 // load time before any test runs.
 const branchesListParityData = createBranchesListParityData();
-const { branches, churn, expectations, repoFullName, session } =
+const { branches, expectations, repoDisplayName, repoFullName, session } =
   branchesListParityData;
 const CARD_SELECTOR = '[data-slot="card"]';
 const CARD_VALUE_SELECTOR = '[data-slot="card-title"]';
-const ALL_TIME_RANGE_LABEL = "All time";
-const SEVEN_DAY_RANGE_LABEL = "Last 7 days";
+const ALL_TIME_RANGE_LABEL = DesktopDateRangeLabel.AllTime;
+// A finite range that is NOT the 7d landing default. The boot-time analytics
+// fetch for the default window can race the branch-analytics projection and be
+// cached (staleTime) with a mid-projection value; re-selecting that same window
+// would serve the racy cache instead of a fresh windowed read. 30d draws the
+// same cohort (the older merge is 45 days out), so every expectation holds.
+const FINITE_RANGE_LABEL = DesktopDateRangeLabel.Last30Days;
 
 const SEED: SharedSessionLocPerDollarSeed = {
   branches: [
@@ -65,15 +58,12 @@ const SEED: SharedSessionLocPerDollarSeed = {
     },
   ],
   costUsd: session.costUsd,
-  filesChanged: churn.filesChanged,
-  linesAdded: churn.additions,
-  linesRemoved: churn.deletions,
   repoFullName,
   sessionId: session.id,
 };
 
-test.describe("Branches LOC per $ canonical availability", () => {
-  test("missing event-time complete pairs never revive the lifetime ratio", async () => {
+test.describe("Guest Branches local metrics", () => {
+  test("keeps windowed rows and phase attribution without a false cohort ratio", async () => {
     test.setTimeout(180_000);
 
     const claudeHome = fs.mkdtempSync(
@@ -85,13 +75,9 @@ test.describe("Branches LOC per $ canonical availability", () => {
     const userDataDir = fs.mkdtempSync(
       path.join(os.tmpdir(), "desktop-value-per-dollar-udd-")
     );
-    const authorityServer = await startFakeGitHubAuthorityServer([
-      repoFullName,
-    ]);
     const env = {
       CLAUDE_HOME: claudeHome,
       CODEX_HOME: codexHome,
-      ...authorityServer.env,
     };
 
     try {
@@ -121,39 +107,41 @@ test.describe("Branches LOC per $ canonical availability", () => {
           page.locator("header").getByText("Branches", { exact: true })
         ).toBeVisible({ timeout: 30_000 });
 
-        // Both rows are visible, but their legacy lifetime values do not prove
-        // canonical event-time complete pairs. Unbounded, "no qualifying pair"
-        // describes the whole cohort — the metric does not apply: "N/A".
-        await selectDateRange(page, ALL_TIME_RANGE_LABEL);
+        // The published rows survive locally, but this guest has no authority
+        // to exclude the repository default from the cohort.
+        await clickDesktopDateRange(page, ALL_TIME_RANGE_LABEL);
         await assertCanonicalBranchRow(page, branches.recent);
         await assertCanonicalBranchRow(page, branches.older);
-        await expect(
-          metricCardValue(page, expectations.aiSpendLabel)
-        ).toHaveText(expectations.allTimeSpend, { timeout: 30_000 });
-        await expect(locPerDollarValue(page)).toHaveText(
-          expectations.allTimeLocPerDollar,
-          { timeout: 30_000 }
-        );
+        expect(await readCanonicalMetricSnapshot(page)).toEqual({
+          aiSpendUsd: {
+            state: BranchMetricAvailability.Unavailable,
+            value: null,
+          },
+          cohortSize: 2,
+          locPerDollar: {
+            state: BranchMetricAvailability.Unavailable,
+            value: null,
+          },
+          medianPrSize: {
+            state: BranchMetricAvailability.Unavailable,
+            value: null,
+          },
+          phaseCoverage: { completeness: "complete", subtotalUsd: 50 },
+        });
+        await expect(locPerDollarValue(page)).toHaveText("No data", {
+          timeout: 30_000,
+        });
 
-        // Narrow to 7 days. The table shrinks, and the card still refuses to
-        // import the lifetime ratio — but it now reports the WEAKER claim it can
-        // actually support. Inside a finite window the absent pair could mean no
-        // work OR uncaptured evidence, so the metric fails closed to Unavailable
-        // (the em-dash) instead of repeating an inapplicability verdict it can no
-        // longer establish. Asserting "N/A" here would demand the card carry the
-        // all-time answer into a window that cannot justify it.
-        await selectDateRange(page, SEVEN_DAY_RANGE_LABEL);
+        // Narrowing to 30 days removes only the older publication; lack of
+        // authority must not turn the remaining local row into a ratio.
+        await clickDesktopDateRange(page, FINITE_RANGE_LABEL);
         await expect(
           visibleBranchNameCells(page, branches.older.name)
         ).toHaveCount(0);
         await assertCanonicalBranchRow(page, branches.recent);
-        await expect(
-          metricCardValue(page, expectations.aiSpendLabel)
-        ).toHaveText(expectations.boundedSpend, { timeout: 30_000 });
-        await expect(locPerDollarValue(page)).toHaveText(
-          expectations.boundedLocPerDollar,
-          { timeout: 30_000 }
-        );
+        await expect(locPerDollarValue(page)).toHaveText("No data", {
+          timeout: 30_000,
+        });
 
         // Follow the real local list link into Branch Detail. The one $100
         // session is shared by two branches, so the renderer must receive and
@@ -185,7 +173,6 @@ test.describe("Branches LOC per $ canonical availability", () => {
         await cleanup();
       }
     } finally {
-      await authorityServer.close();
       fs.rmSync(userDataDir, { force: true, recursive: true });
       fs.rmSync(claudeHome, { force: true, recursive: true });
       fs.rmSync(codexHome, { force: true, recursive: true });
@@ -205,6 +192,52 @@ function visibleBranchNameCells(page: Page, branchName: string) {
  */
 function locPerDollarValue(page: Page) {
   return metricCardValue(page, expectations.locPerDollarLabel);
+}
+
+/** Read the producer result directly so a projection failure is diagnosable. */
+function readCanonicalMetricSnapshot(page: Page) {
+  return page.evaluate(async () => {
+    const desktopApi = Reflect.get(
+      new Object(globalThis.window),
+      "desktopApi"
+    ) as
+      | {
+          branchesApi?: {
+            analytics?: (query: object) => Promise<{
+              canonicalMetrics?: {
+                cohortSize?: number;
+                aiSpendUsd?: {
+                  current?: { state: string; value: number | null };
+                };
+                locPerDollar?: {
+                  current?: { state: string; value: number | null };
+                };
+                medianPrSize?: {
+                  current?: { state: string; value: number | null };
+                };
+              };
+            }>;
+            detail?: (id: string) => Promise<{
+              phaseAttribution?: { coverage?: unknown };
+            } | null>;
+            list?: (query: object) => Promise<{ items?: { id: string }[] }>;
+          };
+        }
+      | undefined;
+    const analytics = await desktopApi?.branchesApi?.analytics?.({});
+    const list = await desktopApi?.branchesApi?.list?.({});
+    const detail = list?.items?.[0]?.id
+      ? await desktopApi?.branchesApi?.detail?.(list.items[0].id)
+      : null;
+    const metrics = analytics?.canonicalMetrics;
+    return {
+      cohortSize: metrics?.cohortSize,
+      aiSpendUsd: metrics?.aiSpendUsd?.current,
+      locPerDollar: metrics?.locPerDollar?.current,
+      medianPrSize: metrics?.medianPrSize?.current,
+      phaseCoverage: detail?.phaseAttribution?.coverage,
+    };
+  });
 }
 
 /** One canonical summary card value, located through its shared label. */
@@ -227,21 +260,20 @@ async function assertCanonicalBranchRow(
     .first();
   await expect(row).toBeVisible({ timeout: 30_000 });
   await expect(
-    row.locator(
-      `a[href="https://github.com/${repoFullName}/pull/${branch.prNumber}"]`
-    )
-  ).toHaveText(`${repoFullName}#${branch.prNumber}`);
+    row
+      .locator(
+        `a[href="https://github.com/${repoFullName}/pull/${branch.prNumber}"]`
+      )
+      // ISS-12709 (#8970): Desktop stores no GitHub PR state, so the chip also
+      // carries the ISS-8422 unconfirmed tail; the label span is pinned alone.
+      .locator("span")
+      .first()
+    // ISS-7362 (whitlockk): inside the 150px `pr` track the org prefix repeats on
+    // every row of an org-scoped list, so the chip carries the same short label
+    // the Repository cell shows. One repo in this corpus ⇒ unambiguous ⇒ elided.
+  ).toHaveText(`${repoDisplayName}#${branch.prNumber}`);
   await expect(
     row.locator(`a[aria-label="${repoFullName} repository on GitHub"]`)
   ).toBeVisible();
   await expect(row).toContainText(branch.lastActiveLabel);
-}
-
-/**
- * Drive the shared date-range control (`packages/app/shared/components/
- * date-range-filter.tsx`) by the option's accessible name. `:visible` scopes to
- * the active Branches toolbar instance.
- */
-async function selectDateRange(page: Page, label: string): Promise<void> {
-  await page.locator(`[aria-label="${label}"]:visible`).first().click();
 }

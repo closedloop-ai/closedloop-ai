@@ -10,7 +10,7 @@
  * (`claude/diff-stats-tool-handlers.ts`); before FEA-3943 the Codex path instead
  * summed `countDiffFiles` per patch and inflated the total (ISS-4398 sibling gap).
  *
- * Splitting this out of the grandfathered `parse-codex.ts` keeps that file
+ * Splitting this out of `parse-codex.ts` keeps that file
  * shrinking (root AGENTS.md file-size rule), exactly as the Claude diff-stats
  * handlers were extracted from `parse-claude.ts`.
  */

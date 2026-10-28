@@ -17,6 +17,7 @@ import {
   getCodexHome as resolveCodexHome,
   getCodexSessionsDir as resolveCodexSessionsDir,
 } from "../../util/codex-home-paths.js";
+import type { DirectoryWalkSkipOptions } from "../engine/directory-walk-skip.js";
 import { collectJsonlFiles } from "../parsing/parser-utils.js";
 
 export function getCodexHome(): string {
@@ -62,17 +63,24 @@ export function sessionIdFromRolloutPath(filePath: string): string {
  */
 export function collectRolloutFiles(
   root: string,
-  opts: { maxDepth?: number } = {}
+  opts: { maxDepth?: number } & DirectoryWalkSkipOptions = {}
 ): string[] {
   return collectJsonlFiles(root, opts);
 }
 
 /**
  * All Codex rollout files (active sessions + archived).
+ *
+ * `onSkip` is optional and off by default, so every existing caller keeps the
+ * silent error-tolerant walk. A caller MEASURING the corpus passes it so a
+ * denied session directory reads as a short count rather than a total
+ * (ISS-8506).
  */
-export function listAllRolloutFiles(): string[] {
+export function listAllRolloutFiles(
+  opts: DirectoryWalkSkipOptions = {}
+): string[] {
   return [
-    ...collectRolloutFiles(getCodexSessionsDir()),
-    ...collectRolloutFiles(getCodexArchivedDir()),
+    ...collectRolloutFiles(getCodexSessionsDir(), opts),
+    ...collectRolloutFiles(getCodexArchivedDir(), opts),
   ];
 }

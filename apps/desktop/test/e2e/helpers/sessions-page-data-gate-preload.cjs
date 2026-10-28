@@ -80,6 +80,24 @@ if (process.env.CL_E2E_SESSIONS_PAGE_DATA_GATE === "1") {
     /** Resolvers for the invocations currently held. */
     pending: [],
     /**
+     * ISS-6382: the FILTERS of every invocation, in order. The restore gate's
+     * whole claim is about WHICH view the first read paginates under, and
+     * `sortBy`/`sortDir` come off the persisted view — so the spec has to read
+     * the request, not just count it. Recorded here because there is no HTTP on
+     * this path for `page.route` to observe.
+     */
+    filters: [],
+    /**
+     * ISS-6382: hold from the NEXT response onward WITHOUT failing the usage
+     * half — the plain "read in flight" the restore gate's window looks like.
+     * `arm()` above cannot serve this: it also flips `failUsage`, which is a
+     * different state entirely.
+     */
+    hold() {
+      gate.passUntil = gate.settled;
+      return gate.passUntil;
+    },
+    /**
      * Start failing the usage half, and hold every response from the SECOND one
      * onwards. Exactly one response is let through so the transient window opens
      * (a held response would never reach the renderer and the hook would never
@@ -91,6 +109,20 @@ if (process.env.CL_E2E_SESSIONS_PAGE_DATA_GATE === "1") {
       gate.failUsage = true;
       gate.passUntil = gate.settled + 1;
       return gate.passUntil;
+    },
+    /**
+     * ISS-6382: answer everything held AND lift the hold, so the handler is
+     * fully open again. Distinct from `release()` below, which deliberately
+     * re-holds the next response — ISS-4561's spec walks the recovery attempt by
+     * attempt and depends on that. A spec that only wanted to observe the
+     * in-flight window needs the opposite: leave the gate holding and FEA-3639's
+     * stall detector eventually fires, and its escape hatch is a
+     * `refetch({ cancelRefetch: true })` that discards the response just let
+     * through and lands its replacement right back in the trap.
+     */
+    resume() {
+      gate.passUntil = Number.POSITIVE_INFINITY;
+      return gate.release();
     },
     /** Answer everything held right now; returns how many were let go. */
     release() {
@@ -110,6 +142,7 @@ if (process.env.CL_E2E_SESSIONS_PAGE_DATA_GATE === "1") {
     }
     return registerHandler(channel, async (event, ...args) => {
       gate.dispatched += 1;
+      gate.filters.push(args[0] ?? null);
       // The LIST half stays real — it is the half that must keep rendering while
       // the usage half recovers, which is the whole shape of the reported bug.
       const response = await listener(event, ...args);
@@ -123,14 +156,34 @@ if (process.env.CL_E2E_SESSIONS_PAGE_DATA_GATE === "1") {
       // page-data response; pass anything without a `list` through untouched
       // rather than inventing a shape the renderer would then have to parse.
       if (
-        !(gate.failUsage && response) ||
+        !response ||
         typeof response !== "object" ||
         !Object.hasOwn(response, "list")
       ) {
         return response;
       }
+      // Native-only malformed payload: JSON cannot carry NaN or Infinity. Keep
+      // the real SQLite read and change only the explicitly selected row before
+      // the real IPC/preload bridge transports it to the renderer.
+      const list = gate.nonFiniteRowName
+        ? {
+            ...response.list,
+            items: response.list.items.map((item) =>
+              item.name === gate.nonFiniteRowName
+                ? {
+                    ...item,
+                    estimatedCost: Number.NaN,
+                    outputTokens: Number.POSITIVE_INFINITY,
+                  }
+                : item
+            ),
+          }
+        : response.list;
+      if (!gate.failUsage) {
+        return list === response.list ? response : { ...response, list };
+      }
       return {
-        list: response.list,
+        list,
         usageError: true,
         usageErrorTransient: true,
       };

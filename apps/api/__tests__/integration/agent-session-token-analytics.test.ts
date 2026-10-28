@@ -22,12 +22,13 @@ import {
 } from "@repo/api/src/types/token-cost-provenance";
 import { withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { agentSessionsService } from "@/app/agent-sessions/service";
 import {
-  autoRollbackTransaction,
+  createCommittedTestOrganizationTracker,
   createTestOrganization,
   createTestUser,
+  joinAmbientTransactionForSessionSyncWrites,
 } from "../utils/db-helpers";
 
 const env = keys();
@@ -142,7 +143,7 @@ async function findArtifactId(
 
 describeIfDb("FEA-2730 token analytics sync", () => {
   it("re-syncing identical token events is a no-op (our skipDuplicates guard)", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const organizationId = await createTestOrganization();
       const user = await createTestUser(organizationId);
       const computeTarget = await createComputeTarget(organizationId, user.id);
@@ -190,7 +191,7 @@ describeIfDb("FEA-2730 token analytics sync", () => {
   });
 
   it("FEA-3419: a fresh re-sync updates event cost in place and a stale retry cannot revert it", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const organizationId = await createTestOrganization();
       const user = await createTestUser(organizationId);
       const computeTarget = await createComputeTarget(organizationId, user.id);
@@ -287,7 +288,7 @@ describeIfDb("FEA-2730 token analytics sync", () => {
   });
 
   it("ISS-4882: round-trips nullable provenance, truthful zero, and additive cost lanes", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const organizationId = await createTestOrganization();
       const user = await createTestUser(organizationId);
       const computeTarget = await createComputeTarget(organizationId, user.id);
@@ -397,17 +398,19 @@ describeIfDb("FEA-2730 token analytics sync", () => {
         costCompletenessReason: TokenCostCompletenessReason.UnsupportedSource,
       });
 
-      const readRows = await agentSessionsService.getSessionTokenEvents({
-        organizationId,
-        sessionArtifactId: artifactId,
-      });
+      const readRows = (
+        await agentSessionsService.getSessionTokenEvents({
+          organizationId,
+          sessionArtifactId: artifactId,
+        })
+      ).events;
       expect(readRows[0]?.estimatedCostUsd).toBeNull();
       expect(readRows[1]?.estimatedCostUsd).toBe(0);
     });
   });
 
   it("ISS-4882: preserves transport replay identity and rejects immutable collisions", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const organizationId = await createTestOrganization();
       const user = await createTestUser(organizationId);
       const computeTarget = await createComputeTarget(organizationId, user.id);
@@ -512,7 +515,7 @@ describeIfDb("FEA-2730 token analytics sync", () => {
   });
 
   it("FEA-3419: the tokenUsage lane round-trips the typed cache-write TTL split (null = absent)", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const organizationId = await createTestOrganization();
       const user = await createTestUser(organizationId);
       const computeTarget = await createComputeTarget(organizationId, user.id);
@@ -579,7 +582,7 @@ describeIfDb("FEA-2730 token analytics sync", () => {
   });
 
   it("carries token counts >2^31, cost >$10k, and runtime_ms >2^31 without truncation", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const organizationId = await createTestOrganization();
       const user = await createTestUser(organizationId);
       const computeTarget = await createComputeTarget(organizationId, user.id);
@@ -618,10 +621,12 @@ describeIfDb("FEA-2730 token analytics sync", () => {
       // BigInt/Decimal to JS numbers, and an exact value here also proves the
       // ingest stored it without truncation (an int4 column would have thrown
       // on insert for a value >2^31, failing the upsert above).
-      const [tokenEvent] = await agentSessionsService.getSessionTokenEvents({
-        organizationId,
-        sessionArtifactId: artifactId,
-      });
+      const [tokenEvent] = (
+        await agentSessionsService.getSessionTokenEvents({
+          organizationId,
+          sessionArtifactId: artifactId,
+        })
+      ).events;
       expect(tokenEvent?.inputTokens).toBe(2_500_000_000);
       expect(tokenEvent?.cacheReadTokens).toBe(3_000_000_000);
       expect(tokenEvent?.cacheWriteTokens).toBe(4_000_000_000);
@@ -639,7 +644,7 @@ describeIfDb("FEA-2730 token analytics sync", () => {
   });
 
   it("isolates token events + analytics across orgs via the session join", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const orgA = await createTestOrganization();
       const userA = await createTestUser(orgA);
       const targetA = await createComputeTarget(orgA, userA.id);
@@ -673,10 +678,12 @@ describeIfDb("FEA-2730 token analytics sync", () => {
 
       // Org A reads its own session.
       expect(
-        await agentSessionsService.getSessionTokenEvents({
-          organizationId: orgA,
-          sessionArtifactId: artifactA,
-        })
+        (
+          await agentSessionsService.getSessionTokenEvents({
+            organizationId: orgA,
+            sessionArtifactId: artifactA,
+          })
+        ).events
       ).toHaveLength(1);
       expect(
         await agentSessionsService.getSessionAnalytics({
@@ -687,10 +694,12 @@ describeIfDb("FEA-2730 token analytics sync", () => {
 
       // Org A cannot reach Org B's session — zero cross-org rows via the join.
       expect(
-        await agentSessionsService.getSessionTokenEvents({
-          organizationId: orgA,
-          sessionArtifactId: artifactB,
-        })
+        (
+          await agentSessionsService.getSessionTokenEvents({
+            organizationId: orgA,
+            sessionArtifactId: artifactB,
+          })
+        ).events
       ).toEqual([]);
       expect(
         await agentSessionsService.getSessionAnalytics({
@@ -702,7 +711,7 @@ describeIfDb("FEA-2730 token analytics sync", () => {
   });
 
   it("upserts the analytics rollup in place when a later sync changes it", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const organizationId = await createTestOrganization();
       const user = await createTestUser(organizationId);
       const computeTarget = await createComputeTarget(organizationId, user.id);
@@ -752,7 +761,7 @@ describeIfDb("FEA-2730 token analytics sync", () => {
   });
 
   it("leaves previously synced rows untouched when a later sync omits the sections", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const organizationId = await createTestOrganization();
       const user = await createTestUser(organizationId);
       const computeTarget = await createComputeTarget(organizationId, user.id);
@@ -809,6 +818,13 @@ describeIfDb("FEA-2730 token analytics sync", () => {
  * drift in any of those breaks it.
  */
 describeIfDb("FEA-4276 list/detail cost parity (real Postgres)", () => {
+  // Committed, not rolled back: `findSessions` opens its own RepeatableRead
+  // snapshot (ISS-12881), and `withDb.tx` refuses an isolation level inside an
+  // ambient transaction (ISS-4669).
+  const committedOrganizations = createCommittedTestOrganizationTracker();
+
+  afterEach(() => committedOrganizations.cleanup());
+
   async function seedAndReadBothCosts(input: {
     rollupCostUsd: number;
     tokenEvents: SyncedAgentSessionTokenEvent[];
@@ -816,13 +832,15 @@ describeIfDb("FEA-4276 list/detail cost parity (real Postgres)", () => {
     listCost?: string | null;
     detailCost?: string | null;
   }> {
-    const organizationId = await createTestOrganization();
+    const organizationId = await committedOrganizations.create();
     const user = await createTestUser(organizationId);
     const computeTarget = await createComputeTarget(organizationId, user.id);
 
-    // The rollup token total the completeness cross-check compares against: the
-    // sum of the per-event token counts, so a complete stream reads as complete
-    // and the (repriced) per-event cost sum wins over the divergent rollup.
+    // Kept equal to the seeded events' own token counts so the fixture stays
+    // internally consistent. Pre-ISS-7176 this fed a completeness cross-check
+    // that decided whether the per-event sum could override the rollup; that
+    // mechanism is gone (the rollup is read directly on both surfaces now), so
+    // these totals no longer influence which cost value displays.
     const rollupInputTokens = input.tokenEvents.reduce(
       (sum, e) => sum + e.inputTokens,
       0
@@ -837,7 +855,8 @@ describeIfDb("FEA-4276 list/detail cost parity (real Postgres)", () => {
       buildPayload([
         buildSession({
           tokenEvents: input.tokenEvents,
-          // The rollup diverges from the per-event sum (the 41× dossier case).
+          // The rollup diverges from the per-event sum (the 41x dossier case);
+          // the rollup is the value both surfaces now display (ISS-7176).
           sessionAnalytics: buildAnalytics({
             inputTokens: rollupInputTokens,
             outputTokens: rollupOutputTokens,
@@ -864,7 +883,7 @@ describeIfDb("FEA-4276 list/detail cost parity (real Postgres)", () => {
   }
 
   it("shows the same reconciled cost on list and detail for a normal record", async () => {
-    await autoRollbackTransaction(async () => {
+    await committedOrganizations.run(async () => {
       const { listCost, detailCost } = await seedAndReadBothCosts({
         // Rollup agrees with the per-event sum here.
         rollupCostUsd: 0.5,
@@ -883,10 +902,15 @@ describeIfDb("FEA-4276 list/detail cost parity (real Postgres)", () => {
     });
   });
 
-  it("reconciles a 41x rollup/per-event divergence to the per-event authority on BOTH surfaces", async () => {
-    await autoRollbackTransaction(async () => {
+  it("shows the ROLLUP on both surfaces when the per-event stream disagrees 41x", async () => {
+    await committedOrganizations.run(async () => {
+      // ISS-7176 re-decided this: the rollup is correct, not the per-event sum.
+      // A stream is only ever a lower bound on a whole session (it omits
+      // line items not billed per token, e.g. web search) — see the sibling
+      // unit-level fixture (cost-list-detail-parity.test.ts) for the full
+      // history. This case previously asserted $33.24 on both surfaces.
       const { listCost, detailCost } = await seedAndReadBothCosts({
-        // Inflated stale rollup; the (repriced) per-event stream sums to $33.24.
+        // The per-event stream sums to $33.24; the rollup ($1,378.39) wins now.
         rollupCostUsd: 1378.39,
         tokenEvents: [
           buildTokenEvent({ externalEventId: "d1", estimatedCostUsd: 5 }),
@@ -907,9 +931,9 @@ describeIfDb("FEA-4276 list/detail cost parity (real Postgres)", () => {
           }),
         ],
       });
-      // Neither surface may show the stale rollup — both show the authority.
-      expect(listCost).toBe("$33.24");
-      expect(detailCost).toBe("$33.24");
+      // Neither surface may show the per-event sum — both show the rollup.
+      expect(listCost).toBe("$1,378.39");
+      expect(detailCost).toBe("$1,378.39");
       expect(listCost).toBe(detailCost);
     });
   });

@@ -5,6 +5,7 @@
   "types": "./index.ts",
   "scripts": {
     "db:generate": "prisma generate --no-hints --schema=./prisma/schema.prisma",
+    "sync:typed-sql": "node scripts/splice-sql-fragments.mjs && node scripts/sync-typed-sql.mjs",
     "analyze": "node scripts/ensure-prisma-client.mjs",
     "prebuild": "tsx scripts/migrate.ts",
     "build": "node scripts/ensure-prisma-client.mjs",
@@ -19,31 +20,34 @@
     "pretest": "node scripts/ensure-prisma-client.mjs",
     "test": "pnpm test:unit",
     "test:coverage": "pnpm test:unit --coverage --coverage.reporter=json --coverage.reporter=json-summary --coverage.reportOnFailure '--coverage.include=*.ts'",
-    "test:unit": "vitest run --exclude '**/integration/**'",
+    "test:unit": "vitest run",
     "test:integration": "vitest run --config vitest.config.integration.ts --no-file-parallelism"
   },
   "dependencies": {
+    "@aws-sdk/credential-provider-node": "^3.972.18",
     "@aws-sdk/rds-signer": "^3.1003.0",
-    "@prisma/adapter-pg": "~7.8.0",
-    "@prisma/client": "~7.8.0",
-    "@prisma/client-runtime-utils": "~7.8.0",
+    "@prisma/adapter-pg": "~7.10.0",
+    "@prisma/client": "~7.10.0",
+    "@prisma/client-runtime-utils": "~7.10.0",
     "@repo/api": "workspace:*",
     "@t3-oss/env-nextjs": "^0.13.11",
     "@vercel/functions": "^3.4.3",
     "pg": "^8.20.0",
     "server-only": "^0.0.1",
-    "zod": "^4.3.6"
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
+    "@repo/vitest-config": "workspace:*",
     "@types/node": "^25.9.1",
     "@types/pg": "8.20.0",
     "bufferutil": "^4.1.0",
     "dotenv": "^17.4.2",
-    "prisma": "~7.8.0",
+    "prisma": "~7.10.0",
     "tsx": "^4.21.0",
     "typescript": "^7.0.2",
     "typescript6": "npm:@typescript/typescript6@6.0.2",
-    "vitest": "^4.1.9"
+    "vitest": "^5.0.2",
+    "vitest-mock-extended": "^5.1.1"
   }
 }

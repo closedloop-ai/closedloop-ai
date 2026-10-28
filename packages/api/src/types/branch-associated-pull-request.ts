@@ -1,6 +1,9 @@
 import { z } from "zod";
 import type { ReviewDecision } from "./branch-checks.js";
-import { normalizeRepoFullName } from "./branch-repository.ts";
+import {
+  normalizeRepoFullName,
+  parseRepositoryFullName,
+} from "./branch-repository.ts";
 import { GitHubPRState } from "./github-status.js";
 
 const REPOSITORY_FULL_NAME_PATTERN = /^[^/\s]+\/[^/\s]+$/;
@@ -17,23 +20,9 @@ const selectedPullRequestNumberSchema = z.coerce.number().int().positive();
  * identity and absent values remain omitted on the wire.
  */
 export const branchSelectedPullRequestQuerySchema = z
-  .object({
-    repositoryFullName: selectedPullRequestRepositoryFullNameSchema.optional(),
-    pullRequestNumber: selectedPullRequestNumberSchema.optional(),
-  })
+  .object(branchSelectedPullRequestQueryShape())
   .strict()
-  .superRefine((value, context) => {
-    if (
-      (value.repositoryFullName === undefined) !==
-      (value.pullRequestNumber === undefined)
-    ) {
-      context.addIssue({
-        code: "custom",
-        message:
-          "repositoryFullName and pullRequestNumber must be provided together",
-      });
-    }
-  });
+  .superRefine(requireWholeSelectedPullRequestIdentity);
 export type BranchSelectedPullRequestQuery = z.infer<
   typeof branchSelectedPullRequestQuerySchema
 >;
@@ -80,6 +69,8 @@ export const BranchAssociatedPullRequestSelectionReason = {
   Explicit: "explicit",
   MostRecentTerminal: "most_recent_terminal",
   None: "none",
+  /** ISS-8422: the only candidate is one no producer ever observed. */
+  Unobserved: "unobserved",
 } as const;
 export type BranchAssociatedPullRequestSelectionReason =
   (typeof BranchAssociatedPullRequestSelectionReason)[keyof typeof BranchAssociatedPullRequestSelectionReason];
@@ -97,6 +88,19 @@ export type BranchAssociatedPullRequest = {
   openedAt: string | null;
   closedAt: string | null;
   mergedAt: string | null;
+  /**
+   * ISS-8422: `false` when this row's lifecycle was never observed, mirroring
+   * {@link BranchAssociatedPullRequestCandidate.lifecycleObserved} onto the
+   * wire. Emitted ONLY when false — absent means observed, so every payload a
+   * producer wrote before this field existed stays correct and unchanged.
+   *
+   * `state` is deliberately NOT widened to null here (an unobserved row still
+   * reports the `OPEN` it read off its column default), so this flag is the only
+   * thing that tells a renderer the state is not a reading. A client cannot
+   * re-derive it: the LOC evidence fields that make a row observed are not on
+   * this item.
+   */
+  lifecycleObserved?: boolean;
 };
 
 /** Additive all-known PR collection and deterministic default selection. */
@@ -124,6 +128,14 @@ export type BranchAssociatedPullRequestCandidate = {
   closedAt: string | null;
   mergedAt: string | null;
   observedAt: string | null;
+  /**
+   * ISS-8422: `false` when the PRODUCER knows this row's lifecycle was never
+   * observed — a persisted `pr_state` that is `NOT NULL` with a `@default(OPEN)`
+   * and no lifecycle evidence behind it. Only a producer reading the raw row can
+   * answer that, so the selector never infers it: absent or `true` means
+   * observed, which is what every caller that omits the field gets.
+   */
+  lifecycleObserved?: boolean;
 };
 
 /** Shared selector output retains the original selected candidate for legacy projections. */
@@ -167,10 +179,19 @@ export function selectBranchAssociatedPullRequests<
   }
   normalizedCandidates.sort(compareCanonicalPullRequests);
 
+  // ISS-8422: "active" means a PR someone WATCHED being open. An unobserved row
+  // reads Open off its column default, and counting it here is what let a stub
+  // outrank a real merged sibling and drop that merge from the merge rate.
   const active = normalizedCandidates.filter(
-    ({ item }) => item.state === GitHubPRState.Open
+    ({ item, unobserved }) => item.state === GitHubPRState.Open && !unobserved
   );
-  if (active.length > 1) {
+  const unobservedOpen = normalizedCandidates.filter(
+    ({ item, unobserved }) => item.state === GitHubPRState.Open && unobserved
+  );
+  // Two unwitnessed open PRs are as ambiguous as two witnessed ones. Without
+  // this, the last-resort pick below would surface whichever sorts first as THE
+  // branch's PR and say nothing about the other.
+  if (active.length > 1 || unobservedOpen.length > 1) {
     reasons.add(BranchAssociatedPullRequestCompletenessReason.MultipleActive);
   }
 
@@ -183,7 +204,13 @@ export function selectBranchAssociatedPullRequests<
   );
   return {
     collection: {
-      items: normalizedCandidates.map(({ item }) => item),
+      // The RESOLVED verdict, not the newest snapshot's: `unobserved` here has
+      // already been folded across every duplicate of this PR, so an item whose
+      // newest re-sync was factless but whose earlier snapshot carried evidence
+      // is published as observed, agreeing with what selection used.
+      items: normalizedCandidates.map(({ item, unobserved }) =>
+        unobserved ? { ...item, lifecycleObserved: false } : item
+      ),
       selectedId,
       selectionReason: selectionReasonFor(
         candidates,
@@ -208,6 +235,7 @@ type NormalizedCandidate<
   item: BranchAssociatedPullRequest;
   observedEpoch: number | null;
   terminalEpoch: number | null;
+  unobserved: boolean;
 };
 
 function normalizeCandidate<
@@ -257,6 +285,7 @@ function normalizeCandidate<
     },
     observedEpoch: isoEpoch(candidate.observedAt),
     terminalEpoch,
+    unobserved: isUnobservedPullRequest(candidate),
   };
 }
 
@@ -315,7 +344,15 @@ function selectCandidate<
   const terminal = candidates
     .filter(({ terminalEpoch }) => terminalEpoch !== null)
     .sort(compareTerminalSelection);
-  return terminal[0] ?? null;
+  if (terminal[0]) {
+    return terminal[0];
+  }
+  // ISS-8422: nothing observed left to rank. An unwitnessed PR is still a real
+  // pull request the user can open, so it is selected LAST rather than dropped
+  // — the branch keeps its number and its link, and the read path reports a null
+  // state rather than the schema default. `candidates` is already in canonical
+  // order, so this stays deterministic.
+  return candidates.find(({ unobserved }) => unobserved) ?? null;
 }
 
 function selectionReasonFor<
@@ -326,6 +363,9 @@ function selectionReasonFor<
   active: readonly NormalizedCandidate<Candidate>[],
   reasons: ReadonlySet<BranchAssociatedPullRequestCompletenessReason>
 ): BranchAssociatedPullRequestSelectionReason {
+  if (selected?.unobserved) {
+    return BranchAssociatedPullRequestSelectionReason.Unobserved;
+  }
   if (selected?.item.state === GitHubPRState.Open) {
     return BranchAssociatedPullRequestSelectionReason.Active;
   }
@@ -362,8 +402,7 @@ function normalizedRepositoryIdentity(value: string | null): string | null {
     return null;
   }
   const normalized = normalizeRepoFullName(value);
-  const segments = normalized.split("/");
-  return segments.length === 2 && segments.every(Boolean) ? normalized : null;
+  return parseRepositoryFullName(normalized) ? normalized : null;
 }
 
 function normalizedLifecycle(
@@ -449,13 +488,32 @@ function compareCodeUnits(left: string, right: string): number {
 function hasSelectionBlockingEvidence(
   reasons: ReadonlySet<BranchAssociatedPullRequestCompletenessReason>
 ): boolean {
-  return [
-    BranchAssociatedPullRequestCompletenessReason.ConflictingDuplicate,
-    BranchAssociatedPullRequestCompletenessReason.InvalidIdentity,
-    BranchAssociatedPullRequestCompletenessReason.InvalidLifecycle,
-    BranchAssociatedPullRequestCompletenessReason.MultipleActive,
-  ].some((reason) => reasons.has(reason));
+  for (const reason of reasons) {
+    if (SELECTION_BLOCKING_REASON[reason]) {
+      return true;
+    }
+  }
+  return false;
 }
+
+/**
+ * Which completeness reasons suppress a default selection. Exhaustive over the
+ * reason union BY CONSTRUCTION: this was a hand-written array of four of six
+ * members, so a new reason silently took the non-blocking branch. A `Record`
+ * cannot be written without naming every member, so the next one fails `tsc`
+ * here (root AGENTS.md, side-inventory lesson).
+ */
+const SELECTION_BLOCKING_REASON: Record<
+  BranchAssociatedPullRequestCompletenessReason,
+  boolean
+> = {
+  [BranchAssociatedPullRequestCompletenessReason.ConflictingDuplicate]: true,
+  [BranchAssociatedPullRequestCompletenessReason.InvalidIdentity]: true,
+  [BranchAssociatedPullRequestCompletenessReason.InvalidLifecycle]: true,
+  [BranchAssociatedPullRequestCompletenessReason.InvalidTimestamp]: false,
+  [BranchAssociatedPullRequestCompletenessReason.MissingTerminalTimestamp]: false,
+  [BranchAssociatedPullRequestCompletenessReason.MultipleActive]: true,
+};
 
 function validIso(value: string | null): string | null {
   return isoEpoch(value) === null ? null : value;
@@ -515,9 +573,25 @@ function mergeCompatibleSnapshots<
     ordered,
     ({ item }) => item.reviewDecision
   );
+  // Observed if ANY snapshot of this PR was: a later unwitnessed re-sync must
+  // not erase an earlier real observation.
+  const unobserved = ordered.every((snapshot) => snapshot.unobserved);
   return {
     ...newest,
-    candidate: { ...newest.candidate, title, url, reviewDecision },
+    unobserved,
+    // The RESOLVED verdict has to travel on the candidate too, not just on this
+    // wrapper. The candidate handed back to callers is the newest raw row, so a
+    // consumer re-reading `lifecycleObserved` off it saw the newest snapshot's
+    // answer while selection had already used the merged one — a factless
+    // re-sync of a PR whose earlier snapshot carried LOC then selected as
+    // observed and rendered as unobserved (davetho review on #6313).
+    candidate: {
+      ...newest.candidate,
+      title,
+      url,
+      reviewDecision,
+      lifecycleObserved: !unobserved,
+    },
     item: {
       ...newest.item,
       title,
@@ -538,4 +612,196 @@ function firstPresent<Value, Candidate>(
     }
   }
   return null;
+}
+
+/**
+ * ISS-8422: the lifecycle state a consumer is allowed to believe.
+ *
+ * `state` is deliberately NOT widened to null for an unobserved pull request
+ * (see {@link BranchAssociatedPullRequest.lifecycleObserved}), so it still
+ * reports the `OPEN` the column default produced. Every reader that takes
+ * `.state` at face value therefore restates that default as a measurement —
+ * which is the whole defect — and the flag beside it is easy to miss. Read
+ * this instead of the field, and the two cannot drift apart.
+ *
+ * Structurally typed on purpose: the cloud wire item, the desktop candidate and
+ * the desktop cloud overlay carry these same two fields under three different
+ * types, and all three need the identical fold.
+ */
+export function observedPullRequestState<State>(
+  pullRequest: {
+    state: State | null;
+    lifecycleObserved?: boolean;
+  } | null
+): State | null {
+  if (isUnobservedPullRequest(pullRequest)) {
+    return null;
+  }
+  return pullRequest?.state ?? null;
+}
+
+/**
+ * ISS-8422: whether NO producer has ever observed this pull request's lifecycle.
+ *
+ * The comparison is against `false` rather than a truthiness test, and naming it
+ * is the point: `lifecycleObserved` is OPTIONAL and its ABSENCE means observed
+ * (a version-skewed producer omits it entirely, and every payload written before
+ * this field existed omits it), so `!pullRequest.lifecycleObserved` reads every
+ * one of those as unobserved. One predicate is what stops each of this flag's
+ * readers from writing that inversion independently.
+ *
+ * Structurally typed for the same reason {@link observedPullRequestState} is:
+ * the cloud wire item, the desktop candidate and the desktop cloud overlay carry
+ * the flag under three different types.
+ */
+export function isUnobservedPullRequest(
+  pullRequest: { lifecycleObserved?: boolean } | null | undefined
+): boolean {
+  return pullRequest?.lifecycleObserved === false;
+}
+
+/**
+ * Whether a short associated-pull-request collection actually HIDES a decided
+ * pull request from a metric — a merge, or an unmerged close.
+ *
+ * ISS-9959: the Branches merge-rate and median-PR-size cards were starred by one
+ * cohort-wide `every(...)`, so a single branch carrying any completeness reason
+ * starred every window, permanently. Answering per window needs this question
+ * kept apart from "is this collection perfect", because the common way a
+ * collection is imperfect is a SELECTION ambiguity among pull requests the
+ * producer read in full — which withholds nothing a decision metric counts.
+ *
+ * Deliberately NOT a question about time. A branch's latest known activity is no
+ * upper bound on when an unread pull request was decided:
+ * `MissingTerminalTimestamp` IS a decided pull request whose instant was never
+ * read, and `buildPullRequestLifecycleActivityRecords` emits no terminal atom
+ * when both terminal timestamps are absent, so the branch's last activity can
+ * predate the very merge the shortfall is about.
+ */
+export function associatedPullRequestsWithholdDecisions(
+  collection: BranchAssociatedPullRequestCollection
+): boolean {
+  const { state, reasons } = collection.completeness;
+  if (state === BranchAssociatedPullRequestCompletenessState.Complete) {
+    return false;
+  }
+  // An Unavailable collection states no reason, and `[].some(...)` is false:
+  // reading an empty reason list as "nothing withheld" would clear a window for
+  // the one state that resolved no candidate at all.
+  if (reasons.length === 0) {
+    return true;
+  }
+  if (reasons.some((reason) => DECISION_WITHHOLDING_REASON[reason])) {
+    return true;
+  }
+  // The non-withholding set holds only while every candidate's lifecycle was
+  // actually observed: an unobserved row reads OPEN off a column default
+  // (ISS-8422), so "these are all still open" is not a reading, and the true
+  // state behind it may be merged.
+  return collection.items.some(isUnobservedPullRequest);
+}
+
+/**
+ * Which completeness reasons withhold pull-request DECISION evidence.
+ *
+ * Exhaustive over the reason union BY CONSTRUCTION, for the same reason
+ * {@link SELECTION_BLOCKING_REASON} is: a `Record` cannot be written without
+ * naming every member, so a seventh reason fails `tsc` here instead of silently
+ * taking the "withholds nothing" branch (root AGENTS.md, side-inventory lesson).
+ *
+ * `MultipleActive` is the only member that withholds nothing: every candidate it
+ * describes is an OPEN pull request the producer read, carrying its own
+ * timestamps, so the shortfall is about WHICH pull request represents the
+ * branch, not about a decision nobody saw. Every other member either drops a
+ * candidate outright or nulls the timestamp a decided pull request would have
+ * been counted by.
+ */
+const DECISION_WITHHOLDING_REASON: Record<
+  BranchAssociatedPullRequestCompletenessReason,
+  boolean
+> = {
+  [BranchAssociatedPullRequestCompletenessReason.ConflictingDuplicate]: true,
+  [BranchAssociatedPullRequestCompletenessReason.InvalidIdentity]: true,
+  [BranchAssociatedPullRequestCompletenessReason.InvalidLifecycle]: true,
+  [BranchAssociatedPullRequestCompletenessReason.InvalidTimestamp]: true,
+  [BranchAssociatedPullRequestCompletenessReason.MissingTerminalTimestamp]: true,
+  [BranchAssociatedPullRequestCompletenessReason.MultipleActive]: false,
+};
+
+/**
+ * ISS-12278: how a `GET /branches/[id]` caller wants the selected PR's checks.
+ * `lazy` callers read them from `/branches/[id]/selected-pull-request/checks`;
+ * a caller that omits the parameter (every installed build before this one)
+ * still gets them inline on the detail.
+ */
+export const BranchDetailChecksDelivery = {
+  Lazy: "lazy",
+} as const;
+export type BranchDetailChecksDelivery =
+  (typeof BranchDetailChecksDelivery)[keyof typeof BranchDetailChecksDelivery];
+
+/** Query accepted by `GET /branches/[id]`: the PR selection plus checks delivery. */
+export const branchDetailQuerySchema = z
+  .object({
+    ...branchSelectedPullRequestQueryShape(),
+    checks: z.enum(BranchDetailChecksDelivery).optional(),
+  })
+  .strict()
+  .superRefine(requireWholeSelectedPullRequestIdentity);
+export type BranchDetailQuery = z.infer<typeof branchDetailQuerySchema>;
+
+function branchSelectedPullRequestQueryShape() {
+  return {
+    repositoryFullName: selectedPullRequestRepositoryFullNameSchema.optional(),
+    pullRequestNumber: selectedPullRequestNumberSchema.optional(),
+  };
+}
+
+function requireWholeSelectedPullRequestIdentity(
+  value: { repositoryFullName?: string; pullRequestNumber?: number },
+  context: z.RefinementCtx
+): void {
+  if (
+    (value.repositoryFullName === undefined) !==
+    (value.pullRequestNumber === undefined)
+  ) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "repositoryFullName and pullRequestNumber must be provided together",
+    });
+  }
+}
+
+/**
+ * A draft closed without merging. Operator ruling 2026-10-14 (ISS-12421
+ * session, resolving the #8791 disagreement): Merge rate and Median PR size
+ * exclude it, and it does not star either card. The selector still reads it as
+ * an invalid lifecycle for the branch's own PR collection and status.
+ */
+export function isClosedUnmergedDraft(
+  candidate: Pick<
+    BranchAssociatedPullRequestCandidate,
+    "isDraft" | "state" | "mergedAt"
+  >
+): boolean {
+  return (
+    candidate.isDraft === true &&
+    candidate.state === GitHubPRState.Closed &&
+    !candidate.mergedAt
+  );
+}
+
+/**
+ * The associated-PR collection over the candidates the PR metrics count, so an
+ * excluded closed draft cannot make a branch's metric evidence incomplete.
+ */
+export function metricAssociatedPullRequestCollection(
+  candidates: readonly BranchAssociatedPullRequestCandidate[],
+  provenance: BranchAssociatedPullRequestProvenance
+): BranchAssociatedPullRequestCollection {
+  return selectBranchAssociatedPullRequests(
+    candidates.filter((candidate) => !isClosedUnmergedDraft(candidate)),
+    provenance
+  ).collection;
 }

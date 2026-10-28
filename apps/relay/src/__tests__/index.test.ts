@@ -1,8 +1,8 @@
 import { request } from "node:http";
 import {
-  DESKTOP_AGENT_SESSIONS_SOCKET_EVENT,
-  type DesktopAgentSessionsAck,
-} from "@repo/api/src/types/agent-session";
+  RelayDispatchDiagnosticReason,
+  RelayDispatchReason,
+} from "@repo/api/src/types/relay-dispatch";
 import {
   afterAll,
   afterEach,
@@ -34,6 +34,9 @@ let stopRelay: (() => Promise<void>) | null = null;
 vi.mock("socket.io", () => {
   return {
     Server: class MockServer {
+      // Engine.IO stub: index.ts attaches a `connection_error` listener to
+      // `io.engine` at module load, so a Server double without one crashes on import.
+      engine = { on: vi.fn() };
       of(namespace?: string) {
         if (namespace === "/desktop-gateway") {
           return socketIoMocks.namespace;
@@ -67,7 +70,6 @@ beforeAll(async () => {
   stopRelay = relayModule.stopRelayServer;
 
   baseUrl = `http://127.0.0.1:${TEST_PORT}`;
-  await new Promise<void>((resolve) => setTimeout(resolve, 50));
 }, 30_000);
 
 afterAll(async () => {
@@ -224,10 +226,14 @@ describe("POST /dispatch", () => {
     expect(response.status).toBe(200);
     const body = JSON.parse(response.body) as {
       delivered: boolean;
+      diagnosticReason: string;
       reason: string;
     };
     expect(body.delivered).toBe(false);
-    expect(body.reason).toBe("target_not_connected");
+    expect(body.reason).toBe(RelayDispatchReason.TargetNotConnected);
+    expect(body.diagnosticReason).toBe(
+      RelayDispatchDiagnosticReason.RegistryUnavailableInMemory
+    );
   });
 
   it("emits desktop.command only to the socket registered for the requested targetId", async () => {
@@ -277,57 +283,6 @@ describe("POST /dispatch", () => {
       "desktop.command",
       expect.anything()
     );
-  });
-
-  it("forwards a plain accepted ack for desktop agent-session sync (FEA-2718 dropped pendingFragments)", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((_url: string, init: RequestInit) => {
-        const requestBody = JSON.parse(String(init.body)) as {
-          event: string;
-          payload?: { targetId?: string };
-        };
-        if (requestBody.event === DESKTOP_AGENT_SESSIONS_SOCKET_EVENT) {
-          return new Response(
-            JSON.stringify({
-              targetId: "target-fragments",
-              gatewaySessionId: "gateway-target-fragments",
-              emit: [],
-              // Even if a stale cloud still returned a pendingFragments flag, the
-              // relay forwards only the plain accepted ack.
-              ack: { accepted: true, pendingFragments: true },
-            }),
-            {
-              status: 200,
-              headers: { "Content-Type": "application/json" },
-            }
-          );
-        }
-        return new Response(
-          JSON.stringify({
-            targetId: requestBody.payload?.targetId,
-            gatewaySessionId: `gateway-${requestBody.payload?.targetId}`,
-            emit: [],
-          }),
-          {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }
-        );
-      })
-    );
-    const socket = createMockRelaySocket("socket-fragments");
-    await registerSocketTarget(socket, "target-fragments");
-    const handler = socket.handlers.get(DESKTOP_AGENT_SESSIONS_SOCKET_EVENT);
-    if (!handler) {
-      throw new Error("Expected desktop.agent-sessions handler");
-    }
-
-    const ack = await new Promise<DesktopAgentSessionsAck>((resolve) => {
-      handler({ schemaVersion: 1, sessions: [] }, resolve);
-    });
-
-    expect(ack).toEqual({ accepted: true });
   });
 });
 

@@ -57,11 +57,6 @@ const headlineBody = {
   documentsByType: [],
   totalComments: 5,
   totalPRsLanded: 3,
-  totalLoops: 7,
-  avgConcurrency: 1.2,
-  totalTokensInput: 1000,
-  totalTokensOutput: 500,
-  totalEstimatedCost: 4.2,
 };
 
 const heatmapBody = { contributionHeatmap: [] };

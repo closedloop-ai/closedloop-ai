@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { DesktopClientAttributionHeader } from "@repo/api/src/types/desktop-client-attribution";
+import { describe, test } from "vitest";
 import type { DesktopPopHeaders } from "../src/main/auth/desktop-pop.js";
 import { provisionManagedKey } from "../src/main/auth/managed-key-provision.js";
+import {
+  resetDesktopClientAttribution,
+  setDesktopClientAttributionResolver,
+} from "../src/main/util/desktop-client-attribution-provider.js";
 
 const GATEWAY_ID = "11111111-1111-4111-8111-111111111111";
 const DEVICE_PEM = "-----BEGIN PUBLIC KEY-----\nabc\n-----END PUBLIC KEY-----";
@@ -59,6 +64,54 @@ describe("provisionManagedKey", () => {
     ]);
     assert.equal(body.gatewayId, GATEWAY_ID);
     assert.equal(body.gatewayPublicKeyPem, DEVICE_PEM);
+  });
+
+  /**
+   * ISS-8749: managed-key provisioning is a first-party cl-api POST that builds
+   * its own `RequestInit`, so it stamps itself — the read chokepoint
+   * (`fetchJsonAndParse`) cannot cover it. Untouched, this lane's authenticated
+   * request span was indistinguishable from one made by an old Desktop build.
+   */
+  test("stamps the published Desktop client attribution", async () => {
+    resetDesktopClientAttribution();
+    setDesktopClientAttributionResolver(() => ({
+      installationId: "019c26aa-3c11-7bb2-8f04-1d7e5a9c3311",
+      clientVersion: "1.24.3",
+    }));
+    let capturedInit: RequestInit | undefined;
+
+    await provisionManagedKey({
+      apiOrigin: "https://api.test",
+      gatewayId: GATEWAY_ID,
+      gatewayPublicKeyPem: DEVICE_PEM,
+      accessToken: "desktop-session-jwt",
+      popSigner: () => okPopSigner(),
+      fetchImpl: (_url, init) => {
+        capturedInit = init;
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              success: true,
+              data: { apiKey: "sk_live_managed" },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          )
+        );
+      },
+    });
+
+    const headers = new Headers(capturedInit?.headers);
+    assert.equal(
+      headers.get(DesktopClientAttributionHeader.InstallationId),
+      "019c26aa-3c11-7bb2-8f04-1d7e5a9c3311"
+    );
+    assert.equal(
+      headers.get(DesktopClientAttributionHeader.ClientVersion),
+      "1.24.3"
+    );
+    // The PoP headers this lane authenticates with must survive the merge.
+    assert.equal(headers.get("X-Desktop-Signature"), "sig");
+    resetDesktopClientAttribution();
   });
 
   test("returns pop_unavailable without a network call when the signer yields no headers", async () => {

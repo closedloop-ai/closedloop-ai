@@ -22,7 +22,10 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { PackInstallState } from "../../lib/install-state";
-import { MemberInstallAction } from "../../lib/member-install-action";
+import {
+  MEMBER_INSTALL_ACTION_LABEL,
+  MemberInstallAction,
+} from "../../lib/member-install-action";
 import { MemberInstallDispatchTone } from "../../lib/member-install-dispatch-copy";
 import type { PackComponentInstallMatrix } from "../../lib/pack-install-matrix";
 import type { PackView } from "../../lib/pack-view";
@@ -35,7 +38,6 @@ const MEMBER_CONTEXT = createPacksContext(PacksMode.WebMember);
 
 // Module-level per the repo's `useTopLevelRegex` convention — a regex literal
 // rebuilt inside a matcher on every query is the rule Ultracite enforces.
-const INSTALL_BUTTON_NAME = /install/i;
 const OFFLINE_REASON_TEXT = /ci-runner is offline/i;
 const AMBIGUOUS_OUTCOME_TEXT = /we couldn't confirm it started/i;
 
@@ -102,7 +104,14 @@ describe("member per-machine install affordance (ISS-5125)", () => {
     );
     expect(
       within(machinesRegion()).queryByRole("button", {
-        name: INSTALL_BUTTON_NAME,
+        name: (accessibleName) =>
+          accessibleName
+            .toLowerCase()
+            .includes(
+              MEMBER_INSTALL_ACTION_LABEL[
+                MemberInstallAction.Install
+              ].toLowerCase()
+            ),
       })
     ).not.toBeInTheDocument();
   });
@@ -178,7 +187,16 @@ describe("member per-machine install affordance (ISS-5125)", () => {
     );
     const region = machinesRegion();
     expect(
-      within(region).queryByRole("button", { name: INSTALL_BUTTON_NAME })
+      within(region).queryByRole("button", {
+        name: (accessibleName) =>
+          accessibleName
+            .toLowerCase()
+            .includes(
+              MEMBER_INSTALL_ACTION_LABEL[
+                MemberInstallAction.Install
+              ].toLowerCase()
+            ),
+      })
     ).not.toBeInTheDocument();
     expect(
       within(region).getByText("This pack can't run on this harness.")

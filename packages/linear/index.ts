@@ -1,5 +1,6 @@
 import "server-only";
 import { LinearClient } from "@linear/sdk";
+import { redactSecrets } from "@repo/lib/security/redact-secrets";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { z } from "zod";
@@ -11,6 +12,7 @@ export {
   type ExtractedTask,
   extractTasksWithLLM,
   formatTaskForLinear,
+  TASK_EXTRACTION_TIMEOUT_MS,
 } from "./task-extractor";
 
 // Lazy config getter - only validates when actually called at runtime
@@ -89,12 +91,6 @@ export type CreatedIssue = {
   title: string;
 };
 
-export type PKCEChallenge = {
-  codeVerifier: string;
-  codeChallenge: string;
-  codeChallengeMethod: "S256";
-};
-
 // =============================================================================
 // OAuth Functions
 // =============================================================================
@@ -102,12 +98,99 @@ export type PKCEChallenge = {
 const LINEAR_TOKEN_URL = "https://api.linear.app/oauth/token";
 const LINEAR_REVOKE_URL = "https://api.linear.app/oauth/revoke";
 
+const CREDENTIAL_MARKER = "[REDACTED]";
+
 /**
- * Redact potential tokens from error messages.
- * Matches strings that look like tokens (20+ alphanumeric chars with dashes/underscores).
+ * Credential-keyed values as they appear in an OAuth request body, query string,
+ * or JSON error echo — `client_secret=…`, `"refresh_token": "…"`.
+ *
+ * Matching the KEY, rather than the shape of the value, is the whole point: a
+ * bare run of token-alphabet characters is indistinguishable from a request id,
+ * a hostname segment, or an error-code name, so a length-only rule deletes the
+ * diagnostics an operator needs AND emits a `[REDACTED]` marker claiming a
+ * secret was found when none was. Module-level so Ultracite's `useTopLevelRegex`
+ * holds and the `g` flag is compiled once.
  */
-function redactTokensFromError(errorText: string): string {
-  return errorText.replace(/[a-zA-Z0-9_-]{20,}/g, "[REDACTED]");
+const CREDENTIAL_KEY_VALUE_PATTERN =
+  /\b(client_secret|access_token|refresh_token|code_verifier)(["']?\s*[=:]\s*["']?)([^"'&\s,}]+)/gi;
+
+/**
+ * The authorization `code` in a form-encoded body or query string. Deliberately
+ * restricted to the exact `code=value` form — no colon, no surrounding
+ * whitespace — so "status code: 400" and `"error_code": "invalid_grant"` keep
+ * their values. `code_verifier=` cannot match it (the character after `code` is
+ * `_`, not `=`); that key is handled above.
+ */
+const AUTHORIZATION_CODE_PARAM_PATTERN = /\bcode=([^"'&\s,}]+)/gi;
+
+/**
+ * A known credential shorter than this is left alone. `String.replaceAll("")`
+ * splices the marker between every character, and a short placeholder value (an
+ * unset `client_secret`, a stubbed verifier) would carpet the message with
+ * markers instead of redacting anything real.
+ */
+const MIN_KNOWN_CREDENTIAL_CHARS = 8;
+
+/**
+ * Redact credential material from error text before it is logged or rethrown.
+ *
+ * Three RECOGNIZED forms, never a length or entropy heuristic: the shared
+ * provider-shape set (`@repo/lib/security/redact-secrets`, the same SSOT the
+ * rest of the repo redacts with), credential-KEYED `key=value` / `"key":"value"`
+ * pairs, and the exact credential values the calling operation was handed. A
+ * marker is therefore emitted only when one of those actually matched, so an
+ * ordinary 20+ character request id or error code survives intact and a clean
+ * message stays marker-free.
+ *
+ * BOUNDARY: this protects the log sinks in this module AND the sanitized error
+ * these operations rethrow (see `sanitizedOAuthError`) — the raw error object is
+ * never propagated, so a caller's own `parseError(error)` cannot re-leak it. It
+ * is still NOT whole-flow redaction: a transport-layer log emitted outside this
+ * package (an HTTP client's own request logging) is unprotected. Do not read a
+ * `[REDACTED]`-clean summary from here as proof the raw body was never recorded
+ * anywhere else.
+ */
+function redactTokensFromError(
+  errorText: string,
+  knownCredentials: readonly (string | undefined)[] = []
+): string {
+  let out = redactSecrets(errorText);
+  // The pattern is stateful (`g`) — reset before reuse across calls.
+  CREDENTIAL_KEY_VALUE_PATTERN.lastIndex = 0;
+  out = out.replace(
+    CREDENTIAL_KEY_VALUE_PATTERN,
+    (_match, key: string, separator: string) =>
+      `${key}${separator}${CREDENTIAL_MARKER}`
+  );
+  AUTHORIZATION_CODE_PARAM_PATTERN.lastIndex = 0;
+  out = out.replace(
+    AUTHORIZATION_CODE_PARAM_PATTERN,
+    `code=${CREDENTIAL_MARKER}`
+  );
+  for (const credential of knownCredentials) {
+    if (credential && credential.length >= MIN_KNOWN_CREDENTIAL_CHARS) {
+      out = out.replaceAll(credential, CREDENTIAL_MARKER);
+    }
+  }
+  return out;
+}
+
+/**
+ * The error an OAuth operation rethrows after logging.
+ *
+ * Sanitizing the log line alone was not redaction: `throw error` handed the
+ * ORIGINAL secret-bearing error to the service layer, and both production
+ * callers (`apps/api/app/integrations/linear/service.ts`) log `parseError(error)`
+ * again in their own catch — so exchange and refresh transport failures leaked
+ * the credentials one frame up. This returns a replacement carrying only the
+ * redacted text, with NO `cause`: attaching the original would re-expose the raw
+ * message to every upstream sink and reopen exactly that leak.
+ */
+function sanitizedOAuthError(
+  error: unknown,
+  knownCredentials: readonly (string | undefined)[]
+): Error {
+  return new Error(redactTokensFromError(parseError(error), knownCredentials));
 }
 
 /**
@@ -123,40 +206,6 @@ const linearTokenResponseSchema = z.object({
 });
 
 /**
- * Generate a PKCE code verifier and challenge.
- * Uses cryptographically secure random bytes and SHA-256 hashing.
- */
-export async function generatePKCE(): Promise<PKCEChallenge> {
-  // Generate a random 32-byte code verifier (encoded as base64url, ~43 chars)
-  const randomBytes = new Uint8Array(32);
-  crypto.getRandomValues(randomBytes);
-
-  // Convert to base64url encoding
-  const codeVerifier = btoa(String.fromCharCode(...randomBytes))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=/g, "");
-
-  // Generate SHA-256 hash of the verifier
-  const encoder = new TextEncoder();
-  const data = encoder.encode(codeVerifier);
-  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-
-  // Convert hash to base64url encoding
-  const hashArray = new Uint8Array(hashBuffer);
-  const codeChallenge = btoa(String.fromCharCode(...hashArray))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=/g, "");
-
-  return {
-    codeVerifier,
-    codeChallenge,
-    codeChallengeMethod: "S256",
-  };
-}
-
-/**
  * Exchange an authorization code for tokens.
  * Called by the API after the app receives the OAuth callback.
  */
@@ -166,6 +215,9 @@ export async function exchangeCodeForTokens(
   redirectUri: string
 ): Promise<LinearTokens> {
   const { clientId, clientSecret } = getRequiredCredentials();
+  // Every credential this operation holds, so they are redacted by exact value
+  // wherever a failure echoes them — no length heuristic required.
+  const exchangeCredentials = [clientSecret, code, codeVerifier] as const;
 
   try {
     const response = await fetch(LINEAR_TOKEN_URL, {
@@ -187,7 +239,7 @@ export async function exchangeCodeForTokens(
       const errorText = await response.text();
       log.error("[linear/oauth] Token exchange failed", {
         status: response.status,
-        error: redactTokensFromError(errorText),
+        error: redactTokensFromError(errorText, exchangeCredentials),
       });
       throw new Error(`Token exchange failed: ${response.status}`);
     }
@@ -203,10 +255,17 @@ export async function exchangeCodeForTokens(
       scope: data.scope?.split(",") ?? [],
     };
   } catch (error) {
+    // ISS-6078: the request body carries `client_secret`, the auth code, and the
+    // verifier, and this sink sits OUTSIDE the non-OK branch that already
+    // redacts — a transport or parse failure that echoes any of it would reach
+    // the log in clear. Redact here too.
+    const sanitized = sanitizedOAuthError(error, exchangeCredentials);
     log.error("[linear/oauth] Token exchange error", {
-      error: parseError(error),
+      error: sanitized.message,
     });
-    throw error;
+    // ISS-6709: rethrow the SANITIZED error, not the original — the service
+    // layer logs `parseError(error)` again in its own catch.
+    throw sanitized;
   }
 }
 
@@ -217,6 +276,7 @@ export async function refreshAccessToken(
   refreshToken: string
 ): Promise<LinearTokens> {
   const { clientId, clientSecret } = getRequiredCredentials();
+  const refreshCredentials = [clientSecret, refreshToken] as const;
 
   try {
     const response = await fetch(LINEAR_TOKEN_URL, {
@@ -236,7 +296,7 @@ export async function refreshAccessToken(
       const errorText = await response.text();
       log.error("[linear/oauth] Token refresh failed", {
         status: response.status,
-        error: redactTokensFromError(errorText),
+        error: redactTokensFromError(errorText, refreshCredentials),
       });
       throw new Error(`Token refresh failed: ${response.status}`);
     }
@@ -252,11 +312,16 @@ export async function refreshAccessToken(
       scope: data.scope?.split(",") ?? [],
     };
   } catch (error) {
-    // Log and re-throw to preserve error handling upstream
+    // Log and re-throw to preserve error handling upstream. ISS-6078: redacted
+    // for the same reason as the exchange outer catch — the request body carries
+    // `client_secret` and the refresh token. ISS-6709: the REPLACEMENT is what
+    // travels upstream, so the service layer's own `parseError(error)` cannot
+    // re-leak the original.
+    const sanitized = sanitizedOAuthError(error, refreshCredentials);
     log.error("[linear/oauth] Token refresh error", {
-      error: parseError(error),
+      error: sanitized.message,
     });
-    throw error;
+    throw sanitized;
   }
 }
 
@@ -277,15 +342,19 @@ export async function revokeToken(accessToken: string): Promise<void> {
 
     if (!response.ok) {
       const errorText = await response.text();
+      // ISS-6078: the revoke body is the access token itself, so this branch
+      // needs the same redaction the exchange/refresh non-OK branches already
+      // had — it was the one token call site logging a response body raw.
       log.warn("[linear/oauth] Token revocation failed (continuing anyway)", {
         status: response.status,
-        error: errorText,
+        error: redactTokensFromError(errorText, [accessToken]),
       });
     }
   } catch (error) {
-    // Best effort - log but don't throw
+    // Best effort - log but don't throw, so there is no rethrown error to
+    // sanitize here; the log sink is the only sink.
     log.warn("[linear/oauth] Token revocation error (continuing anyway)", {
-      error: parseError(error),
+      error: redactTokensFromError(parseError(error), [accessToken]),
     });
   }
 }

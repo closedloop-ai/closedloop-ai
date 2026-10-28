@@ -1,8 +1,8 @@
+import { LONG_RUNNING_API_TIMEOUT_MS } from "@repo/api/src/types/long-running-api-timeout";
 import { ApiError } from "@repo/app/shared/api/api-error";
 import {
   API_NO_RESPONSE_STATUS,
   API_TIMEOUT_ERROR_CODE,
-  LONG_RUNNING_API_TIMEOUT_MS,
 } from "@repo/app/shared/api/api-timeout";
 import { shouldRetryQuery } from "@repo/app/shared/query/query-client";
 import { describe, expect, it, vi } from "vitest";
@@ -155,11 +155,9 @@ describe("createDesktopCloudApiAdapter", () => {
     expect((error as ApiError).isTimeout()).toBe(true);
     expect((error as ApiError).code).toBe(API_TIMEOUT_ERROR_CODE);
     expect((error as ApiError).status).toBe(API_NO_RESPONSE_STATUS);
-    // Pinned as a property of the classified error, NOT as a delta: the
-    // unlabeled path already failed fast (`isResponseBackedError` short-
-    // circuits on any `ApiError`). This guards against a future change that
-    // makes a timeout retryable, which would reinstate the minutes-of-fake-
-    // loading failure the deadline exists to end.
+    // The unlabeled path is retried (ISS-5083), so this is the delta the
+    // classification buys. A retryable timeout would reinstate the
+    // minutes-of-fake-loading failure the deadline exists to end.
     expect(shouldRetryQuery(0, error)).toBe(false);
   });
 

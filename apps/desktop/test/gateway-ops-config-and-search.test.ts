@@ -11,11 +11,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, test } from "node:test";
+import { glob } from "glob";
+import { afterEach, test } from "vitest";
 import { OperationDispatcher } from "../src/server/operation-dispatcher.js";
 import { registerFilesystemDirectoriesRoutes } from "../src/server/operations/filesystem-directories.js";
 import { registerFilesystemSearchRoutes } from "../src/server/operations/filesystem-search.js";
-import { registerMetadataRoutes } from "../src/server/operations/metadata-routes.js";
 import { registerReposConfigRoutes } from "../src/server/operations/repos-config.js";
 import {
   addRepo,
@@ -527,6 +527,154 @@ test("GET /files/search with more than 10 results sets truncated=true and return
   assert.equal(res.body.truncated, true);
 });
 
+/**
+ * ISS-9120 — a `<segment>/..` collapse in the query walks glob above
+ * `searchDir`; results come back RELATIVE (`../outside/...`), so only the
+ * handler's own checks stand between the query and a listing of any directory.
+ * Fixture: `<tmp>/sandbox` is the repo, `<tmp>/outside/secret.txt` is the
+ * target — synthetic only, never a real home directory.
+ */
+async function makeEscapeFixture(): Promise<{
+  tmpDir: string;
+  repoDir: string;
+}> {
+  const tmpDir = makeTempDir();
+  const repoDir = path.join(tmpDir, "sandbox");
+  await fs.mkdir(path.join(repoDir, "a"), { recursive: true });
+  await fs.writeFile(path.join(repoDir, "a", "file.txt"), "");
+  await fs.mkdir(path.join(tmpDir, "outside", "node_modules"), {
+    recursive: true,
+  });
+  await fs.writeFile(path.join(tmpDir, "outside", "secret.txt"), "");
+  await fs.writeFile(
+    path.join(tmpDir, "outside", "node_modules", "pkg.txt"),
+    ""
+  );
+  return { tmpDir, repoDir };
+}
+
+for (const query of [
+  "*/../../outside/secret",
+  "x/../../outside/secret",
+  "*/../../outside/node_modules/",
+  "..\\..\\outside\\secret",
+  "..",
+]) {
+  test(`GET /files/search rejects a query with a \`..\` segment with 400: ${JSON.stringify(query)}`, async () => {
+    savedEnv = saveEnvVars(ENV_KEYS);
+    Reflect.deleteProperty(process.env, "SYMPHONY_WORKTREE_PARENT_DIR");
+    const { tmpDir, repoDir } = await makeEscapeFixture();
+    const dispatcher = makeSearchDispatcher([tmpDir]);
+    const res = await dispatchOperation({
+      dispatcher,
+      method: "GET",
+      pathname: "/api/gateway/files/search",
+      query: { repo: repoDir, base: "true", query },
+    });
+    assert.equal(res.statusCode, 400);
+    // The 400 carries the full FileSearchResponse shape, not a bare `{ error }`
+    // — the client types `files` non-optional and never checks `response.ok`.
+    assert.deepEqual(res.body, {
+      files: [],
+      truncated: false,
+      error: "invalid query",
+    });
+  });
+}
+
+test("GET /files/search rejects a query containing NUL with 400", async () => {
+  savedEnv = saveEnvVars(ENV_KEYS);
+  Reflect.deleteProperty(process.env, "SYMPHONY_WORKTREE_PARENT_DIR");
+  const { tmpDir, repoDir } = await makeEscapeFixture();
+  const dispatcher = makeSearchDispatcher([tmpDir]);
+  const res = await dispatchOperation({
+    dispatcher,
+    method: "GET",
+    pathname: "/api/gateway/files/search",
+    query: { repo: repoDir, base: "true", query: "file\0" },
+  });
+  assert.equal(res.statusCode, 400);
+  // The 400 carries the full FileSearchResponse shape, not a bare `{ error }`
+  // — the client types `files` non-optional and never checks `response.ok`.
+  assert.deepEqual(res.body, {
+    files: [],
+    truncated: false,
+    error: "invalid query",
+  });
+});
+
+// A brace alternation expands to `..` only inside glob, so no query segment
+// equals `..` and the 400 check cannot see it. Since ISS-11193 the route's glob
+// runs with `nobrace`, so the braces stay literal and nothing matches; the
+// `containedResults` post-filter stays as a second layer behind it.
+for (const query of [
+  "x/{..,y}/{..,y}/outside/secret",
+  "{x,y}/{..,z}/{..,z}/outside/",
+]) {
+  test(`GET /files/search drops every match that resolves outside searchDir: ${JSON.stringify(query)}`, async () => {
+    savedEnv = saveEnvVars(ENV_KEYS);
+    Reflect.deleteProperty(process.env, "SYMPHONY_WORKTREE_PARENT_DIR");
+    const { tmpDir, repoDir } = await makeEscapeFixture();
+    const dispatcher = makeSearchDispatcher([tmpDir]);
+    const res = await dispatchOperation({
+      dispatcher,
+      method: "GET",
+      pathname: "/api/gateway/files/search",
+      query: { repo: repoDir, base: "true", query },
+    });
+    assert.equal(res.statusCode, 200);
+    const files = res.body.files as string[];
+    assert.deepEqual(files, []);
+    assert.equal(res.body.truncated, false);
+
+    // Counterfactual: `files: []` is also what an unmatched fixture returns, so
+    // on its own the assertion above cannot fail. Run the route's own pattern
+    // through a raw glob WITHOUT `nobrace` and require that it DOES escape —
+    // glob yields relative `../…` paths for an escaped match. If a `^13.0.6`
+    // minor stops expanding `{..,y}`, or the fixture stops matching, this fails
+    // loudly instead of leaving the case vacuously green. The empty result
+    // above is the work of the route's `nobrace` or of `containedResults`;
+    // either one alone keeps it empty.
+    const rawMatches = await glob(`**/*${query}*`, {
+      cwd: repoDir,
+      nodir: true,
+      dot: true,
+      nocase: true,
+      maxDepth: 10,
+    });
+    const escaping = rawMatches.filter((match) => match.startsWith(".."));
+    assert.ok(
+      escaping.length > 0,
+      `expected the unfiltered glob to escape ${repoDir}; got ${JSON.stringify(rawMatches)}`
+    );
+  });
+}
+
+test("GET /files/search keeps a slash-separated in-sandbox query and an absolute query byte-identical", async () => {
+  savedEnv = saveEnvVars(ENV_KEYS);
+  Reflect.deleteProperty(process.env, "SYMPHONY_WORKTREE_PARENT_DIR");
+  const { tmpDir, repoDir } = await makeEscapeFixture();
+  const dispatcher = makeSearchDispatcher([tmpDir]);
+
+  const nested = await dispatchOperation({
+    dispatcher,
+    method: "GET",
+    pathname: "/api/gateway/files/search",
+    query: { repo: repoDir, base: "true", query: "a/file" },
+  });
+  assert.equal(nested.statusCode, 200);
+  assert.deepEqual(nested.body, { files: ["a/file.txt"], truncated: false });
+
+  const absolute = await dispatchOperation({
+    dispatcher,
+    method: "GET",
+    pathname: "/api/gateway/files/search",
+    query: { repo: repoDir, base: "true", query: "/tmp/x" },
+  });
+  assert.equal(absolute.statusCode, 200);
+  assert.deepEqual(absolute.body, { files: [], truncated: false });
+});
+
 // ─── filesystem-directories routes ───────────────────────────────────────────
 // NOTE: TCC-protected folder filtering and home-dir handling are already covered
 // by filesystem-directories-tcc.test.ts. These tests cover the remaining branches.
@@ -626,170 +774,4 @@ test("GET /directories sorts two plain dirs alphabetically by name", async () =>
     names.indexOf("alpha") < names.indexOf("bravo"),
     "alpha sorted before bravo"
   );
-});
-
-// ─── metadata-routes: symphony/status ────────────────────────────────────────
-
-function makeMetaDispatcher(
-  allowedDirs: string[],
-  getSymphonyDir: () => string
-): OperationDispatcher {
-  const dispatcher = new OperationDispatcher();
-  registerMetadataRoutes(dispatcher, () => allowedDirs, getSymphonyDir);
-  return dispatcher;
-}
-
-test("GET /symphony/status without workDir param returns 400", async () => {
-  const tmpDir = makeTempDir();
-  const dispatcher = makeMetaDispatcher([tmpDir], () => tmpDir);
-  const res = await dispatchOperation({
-    dispatcher,
-    method: "GET",
-    pathname: "/api/gateway/symphony/status",
-  });
-  assert.equal(res.statusCode, 400);
-  assert.equal(res.body.error, "workDir parameter is required");
-});
-
-test("GET /symphony/status with workDir outside allowed dirs returns 403", async () => {
-  const allowedDir = makeTempDir();
-  const outsideDir = makeTempDir();
-  const dispatcher = makeMetaDispatcher([allowedDir], () => allowedDir);
-  const res = await dispatchOperation({
-    dispatcher,
-    method: "GET",
-    pathname: "/api/gateway/symphony/status",
-    query: { workDir: outsideDir },
-  });
-  assert.equal(res.statusCode, 403);
-  assert.equal(res.body.error, "directory not allowed");
-});
-
-test("GET /symphony/status with no state.json returns 200 with isRunning=false and reason", async () => {
-  const tmpDir = makeTempDir();
-  const workDir = path.join(tmpDir, "ws");
-  await fs.mkdir(workDir, { recursive: true });
-  const dispatcher = makeMetaDispatcher([tmpDir], () => tmpDir);
-  const res = await dispatchOperation({
-    dispatcher,
-    method: "GET",
-    pathname: "/api/gateway/symphony/status",
-    query: { workDir },
-  });
-  assert.equal(res.statusCode, 200);
-  assert.equal(res.body.isRunning, false);
-  assert.equal(res.body.reason, "state.json not found");
-});
-
-test("GET /symphony/status with COMPLETED status returns 200 with isRunning=false", async () => {
-  const tmpDir = makeTempDir();
-  const workDir = path.join(tmpDir, "ws");
-  const stateDir = path.join(workDir, ".closedloop-ai", "work");
-  await fs.mkdir(stateDir, { recursive: true });
-  await fs.writeFile(
-    path.join(stateDir, "state.json"),
-    JSON.stringify({ status: "COMPLETED", phase: "done", iteration: 3 }),
-    "utf-8"
-  );
-  const dispatcher = makeMetaDispatcher([tmpDir], () => tmpDir);
-  const res = await dispatchOperation({
-    dispatcher,
-    method: "GET",
-    pathname: "/api/gateway/symphony/status",
-    query: { workDir },
-  });
-  assert.equal(res.statusCode, 200);
-  assert.equal(res.body.isRunning, false);
-  assert.equal(res.body.phase, "done");
-  assert.equal(res.body.iteration, 3);
-});
-
-test("GET /symphony/status with corrupt state.json returns 500 with isRunning=false", async () => {
-  const tmpDir = makeTempDir();
-  const workDir = path.join(tmpDir, "ws");
-  const stateDir = path.join(workDir, ".closedloop-ai", "work");
-  await fs.mkdir(stateDir, { recursive: true });
-  await fs.writeFile(path.join(stateDir, "state.json"), "{ bad json", "utf-8");
-  const dispatcher = makeMetaDispatcher([tmpDir], () => tmpDir);
-  const res = await dispatchOperation({
-    dispatcher,
-    method: "GET",
-    pathname: "/api/gateway/symphony/status",
-    query: { workDir },
-  });
-  assert.equal(res.statusCode, 500);
-  assert.equal(res.body.isRunning, false);
-  assert.equal(typeof res.body.error, "string");
-});
-
-// ─── metadata-routes: work-directory ─────────────────────────────────────────
-// Line 161 (!ticketId || typeof ticketId !== "string") is UNREACHABLE via
-// normal dispatch: the route pattern "[^/]+" requires at least one character,
-// so the dispatcher only routes when ticketId is a non-empty string.
-
-test("GET /work-directory/:ticketId with no sessions and no repos returns exists=false", async () => {
-  const tmpDir = makeTempDir();
-  const dispatcher = makeMetaDispatcher([tmpDir], () => tmpDir);
-  const res = await dispatchOperation({
-    dispatcher,
-    method: "GET",
-    pathname: "/api/gateway/work-directory/ISS-0001",
-  });
-  assert.equal(res.statusCode, 200);
-  assert.equal(res.body.exists, false);
-  assert.equal(res.body.path, null);
-});
-
-test("GET /work-directory/:ticketId finds worktree via sessions.json match", async () => {
-  const tmpDir = makeTempDir();
-  const worktreePath = path.join(tmpDir, "my-worktree");
-  await fs.mkdir(worktreePath, { recursive: true });
-  await fs.writeFile(
-    path.join(tmpDir, "sessions.json"),
-    JSON.stringify({
-      sessions: [
-        {
-          ticketId: "ISS-9000",
-          repoPath: path.join(tmpDir, "repo"),
-          worktreePath,
-        },
-      ],
-    }),
-    "utf-8"
-  );
-  const dispatcher = makeMetaDispatcher([tmpDir], () => tmpDir);
-  const res = await dispatchOperation({
-    dispatcher,
-    method: "GET",
-    pathname: "/api/gateway/work-directory/ISS-9000",
-  });
-  assert.equal(res.statusCode, 200);
-  assert.equal(res.body.exists, true);
-  assert.equal(res.body.source, "session");
-  assert.equal(res.body.path, worktreePath);
-});
-
-test("GET /work-directory/:ticketId finds worktree via repos config loop", async () => {
-  savedEnv = saveEnvVars(ENV_KEYS);
-  const tmpDir = makeTempDir();
-  const repoDir = path.join(tmpDir, "myrepo");
-  await fs.mkdir(repoDir, { recursive: true });
-  const worktreePath = path.join(tmpDir, "myrepo-ISS-9001");
-  await fs.mkdir(worktreePath, { recursive: true });
-  process.env.SYMPHONY_WORKTREE_PARENT_DIR = tmpDir;
-  const configDir = path.join(tmpDir, "config");
-  await fs.mkdir(configDir, { recursive: true });
-  await saveReposConfig(
-    { repos: [{ path: repoDir, addedAt: "2025-01-01" }], settings: {} },
-    configDir
-  );
-  const dispatcher = makeMetaDispatcher([tmpDir], () => tmpDir);
-  const res = await dispatchOperation({
-    dispatcher,
-    method: "GET",
-    pathname: "/api/gateway/work-directory/ISS-9001",
-  });
-  assert.equal(res.statusCode, 200);
-  assert.equal(res.body.exists, true);
-  assert.equal(res.body.source, "worktree");
 });

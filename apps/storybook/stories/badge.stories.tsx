@@ -1,30 +1,19 @@
-import { Badge } from "@repo/design-system/components/ui/badge";
+import { BADGE_VARIANTS, Badge } from "@repo/design-system/components/ui/badge";
 import type { Meta, StoryObj } from "@storybook/react";
 
 /**
  * Displays a badge or a component that looks like a badge.
  */
 const meta = {
-  title: "Design System/Data Display/Badge",
+  title: "Primitives v1.0/Data Display/Badge",
   component: Badge,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   argTypes: {
     children: {
       control: "text",
     },
     variant: {
-      options: [
-        "default",
-        "secondary",
-        "destructive",
-        "error",
-        "success",
-        "warning",
-        "info",
-        "accent",
-        "muted",
-        "outline",
-      ],
+      options: BADGE_VARIANTS,
       control: { type: "radio" },
     },
   },
@@ -41,9 +30,16 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 /**
- * The default form of the badge.
+ * The default form of the badge: `variant="default"`. Explicit here (rather
+ * than left to render implicitly with no props) so both a human and any
+ * static-analysis tooling reading this file can see it is genuinely
+ * exercised, not just visually correct by luck.
  */
-export const Default: Story = {};
+export const Default: Story = {
+  args: {
+    variant: "default",
+  },
+};
 
 /**
  * Use the `secondary` badge to call for less urgent information, blending
@@ -112,11 +108,31 @@ export const Accent: Story = {
 };
 
 /**
+ * Use the `ai` badge for the agentic/AI tone.
+ */
+export const Ai: Story = {
+  args: {
+    variant: "ai",
+  },
+};
+
+/**
  * Use the `muted` badge for low-emphasis metadata or supplementary labels.
  */
 export const Muted: Story = {
   args: {
     variant: "muted",
+  },
+};
+
+/**
+ * Use the `neutral` badge for a bordered, filled chip whose text stays the
+ * plain foreground color — distinct from `default` (a solid primary chip)
+ * and from `outline` (no fill at all).
+ */
+export const Neutral: Story = {
+  args: {
+    variant: "neutral",
   },
 };
 
@@ -131,21 +147,21 @@ export const Outline: Story = {
 };
 
 /**
- * All 10 badge variants displayed together for comparison.
+ * Every badge variant displayed together for comparison, driven by
+ * BADGE_VARIANTS so this can't go stale the way a hand-typed list did.
  */
 export const AllVariants: Story = {
+  tags: ["!manifest"],
+  parameters: {
+    controls: { disable: true },
+  },
   render: () => (
     <div className="flex flex-wrap gap-2">
-      <Badge>Default</Badge>
-      <Badge variant="secondary">Secondary</Badge>
-      <Badge variant="destructive">Destructive</Badge>
-      <Badge variant="error">Error</Badge>
-      <Badge variant="success">Success</Badge>
-      <Badge variant="warning">Warning</Badge>
-      <Badge variant="info">Info</Badge>
-      <Badge variant="accent">Accent</Badge>
-      <Badge variant="muted">Muted</Badge>
-      <Badge variant="outline">Outline</Badge>
+      {BADGE_VARIANTS.map((variant) => (
+        <Badge key={variant} variant={variant}>
+          {variant}
+        </Badge>
+      ))}
     </div>
   ),
 };

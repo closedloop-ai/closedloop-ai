@@ -1,7 +1,7 @@
 import { BranchStatus } from "@repo/api/src/types/branch";
 import { GitHubPRState } from "@repo/api/src/types/github";
 import { Prisma } from "@repo/database";
-import { selectedAssociatedPullRequestExists } from "../branch-associated-pull-request-sql";
+import { selectedObservedAssociatedPullRequestExists } from "../branch-associated-pull-request-sql";
 
 export type BranchFilterStatus =
   | typeof BranchStatus.Open
@@ -13,18 +13,23 @@ export type BranchFilterStatus =
  * Maps a displayed Branch status to the candidate predicate used by list rows
  * and totals. Existing status semantics remain intact; specifically, the
  * Merged local-status fallback applies only when no associated PR is selected.
+ *
+ * Every arm below reads the OBSERVED selection, never the bare one: ISS-8422
+ * lets an unwitnessed PR be selected so the branch keeps its link, and the
+ * projection derives that branch as having no connected PR. Reading the bare
+ * selection here would file such a row under a status its own card contradicts.
  */
 export function branchCandidateStatusClause(
   status: BranchFilterStatus
 ): Prisma.Sql {
   switch (status) {
     case BranchStatus.Draft:
-      return selectedAssociatedPullRequestExists([
+      return selectedObservedAssociatedPullRequestExists([
         Prisma.sql`pr.is_draft = TRUE`,
       ]);
     case BranchStatus.Merged:
       return Prisma.sql`(
-        ${selectedAssociatedPullRequestExists([
+        ${selectedObservedAssociatedPullRequestExists([
           Prisma.sql`pr.is_draft = FALSE`,
           Prisma.sql`(
             pr.pr_state = ${GitHubPRState.Merged}::"GitHubPRState"
@@ -33,12 +38,12 @@ export function branchCandidateStatusClause(
         ])}
         OR (
           a.status = ${GitHubPRState.Merged}
-          AND NOT ${selectedAssociatedPullRequestExists()}
+          AND NOT ${selectedObservedAssociatedPullRequestExists()}
         )
       )`;
     case BranchStatus.Closed:
       return Prisma.sql`(
-        ${selectedAssociatedPullRequestExists([
+        ${selectedObservedAssociatedPullRequestExists([
           Prisma.sql`pr.is_draft = FALSE`,
           Prisma.sql`pr.pr_state = ${GitHubPRState.Closed}::"GitHubPRState"`,
           Prisma.sql`pr.merged_at IS NULL`,
@@ -46,8 +51,8 @@ export function branchCandidateStatusClause(
         OR (
           a.status = ${GitHubPRState.Closed}
           AND (
-            NOT ${selectedAssociatedPullRequestExists()}
-            OR ${selectedAssociatedPullRequestExists([
+            NOT ${selectedObservedAssociatedPullRequestExists()}
+            OR ${selectedObservedAssociatedPullRequestExists([
               Prisma.sql`pr.is_draft = FALSE`,
               Prisma.sql`pr.pr_state <> ${GitHubPRState.Merged}::"GitHubPRState"`,
               Prisma.sql`pr.merged_at IS NULL`,
@@ -59,7 +64,7 @@ export function branchCandidateStatusClause(
       return Prisma.sql`(
         a.status <> ${GitHubPRState.Closed}
         AND (
-          ${selectedAssociatedPullRequestExists([
+          ${selectedObservedAssociatedPullRequestExists([
             Prisma.sql`pr.is_draft = FALSE`,
             Prisma.sql`pr.pr_state NOT IN (
               ${GitHubPRState.Merged}::"GitHubPRState",
@@ -69,7 +74,7 @@ export function branchCandidateStatusClause(
           ])}
           OR (
             a.status <> ${GitHubPRState.Merged}
-            AND NOT ${selectedAssociatedPullRequestExists()}
+            AND NOT ${selectedObservedAssociatedPullRequestExists()}
           )
         )
       )`;

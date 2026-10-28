@@ -37,7 +37,7 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import type { SyncedAgentSession } from "../src/main/agent-sync/agent-session-sync-contract.js";
 import { AgentSessionSyncService } from "../src/main/agent-sync/agent-session-sync-service.js";
 import type { AgentSessionSyncProgress } from "../src/main/agent-sync/agent-session-sync-service-options.js";

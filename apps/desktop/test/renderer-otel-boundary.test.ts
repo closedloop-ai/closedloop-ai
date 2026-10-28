@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
-import { afterEach, test } from "node:test";
 import { AppExceptionOrigin } from "@closedloop-ai/telemetry-contract/app-exception-origin";
-import { TelemetryAttribute } from "@closedloop-ai/telemetry-contract/attributes";
+import {
+  TelemetryAttribute,
+  TelemetryServiceName,
+} from "@closedloop-ai/telemetry-contract/attributes";
 import {
   SpanKind,
   SpanStatusCode,
 } from "@closedloop-ai/telemetry-contract/span";
 import { metrics, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
-import { vi } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import { createRendererOtelExportHandler } from "../src/main/ipc/renderer-otel-ipc.js";
 import {
   createDesktopOtelRuntime,
@@ -75,7 +77,7 @@ test("preload API forwards renderer telemetry through the production handler int
   assert.match(record?.parentSpanId ?? "", SPAN_ID_PATTERN);
   assert.equal(
     record?.resourceAttributes[TelemetryAttribute.ServiceName],
-    "closedloop-desktop"
+    TelemetryServiceName.Desktop
   );
   assert.equal(
     record?.resourceAttributes[TelemetryAttribute.ServiceVersion],
@@ -138,7 +140,7 @@ test("preload API forwards renderer exception telemetry through the production h
   );
   assert.equal(
     record?.resourceAttributes[TelemetryAttribute.ServiceName],
-    "closedloop-desktop"
+    TelemetryServiceName.Desktop
   );
   assert.equal(
     record?.resourceAttributes[TelemetryAttribute.DeviceId],
@@ -370,12 +372,50 @@ test("boundary rate limit fails closed after sustained valid batches", async () 
   });
 });
 
-test("boundary unavailable runtime states fail closed without buffer append", async () => {
+test("boundary reports NotStarted mid-boot, not only when idle", async () => {
+  // ISS-6329's actual subject is the window where main is asynchronously
+  // booting (`Starting`), not merely "never asked to start" (`Idle`). Holding
+  // the installation id unresolved parks the runtime in `Starting`, so the
+  // second half of the Idle/Starting condition has its own coverage — without
+  // it, deleting `state === Starting` leaves the whole suite green while the
+  // real boot race still re-latches the renderer.
+  let releaseInstallationId: (value: string) => void = () => {};
+  const installationId = new Promise<string>((resolve) => {
+    releaseInstallationId = resolve;
+  });
+  const startingRuntime = createRuntime({
+    getAppInstallationId: () => installationId,
+  });
+
+  const startPromise = startingRuntime.start();
+  try {
+    assert.deepEqual(startingRuntime.exportExternalRecords([]), {
+      ok: false,
+      reason: RendererOtelExportFailureReason.NotStarted,
+    });
+  } finally {
+    // Unconditional: a failed assertion above must not leave `startRuntime()`
+    // pending, or the afterEach shutdown that awaits it hangs the whole file
+    // instead of reporting the failure.
+    releaseInstallationId("install_boundary");
+    await startPromise;
+  }
+
+  assert.deepEqual(startingRuntime.exportExternalRecords([]), {
+    ok: true,
+    acceptedRecords: 0,
+    droppedRecordsCount: 0,
+  });
+});
+
+test("boundary non-serving runtime states fail closed without buffer append", async () => {
+  // ISS-6329: idle is "not booted yet", which the renderer must be free to
+  // retry; failed and shutdown stay `Unavailable` and stay terminal.
   const idleRuntime = createRuntime();
   const idleEvidence = await exportBoundaryFailure(idleRuntime);
   assert.deepEqual(idleEvidence.result, {
     ok: false,
-    reason: RendererOtelExportFailureReason.Unavailable,
+    reason: RendererOtelExportFailureReason.NotStarted,
   });
   assert.deepEqual(idleEvidence.records, []);
 

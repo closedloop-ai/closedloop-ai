@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, test } from "node:test";
+import { afterEach, describe, test } from "vitest";
 import { GatewayIdentityStore } from "../src/main/auth/gateway-identity.js";
 
 const UUID_PATTERN =
@@ -124,5 +124,20 @@ describe("GatewayIdentityStore.loadSync", () => {
     const id = new GatewayIdentityStore(dir).loadSync();
 
     assert.match(id, UUID_PATTERN);
+  });
+});
+
+describe("GatewayIdentityStore.rotateSync (ISS-11843)", () => {
+  test("persists a fresh UUID that a later boot reads back", () => {
+    const dir = makeTempDir();
+    const store = new GatewayIdentityStore(dir);
+    const original = store.loadSync();
+
+    const rotated = store.rotateSync();
+
+    assert.match(rotated, UUID_PATTERN);
+    assert.notEqual(rotated, original);
+    assert.equal(store.currentSync(), rotated);
+    assert.equal(new GatewayIdentityStore(dir).loadSync(), rotated);
   });
 });

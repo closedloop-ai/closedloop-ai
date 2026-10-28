@@ -1,12 +1,22 @@
-import { DocumentStatus, DocumentType } from "@repo/api/src/types/document.js";
+import {
+  DOCUMENT_ROUTE_PREFIX,
+  DocumentStatus,
+  DocumentType,
+} from "@repo/api/src/types/document.js";
 import { SearchMode } from "@repo/api/src/types/search.js";
-import { SearchEntityType } from "@repo/api/src/types/search-entity-kind.js";
+import {
+  PHASE_1_SEARCH_ENTITY_TYPES,
+  SearchEntityType,
+} from "@repo/api/src/types/search-entity-kind.js";
 import { describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../api-client.js";
 import { registerSearch } from "../tools/search.js";
+import { MAX_CURSOR_CHARS } from "../tools/tool-utils.js";
 import {
   createToolHarness,
+  createToolHarnessWithMock,
   parseToolPayload,
+  registeredInputSchema,
 } from "./fixtures/tool-harness.js";
 
 describe("search MCP tool", () => {
@@ -105,19 +115,19 @@ describe("search MCP tool", () => {
     expect(result.isError).toBe(true);
   });
 
-  it("runs the unified corpus search when mode is supplied and shapes ranked hits (incl. loops)", async () => {
+  it("runs the unified corpus search when mode is supplied and shapes ranked hits (incl. sessions)", async () => {
     const get = vi.fn().mockResolvedValue({
       query: "auth",
       mode: "fulltext",
       results: [
         {
-          entityType: "loop",
-          entityId: "loop-1",
+          entityType: SearchEntityType.AgentSession,
+          entityId: "session-1",
           title: "plan",
           snippet: "make an <b>auth</b> plan",
           rank: 0.9,
           updatedAt: "2026-05-14T04:11:39.337Z",
-          deepLink: "/loops/loop-1",
+          deepLink: "/sessions/session-1",
         },
         {
           entityType: "document",
@@ -146,15 +156,16 @@ describe("search MCP tool", () => {
     });
     expect(payload.mode).toBe("fulltext");
     expect(payload.resultCount).toBe(2);
-    // A loop appears in the corpus alongside documents.
-    const loopHit = payload.results.find(
-      (r: { entityType: string }) => r.entityType === "loop"
+    // A session appears in the corpus alongside documents.
+    const sessionHit = payload.results.find(
+      (r: { entityType: string }) =>
+        r.entityType === SearchEntityType.AgentSession
     );
-    expect(loopHit).toBeDefined();
-    expect(loopHit.webUrl).toContain("/loops/loop-1");
+    expect(sessionHit).toBeDefined();
+    expect(sessionHit.webUrl).toContain("/sessions/session-1");
     // The wire `updatedAt` (an ISO string, not a Date) passes through verbatim.
-    expect(loopHit.updatedAt).toBe("2026-05-14T04:11:39.337Z");
-    expect(loopHit.rank).toBe(0.9);
+    expect(sessionHit.updatedAt).toBe("2026-05-14T04:11:39.337Z");
+    expect(sessionHit.rank).toBe(0.9);
   });
 
   it("falls back to the shared deep-link builder when the API omits deepLink", async () => {
@@ -163,8 +174,8 @@ describe("search MCP tool", () => {
       mode: "fulltext",
       results: [
         {
-          entityType: "loop",
-          entityId: "loop-9",
+          entityType: SearchEntityType.AgentSession,
+          entityId: "session-9",
           title: "plan",
           snippet: "plan",
           rank: 0.5,
@@ -182,7 +193,7 @@ describe("search MCP tool", () => {
       await handler({ q: "auth", mode: "fulltext" })
     );
 
-    expect(payload.results[0].webUrl).toContain("/loops/loop-9");
+    expect(payload.results[0].webUrl).toContain("/sessions/session-9");
   });
 
   it("prefers the Phase-2 route (type + slug) over the legacy deepLink for a document", async () => {
@@ -214,8 +225,10 @@ describe("search MCP tool", () => {
       await handler({ q: "auth", mode: "fulltext" })
     );
 
-    // The routable /prds/<slug> path wins over the UUID-only /documents/<id>.
-    expect(payload.results[0].webUrl).toContain("/prds/auth-prd");
+    // The routable `/documents/<slug>` path wins over the UUID-only `/documents/<id>`.
+    expect(payload.results[0].webUrl).toContain(
+      `/${DOCUMENT_ROUTE_PREFIX}/auth-prd`
+    );
     expect(payload.results[0].webUrl).not.toContain("doc-1");
   });
 
@@ -239,21 +252,13 @@ describe("search MCP tool", () => {
     });
   });
 
+  // ISS-12435: `type:loop` stays an accepted filter for old callers; the API
+  // holds no loop rows, so the unified path answers with no hits.
   it("routes a structured `q=type:loop` (no mode/types) through the unified path", async () => {
     const get = vi.fn().mockResolvedValue({
       query: "type:loop",
       mode: SearchMode.Fulltext,
-      results: [
-        {
-          entityType: SearchEntityType.Loop,
-          entityId: "loop-7",
-          title: "nightly plan",
-          snippet: "nightly plan",
-          rank: 0.8,
-          updatedAt: "2026-05-14T04:11:39.337Z",
-          deepLink: "/loops/loop-7",
-        },
-      ],
+      results: [],
       nextCursor: null,
     });
     const handler = createToolHarness(registerSearch, {
@@ -272,12 +277,27 @@ describe("search MCP tool", () => {
     // The unified (ranked-hits) shape is decoded, not the legacy empty
     // documents/projects payload the pre-fix code silently returned.
     expect(payload.mode).toBe(SearchMode.Fulltext);
-    expect(payload.resultCount).toBe(1);
-    expect(payload.results[0].entityType).toBe(SearchEntityType.Loop);
-    expect(payload.results[0].webUrl).toContain("/loops/loop-7");
+    expect(payload.resultCount).toBe(0);
+    expect(payload.results).toEqual([]);
     // No legacy fields leaked into the unified payload.
     expect(payload.documents).toBeUndefined();
     expect(payload.projects).toBeUndefined();
+  });
+
+  // ISS-12435: the `types` field still accepts `loop` from old callers, but its
+  // description offers agents only the kinds that can return hits.
+  it("accepts a `loop` type but does not offer it in the types description", () => {
+    const { registerTool } = createToolHarnessWithMock(registerSearch, {
+      get: vi.fn(),
+    } as unknown as ApiClient);
+    const schema = registeredInputSchema(registerTool);
+
+    expect(
+      schema.safeParse({ q: "auth", types: [SearchEntityType.Loop] }).success
+    ).toBe(true);
+    const description = schema.shape.types.description ?? "";
+    expect(description).toContain(SearchEntityType.Document);
+    expect(description).not.toContain(SearchEntityType.Loop);
   });
 
   it("routes a structured `q=status:TODO auth` through the unified path, forwarding the raw q", async () => {
@@ -312,7 +332,9 @@ describe("search MCP tool", () => {
       mode: SearchMode.Fulltext,
     });
     expect(payload.resultCount).toBe(1);
-    expect(payload.results[0].webUrl).toContain("/prds/auth-prd");
+    expect(payload.results[0].webUrl).toContain(
+      `/${DOCUMENT_ROUTE_PREFIX}/auth-prd`
+    );
   });
 
   it("forwards limit and cursor to GET /search on the unified path", async () => {
@@ -421,5 +443,124 @@ describe("search MCP tool", () => {
     expect(payload.results).toBeUndefined();
     expect(payload.documentCount).toBe(0);
     expect(payload.projectCount).toBe(0);
+  });
+
+  it("rejects a cursor exceeding MAX_CURSOR_CHARS at the schema level", () => {
+    const get = vi.fn();
+    const { registerTool } = createToolHarnessWithMock(registerSearch, {
+      get,
+    } as unknown as ApiClient);
+    const schema = registeredInputSchema(registerTool);
+
+    const result = schema.safeParse({
+      q: "auth",
+      mode: SearchMode.Fulltext,
+      cursor: "A".repeat(MAX_CURSOR_CHARS + 1),
+    });
+
+    expect(result.success).toBe(false);
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it("accepts a realistic ~60-character cursor", async () => {
+    const get = vi.fn().mockResolvedValue({
+      query: "auth",
+      mode: SearchMode.Fulltext,
+      results: [],
+      nextCursor: null,
+    });
+    const handler = createToolHarness(registerSearch, {
+      get,
+    } as unknown as ApiClient);
+
+    const realisticCursor =
+      "eyJyYW5rIjowLjUsImlkIjoiMDFhMDZjMTAtYmY2Ny03NzliIn0";
+    await handler({
+      q: "auth",
+      mode: SearchMode.Fulltext,
+      cursor: realisticCursor,
+    });
+
+    expect(get).toHaveBeenCalledWith("/search", {
+      q: "auth",
+      mode: SearchMode.Fulltext,
+      cursor: realisticCursor,
+    });
+  });
+
+  it("collapses a repeated types array to the distinct kinds on the wire", async () => {
+    const get = vi.fn().mockResolvedValue({
+      query: "auth",
+      mode: SearchMode.Fulltext,
+      results: [],
+      nextCursor: null,
+    });
+    const handler = createToolHarness(registerSearch, {
+      get,
+    } as unknown as ApiClient);
+
+    // `GET /search` folds repeats to one predicate, so this call is valid today
+    // and must stay valid; deduping here is what keeps the request line bounded
+    // by the enum size instead of by the caller's array length (ISS-9177).
+    await handler({
+      q: "auth",
+      types: Array.from({ length: 5000 }, () => PHASE_1_SEARCH_ENTITY_TYPES[0]),
+    });
+
+    expect(get).toHaveBeenCalledWith("/search", {
+      q: "auth",
+      mode: SearchMode.Fulltext,
+      types: [PHASE_1_SEARCH_ENTITY_TYPES[0]],
+    });
+  });
+
+  it("preserves first-seen order when deduping types, matching the route", async () => {
+    const get = vi.fn().mockResolvedValue({
+      query: "auth",
+      mode: SearchMode.Fulltext,
+      results: [],
+      nextCursor: null,
+    });
+    const handler = createToolHarness(registerSearch, {
+      get,
+    } as unknown as ApiClient);
+
+    await handler({
+      q: "auth",
+      types: [
+        PHASE_1_SEARCH_ENTITY_TYPES[1],
+        PHASE_1_SEARCH_ENTITY_TYPES[0],
+        PHASE_1_SEARCH_ENTITY_TYPES[1],
+      ],
+    });
+
+    expect(get).toHaveBeenCalledWith("/search", {
+      q: "auth",
+      mode: SearchMode.Fulltext,
+      types: [PHASE_1_SEARCH_ENTITY_TYPES[1], PHASE_1_SEARCH_ENTITY_TYPES[0]],
+    });
+  });
+
+  it("accepts a types array naming every kind exactly once", async () => {
+    const get = vi.fn().mockResolvedValue({
+      query: "auth",
+      mode: SearchMode.Fulltext,
+      results: [],
+      nextCursor: null,
+    });
+    const handler = createToolHarness(registerSearch, {
+      get,
+    } as unknown as ApiClient);
+
+    await handler({
+      q: "auth",
+      types: [...PHASE_1_SEARCH_ENTITY_TYPES],
+    });
+
+    expect(get).toHaveBeenCalledWith("/search", {
+      q: "auth",
+      mode: SearchMode.Fulltext,
+      types: [...PHASE_1_SEARCH_ENTITY_TYPES],
+    });
   });
 });

@@ -1,6 +1,5 @@
 import "server-only";
 
-import { analytics } from "@repo/analytics/server";
 import {
   BranchViewLocalErrorCode,
   BranchViewLocalHeader,
@@ -9,14 +8,13 @@ import {
   resolveBranchViewLocalOperationId,
 } from "@repo/api/src/types/branch-view-local";
 import type { JsonObject, JsonValue } from "@repo/api/src/types/common";
-import type {
-  CreateDesktopCommandInput,
-  RelayOperationDispatchRequest,
-} from "@repo/api/src/types/compute-target";
+import type { CreateDesktopCommandInput } from "@repo/api/src/types/compute-target";
 import { withDb } from "@repo/database";
 import { normalizeGitHubLogin } from "@/app/comments/external-authors";
 import { computeTargetsService } from "@/app/compute-targets/service";
 import { usersService } from "@/app/users/service";
+import { evaluateServerFeatureFlagForDistinctId } from "@/lib/feature-flags/server-feature-flag-evaluation";
+import { BRANCH_PR_SERVER_FLAG } from "@/lib/feature-flags/server-feature-flags";
 import { resolvePrContext } from "@/lib/resolve-pr-context";
 import { isRecord } from "@/lib/type-guards";
 
@@ -130,15 +128,9 @@ export async function validateBranchViewLocalAccess(
 }
 
 export function classifyBranchViewLocalCommand(
-  input: CreateDesktopCommandInput | RelayOperationDispatchRequest
+  input: CreateDesktopCommandInput
 ): boolean {
-  if ("path" in input) {
-    return isBranchViewLocalGatewayPath(input.path);
-  }
-  const params = isRecord(input.params) ? input.params : {};
-  const request = isRecord(params.request) ? params.request : {};
-  const path = typeof request.path === "string" ? request.path : null;
-  return Boolean(path && isBranchViewLocalGatewayPath(path));
+  return isBranchViewLocalGatewayPath(input.path);
 }
 
 export function stampBranchViewLocalCommandMetadata(
@@ -214,17 +206,6 @@ export async function authorizeBranchViewLocalEventRead(input: {
   });
 }
 
-export async function isStoredBranchViewLocalCommand(input: {
-  commandId: string;
-  computeTargetId: string;
-}): Promise<boolean> {
-  const command = await loadStoredCommandPayload(input.commandId);
-  if (!command || command.computeTargetId !== input.computeTargetId) {
-    return false;
-  }
-  return isStoredBranchViewLocalPayload(command);
-}
-
 function toStoredRequestPayload(requestPayload: unknown): JsonObject {
   return isRecord(requestPayload) ? (requestPayload as JsonObject) : {};
 }
@@ -237,8 +218,7 @@ function toStoredRequestPayload(requestPayload: unknown): JsonObject {
  * The API-owned marker header is the proof, not the classification: trusting it
  * to classify means a row whose marker was never stamped, was stamped by an
  * older build, or was written by any other `createCommand` caller reads as an
- * ordinary command and escapes both the public author check and the internal
- * read block. The operation id and the gateway path are the durable identity
+ * ordinary command and escapes the author check. The operation id and the gateway path are the durable identity
  * that the dispatch side (`classifyBranchViewLocalCommand`) also keys off.
  */
 function isStoredBranchViewLocalPayload(command: {
@@ -284,12 +264,24 @@ async function loadStoredCommandPayload(
   );
 }
 
+/**
+ * ISS-7778: routed through the classified evaluator rather than reaching for
+ * `analytics.isFeatureEnabled` directly. This was one of the two sites the
+ * former "single choke point" did not actually cover, so a suppression
+ * installed there would have left this authorization gate unreachable to it.
+ *
+ * Fail-closed behavior is unchanged: an unconfigured client and an unevaluated
+ * flag both resolve `null`, which is not `true`, and a thrown evaluation is
+ * caught here exactly as before.
+ */
 async function isBranchPrEnabled(userId: string): Promise<boolean> {
-  if (typeof analytics.isFeatureEnabled !== "function") {
-    return false;
-  }
   try {
-    return (await analytics.isFeatureEnabled("branch-pr", userId)) === true;
+    return (
+      (await evaluateServerFeatureFlagForDistinctId(
+        BRANCH_PR_SERVER_FLAG,
+        userId
+      )) === true
+    );
   } catch {
     return false;
   }

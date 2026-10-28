@@ -1,0 +1,11 @@
+-- ISS-7516: record the data-sync level the producing machine reported on its
+-- most recent sync of a session (last-write-wins, not a record-time fact).
+--
+-- Only the `full` level queues transcripts (the desktop's
+-- `syncTierAllowsTranscripts`), so without this column a permanently-absent
+-- transcript (the user's own consent) is indistinguishable from one still
+-- uploading (lag). Nullable with NO default and NO backfill on purpose: NULL
+-- means "no level reported" — by a desktop build that predates the field, or for
+-- a row written before it — and a default would manufacture a verdict for every
+-- historical row. Read-side consumers must branch on NULL, never coerce it.
+ALTER TABLE "session_detail" ADD COLUMN "data_sync_level" TEXT;

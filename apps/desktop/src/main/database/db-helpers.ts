@@ -12,6 +12,7 @@ import { PLUGIN_CHILD_KINDS } from "@repo/api/src/types/agent-component";
 import {
   ArtifactRefRelation,
   PR_INT_MAX,
+  REPOSITORY_FULL_NAME_MAX_LENGTH,
 } from "@repo/api/src/types/session-artifact-link";
 import type { DashboardListWindow } from "../../shared/agent-db-contract.js";
 import { asRecord } from "../../shared/type-guards.js";
@@ -35,6 +36,14 @@ const LINE_SPLIT_RE = /\r?\n/;
 const MARKDOWN_HEADING_PREFIX_RE = /^#+\s*/;
 /** A component kind safe to interpolate into SQL: bare lowercase identifier. */
 const SQL_SAFE_COMPONENT_KIND_RE = /^[a-z][a-z_]*$/;
+/**
+ * ISS-5496: a date-TIME with no zone designator at all (`2026-06-22T10:00:00`,
+ * `2026-06-22T10:00`, `2026-06-22T10:00:00.5`). The character class is POSITIVE
+ * — digits, `:`, `.` — rather than a negated "no Z and no sign", so a trailing
+ * `Z`/`z` or a `+HH:MM`/`-HHMM` offset falls out on its own and no unlisted
+ * suffix can be mistaken for a zone-less tail.
+ */
+const ZONE_LESS_DATE_TIME_RE = /^\d{4}-\d{2}-\d{2}T[\d:.]+$/;
 
 export function strOf(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
@@ -69,6 +78,13 @@ export function numberFromUnknown(value: unknown): number | null {
 // FEA-2430: display-facing day/hour SQL bucket expressions convert UTC-stored
 // ISO timestamps to the user's LOCAL timezone. Shared by local-insights.ts
 // (which documents the full timezone contract) and dashboard-queries.ts.
+//
+// ISS-7579: these are the DISPLAY-facing twins of `storedUtcDaySql`
+// (session-timestamp-form.ts), which buckets the STORED UTC day for a persisted
+// `started_day` column. Pick by destination, not convenience: a value being
+// rendered bucket here, a value being written there. That helper carries the
+// ISS-6760 ledger explaining why a stored UTC day must never become a
+// cohort/group-by axis — the FEA-2999 bug was exactly that mistake.
 export function localDay(col: string): string {
   return `strftime('%Y-%m-%d', ${col}, 'localtime')`;
 }
@@ -120,8 +136,20 @@ export function createdArtifactLinksSubquery(): string {
 // statement — callers resolve the id set ONCE per call and render it — and the
 // resolver executes a query, which this module does not do (see the header).
 
+/**
+ * The null-degrading twin of {@link numberOrZero}: same input union, same
+ * finite check, but a value carrying no number stays `null` (unknown) instead
+ * of reading as a real 0. Use this where a 0 would LIE — a cost that was never
+ * computed, a column that may not be populated; use `numberOrZero` where the
+ * figure is a COUNT/SUM-shaped total and absent genuinely means none.
+ *
+ * ISS-7580 widened the input union to match `numberOrZero` so a raw `bigint`
+ * aggregate or a TEXT cell can pick either degradation without a cast. The two
+ * are deliberately ONE pair in one module: a separate `numberOrNull` would be
+ * this function under a second name.
+ */
 export function nullableNumber(
-  value: number | null | undefined
+  value: number | bigint | string | null | undefined
 ): number | null {
   if (value == null) {
     return null;
@@ -154,31 +182,72 @@ export function boundedNonNegativeInt(
 // or numeric string — to the JS number the desktop contract uses. Shared by
 // local-insights.ts and shared-agent-components-api.ts, which previously each
 // hand-rolled this coercion (as `num`/`toNumber`).
+//
+// ISS-7580: a value that carries NO number reads 0 as well, because the name is
+// the contract. Callers apply this to `$queryRawUnsafe` rows, and SQLite stores
+// whatever was written — affinity converts what it can and keeps the rest
+// verbatim — so a corrupt cell arrives as TEXT and `Number("n/a")` is NaN.
+//
+// Which escape from the numeric domain you get depends on how the cell is read,
+// measured against `node:sqlite`: a BARE, non-aggregate read hands JS the
+// literal `"n/a"` (NaN), while `SUM` applies numeric affinity first, so the same
+// text sums to 0 and an overflowing `"1e999"` sums to `Infinity`. `isFinite`
+// rather than `isNaN` because both are values this helper must not emit.
+//
+// 0 is the honest degradation only where the reader treats the figure as a
+// COUNT/SUM-shaped total and absent genuinely means none. Where "not populated"
+// must stay distinguishable from a real zero — a version, an identity, a
+// conservation target — use {@link nullableNumber}, the same coercion degrading
+// to null.
 export function numberOrZero(
   value: number | bigint | string | null | undefined
 ): number {
-  return value == null ? 0 : Number(value);
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
-export function parseGitHubPrUrl(
-  value: string
-): { repoFullName: string; number: number } | null {
+/**
+ * Parse a github.com pull-request URL into the `(repo, number)` identity it
+ * names, or say why it names none.
+ *
+ * The refusal rides on the result because ONE caller has to tell
+ * `RepoPastWireBound` from every other refusal, and that answer comes out of
+ * this same traversal. A second predicate re-deriving the hostname, the path
+ * shape and the number to reach it is SSOT drift by copy — and the copy this
+ * replaces had already drifted inside one review round (PR #6627: it was
+ * missing the number check, so it reported a `/pull/not-a-number` URL as
+ * over-bound and dropped a record the malformed-URL path had always kept).
+ */
+export function parseGitHubPrUrl(value: string): GitHubPrUrlParse {
+  let parsed: URL;
   try {
-    const parsed = new URL(value);
-    if (parsed.hostname !== "github.com") {
-      return null;
-    }
-    const [owner, repo, type, rawNumber] = parsed.pathname
-      .split("/")
-      .filter(Boolean);
-    if (!(owner && repo && type === "pull")) {
-      return null;
-    }
-    const number = numberFromUnknown(rawNumber);
-    return number ? { repoFullName: `${owner}/${repo}`, number } : null;
+    parsed = new URL(value);
   } catch {
-    return null;
+    return NOT_A_PR_URL;
   }
+  if (parsed.hostname !== "github.com") {
+    return NOT_A_PR_URL;
+  }
+  const [owner, repo, type, rawNumber] = parsed.pathname
+    .split("/")
+    .filter(Boolean);
+  if (!(owner && repo && type === "pull")) {
+    return NOT_A_PR_URL;
+  }
+  const number = numberFromUnknown(rawNumber);
+  if (!number) {
+    return NOT_A_PR_URL;
+  }
+  const slug = `${owner}/${repo}`;
+  // ISS-8882: the URL-derived slug takes the same bound as a stored one, so a
+  // 205-char owner/repo never reaches `pull_requests` or `artifacts`. It is
+  // named apart from the other refusals because it is the only one a caller
+  // must not fall back from — see `GitHubPrUrlRefusal`.
+  if (isRepoFullNamePastWireBound(slug)) {
+    return REPO_PAST_WIRE_BOUND;
+  }
+  const repoFullName = normalizeRepoFullName(slug);
+  return repoFullName ? { ok: true, repoFullName, number } : NOT_A_PR_URL;
 }
 
 export function normalizeRepoFullName(value: unknown): string | null {
@@ -186,7 +255,10 @@ export function normalizeRepoFullName(value: unknown): string | null {
     return null;
   }
   const normalized = value.trim();
-  return GITHUB_REPO_FULL_NAME_RE.test(normalized) ? normalized : null;
+  return normalized.length <= REPOSITORY_FULL_NAME_MAX_LENGTH &&
+    GITHUB_REPO_FULL_NAME_RE.test(normalized)
+    ? normalized
+    : null;
 }
 
 export function packIdFromSkillName(name: string): string | null {
@@ -361,8 +433,8 @@ export function optionalTokenCountValue(
  * stores the hook payload's `data.tool_name` verbatim — and every SQL reader
  * that filtered on `tool_name IS NOT NULL` alone therefore counted an
  * empty-named "tool" the hydrate path drops, and grouped it as its own nameless
- * row. The `session_tool_analytics` / `session_analytics` rollups already used
- * the stricter form, so the readers disagreed with the rollups too.
+ * row. The `session_analytics` rollup already used the stricter form, so the
+ * readers disagreed with the rollup too.
  *
  * Every tool-count read and the rollup writer share this helper so the four
  * surfaces (Insights `tools` KPI, `toolUsage`, `toolRunsOverTime`, and the
@@ -374,6 +446,15 @@ export function optionalTokenCountValue(
 export function toolInvocationPredicate(column: string): string {
   return `(${column} IS NOT NULL AND ${column} <> '')`;
 }
+
+/**
+ * Milliseconds in a day, for the day-window arithmetic several readers and the
+ * retention sweep all do. Here rather than in any one of them because it
+ * belongs to none of them: it was independently re-declared in
+ * `session-maintenance.ts`, `local-insights-range.ts` and two `cost/` modules
+ * before ISS-6751 needed a fifth.
+ */
+export const MS_PER_DAY = 24 * 60 * 60_000;
 
 /**
  * FEA-1459 Fix 6: Resolve the machine's IANA timezone for day-bucketing queries.
@@ -464,3 +545,84 @@ export const PLUGIN_CHILD_KINDS_SQL_LIST: string = PLUGIN_CHILD_KINDS.map(
     return `'${kind}'`;
   }
 ).join(", ");
+
+// The row shape a `localDay()`-bucketed COUNT produces. Shared by the per-day
+// trend reads across the Insights section modules so they cannot drift.
+export type DayCount = { day: string; n: bigint };
+
+/**
+ * ISS-5496 / ISS-8398: name the zone of a ZONE-LESS date-time as UTC, leaving
+ * every other spelling untouched.
+ *
+ * This one expression IS the store's "a zone-less date-time means UTC" rule, and
+ * it lives here — beside {@link toCanonicalIso} and {@link validIso}, its only
+ * collaborators — because it now has two callers that must never disagree:
+ * `canonicalizeStoredTimestamp` (`timestamp-format-maintenance.ts`, the ISS-5496
+ * heal) and `toLegacyAgentInstant` (`turn-buckets.ts`, the ISS-8398 legacy Agent
+ * arm). Re-typing the ternary in the second caller is the SSOT-drift-by-copy
+ * this repo names explicitly, so the REGEX stays private and the RULE is what is
+ * exported.
+ *
+ * UTC is not invented here. `Date.parse` reads a zone-less date-time as
+ * HOST-LOCAL per ECMA-262, which makes output depend on the operator's `TZ`;
+ * every other reader of these TEXT columns already treats the digits as UTC —
+ * SQLite's `unixepoch()`/`strftime` over the same text, the lexical comparisons
+ * the columns are sorted by, `toIso` at the parser boundary (ISS-6738), and the
+ * cloud's own `(… ->> 'timestamp')::timestamp` + `AT TIME ZONE 'UTC'` read. So
+ * supplying the zone the text omits is what makes a value deterministic and
+ * zone-independent, not what changes its meaning.
+ *
+ * ONLY the zone is supplied — no canonicalization, no parse, no validation. The
+ * caller decides what an unparseable result means, and the two callers differ
+ * there on purpose: the heal returns the ORIGINAL stored text so its skip guard
+ * leaves the row alone, while the bucket arm REJECTS the unit outright.
+ */
+export function readZoneLessAsUtc(value: string): string {
+  return ZONE_LESS_DATE_TIME_RE.test(value) ? `${value}Z` : value;
+}
+
+// ISS-8882: `normalizeRepoFullName` returns null for two reasons a caller must
+// NOT conflate. A bare or malformed name is recoverable — a later resolver sweep
+// can still map it, and the established posture is to null-scope it (FEA-2866).
+// A slug past the wire bound never becomes valid, so the same null-scoping is
+// actively wrong: it collapses distinct over-bound repositories onto one
+// `branch::<name>` / `pr::<number>` artifact, and a `?? defaultRepo` fallback
+// files the record under a repository the data never named — the truncation harm
+// this ticket exists to prevent, one indirection away. Every caller that
+// DEGRADES on null must reject this kind outright, before the degrade.
+export function isRepoFullNamePastWireBound(value: unknown): boolean {
+  return (
+    typeof value === "string" &&
+    value.trim().length > REPOSITORY_FULL_NAME_MAX_LENGTH
+  );
+}
+
+/**
+ * Why {@link parseGitHubPrUrl} refused a URL.
+ *
+ * `RepoPastWireBound` is the ONE refusal a caller must not fall back from: the
+ * URL named a real repository, this store just cannot hold its slug, so filing
+ * the PR on the session's own repo would name a repository the data never did —
+ * the truncation harm the drop-never-truncate rule exists to prevent, one
+ * indirection away. Every other refusal leaves no usable repository either way,
+ * so an explicit `pr.repo` or the session default may still stand (ISS-8882).
+ */
+export const GitHubPrUrlRefusal = {
+  NotAPrUrl: "not_a_pr_url",
+  RepoPastWireBound: "repo_past_wire_bound",
+} as const;
+export type GitHubPrUrlRefusal =
+  (typeof GitHubPrUrlRefusal)[keyof typeof GitHubPrUrlRefusal];
+
+export type GitHubPrUrlParse =
+  | { ok: true; repoFullName: string; number: number }
+  | { ok: false; refusal: GitHubPrUrlRefusal };
+
+const NOT_A_PR_URL: GitHubPrUrlParse = {
+  ok: false,
+  refusal: GitHubPrUrlRefusal.NotAPrUrl,
+};
+const REPO_PAST_WIRE_BOUND: GitHubPrUrlParse = {
+  ok: false,
+  refusal: GitHubPrUrlRefusal.RepoPastWireBound,
+};

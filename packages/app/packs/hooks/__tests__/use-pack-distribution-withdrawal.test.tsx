@@ -264,6 +264,39 @@ describe("usePackDistributionWithdrawal cache handling (ISS-5123)", () => {
     );
   });
 
+  // ISS-6925 review (whitlockk): pack detail is addressable now, so Back/Forward
+  // move the surface's selection while a confirmation is open. The subject is
+  // captured with the ids, so neither the dialog's blast-radius sentence nor the
+  // success toast can end up naming a pack the pending ids do not touch.
+  it("keeps the requested pack as the subject when the selection moves under the open dialog", async () => {
+    const { wrapper } = createCacheHarness();
+    const { result, rerender } = renderHook(
+      ({ packName }: { packName: string }) =>
+        usePackDistributionWithdrawal({
+          isAdmin: true,
+          flagEnabled: true,
+          packName,
+        }),
+      { initialProps: { packName: "Code" }, wrapper }
+    );
+
+    act(() => {
+      result.current.requestWithdraw?.([DISTRIBUTION_ID]);
+    });
+    // Back/Forward lands on a different pack; the confirmation stays open.
+    rerender({ packName: "Judges" });
+
+    expect(result.current.pendingPackName).toBe("Code");
+
+    await act(async () => {
+      await result.current.confirmWithdraw();
+    });
+
+    expect(mockToast.success).toHaveBeenCalledWith(
+      'Stopped distributing "Code"'
+    );
+  });
+
   it("does not claim success when the request failed", async () => {
     mockApiClient.delete.mockRejectedValue(new Error("network down"));
     const { wrapper } = createCacheHarness();

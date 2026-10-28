@@ -1,9 +1,12 @@
 "use client";
 
 import {
-  FIRST_COLUMN_INDEX,
-  getDataColumnIndex,
+  type GridColumnTracks,
+  resolveColumnControlName,
+  resolveColumnHeaderAriaLabel,
+  resolveGridColumnTracks,
 } from "@closedloop-ai/design-system/lib/grid-table-aria";
+import { PINNED_LEAD_CELL_CLASS } from "@closedloop-ai/design-system/lib/grid-table-pin";
 import { cn } from "@closedloop-ai/design-system/lib/utils";
 import { InfoIcon } from "lucide-react";
 import { type ReactNode, useState } from "react";
@@ -240,6 +243,17 @@ type TableGridHeaderProps = {
    */
   insideAriaTable?: boolean;
   /**
+   * The grid's resolved track numbering (ISS-9564), supplied by the compositor
+   * that owns both this header and the body it pairs with — `GridTable`.
+   *
+   * Absent → resolved from `leadingUtilityHeader`, which is all a standalone
+   * caller has. Such a caller then owns numbering its own body identically:
+   * `@repo/app/documents/components/table/document-row.tsx` still does that by
+   * hand off `getDataColumnIndex`, so it is two runs over one grid — routing it
+   * through this prop is app-side work, not this module's.
+   */
+  columnTracks?: GridColumnTracks;
+  /**
    * GridTable v2 — per-column menu actions. Absent → no column menu button
    * renders anywhere, byte-identical to before.
    */
@@ -264,6 +278,16 @@ type TableGridHeaderProps = {
    * would restyle every other table's header the moment it merged.
    */
   enhancedHeaderInteractions?: boolean;
+  /**
+   * ISS-6959 — pin the leading identity header cell to the left edge of the
+   * host scroll container, keeping it above the column labels that scroll
+   * beneath it. Forwarded by `GridTable` from its own `pinLeadColumn`, which is
+   * where the contract (and the utility-track carve-out) is documented.
+   *
+   * The header needs no tint overlay: unlike a body row it has no hover or
+   * selected treatment, so the opaque surface token alone matches it exactly.
+   */
+  pinLeadColumn?: boolean;
 };
 
 export function TableGridHeader({
@@ -288,13 +312,19 @@ export function TableGridHeader({
   actions,
   leadingUtilityHeader,
   enhancedHeaderInteractions = false,
+  pinLeadColumn = false,
+  columnTracks,
 }: TableGridHeaderProps) {
-  // ISS-4672: the header's `aria-colindex` values start from the same shared
-  // base the body rows use, so the header/body pairing can never number the
-  // grid's tracks from different starts. A leading utility track shifts BOTH
-  // sides by one — `GridTable` derives its body indexes the same way.
-  const leadColumnIndex =
-    leadingUtilityHeader == null ? FIRST_COLUMN_INDEX : FIRST_COLUMN_INDEX + 1;
+  // ISS-4672 / ISS-9564: the header's `aria-colindex` values come from the same
+  // resolution the body rows use, so the header/body pairing cannot number the
+  // grid's tracks from different starts.
+  const hasUtilityCell = Boolean(leadingUtilityHeader);
+  const tracks =
+    columnTracks ??
+    resolveGridColumnTracks({
+      hasLeadingUtility: hasUtilityCell,
+      dataColumnCount: columns.length,
+    });
   return (
     <div
       className={cn(
@@ -304,17 +334,19 @@ export function TableGridHeader({
       role={insideAriaTable ? "row" : undefined}
       style={{ gridTemplateColumns }}
     >
-      {leadingUtilityHeader == null ? null : (
+      {hasUtilityCell ? (
         <div
-          aria-colindex={insideAriaTable ? FIRST_COLUMN_INDEX : undefined}
+          aria-colindex={
+            insideAriaTable ? tracks.leadingUtilityColumnIndex : undefined
+          }
           className="flex min-w-0 items-center justify-center py-2"
           role={insideAriaTable ? "columnheader" : undefined}
         >
           {leadingUtilityHeader}
         </div>
-      )}
+      ) : null}
       <div
-        aria-colindex={insideAriaTable ? leadColumnIndex : undefined}
+        aria-colindex={insideAriaTable ? tracks.leadColumnIndex : undefined}
         aria-sort={
           insideAriaTable
             ? getLeadingAriaSort(
@@ -330,7 +362,8 @@ export function TableGridHeader({
           // The lead column's caret follows the SAME reveal rule as the data
           // columns under v2, so reading across the row cannot suggest that only
           // the first column sorts. That needs the hover scope here too.
-          enhancedHeaderInteractions && "group/header"
+          enhancedHeaderInteractions && "group/header",
+          pinLeadColumn && PINNED_LEAD_CELL_CLASS
         )}
         role={insideAriaTable ? "columnheader" : undefined}
       >
@@ -358,7 +391,7 @@ export function TableGridHeader({
           actions={actions}
           colIndex={
             insideAriaTable
-              ? getDataColumnIndex(leadColumnIndex, index)
+              ? tracks.dataColumnIndex(index)
               : undefined
           }
           column={column}
@@ -547,6 +580,15 @@ function ColumnHeaderCell({
   // render an operable control whose emitted width `setColumnWidth` discards. A
   // table that never wires `resize` is byte-identical to before.
   const canResize = resize != null && resize.columnIds.includes(column.id);
+  // What this column's own CONTROLS call it. Every one of them names itself by
+  // interpolating a column name, so they all have to resolve it the same way or
+  // a blank-label column grows a handful of controls called " help",
+  // "Reorder  column" and " column options".
+  const controlName = resolveColumnControlName(
+    column.label,
+    column.id,
+    column.ariaLabel
+  );
   // A menu button only renders when the table wired `actions` AND this column
   // opted into at least one of them — never an affordance that opens empty.
   const hasMenu = hasColumnMenuItems({
@@ -579,7 +621,7 @@ function ColumnHeaderCell({
   const headerTooltip = column.tooltip ? (
     <HeaderTooltip
       alignEnd={alignHeaderEnd}
-      label={column.label}
+      label={controlName}
       text={column.tooltip}
     />
   ) : null;
@@ -588,9 +630,19 @@ function ColumnHeaderCell({
       aria-colindex={colIndex}
       // Gated on `colIndex` because `aria-label` is prohibited on a role-less
       // element: it may only be set once this cell is a real `columnheader`.
-      aria-label={colIndex == null ? undefined : getHeaderAriaLabel(column)}
+      aria-label={
+        colIndex == null
+          ? undefined
+          : resolveColumnHeaderAriaLabel(
+              column.label,
+              column.id,
+              column.ariaLabel
+            )
+      }
       // Only a sortable header may announce a sort state: `aria-sort="none"` on
       // a static column would advertise a sort control the user cannot operate.
+      // That absent-vs-`none` split is the contract ISS-10425 ruled on — see
+      // `getAriaSort`.
       aria-sort={
         colIndex != null && column.sortable
           ? getAriaSort(sortBy === column.id, sortDir)
@@ -720,7 +772,7 @@ function ColumnHeaderCell({
       {canReorder ? (
         <ColumnDragHandle
           columnId={column.id}
-          label={column.label}
+          label={controlName}
           reorder={reorder}
         />
       ) : null}
@@ -728,13 +780,22 @@ function ColumnHeaderCell({
         <ColumnResizeHandle
           columnId={column.id}
           enhancedHeaderInteractions={enhancedHeaderInteractions}
-          label={column.label}
+          label={controlName}
           resize={resize}
         />
       ) : null}
       {alignHeaderEnd ? headerTooltip : null}
       {column.sortable ? (
         <button
+          // Same contract as v2's sort control: a blank-label column leaves this
+          // button holding only a sort caret, so it needs the resolved name. A
+          // labelled column gets `undefined` rather than an override of its own
+          // visible text.
+          aria-label={resolveColumnHeaderAriaLabel(
+            column.label,
+            column.id,
+            column.ariaLabel
+          )}
           className={cn(
             "group/sortbtn flex min-w-0 items-center gap-1 overflow-hidden hover:text-foreground",
             // ISS-5333, the sortable arm. A left-aligned header keeps `flex-1`:
@@ -771,7 +832,7 @@ function ColumnHeaderCell({
           columnId={column.id}
           filterable={column.filterable}
           groupable={column.groupable}
-          label={column.label || (column.ariaLabel ?? column.id)}
+          label={controlName}
           movable={column.movable}
           onSort={onSort}
           sortable={column.sortable}
@@ -790,21 +851,6 @@ function ColumnHeaderCell({
  * reports. Returns `undefined` when the lead column is not sortable at all: a
  * plain label must not advertise a sort control that does not exist.
  */
-/**
- * Accessible name for a data-column header (ISS-4672). A column that renders no
- * visible label — the row-actions / chrome column every dense table ends with —
- * would otherwise become a nameless `columnheader` that each body cell in its
- * track is announced against, so `ariaLabel` names it. A column WITH a visible
- * label returns `undefined`: its text is already the accessible name, and an
- * `aria-label` there would silently override what the user can see.
- */
-function getHeaderAriaLabel(column: TableGridHeaderColumn): string | undefined {
-  if (column.label) {
-    return undefined;
-  }
-  return column.ariaLabel;
-}
-
 function getLeadingAriaSort(
   sortBy: string | null,
   sortDir: SortDirection,

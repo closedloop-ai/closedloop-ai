@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import type { ActivityBucket } from "@repo/api/src/types/agent-session";
+import { test } from "vitest";
 import { buildSessionTraceSyncFields } from "../src/main/database/session-trace.js";
 import {
   baseSessionTraceInput as baseInput,

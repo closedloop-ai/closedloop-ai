@@ -22,7 +22,6 @@ export type NavIconName =
   | "agents"
   | "packs"
   | "insights"
-  | "loops"
   | "agent-monitoring"
   | "judges";
 
@@ -56,7 +55,7 @@ export const artifactsNav: readonly NavItem[] = [
   { label: "Issues", icon: "issues" },
   { label: "Sessions", icon: "sessions" },
   { label: "Branches", icon: "branches" },
-  { label: "Agents", icon: "agents" },
+  { label: "Agentic Components", icon: "agents" },
   { label: "Packs", icon: "packs", isActive: true },
 ];
 
@@ -77,7 +76,6 @@ export const teams: readonly TeamItem[] = [
 
 export const labsNav: readonly NavItem[] = [
   { label: "Insights", icon: "insights" },
-  { label: "Loops", icon: "loops" },
   { label: "Agent Monitoring", icon: "agent-monitoring" },
   { label: "Judges", icon: "judges" },
 ];
@@ -209,7 +207,7 @@ export type PackPerformance = {
   tokenEfficiencyDelta: number;
   /** 8-point efficiency trend for a sparkline (oldest to newest). */
   efficiencyTrend: readonly number[];
-  /** Average reviewer/judge score, 0-10. */
+  /** Average quality score, 0-10. */
   qualityScore: number;
   /** % higher quality vs. baseline. */
   qualityDelta: number;

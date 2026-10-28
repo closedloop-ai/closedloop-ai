@@ -9,11 +9,8 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { useApiClient } from "../../shared/api/use-api-client";
-
-export const artifactFavoriteKeys = {
-  all: ["artifact-favorites"] as const,
-  list: () => [...artifactFavoriteKeys.all, "list"] as const,
-};
+import { artifactFavoriteKeys } from "./artifact-favorite-keys";
+import { invalidateFavoriteWriteViewFamilies } from "./bulk-artifact-invalidation";
 
 export function useFavoriteArtifacts(
   options?: Omit<UseQueryOptions<Artifact[]>, "queryKey" | "queryFn">
@@ -37,6 +34,7 @@ export function useToggleFavoriteArtifact() {
   const apiClient = useApiClient();
 
   return useMutation({
+    mutationKey: artifactFavoriteKeys.toggle(),
     mutationFn: ({
       artifactId,
       isFavorite,
@@ -55,9 +53,7 @@ export function useToggleFavoriteArtifact() {
       );
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: artifactFavoriteKeys.list(),
-      });
+      invalidateFavoriteWriteViewFamilies(queryClient);
     },
   });
 }

@@ -1,5 +1,4 @@
 /**
- * @file command-palette.test.tsx
  * @description Component tests for the desktop command-palette Docs group
  * (FEA-3845 / PRD-555 M3). Drives the palette off a mocked
  * `window.desktopApi.docsHelp.search` bridge and a mocked navigation port, and
@@ -40,11 +39,28 @@ vi.mock("@repo/navigation/use-navigation", () => ({
 }));
 
 import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { PORTABLE_SEARCH_SURFACE_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { DESKTOP_DOCS_HELP_FEATURE_FLAG_KEY } from "../../../../shared/desktop-docs-help-flag";
 import type { DocsHelpSearchResult } from "../../../../shared/docs-help-contract";
 import { CommandPalette } from "../command-palette";
+import { DOCS_SEARCH_RETRY_LABEL } from "../docs-command-group";
 
 const flagMock = vi.mocked(useFeatureFlagEnabled);
+
+/**
+ * Every gate ON except `portable-search-surface` (ISS-9414), which is the key
+ * that swaps this Docs group for the shared `SearchSurfaceV2`. A blanket
+ * `mockReturnValue(true)` used to mean "docsHelp and Labs are on"; once a
+ * second, default-OFF key started choosing the palette's body, it silently
+ * meant "and render the other component" instead — so the cases below have to
+ * name the branch they are about. The surface branch has its own suite,
+ * `search-surface-mount.test.tsx`.
+ */
+function enableDocsCorpusOnly() {
+  flagMock.mockImplementation(
+    (key: string) => key !== PORTABLE_SEARCH_SURFACE_FEATURE_FLAG_KEY
+  );
+}
 const NO_MATCHES_RE = /No documentation matches/;
 
 const HIT_RESULT: DocsHelpSearchResult = {
@@ -89,6 +105,40 @@ function installDocsHelp(
 function openPalette() {
   fireEvent.keyDown(window, { key: "k", metaKey: true });
 }
+
+/*
+ * ISS-7493. The palette binds a bare `window.addEventListener("keydown", …)`,
+ * and `fireEvent.keyDown` cannot express this input: jsdom's `KeyboardEvent`
+ * constructor coerces `key` to a string, so the EventInit route always yields
+ * one. Overwriting the own property after construction is what a password
+ * manager or extension shim actually does.
+ */
+function dispatchChordWithKey(key: unknown) {
+  const event = new KeyboardEvent("keydown", { bubbles: true, metaKey: true });
+  Object.defineProperty(event, "key", { configurable: true, value: key });
+  window.dispatchEvent(event);
+}
+
+/*
+ * jsdom does not let a listener's exception escape `dispatchEvent` — it reports
+ * it as an uncaught error on `window` instead. A throw-only assertion around
+ * the dispatch is therefore green either way, so the error event is what this
+ * suite watches.
+ */
+function captureUncaughtErrors() {
+  const seen: string[] = [];
+  const onError = (event: ErrorEvent) => {
+    seen.push(event.message);
+  };
+  window.addEventListener("error", onError);
+  return { seen, stop: () => window.removeEventListener("error", onError) };
+}
+
+const UNUSABLE_CHORD_KEYS: ReadonlyArray<readonly [string, unknown]> = [
+  ["absent", undefined],
+  ["null", null],
+  ["a non-string", 42],
+];
 
 function typeQuery(value: string) {
   fireEvent.change(screen.getByPlaceholderText("Search documentation…"), {
@@ -136,7 +186,7 @@ afterEach(() => {
 
 describe("desktop CommandPalette Docs group (FEA-3845)", () => {
   it("opens on ⌘K, surfaces docs hits, and Enter opens the Help view at the page + heading", async () => {
-    flagMock.mockReturnValue(true);
+    enableDocsCorpusOnly();
     const search = installDocsHelp();
     render(<CommandPalette />);
 
@@ -163,7 +213,7 @@ describe("desktop CommandPalette Docs group (FEA-3845)", () => {
   });
 
   it("shows the empty state when the query has no docs matches", async () => {
-    flagMock.mockReturnValue(true);
+    enableDocsCorpusOnly();
     installDocsHelp(
       vi.fn(
         async (): Promise<DocsHelpSearchResult> => ({
@@ -181,6 +231,82 @@ describe("desktop CommandPalette Docs group (FEA-3845)", () => {
     expect(screen.queryByText("Docs")).toBeNull();
     expect(navigateMock).not.toHaveBeenCalled();
   });
+
+  it("says the search failed rather than that no docs match, when it rejects (ISS-10044)", async () => {
+    enableDocsCorpusOnly();
+    installDocsHelp(vi.fn(() => Promise.reject(new Error("index unreadable"))));
+    render(<CommandPalette />);
+
+    openPalette();
+    typeQuery("zzz");
+
+    expect(await screen.findByText("Couldn't search the docs.")).toBeTruthy();
+    // The defect: a rejected search rendered no Docs row at all, so cmdk fell
+    // through to `CommandEmpty` and the palette answered for an index it never
+    // reached. The sibling above pins that this sentence DOES render when the
+    // search genuinely returns nothing.
+    expect(screen.queryByText(NO_MATCHES_RE)).toBeNull();
+    // The retry `useDocsCommandSearch` has returned since ISS-9414 and this
+    // branch dropped. A `CommandItem`, not a button: `CommandList` is a listbox
+    // whose arrow keys reach options only.
+    expect(
+      screen.getByRole("option", { name: DOCS_SEARCH_RETRY_LABEL })
+    ).toBeTruthy();
+  });
+
+  it("re-issues the rejected query when the palette retry is chosen (ISS-10044)", async () => {
+    enableDocsCorpusOnly();
+    const search = installDocsHelp(
+      vi.fn(() => Promise.reject(new Error("index unreadable")))
+    );
+    render(<CommandPalette />);
+
+    openPalette();
+    typeQuery("zzz");
+    await screen.findByText("Couldn't search the docs.");
+    const callsBeforeRetry = search.mock.calls.length;
+
+    fireEvent.click(
+      screen.getByRole("option", { name: DOCS_SEARCH_RETRY_LABEL })
+    );
+
+    // A retry that re-renders the settled failure without crossing IPC again is
+    // the affordance's own version of this ticket's defect.
+    await waitFor(() =>
+      expect(search.mock.calls.length).toBeGreaterThan(callsBeforeRetry)
+    );
+  });
+
+  // ISS-7493 (whitlockk review, PR #7424). Every other case here sends a well-formed
+  // `key: "k"`, so `isPaletteChord`'s guard could be deleted without one of them
+  // failing. The desktop shell mounts this listener on `window` for the whole
+  // renderer lifetime, and a synthetic keydown carrying no usable `key` reached
+  // `.toLowerCase()` and threw.
+  it.each(UNUSABLE_CHORD_KEYS)(
+    "a Meta chord with %s key neither opens the palette nor throws",
+    (_label, key) => {
+      enableDocsCorpusOnly();
+      installDocsHelp();
+      render(<CommandPalette />);
+      const errors = captureUncaughtErrors();
+
+      try {
+        dispatchChordWithKey(key);
+
+        expect(errors.seen).toEqual([]);
+        expect(
+          screen.queryByPlaceholderText("Search documentation…")
+        ).toBeNull();
+      } finally {
+        errors.stop();
+      }
+
+      // The positive control, same render: a real ⌘K still opens. Without it the
+      // assertions above would also pass for a palette that never mounted.
+      openPalette();
+      expect(screen.getByPlaceholderText("Search documentation…")).toBeTruthy();
+    }
+  );
 
   it("does not mount or bind ⌘K when the docsHelp flag is off", () => {
     flagMock.mockReturnValue(false);

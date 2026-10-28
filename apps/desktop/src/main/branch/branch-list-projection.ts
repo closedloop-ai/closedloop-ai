@@ -1,9 +1,15 @@
-import { type BranchRow, encodeBranchId } from "@repo/api/src/types/branch";
 import {
-  BranchCollaboratorSource,
-  BranchIdentityAvailability,
-} from "@repo/api/src/types/branch-identity";
+  CollaboratorArtifactType,
+  unavailableArtifactCollaborators,
+} from "@repo/api/src/types/artifact-collaborators";
+import { type BranchRow, encodeBranchId } from "@repo/api/src/types/branch";
+import { BranchIdentityAvailability } from "@repo/api/src/types/branch-identity";
 import { normalizeRepoFullName } from "@repo/api/src/types/branch-repository";
+import type { Priority } from "@repo/api/src/types/common";
+import {
+  compareListQueryText,
+  ListQueryTextOrdering,
+} from "@repo/api/src/types/list-query-ordering-semantics";
 import type { BranchLinkRow, BranchPrRow } from "../database/branch-reads.js";
 import type { BranchTokenAggregateRow } from "../database/branch-token-aggregate-reads.js";
 import {
@@ -45,19 +51,11 @@ export function projectBranchListItems(
         availability: BranchIdentityAvailability.Unavailable,
         person: null,
       },
-      collaborators: {
-        availability: BranchIdentityAvailability.Unavailable,
-        people: [],
-        sources: {
-          [BranchCollaboratorSource.PullRequestComments]:
-            BranchIdentityAvailability.Unavailable,
-          [BranchCollaboratorSource.BranchComments]:
-            BranchIdentityAvailability.Unavailable,
-          [BranchCollaboratorSource.SessionComments]:
-            BranchIdentityAvailability.Unavailable,
-        },
-      },
+      collaborators: unavailableArtifactCollaborators(
+        CollaboratorArtifactType.Branch
+      ),
       status: statusForSelectedDesktopPullRequest(selectedPullRequest),
+      priority: branch.priority,
       ...selectedDesktopPullRequestFields(selectedPullRequest),
       mergedAt: null,
       multiPrWarning: hasMultipleValidPullRequestNumbers(prs),
@@ -96,6 +94,13 @@ type BranchAccumulator = {
   linesAdded: number | null;
   linesRemoved: number | null;
   filesChanged: number | null;
+  /**
+   * ISS-10332: the first non-null priority among the branch's artifact rows.
+   * The local write sets every `kind = 'branch'` row of one identity together,
+   * so they disagree only when a row appeared after the write (a new worktree
+   * of the same branch), which holds none and must not mask the value.
+   */
+  priority: Priority | null;
 };
 
 function groupBranchAccumulators(
@@ -114,10 +119,12 @@ function groupBranchAccumulators(
         linesAdded: linkLoc?.linesAdded ?? null,
         linesRemoved: linkLoc?.linesRemoved ?? null,
         filesChanged: linkLoc?.filesChanged ?? null,
+        priority: link.priority,
       });
       continue;
     }
     existing.sessionIds.add(link.sessionId);
+    existing.priority ??= link.priority;
     if (!completeArtifactLoc(existing) && linkLoc) {
       existing.linesAdded = linkLoc.linesAdded;
       existing.linesRemoved = linkLoc.linesRemoved;
@@ -196,12 +203,30 @@ function compareCanonicalLastActive(left: BranchRow, right: BranchRow): number {
   ) {
     return rightOccurredAt - leftOccurredAt;
   }
+  return compareBranchIdentityKeys(left, right);
+}
+
+/**
+ * The repo / branch / id tie-break, ranked the way the two Branch list
+ * compilers rank the same three keys (ISS-9585) — `und-x-icu` in the SQL
+ * mirror, `compareListQueryText(…, Collated)` in the `@repo/lib/branches`
+ * kernel. A bare `localeCompare()` here would order this desktop projection by
+ * the machine's own locale, so the same corpus could page differently than the
+ * kernel ordered it in the very same process.
+ */
+function compareBranchIdentityKeys(left: BranchRow, right: BranchRow): number {
   return (
-    normalizeRepoFullName(left.repoFullName ?? "").localeCompare(
-      normalizeRepoFullName(right.repoFullName ?? "")
+    compareListQueryText(
+      normalizeRepoFullName(left.repoFullName ?? ""),
+      normalizeRepoFullName(right.repoFullName ?? ""),
+      ListQueryTextOrdering.Collated
     ) ||
-    left.branchName.localeCompare(right.branchName) ||
-    left.id.localeCompare(right.id)
+    compareListQueryText(
+      left.branchName,
+      right.branchName,
+      ListQueryTextOrdering.Collated
+    ) ||
+    compareListQueryText(left.id, right.id, ListQueryTextOrdering.Collated)
   );
 }
 

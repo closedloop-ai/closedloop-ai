@@ -6,7 +6,7 @@ import {
   type Result as DomainResult,
   Result,
 } from "@repo/api/src/types/result";
-import { GitHubInstallationStatus, withDb } from "@repo/database";
+import { withDb } from "@repo/database";
 import { GitHubProviderResultStatus } from "@repo/github";
 import { getUserTokenOctokit } from "@repo/github/user-token-auth";
 import { log } from "@repo/observability/log";
@@ -22,7 +22,7 @@ import {
   hasActiveNoAccessVerdict,
 } from "@/lib/github/github-capability-store";
 import {
-  GITHUB_REPO_SCOPE,
+  meetsGitHubRepoScopeFloor,
   storedGitHubCredentialKind,
 } from "@/lib/github/github-connection-credential";
 import {
@@ -32,8 +32,9 @@ import {
   recordPoolRateLimit,
   recordPoolRepoAccess,
 } from "@/lib/github/github-sync-pool-observations";
+import { acquireGitHubUserToken } from "@/lib/github/github-user-credential";
 import { acquireInstallationClient } from "@/lib/github/installation-client";
-import { decryptIntegrationToken } from "@/lib/integration-encryption";
+import { findCoveringInstallation } from "@/lib/github/installation-repository-lookup";
 
 /**
  * PLN-1525 step 2a (PLN-1535 D9): the `sync-read` lane. An org-scoped read
@@ -122,39 +123,21 @@ export async function getGitHubSyncClient(
 async function resolveCoveringInstallation(
   input: GetGitHubSyncClientInput
 ): Promise<DomainResult<GitHubSyncClient, GitHubAccessError> | null> {
-  const fullName = `${input.target.owner}/${input.target.repo}`;
-  const installation = await withDb((db) =>
-    db.gitHubInstallation.findUnique({
-      where: { organizationId: input.organizationId },
-      select: {
-        installationId: true,
-        status: true,
-        repositories: {
-          where: {
-            fullName: { equals: fullName, mode: "insensitive" },
-            removedAt: null,
-          },
-          select: { id: true },
-          take: 1,
-        },
-      },
-    })
+  const covering = await findCoveringInstallation(
+    input.organizationId,
+    `${input.target.owner}/${input.target.repo}`
   );
-  const covers =
-    installation &&
-    installation.status === GitHubInstallationStatus.ACTIVE &&
-    installation.repositories.length > 0;
-  if (!covers) {
+  if (!covering) {
     return null;
   }
-  const acquired = await acquireInstallationClient(installation.installationId);
+  const acquired = await acquireInstallationClient(covering.installationId);
   if (acquired.status !== GitHubProviderResultStatus.Success) {
     return Result.err(mapInstallationAcquisitionFailure(acquired));
   }
   return Result.ok({
     octokit: acquired.value,
     kind: GitHubCredentialKind.Installation,
-    actingAs: { installationId: installation.installationId },
+    actingAs: { installationId: covering.installationId },
     // No user owns an installation token.
     credentialOwnerId: null,
     rateLimitTier: null,
@@ -169,7 +152,6 @@ type PoolConnectionRow = {
   userId: string;
   githubUserId: string;
   login: string;
-  accessTokenEncrypted: string;
   scopes: string[];
   rateLimitTier: number | null;
   observedLimit: number | null;
@@ -179,7 +161,6 @@ type PoolConnectionRow = {
   backoffUntil: Date | null;
   healthState: string;
   lastUsedAt: Date | null;
-  tokenExpiresAt: Date | null;
   revokedAt: Date | null;
   capabilities: GitHubRepoVerdictRow[];
 };
@@ -218,14 +199,48 @@ async function drawFromPool(
   }
 
   sortPoolCandidates(candidates, now);
+  const passedOver: GitHubAccessDenialReason[] = [];
+  let contended = false;
   for (const candidate of candidates) {
-    const client = await buildPoolClient(candidate, input, options, now);
-    if (client) {
-      return Result.ok(client);
+    const attempt = await buildPoolClient(candidate, input, options, now);
+    if (attempt.ok) {
+      return Result.ok(attempt.client);
+    }
+    if (attempt.denial) {
+      passedOver.push(attempt.denial);
+    } else {
+      contended = true;
     }
   }
-  // Every candidate token failed to decrypt — same remedy as revocation.
-  return Result.err({ reason: GitHubAccessDenialReason.Revoked });
+  // No candidate produced a client: either Clerk could not serve their owners,
+  // or a concurrent draw won the claim on every one of them.
+  return Result.err({ reason: mapPassedOverDenials(passedOver, contended) });
+}
+
+/**
+ * What an all-candidates-passed-over draw denies with.
+ *
+ * A transient reason outranks a durable one: the reconcile cron backs off on
+ * `unavailable` but RE-TIERS the repo on `not_connected`, so one org member's
+ * missing link must not turn a Clerk blip into a demotion sweep.
+ *
+ * `contention` outranks both (ISS-8270). A lost CAS means a concurrent draw
+ * WON that connection, so the org's credential is usable this instant — the
+ * one thing `not_connected` claims it is not. With N sweeps racing a
+ * single-connection pool, N−1 lose by construction, and answering
+ * `not_connected` reclassified those repos on every tick.
+ */
+function mapPassedOverDenials(
+  denials: GitHubAccessDenialReason[],
+  contended: boolean
+): GitHubAccessDenialReason {
+  if (contended) {
+    return GitHubAccessDenialReason.Contention;
+  }
+  if (denials.includes(GitHubAccessDenialReason.Unavailable)) {
+    return GitHubAccessDenialReason.Unavailable;
+  }
+  return GitHubAccessDenialReason.NotConnected;
 }
 
 async function readPoolConnections(
@@ -233,7 +248,9 @@ async function readPoolConnections(
   now: Date
 ): Promise<PoolConnectionRow[]> {
   // Revoked rows are read (not filtered) so a fully-revoked pool surfaces
-  // as `revoked` — a reconnect prompt — rather than `not_connected`.
+  // as `revoked` — a reconnect prompt — rather than `not_connected`. The
+  // marker is written by `markClerkRegistryUnlinked` when Clerk reports the
+  // owner's GitHub link is gone.
   return await withDb((db) =>
     db.gitHubUserConnection.findMany({
       where: { organizationId: input.organizationId },
@@ -243,7 +260,6 @@ async function readPoolConnections(
         userId: true,
         githubUserId: true,
         login: true,
-        accessTokenEncrypted: true,
         scopes: true,
         rateLimitTier: true,
         observedLimit: true,
@@ -253,10 +269,9 @@ async function readPoolConnections(
         backoffUntil: true,
         healthState: true,
         lastUsedAt: true,
-        tokenExpiresAt: true,
         revokedAt: true,
         capabilities: {
-          where: activeRepoVerdictWhere([input.target], now),
+          where: activeRepoVerdictWhere(input.target, now),
           select: {
             credentialKind: true,
             denialReason: true,
@@ -279,20 +294,11 @@ function classifyPoolExclusion(
   if (connection.healthState === GitHubSyncHealthState.Unhealthy) {
     return PoolExclusion.Unhealthy;
   }
-  if (
-    connection.tokenExpiresAt &&
-    connection.tokenExpiresAt.getTime() <= now.getTime()
-  ) {
-    return PoolExclusion.Unhealthy;
-  }
   // OAuth-family tokens (classic scopes) need `repo`; App-family tokens
   // (empty scopes) are governed by installation reach instead. Distinct from
   // Unhealthy — the remedy is a scope-widening reconnect, and the interactive
   // resolver reports the same condition as insufficient_scope.
-  if (
-    connection.scopes.length > 0 &&
-    !connection.scopes.includes(GITHUB_REPO_SCOPE)
-  ) {
+  if (!meetsGitHubRepoScopeFloor(connection.scopes)) {
     return PoolExclusion.InsufficientScope;
   }
   // Any active verdict is enough to skip a draw — unlike the repo-sync tier,
@@ -408,22 +414,31 @@ function poolLastUsedRank(connection: PoolConnectionRow): number {
   return connection.lastUsedAt ? connection.lastUsedAt.getTime() : 0;
 }
 
+/**
+ * A draw attempt against one candidate. `denial` is null when the candidate
+ * was lost to the CAS race rather than to a credential failure — a race says
+ * nothing about the org's connection state, so it colours the exhaustion
+ * reason as `contention` rather than as any statement about the credential.
+ */
+type PoolDrawAttempt =
+  | { ok: true; client: GitHubSyncClient }
+  | { ok: false; denial: GitHubAccessDenialReason | null };
+
 async function buildPoolClient(
   connection: PoolConnectionRow,
   input: GetGitHubSyncClientInput,
   options: GetGitHubSyncClientOptions,
   now: Date
-): Promise<GitHubSyncClient | null> {
-  let token: string;
-  try {
-    token = await decryptIntegrationToken(connection.accessTokenEncrypted);
-  } catch {
-    log.warn(`${POOL_LOG_PREFIX} failed to decrypt pooled GitHub token`, {
-      organizationId: connection.organizationId,
-      userId: connection.userId,
-    });
-    return null;
+): Promise<PoolDrawAttempt> {
+  const acquired = await acquireGitHubUserToken({
+    organizationId: connection.organizationId,
+    userId: connection.userId,
+    now,
+  });
+  if (!acquired.ok) {
+    return { ok: false, denial: acquired.denial };
   }
+  const token = acquired.token;
 
   // Draw claim, CAS'd on the LRU snapshot this selection ranked with:
   // concurrent sweeps that chose the same token race on this write, the
@@ -441,7 +456,7 @@ async function buildPoolClient(
     })
   );
   if (claimed.count === 0) {
-    return null;
+    return { ok: false, denial: null };
   }
 
   const octokit = getUserTokenOctokit(token, { fetch: options.fetch });
@@ -458,18 +473,23 @@ async function buildPoolClient(
   });
 
   return {
-    octokit,
-    kind: storedGitHubCredentialKind(connection.scopes),
-    actingAs: {
-      githubUserId: connection.githubUserId,
-      login: connection.login,
+    ok: true,
+    client: {
+      octokit,
+      kind: storedGitHubCredentialKind(connection.scopes),
+      actingAs: {
+        githubUserId: connection.githubUserId,
+        login: connection.login,
+      },
+      // The internal user whose token this is — persisted as fetch provenance
+      // so a tier-2 projection records which user's credential fetched it
+      // (tamsinb).
+      credentialOwnerId: connection.userId,
+      rateLimitTier: connection.rateLimitTier,
+      recordRateLimit: (rateLimit) =>
+        recordPoolRateLimit(connection, rateLimit),
+      recordRepoAccess: (outcome) =>
+        recordPoolRepoAccess(connection, input.target, outcome),
     },
-    // The internal user whose token this is — persisted as fetch provenance so a
-    // tier-2 projection records which user's credential fetched it (tamsinb).
-    credentialOwnerId: connection.userId,
-    rateLimitTier: connection.rateLimitTier,
-    recordRateLimit: (observed) => recordPoolRateLimit(connection, observed),
-    recordRepoAccess: (outcome) =>
-      recordPoolRepoAccess(connection, input.target, outcome),
   };
 }

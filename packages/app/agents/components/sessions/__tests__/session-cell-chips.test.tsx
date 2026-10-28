@@ -2,15 +2,15 @@ import { tooltipMockModule } from "@repo/app/test/mocks/tooltip";
 import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import {
+  AutonomyChip,
+  HarnessChip,
+  ModelChip,
   SESSION_AUTONOMY_CHIP_TEST_ID,
   SESSION_HARNESS_CHIP_TEST_ID,
   SESSION_MODEL_CHIP_TEST_ID,
-  SessionAutonomyChip,
-  SessionHarnessChip,
-  SessionModelChip,
 } from "../session-cell-chips";
+import { SessionsTable } from "../session-detail-table";
 import { createSessionTableRowFixture } from "../session-list-fixtures";
-import { SessionsTable } from "../sessions-table";
 
 vi.mock("@repo/design-system/components/ui/tooltip", () => tooltipMockModule);
 
@@ -20,9 +20,9 @@ vi.mock("@repo/design-system/components/ui/tooltip", () => tooltipMockModule);
  * CONTENT assertions — labels and tooltip sentences — so reverting the content
  * mapping produces named failures here, per-scope.
  */
-describe("SessionHarnessChip", () => {
+describe("HarnessChip", () => {
   it("renders the harness display name as the pill's whole content", () => {
-    render(<SessionHarnessChip harness="claude" />);
+    render(<HarnessChip harness="claude" />);
     const chip = screen.getByTestId(SESSION_HARNESS_CHIP_TEST_ID);
     expect(chip).toHaveTextContent("Claude");
     // Name only — no dot, no icon (the prototype's neutral pill).
@@ -31,7 +31,7 @@ describe("SessionHarnessChip", () => {
   });
 
   it("degrades an unknown harness to its raw string rather than fabricating a label", () => {
-    render(<SessionHarnessChip harness="some-new-harness" />);
+    render(<HarnessChip harness="some-new-harness" />);
     expect(screen.getByTestId(SESSION_HARNESS_CHIP_TEST_ID)).toHaveTextContent(
       "some-new-harness"
     );
@@ -41,9 +41,7 @@ describe("SessionHarnessChip", () => {
     // `Chip` is overflow-hidden/whitespace-nowrap, so without an explicitly
     // truncating inner span a raw-string fallback is cut flush against the
     // rounded edge inside the 124px track, with no ellipsis to say it was cut.
-    render(
-      <SessionHarnessChip harness="a-very-long-unrecognized-harness-id" />
-    );
+    render(<HarnessChip harness="a-very-long-unrecognized-harness-id" />);
     const label = screen
       .getByTestId(SESSION_HARNESS_CHIP_TEST_ID)
       .querySelector("span");
@@ -53,16 +51,16 @@ describe("SessionHarnessChip", () => {
   it("stays out of the tab order — it carries no tooltip to reach", () => {
     // The counterpart of the two focusable chips below. A pill with nothing to
     // explain must not add a tab stop per row; only Model and Autonomy earn one.
-    render(<SessionHarnessChip harness="claude" />);
+    render(<HarnessChip harness="claude" />);
     expect(
       screen.getByTestId(SESSION_HARNESS_CHIP_TEST_ID).getAttribute("tabindex")
     ).toBeNull();
   });
 });
 
-describe("SessionModelChip", () => {
+describe("ModelChip", () => {
   it("labels with the model id and explains provider · model in the tooltip", () => {
-    render(<SessionModelChip model="claude-opus-4-8" />);
+    render(<ModelChip model="claude-opus-4-8" />);
     expect(screen.getByTestId(SESSION_MODEL_CHIP_TEST_ID)).toHaveTextContent(
       "claude-opus-4-8"
     );
@@ -79,20 +77,23 @@ describe("SessionModelChip", () => {
     // `providerOf`'s `Other` enum member, which is grouping vocabulary that
     // tells a user nothing in a tooltip.
     ["unknown-model-2026", "Model", "text-muted-foreground"],
-  ])("attributes %s to %s with the matching dot token", (model, provider, dotToken) => {
-    render(<SessionModelChip model={model} />);
-    expect(screen.getByTestId("tooltip-content")).toHaveTextContent(
-      `${provider} · ${model}`
-    );
-    // The dot is a decorative, provider-toned enhancer: hidden from AT (the
-    // id text carries the information — WCAG 1.4.1) and colored via a design
-    // token, never a hardcoded hex.
-    const dot = screen
-      .getByTestId(SESSION_MODEL_CHIP_TEST_ID)
-      .querySelector("span[aria-hidden]");
-    expect(dot).not.toBeNull();
-    expect(dot?.className).toContain(dotToken);
-  });
+  ])(
+    "attributes %s to %s with the matching dot token",
+    (model, provider, dotToken) => {
+      render(<ModelChip model={model} />);
+      expect(screen.getByTestId("tooltip-content")).toHaveTextContent(
+        `${provider} · ${model}`
+      );
+      // The dot is a decorative, provider-toned enhancer: hidden from AT (the
+      // id text carries the information — WCAG 1.4.1) and colored via a design
+      // token, never a hardcoded hex.
+      const dot = screen
+        .getByTestId(SESSION_MODEL_CHIP_TEST_ID)
+        .querySelector("span[aria-hidden]");
+      expect(dot).not.toBeNull();
+      expect(dot?.className).toContain(dotToken);
+    }
+  );
 });
 
 /**
@@ -106,33 +107,33 @@ describe("SessionModelChip", () => {
  */
 describe("tooltip triggers are keyboard-reachable", () => {
   it.each([
-    [SESSION_MODEL_CHIP_TEST_ID, <SessionModelChip key="m" model="gpt-5.5" />],
-    [
-      SESSION_AUTONOMY_CHIP_TEST_ID,
-      <SessionAutonomyChip autonomy={84} key="a" />,
-    ],
+    [SESSION_MODEL_CHIP_TEST_ID, <ModelChip key="m" model="gpt-5.5" />],
+    [SESSION_AUTONOMY_CHIP_TEST_ID, <AutonomyChip autonomy={84} key="a" />],
   ])("%s is focusable", (testId, element) => {
     render(element);
     expect(screen.getByTestId(testId).getAttribute("tabindex")).toBe("0");
   });
 });
 
-describe("SessionAutonomyChip", () => {
+describe("AutonomyChip", () => {
   it.each([
     [84, "High"],
     [50, "Mixed"],
     [12, "Guided"],
-  ])("renders score %i as the %s tier pill, score tooltip-only", (score, tier) => {
-    render(<SessionAutonomyChip autonomy={score} />);
-    const chip = screen.getByTestId(SESSION_AUTONOMY_CHIP_TEST_ID);
-    // The tier WORD is the cell content; the numeric score renders nowhere in
-    // the cell (the prototype's call — it lives in the tooltip only).
-    expect(chip).toHaveTextContent(tier);
-    expect(chip.textContent).not.toContain(String(score));
-    expect(screen.getByTestId("tooltip-content")).toHaveTextContent(
-      `Autonomy score ${score} of 100`
-    );
-  });
+  ])(
+    "renders score %i as the %s tier pill, score tooltip-only",
+    (score, tier) => {
+      render(<AutonomyChip autonomy={score} />);
+      const chip = screen.getByTestId(SESSION_AUTONOMY_CHIP_TEST_ID);
+      // The tier WORD is the cell content; the numeric score renders nowhere in
+      // the cell (the prototype's call — it lives in the tooltip only).
+      expect(chip).toHaveTextContent(tier);
+      expect(chip.textContent).not.toContain(String(score));
+      expect(screen.getByTestId("tooltip-content")).toHaveTextContent(
+        `Autonomy score ${score} of 100`
+      );
+    }
+  );
 });
 
 /**

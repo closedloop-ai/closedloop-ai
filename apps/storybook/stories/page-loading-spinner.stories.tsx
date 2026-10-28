@@ -8,9 +8,9 @@ const LoadingCanvas = () => (
 );
 
 const meta = {
-  title: "Design System/Primitives/Page Loading Spinner",
+  title: "Primitives v1.0/Feedback & Status/Page Loading Spinner",
   component: LoadingCanvas,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
 } satisfies Meta<typeof LoadingCanvas>;
 
 export default meta;

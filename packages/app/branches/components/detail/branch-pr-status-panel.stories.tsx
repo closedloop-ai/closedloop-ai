@@ -1,5 +1,14 @@
+import type { BranchPageDetail } from "@repo/api/src/types/branch";
 import { BranchStatus } from "@repo/api/src/types/branch";
-import { ReviewDecision } from "@repo/api/src/types/branch-checks";
+import {
+  BranchViewCheckKind,
+  BranchViewChecksProviderState,
+} from "@repo/api/src/types/branch-check-projection";
+import {
+  ChecksStatus,
+  ReviewDecision,
+} from "@repo/api/src/types/branch-checks";
+import { BRANCH_DETAIL_MEASURED_CHECKS_FLAG_KEY } from "@repo/api/src/types/branch-detail-measured-checks-flag";
 import {
   branchSelectedPullRequestChecksEvidenceUnavailable,
   projectBranchSelectedPullRequestChecks,
@@ -17,6 +26,8 @@ import {
   SelectedPullRequestEvidenceAvailability,
   SelectedPullRequestEvidenceUnavailableReason,
 } from "@repo/api/src/types/selected-pull-request-evidence";
+import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
+import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
 import type { Meta, StoryObj } from "@storybook/react";
 import { userEvent, within } from "storybook/test";
 import { makeBranchDetail } from "../../__tests__/branch-fixtures";
@@ -31,9 +42,9 @@ const CHECKS_BUTTON_NAME = /checks/i;
  * check-link geometry visible rather than leaving it to unit assertions.
  */
 const meta = {
-  title: "App Core/Branches/Branch PR Status Panel",
+  title: "Composites v1.0/Branches/Branch PR Status Panel",
   component: BranchPrStatusPanel,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   decorators: [
     (Story) => (
       <div className="w-[420px] p-4">
@@ -100,6 +111,189 @@ export const NoSelectedPullRequest: Story = {
   },
 };
 
+/**
+ * ISS-8241 Half A, flag ON. The five states this box must keep apart: the four
+ * non-answers, each in its own words, plus the measured population itself with
+ * the rows and tally behind it — and, on that last one, the recorded-population
+ * line that has to appear the moment the list in hand is short of its own count.
+ * Every story below mounts the flag adapter; the stories above deliberately do
+ * not, so they keep covering the flag-OFF live render that ships today.
+ */
+export const MeasuredConclusion: Story = {
+  args: { detail: measuredDetail(ChecksStatus.Failing, measuredProjection()) },
+  decorators: [withMeasuredChecksFlag],
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      within(canvasElement).getByRole("button", { name: CHECKS_BUTTON_NAME })
+    );
+  },
+};
+
+export const MeasuredNothingReported: Story = {
+  args: { detail: measuredDetail(null, undefined) },
+  decorators: [withMeasuredChecksFlag],
+};
+
+/**
+ * The fourth non-answer: the read succeeded and counted a population, and none
+ * of its rows arrived. Nothing renders beneath the line, because the rows that
+ * count promised are the very thing missing.
+ */
+export const MeasuredRowsMissing: Story = {
+  args: {
+    detail: measuredDetail(ChecksStatus.Passing, {
+      ...measuredProjection(),
+      items: [],
+    }),
+  },
+  decorators: [withMeasuredChecksFlag],
+};
+
+/** A population the producer capped: the tally must not read as the whole list. */
+export const MeasuredTruncatedPopulation: Story = {
+  args: {
+    detail: measuredDetail(ChecksStatus.Failing, {
+      ...measuredProjection(),
+      truncated: true,
+      totalCount: 40,
+    }),
+  },
+  decorators: [withMeasuredChecksFlag],
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      within(canvasElement).getByRole("button", { name: CHECKS_BUTTON_NAME })
+    );
+  },
+};
+
+/**
+ * ISS-8629, the state the ruling turns on: every row in hand passed, and the
+ * population is not all here. The summary keeps its tally and its recorded-
+ * population line and gives up only the GREEN, because "passing" is a claim
+ * about checks nobody has fetched — Kaito, 2026-08-31. The wire says UNKNOWN
+ * over this same population, and now so does the tone.
+ */
+export const MeasuredIncompletePassing: Story = {
+  args: {
+    detail: measuredDetail(ChecksStatus.Unknown, {
+      ...measuredProjection(),
+      totalCount: 9,
+      items: measuredProjection().items.slice(0, 1),
+    }),
+  },
+  decorators: [withMeasuredChecksFlag],
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      within(canvasElement).getByRole("button", { name: CHECKS_BUTTON_NAME })
+    );
+  },
+};
+
+/**
+ * ISS-8629, the capped population: the producer stopped counting, so every row
+ * it counted is in hand and its total is still a floor. "1 of 1 recorded checks"
+ * would tell the reader everything is here under a tone withheld because it is
+ * not, so this state says so in its own words instead.
+ */
+export const MeasuredCappedPopulation: Story = {
+  args: {
+    detail: measuredDetail(ChecksStatus.Unknown, {
+      ...measuredProjection(),
+      totalCount: 1,
+      truncated: true,
+      items: measuredProjection().items.slice(0, 1),
+    }),
+  },
+  decorators: [withMeasuredChecksFlag],
+};
+
+export const MeasuredEmptyPopulation: Story = {
+  args: {
+    detail: measuredDetail(ChecksStatus.Unknown, {
+      ...measuredProjection(),
+      providerState: BranchViewChecksProviderState.NoChecks,
+      totalCount: 0,
+      items: [],
+    }),
+  },
+  decorators: [withMeasuredChecksFlag],
+};
+
+export const MeasuredProviderReadFailed: Story = {
+  args: {
+    detail: measuredDetail(ChecksStatus.Passing, {
+      ...measuredProjection(),
+      providerState: BranchViewChecksProviderState.ProviderUnavailable,
+      totalCount: 0,
+      items: [],
+    }),
+  },
+  decorators: [withMeasuredChecksFlag],
+};
+
+function withMeasuredChecksFlag(Story: () => React.JSX.Element) {
+  return (
+    <FeatureFlagAdapterProvider
+      adapter={createStaticFeatureFlagAdapter({
+        enabledFlags: [BRANCH_DETAIL_MEASURED_CHECKS_FLAG_KEY],
+      })}
+    >
+      <Story />
+    </FeatureFlagAdapterProvider>
+  );
+}
+
+function measuredDetail(
+  checksStatus: ChecksStatus | null,
+  selectedPullRequestChecksProjection: BranchPageDetail["selectedPullRequestChecksProjection"]
+): BranchPageDetail {
+  return {
+    ...selectedDetail([SelectedPullRequestCheckCategory.Successful]),
+    checksStatus,
+    checksPassed: null,
+    checksTotal: selectedPullRequestChecksProjection?.totalCount ?? null,
+    ...(selectedPullRequestChecksProjection
+      ? { selectedPullRequestChecksProjection }
+      : {}),
+  };
+}
+
+function measuredProjection() {
+  return {
+    headSha: HEAD_SHA,
+    providerState: BranchViewChecksProviderState.Available,
+    unavailableReason: null,
+    totalCount: 3,
+    truncated: false,
+    items: [
+      {
+        id: "build",
+        kind: BranchViewCheckKind.CheckRun,
+        name: "Build",
+        status: "COMPLETED",
+        conclusion: "SUCCESS",
+        targetUrl: "https://ci.example.test/build",
+      },
+      {
+        id: "unit",
+        kind: BranchViewCheckKind.CheckRun,
+        name: "Unit tests",
+        status: "COMPLETED",
+        conclusion: "FAILURE",
+        targetUrl: null,
+      },
+      {
+        id: "e2e",
+        kind: BranchViewCheckKind.CheckRun,
+        name: "Desktop E2E",
+        status: "IN_PROGRESS",
+        conclusion: null,
+        targetUrl: null,
+      },
+    ],
+  };
+}
+
 function selectedDetail(
   categories: SelectedPullRequestCheckCategoryType[],
   completeness: SelectedPullRequestChecksCompleteness = SelectedPullRequestChecksCompleteness.Complete,
@@ -109,10 +303,10 @@ function selectedDetail(
     ? branchSelectedPullRequestChecksEvidenceUnavailable({
         status: SelectedPullRequestEvidenceAvailability.Unavailable,
         reason: SelectedPullRequestEvidenceUnavailableReason.ProviderFailure,
-      }).response
+      })
     : projectBranchSelectedPullRequestChecks(
         checksEvidence(categories, completeness)
-      ).response;
+      );
   return makeBranchDetail({
     status: BranchStatus.Open,
     selectedPullRequest: {
@@ -128,6 +322,8 @@ function selectedDetail(
       closedAt: null,
       mergedAt: null,
       body: "Description",
+      baseRefName: "main",
+      authorLogin: "octocat",
       headRefOid: HEAD_SHA,
       mergeCommitSha: null,
       changedFiles: 3,

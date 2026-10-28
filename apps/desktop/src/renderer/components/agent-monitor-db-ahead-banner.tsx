@@ -1,7 +1,7 @@
 import { Button } from "@closedloop-ai/design-system/components/ui/button";
 import { TriangleAlert } from "lucide-react";
 import { type ReactNode, useCallback } from "react";
-import { useTerminalAgentMonitorStatus } from "../hooks/use-ingest-progress";
+import { useTerminalAgentMonitorStatus } from "../hooks/use-agent-monitor-status";
 
 /**
  * ISS-4834 (Pascoe copy pass): effect first, cause second, and the button

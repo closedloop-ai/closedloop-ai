@@ -17,25 +17,35 @@ import { getLiveblocksApiClient } from "@repo/collaboration/server/webhook";
 import { parseArtifactRoomId } from "@repo/collaboration/shared/room-utils";
 import { log } from "@repo/observability/log";
 import { commentsService } from "../../comments/service";
+import { isDocumentCommentsSwitchLatched } from "../../comments/service/comment-store-switch";
 import { unionProviderParticipants } from "../../comments/thread-participants";
+import {
+  type LiveblocksHandlerOutcome,
+  LiveblocksWebhookOutcome,
+} from "./webhook-outcome";
 
-export async function handleThreadCreated(
+export function handleThreadCreated(
   event: ThreadCreatedEvent
+): Promise<LiveblocksHandlerOutcome> {
+  return projectLiveblocksEvent(event, projectThreadCreated);
+}
+
+async function projectThreadCreated(
+  event: ThreadCreatedEvent,
+  organizationId: string
 ): Promise<void> {
   const { roomId, threadId, createdBy } = event.data;
-  const organizationId = getOrganizationId(roomId);
-  if (!organizationId) {
-    return;
-  }
-
   const client = requireApiClient();
   const thread = await client.getThread({ roomId, threadId });
 
-  await commentsService.upsertThreadFromLiveblocks(
+  const stored = await commentsService.upsertThreadFromLiveblocks(
     organizationId,
     thread,
     createdBy
   );
+  if (!stored) {
+    return;
+  }
 
   for (const comment of thread.comments) {
     await commentsService.upsertCommentFromLiveblocks(
@@ -48,28 +58,32 @@ export async function handleThreadCreated(
 
 export function handleCommentCreated(
   event: CommentCreatedEvent
-): Promise<void> {
-  return upsertCommment(event);
+): Promise<LiveblocksHandlerOutcome> {
+  return projectLiveblocksEvent(event, upsertCommment);
 }
 
-export function handleCommentEdited(event: CommentEditedEvent): Promise<void> {
-  return upsertCommment(event);
+export function handleCommentEdited(
+  event: CommentEditedEvent
+): Promise<LiveblocksHandlerOutcome> {
+  return projectLiveblocksEvent(event, upsertCommment);
 }
 
 async function upsertCommment(
-  event: CommentCreatedEvent | CommentEditedEvent
+  event: CommentCreatedEvent | CommentEditedEvent,
+  organizationId: string
 ): Promise<void> {
   const { roomId, threadId, commentId } = event.data;
-  const organizationId = getOrganizationId(roomId);
-  if (!organizationId) {
-    return;
-  }
-
   const client = requireApiClient();
 
   // Thread-first upsert: ensure parent thread exists
   const thread = await client.getThread({ roomId, threadId });
-  await commentsService.upsertThreadFromLiveblocks(organizationId, thread);
+  const stored = await commentsService.upsertThreadFromLiveblocks(
+    organizationId,
+    thread
+  );
+  if (!stored) {
+    return;
+  }
 
   const comment = await client.getComment({ roomId, threadId, commentId });
   await commentsService.upsertCommentFromLiveblocks(
@@ -79,45 +93,36 @@ async function upsertCommment(
   );
 }
 
-export async function handleCommentDeleted(
+export function handleCommentDeleted(
   event: CommentDeletedEvent
-): Promise<void> {
-  const { roomId, commentId } = event.data;
-  const organizationId = getOrganizationId(roomId);
-  if (!organizationId) {
-    return;
-  }
-
-  await commentsService.softDeleteComment(organizationId, commentId);
+): Promise<LiveblocksHandlerOutcome> {
+  return projectLiveblocksEvent(event, projectCommentDeleted);
 }
 
-export async function handleCommentReactionAdded(
+async function projectCommentDeleted(
+  event: CommentDeletedEvent,
+  organizationId: string
+): Promise<void> {
+  await commentsService.softDeleteComment(organizationId, event.data.commentId);
+}
+
+export function handleCommentReactionAdded(
   event: CommentReactionAdded
-): Promise<void> {
-  const { roomId, threadId, commentId } = event.data;
-  const organizationId = getOrganizationId(roomId);
-  if (!organizationId) {
-    return;
-  }
-
-  const client = requireApiClient();
-  const comment = await client.getComment({ roomId, threadId, commentId });
-  await commentsService.upsertCommentFromLiveblocks(
-    organizationId,
-    threadId,
-    comment
-  );
+): Promise<LiveblocksHandlerOutcome> {
+  return projectLiveblocksEvent(event, refetchReactedComment);
 }
 
-export async function handleCommentReactionRemoved(
+export function handleCommentReactionRemoved(
   event: CommentReactionRemoved
+): Promise<LiveblocksHandlerOutcome> {
+  return projectLiveblocksEvent(event, refetchReactedComment);
+}
+
+async function refetchReactedComment(
+  event: CommentReactionAdded | CommentReactionRemoved,
+  organizationId: string
 ): Promise<void> {
   const { roomId, threadId, commentId } = event.data;
-  const organizationId = getOrganizationId(roomId);
-  if (!organizationId) {
-    return;
-  }
-
   const client = requireApiClient();
   const comment = await client.getComment({ roomId, threadId, commentId });
   await commentsService.upsertCommentFromLiveblocks(
@@ -127,27 +132,30 @@ export async function handleCommentReactionRemoved(
   );
 }
 
-export async function handleThreadDeleted(
+export function handleThreadDeleted(
   event: ThreadDeletedEvent
-): Promise<void> {
-  const { roomId, threadId } = event.data;
-  const organizationId = getOrganizationId(roomId);
-  if (!organizationId) {
-    return;
-  }
-
-  await commentsService.deleteThread(organizationId, threadId);
+): Promise<LiveblocksHandlerOutcome> {
+  return projectLiveblocksEvent(event, projectThreadDeleted);
 }
 
-export async function handleThreadResolved(
+async function projectThreadDeleted(
+  event: ThreadDeletedEvent,
+  organizationId: string
+): Promise<void> {
+  await commentsService.deleteThread(organizationId, event.data.threadId);
+}
+
+export function handleThreadResolved(
   event: ThreadMarkedAsResolvedEvent
+): Promise<LiveblocksHandlerOutcome> {
+  return projectLiveblocksEvent(event, projectThreadResolved);
+}
+
+async function projectThreadResolved(
+  event: ThreadMarkedAsResolvedEvent,
+  organizationId: string
 ): Promise<void> {
   const { roomId, threadId, updatedAt, updatedBy } = event.data;
-  const organizationId = getOrganizationId(roomId);
-  if (!organizationId) {
-    return;
-  }
-
   const client = requireApiClient();
 
   // Thread-first upsert: ensure thread exists before updating status. This also
@@ -226,15 +234,17 @@ export async function handleThreadResolved(
   });
 }
 
-export async function handleThreadUnresolved(
+export function handleThreadUnresolved(
   event: ThreadMarkedAsUnresolvedEvent
+): Promise<LiveblocksHandlerOutcome> {
+  return projectLiveblocksEvent(event, projectThreadUnresolved);
+}
+
+async function projectThreadUnresolved(
+  event: ThreadMarkedAsUnresolvedEvent,
+  organizationId: string
 ): Promise<void> {
   const { roomId, threadId, updatedAt, updatedBy } = event.data;
-  const organizationId = getOrganizationId(roomId);
-  if (!organizationId) {
-    return;
-  }
-
   const client = requireApiClient();
 
   // Thread-first upsert: ensure thread exists before updating status. This also
@@ -338,3 +348,47 @@ function isSupersededEvent(
   }
   return eventTime < providerTime;
 }
+
+/**
+ * PLN-2187 T-7.4: projects a thread or comment event for its artifact room's
+ * organization, unless that organization's switch to Postgres document
+ * comments is already latched. Only the request path latches the switch; this
+ * reads it. A dropped event is logged as
+ * `comments.liveblocks_event_after_switch` and reported to the route as
+ * ignored. A room that is not an artifact room projects nothing, as before.
+ */
+async function projectLiveblocksEvent<Event extends LiveblocksCommentEvent>(
+  event: Event,
+  project: (event: Event, organizationId: string) => Promise<void>
+): Promise<LiveblocksHandlerOutcome> {
+  const organizationId = getOrganizationId(event.data.roomId);
+  if (!organizationId) {
+    return LiveblocksWebhookOutcome.Processed;
+  }
+  if (!(await isDocumentCommentsSwitchLatched(organizationId))) {
+    await project(event, organizationId);
+    return LiveblocksWebhookOutcome.Processed;
+  }
+  log.warn(LIVEBLOCKS_EVENT_AFTER_SWITCH_EVENT, {
+    event: LIVEBLOCKS_EVENT_AFTER_SWITCH_EVENT,
+    organizationId,
+    eventType: event.type,
+    roomId: event.data.roomId,
+    threadId: event.data.threadId,
+  });
+  return LiveblocksWebhookOutcome.Ignored;
+}
+
+type LiveblocksCommentEvent =
+  | CommentCreatedEvent
+  | CommentDeletedEvent
+  | CommentEditedEvent
+  | CommentReactionAdded
+  | CommentReactionRemoved
+  | ThreadCreatedEvent
+  | ThreadDeletedEvent
+  | ThreadMarkedAsResolvedEvent
+  | ThreadMarkedAsUnresolvedEvent;
+
+export const LIVEBLOCKS_EVENT_AFTER_SWITCH_EVENT =
+  "comments.liveblocks_event_after_switch";

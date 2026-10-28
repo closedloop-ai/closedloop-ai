@@ -67,3 +67,41 @@ export const READY_AGENT_MONITOR_RUNTIME_STATUS: AgentMonitorRuntimeStatus = {
   dbAhead: false,
   reason: null,
 } as const;
+
+/**
+ * ISS-9082: whether the AGENT HOOK capture lane is alive, for the telemetry
+ * heartbeat. Not every capture lane — the OTLP receiver's own bind failure is
+ * the same false-healthy on the other port and is deliberately NOT folded in
+ * here (ISS-9180): `OtlpHttpReceiver` gets an `onBindError` that only logs,
+ * while `AgentHookListener` gets the terminal-failure handler this function
+ * reads, so an `EADDRINUSE` on the receiver port still reports `ready`. What a
+ * partial failure should REPORT is the open question there — `failed`
+ * over-claims on the lane that matters most, and anything else widens a
+ * published closed enum.
+ *
+ * `kind` alone is not that answer either. It tracks the local DB runtime, which
+ * `bootstrapAgentDashboardRuntime` advances to `ready` as soon as the runtime
+ * resolves — while the hook listener that actually receives agent events is
+ * started fire-and-forget and RESOLVES rather than rejects on a bind failure
+ * ("agent capture port is already in use; agent monitoring is off this
+ * session"). That failure lands on the separate terminal-failure flag, so a
+ * dead capture reads `ready` on `kind` for the life of the process, which is
+ * precisely the signal this heartbeat exists to refuse.
+ *
+ * Widening only: a terminal capture failure can turn a `ready` or `starting`
+ * into `failed`, never the reverse.
+ *
+ * Deliberately NOT folded back into the IPC status itself — `kind: failed`
+ * drives the renderer's "update required" treatment, which is the ISS-4714
+ * DB-ahead story and not this one. Changing what the user sees on a port
+ * collision is a product decision, not a telemetry fix.
+ */
+export function resolveCaptureLivenessStatus(
+  runtimeStatus: AgentMonitorRuntimeStatus,
+  captureTerminallyFailed: boolean
+): AgentMonitorRuntimeStatusKind {
+  if (captureTerminallyFailed) {
+    return AgentMonitorRuntimeStatusKind.Failed;
+  }
+  return runtimeStatus.kind;
+}

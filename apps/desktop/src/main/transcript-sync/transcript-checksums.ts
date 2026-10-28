@@ -1,17 +1,11 @@
 /**
  * @file transcript-checksums.ts
- * @description Streaming checksums + newline-boundary helpers for the transcript
- * archive lane (FEA-2715). The control plane (PLN-1287) requires, for the window
- * `[0, planEndOffset)`, a sha256 (64 lowercase hex — archive identity /
- * idempotency) and a CRC64NVME (base64, exactly as S3 reports `ChecksumCRC64NVME`
- * — integrity). Both are computed in a SINGLE streamed pass over the byte range
- * so multi-GB transcripts are never loaded into memory (PRD FR4 / AC5).
+ * @description Streaming byte-window and newline-boundary helpers for the
+ * transcript archive lane (FEA-2715).
  */
-import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { open } from "node:fs/promises";
 import { Readable } from "node:stream";
-import { Crc64Nvme } from "@aws-sdk/crc64-nvme";
 
 /** Checksums over a `[start, end)` window plus the exact byte count streamed. */
 export type WindowChecksums = {
@@ -30,9 +24,9 @@ const BACKSCAN_BLOCK_BYTES = 64 * 1024;
  * Open a streaming reader over the `[start, end)` byte window (bytes are
  * streamed, never buffered, so multi-GB transcripts are never loaded into
  * memory — PRD FR4 / AC5). An empty or inverted range yields an already-ended
- * empty stream. Shared by the checksum pass (`digestStream`) and the executor's
- * upload path so the inclusive/exclusive boundary adjustment and empty-range
- * guard are defined once.
+ * empty stream. Shared by redacted upload staging and its returned range reader
+ * so the inclusive/exclusive boundary adjustment and empty-range guard are
+ * defined once.
  */
 export function openBoundedReadStream(
   path: string,
@@ -44,49 +38,6 @@ export function openBoundedReadStream(
   }
   // Node's `end` option is INCLUSIVE, so [start, end) => end: end - 1.
   return createReadStream(path, { start, end: end - 1 });
-}
-
-async function digestStream(
-  filePath: string,
-  start: number,
-  end: number
-): Promise<WindowChecksums> {
-  const sha = createHash("sha256");
-  const crc = new Crc64Nvme();
-  let byteLength = 0;
-
-  if (end > start) {
-    await new Promise<void>((resolve, reject) => {
-      const stream = openBoundedReadStream(filePath, start, end);
-      stream.on("data", (chunk) => {
-        const buf = chunk as Buffer;
-        sha.update(buf);
-        crc.update(buf);
-        byteLength += buf.length;
-      });
-      stream.on("error", reject);
-      stream.on("end", resolve);
-    });
-  }
-
-  const crcDigest = await crc.digest();
-  return {
-    sha256Hex: sha.digest("hex"),
-    crc64NvmeBase64: Buffer.from(crcDigest).toString("base64"),
-    byteLength,
-  };
-}
-
-/**
- * Compute sha256 + CRC64NVME over `[0, endOffset)` — the full synced window the
- * `sync-plan` / `complete` requests describe. `endOffset === 0` yields the
- * checksums of the empty input.
- */
-export function computeWindowChecksums(
-  filePath: string,
-  endOffset: number
-): Promise<WindowChecksums> {
-  return digestStream(filePath, 0, endOffset);
 }
 
 /**

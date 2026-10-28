@@ -59,8 +59,8 @@ import {
  * imported from `../../src/shared/feature-flags`: that module's extension-less
  * `@repo/api/src/types/...` specifiers do not resolve under Playwright's ESM
  * loader, and a spec-level import failure aborts the WHOLE desktop-e2e suite at
- * load time (see the same note in `agents-source-provenance.spec.ts` and
- * `agents-loc-per-dollar-display.spec.ts`). The copy is pinned by the ISS-5500
+ * load time (see the same note in `agents-source-provenance.spec.ts`).
+ * The copy is pinned by the ISS-5500
  * case in `apps/desktop/test/feature-flags-shared-ui.test.ts`, which asserts this
  * exact string against `AGENTS_DEFINITION_EMPTY_STATE_FLAG_KEY`, so a rename
  * fails there rather than silently leaving this spec seeding a key nothing reads.
@@ -123,7 +123,11 @@ test.describe("Agent detail definition absence reason, Labs gate ON (ISS-5500)",
         // Positive control: the Definition panel mounted through the renderer's
         // real local IPC source. Without it an absence assertion is vacuous.
         await expect(
-          page.getByRole("heading", { exact: true, name: DEFINITION_HEADING })
+          page.getByRole("heading", {
+            exact: true,
+            level: 2,
+            name: DEFINITION_HEADING,
+          })
         ).toBeVisible({ timeout: MOUNT_TIMEOUT_MS });
 
         await expect(
@@ -163,7 +167,11 @@ test.describe("Agent detail definition absence reason, Labs gate ON (ISS-5500)",
         await gotoHash(page, `/agents/${COMPONENT_SLUG}`);
 
         await expect(
-          page.getByRole("heading", { exact: true, name: DEFINITION_HEADING })
+          page.getByRole("heading", {
+            exact: true,
+            level: 2,
+            name: DEFINITION_HEADING,
+          })
         ).toBeVisible({ timeout: MOUNT_TIMEOUT_MS });
 
         await expect(
@@ -200,7 +208,11 @@ test.describe("Agent detail definition absence reason, Labs gate OFF (ISS-5500 d
         await gotoHash(page, `/agents/${COMPONENT_SLUG}`);
 
         await expect(
-          page.getByRole("heading", { exact: true, name: DEFINITION_HEADING })
+          page.getByRole("heading", {
+            exact: true,
+            level: 2,
+            name: DEFINITION_HEADING,
+          })
         ).toBeVisible({ timeout: MOUNT_TIMEOUT_MS });
 
         await expect(

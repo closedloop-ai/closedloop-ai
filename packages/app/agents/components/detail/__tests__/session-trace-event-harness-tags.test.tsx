@@ -12,7 +12,8 @@
 
 import { cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SessionTrace, type SessionTraceItem } from "../session-trace";
+import { SessionTrace } from "../session-trace";
+import type { SessionTraceItem } from "../session-trace-groups";
 
 const COMMAND_OUTPUT_LABEL = /Command output/;
 const REVIEW_LABEL = /\/review/;

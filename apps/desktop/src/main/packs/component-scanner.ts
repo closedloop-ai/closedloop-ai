@@ -28,10 +28,7 @@ import {
   AgentComponentKind,
   Harness,
 } from "@repo/api/src/types/agent-component";
-import {
-  escapeSqliteLikePattern,
-  PLUGIN_CHILD_KINDS_SQL_LIST,
-} from "../database/db-helpers.js";
+import { PLUGIN_CHILD_KINDS_SQL_LIST } from "../database/db-helpers.js";
 import type { DesktopPrisma } from "../database/prisma-client.js";
 import { gatewayLog } from "../logging/gateway-logger.js";
 import {
@@ -39,35 +36,28 @@ import {
   RESERVED_PLUGIN_PACK_IDS,
   readClaudeInstalledPluginRegistry,
 } from "./claude-plugin-registry.js";
+import {
+  applyComponentTombstone,
+  reserveComponentOrderingKey,
+} from "./component-tombstone.js";
+import {
+  buildChildCandidatePageSql,
+  buildPackLinkClaimSql,
+  type ChildOwnershipRow,
+  comparePackClaimSpecificity,
+  groupChildrenByNewOwner,
+  PACK_LINK_READ_PAGE,
+  PACK_LINK_WRITE_CHUNK,
+  type PackLinkClaim,
+  packLinkClaimParams,
+  selectTombstonedPackIdsToClear,
+} from "./pack-link-ownership.js";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export type PackScannerDb = DesktopPrisma;
-
-/** One or more trailing `/` on an otherwise well-formed install path. */
-const TRAILING_SEPARATOR_RE = /\/+$/;
-
-/**
- * ISS-6094: strip trailing separators from a pack's stored `install_path`
- * before it is used as a match root.
- *
- * The registry reader accepts whatever non-empty `installPath` the harness
- * wrote, while child rows carry `path.join`-normalized paths that never keep a
- * trailing separator. So a pack stored as `…/plugin/` compared unequal to its
- * own directory AND built the prefix `…/plugin//%`, which matches nothing under
- * `…/plugin/skills/…` — the pack silently adopted none of its children and
- * rolled up zero. Normalizing once, before BOTH bound values, is what keeps the
- * exact-match and prefix-match halves talking about the same directory.
- *
- * A path that is nothing but separators (`/`) is returned unchanged: there is no
- * shorter root to fall back to, and emptying it would match every row.
- */
-function normalizePackRoot(installPath: string): string {
-  const trimmed = installPath.replace(TRAILING_SEPARATOR_RE, "");
-  return trimmed === "" ? installPath : trimmed;
-}
 
 export type ComponentScannerSummary = {
   upserted: number;
@@ -148,7 +138,8 @@ function deterministicPluginComponentId(
  * continue.
  */
 export async function projectPacksToComponents(
-  db: PackScannerDb
+  db: PackScannerDb,
+  packLinkChunkSize: number = PACK_LINK_WRITE_CHUNK
 ): Promise<ComponentScannerSummary> {
   const summary: ComponentScannerSummary = {
     upserted: 0,
@@ -212,14 +203,20 @@ export async function projectPacksToComponents(
       await upsertPluginComponent(db, compId, pack, now, summary);
     } else {
       // Tombstone the corresponding plugin component row.
-      await tombstonePluginComponent(db, compId, pack.uninstalledAt, summary);
+      await tombstonePluginComponent(
+        db,
+        compId,
+        pack.uninstalledAt,
+        now,
+        summary
+      );
     }
   }
 
   // Reconcile the child `pack_id` links: release the ones a now-uninstalled pack
   // held, then back-fill every child kind the plugin usage rollup joins so it can
   // sum their invocation counts (T-13.4, widened by ISS-6094).
-  await backfillChildPackIds(db, packs, summary);
+  await backfillChildPackIds(db, packs, now, packLinkChunkSize, summary);
 
   return summary;
 }
@@ -284,22 +281,31 @@ async function upsertPluginComponent(
   }
 }
 
+/**
+ * Mirror an `agent_packs` tombstone onto its projected plugin component row.
+ *
+ * ISS-6881: the write goes through {@link applyComponentTombstone} so it also
+ * advances the sync ordering key — the component-sync cursor pages by
+ * `(last_seen_at, id)`, so a tombstone that left the ordering key behind the
+ * persisted cursor stayed invisible to the lane and the uninstall never reached the
+ * cloud. The scan instant is only a floor for that key, never the key itself: the
+ * pack's own `uninstalledAt` belongs to whichever earlier scan retired it, and `now`
+ * ties with every sibling row this same scan writes. See that module's header.
+ */
 async function tombstonePluginComponent(
   db: PackScannerDb,
   compId: string,
   uninstalledAt: string,
+  now: string,
   summary: ComponentScannerSummary
 ): Promise<void> {
   try {
-    await db.write((client) =>
-      client.$executeRawUnsafe(
-        `UPDATE agent_components
-         SET uninstalled_at = $1
-         WHERE id = $2 AND uninstalled_at IS NULL`,
-        uninstalledAt,
-        compId
-      )
-    );
+    await applyComponentTombstone(db, {
+      uninstalledAt,
+      scanInstant: now,
+      whereSql: "id = $3 AND uninstalled_at IS NULL",
+      whereParams: [compId],
+    });
     summary.tombstoned++;
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -343,6 +349,49 @@ async function tombstonePluginComponent(
  * `projectPacksToComponents` into `runPackScanPostSteps`, which both db-host
  * pack-scan store ops run, so this is the first release in which the backfill
  * executes on a user's machine at all.
+ *
+ * ISS-6905: `pack_id` is ON THE COMPONENT SYNC WIRE (`component-sync-source.ts`
+ * maps it to `SyncedComponent.packId`), so this UPDATE is a mutation that must
+ * RE-ENTER the keyset lane — which pages by `(COALESCE(last_seen_at,''), id)`.
+ * Writing `pack_id` alone left the row at its existing ordering key, so once the
+ * cursor had paged past it the new link never reached the cloud and org inventory
+ * kept attributing the child to its old pack (or to none) indefinitely. The key
+ * comes from {@link reserveComponentOrderingKey} — the same owner the tombstone
+ * writers use — rather than from `now`, because one scan stamps one `now` across
+ * every row it writes and the lane runs concurrently: a row landing at `(now, idA)`
+ * after the lane acknowledged a sibling at `(now, idB >= idA)` satisfies neither
+ * keyset disjunct. Reserving inside the `write` task is what makes the ORDERING-KEY
+ * read and the UPDATE one atomic read-modify-write; see that module's header. That
+ * claim covers only those two statements. The candidate-row read below runs on a
+ * reader connection OUTSIDE any write task, so the owner it resolves is a decision
+ * about a committed snapshot — which is why the UPDATE re-asserts the whole of that
+ * snapshot (`id`, `install_path`, `component_kind`, and the `pack_id` it is changing
+ * FROM) rather than trusting it to still hold. `install_path` is the load-bearing
+ * half: `upsertDefinition` moves a child's path under the same id, so an id-only
+ * predicate would stamp a moved row with the pack that owned it where it used to
+ * live. {@link buildPackLinkClaimSql} carries that argument in full.
+ *
+ * The read is KEYSET-PAGED on `id` ({@link PACK_LINK_READ_PAGE}), each page resolved
+ * and written before the next is read, so peak row residency is one page rather than
+ * the whole plugin-child inventory.
+ *
+ * The `pack_id IS NULL OR pack_id != $1` guard is what bounds the re-sync cost:
+ * it matches only rows whose `pack_id` actually CHANGES, so a scan that finds
+ * nothing new writes nothing and re-enters nothing. The added lane volume is
+ * exactly one row per genuine link change, which is the floor for delivering it
+ * at all — not one row per scan.
+ *
+ * Advancing the key also refreshes what `shared-agent-components-api.ts` presents as
+ * "last observed", for a row selected by its STORED `install_path` rather than by a
+ * fresh on-disk check. That is inherent to `last_seen_at` carrying both meanings —
+ * ISS-6881 made it the sync ordering key, and a tombstone already advances it for a
+ * component the scan just found GONE. It is recorded here because this widens the set
+ * of mutations that touch it, and it is bounded: only a row whose owning pack actually
+ * changed is written at all.
+ *
+ * `chunkSize` exists so the multi-chunk write path is reachable from a test without
+ * seeding `PACK_LINK_WRITE_CHUNK` rows, the same knob `component-tombstone-repair.ts`
+ * threads for the same reason.
  */
 async function backfillChildPackIds(
   db: PackScannerDb,
@@ -351,6 +400,8 @@ async function backfillChildPackIds(
     installPath: string;
     uninstalledAt: string | null;
   }>,
+  now: string,
+  chunkSize: number,
   summary: ComponentScannerSummary
 ): Promise<void> {
   // ISS-6094: reconcile FIRST, claim second. Skipping an uninstalled pack (the
@@ -359,7 +410,7 @@ async function backfillChildPackIds(
   // kept rolling up its ex-children's invocations forever. Clearing before the
   // active claims run also means a child that a still-installed nested pack owns
   // is immediately re-stamped by that pack in the same pass, never left NULL.
-  await clearTombstonedPackLinks(db, packs, summary);
+  await clearTombstonedPackLinks(db, packs, now, summary);
 
   // ISS-6094: claim in SHALLOWEST-FIRST order so the deepest matching pack is
   // the last writer, and therefore the owner. Packs are not all keyed on their
@@ -373,82 +424,32 @@ async function backfillChildPackIds(
     .filter((pack) => pack.uninstalledAt === null)
     .sort(comparePackClaimSpecificity);
 
-  for (const pack of claimOrder) {
+  const width = Math.max(1, Math.floor(chunkSize));
+  let afterId: string | null = null;
+  for (;;) {
+    let page: ChildOwnershipRow[];
     try {
-      // ISS-6094: match the pack's own directory or something strictly BENEATH
-      // it, never a sibling that merely shares a string prefix. A bare
-      // `LIKE '<installPath>%'` let a pack at `…/cache/git` claim every child of
-      // `…/cache/git-flow`, silently rolling one plugin's usage into another —
-      // and the widened kind list above exposes subagent/mcp children to that
-      // same mis-claim. `escapeSqliteLikePattern` (the store-wide LIKE escaper,
-      // shared with read-stores.ts / session-aggregate-filters.ts) neutralises
-      // `%`/`_`/`\` in the path itself, which are ordinary characters in a
-      // directory name but LIKE metacharacters here.
-      //
-      // Both bound values derive from ONE normalized root: a stored path that
-      // ends in a separator would otherwise build `<path>//%` and match none of
-      // the pack's own children (see `normalizePackRoot`).
-      const root = normalizePackRoot(pack.installPath);
-      const affected = await db.write((client) =>
-        client.$executeRawUnsafe(
-          `UPDATE agent_components
-           SET pack_id = $1
-           WHERE component_kind IN (${PLUGIN_CHILD_KINDS_SQL_LIST})
-             AND (install_path = $2 OR install_path LIKE $3 ESCAPE '\\')
-             AND (pack_id IS NULL OR pack_id != $1)`,
-          pack.packId,
-          root,
-          `${escapeSqliteLikePattern(root)}/%`
-        )
-      );
-      if (typeof affected === "number" && affected > 0) {
-        summary.packIdBackfills += affected;
-      }
+      page = await readChildCandidatePage(db, afterId);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       gatewayLog.warn(
         "component-scanner",
-        `backfillChildPackIds(${pack.packId}): ${msg}`
+        `backfillChildPackIds: failed to read child rows: ${msg}`
       );
+      return;
     }
+    const lastRow = page.at(-1);
+    if (lastRow === undefined) {
+      return;
+    }
+    for (const [packId, claims] of groupChildrenByNewOwner(page, claimOrder)) {
+      await claimChildrenForPack(db, packId, claims, now, width, summary);
+    }
+    if (page.length < PACK_LINK_READ_PAGE) {
+      return;
+    }
+    afterId = lastRow.id;
   }
-}
-
-/** The two fields the child-claim order is decided on. */
-type PackClaimOrderKey = {
-  packId: string;
-  installPath: string;
-};
-
-/**
- * ISS-6094: order two packs shallowest-first for the last-writer-wins child
- * claim, so the pack with the MOST SPECIFIC (longest) matching root ends up
- * owning a child that several packs' prefixes match.
- *
- * Length of the normalized root, not segment count: an ancestor's root is always
- * a strict string prefix of a descendant's, so it is always strictly shorter —
- * the two orderings agree wherever ancestry exists, and length needs no
- * splitting. Unrelated equal-length roots cannot both match one child, so their
- * relative order is arbitrary; it is still pinned (root, then packId) because an
- * unstable comparator would let a child's `pack_id` flap between scans and move
- * a plugin's invocations between dashboard refreshes.
- */
-function comparePackClaimSpecificity(
-  a: PackClaimOrderKey,
-  b: PackClaimOrderKey
-): number {
-  const rootA = normalizePackRoot(a.installPath);
-  const rootB = normalizePackRoot(b.installPath);
-  if (rootA.length !== rootB.length) {
-    return rootA.length - rootB.length;
-  }
-  if (rootA !== rootB) {
-    return rootA < rootB ? -1 : 1;
-  }
-  if (a.packId === b.packId) {
-    return 0;
-  }
-  return a.packId < b.packId ? -1 : 1;
 }
 
 /**
@@ -464,6 +465,19 @@ function comparePackClaimSpecificity(
  *
  * Scoped to `PLUGIN_CHILD_KINDS` so the pack's own `component_kind='plugin'`
  * row (which legitimately carries its `pack_id`) is never cleared.
+ *
+ * ISS-6905: the unlink advances the sync ordering key for the same reason the
+ * backfill above does — `pack_id` is on the component sync wire, and a mutation
+ * left behind the keyset cursor never reaches the cloud, so the child would go on
+ * being attributed to a pack the user removed. `pack_id = $1` already scopes the
+ * write to rows still pointing at THIS tombstoned pack, so a repeat scan matches
+ * nothing and costs the lane nothing.
+ *
+ * Which ids get released is {@link selectTombstonedPackIdsToClear}'s decision, not
+ * "every row with `uninstalled_at`": one logical pack id can hold several
+ * `agent_packs` installs, and releasing an id that still has an active one starts a
+ * per-scan release/re-claim loop that the ordering-key advance turns into permanent
+ * sync volume. See that helper for the gstack case it is derived from.
  */
 async function clearTombstonedPackLinks(
   db: PackScannerDb,
@@ -472,22 +486,23 @@ async function clearTombstonedPackLinks(
     installPath: string;
     uninstalledAt: string | null;
   }>,
+  now: string,
   summary: ComponentScannerSummary
 ): Promise<void> {
-  for (const pack of packs) {
-    if (pack.uninstalledAt === null) {
-      continue;
-    }
+  for (const packId of selectTombstonedPackIdsToClear(packs)) {
     try {
-      const affected = await db.write((client) =>
-        client.$executeRawUnsafe(
+      const affected = await db.write(async (client) => {
+        const orderingKey = await reserveComponentOrderingKey(client, now);
+        return await client.$executeRawUnsafe(
           `UPDATE agent_components
-           SET pack_id = NULL
+           SET pack_id = NULL,
+               last_seen_at = $2
            WHERE component_kind IN (${PLUGIN_CHILD_KINDS_SQL_LIST})
              AND pack_id = $1`,
-          pack.packId
-        )
-      );
+          packId,
+          orderingKey
+        );
+      });
       if (typeof affected === "number" && affected > 0) {
         summary.packIdUnlinks += affected;
       }
@@ -495,7 +510,66 @@ async function clearTombstonedPackLinks(
       const msg = e instanceof Error ? e.message : String(e);
       gatewayLog.warn(
         "component-scanner",
-        `clearTombstonedPackLinks(${pack.packId}): ${msg}`
+        `clearTombstonedPackLinks(${packId}): ${msg}`
+      );
+    }
+  }
+}
+
+/**
+ * One keyset page of plugin-child candidate rows, ordered by `id` after `afterId`.
+ *
+ * Split from the caller so the two bind shapes (first page, continuation) stay a
+ * detail of the read rather than a branch inside the claim loop. Throws; the caller
+ * owns the warn-and-stop.
+ */
+async function readChildCandidatePage(
+  db: PackScannerDb,
+  afterId: string | null
+): Promise<ChildOwnershipRow[]> {
+  const sql = buildChildCandidatePageSql(afterId !== null, PACK_LINK_READ_PAGE);
+  return await db.read((reader) =>
+    afterId === null
+      ? reader.$queryRawUnsafe<ChildOwnershipRow[]>(sql)
+      : reader.$queryRawUnsafe<ChildOwnershipRow[]>(sql, afterId)
+  );
+}
+
+/**
+ * Stamp one pack's resolved claims, `width` rows per statement.
+ *
+ * A failed chunk is warned and skipped rather than aborting the pass: the next scan
+ * re-resolves the same rows from their current paths, and one unwritable chunk must
+ * not cost every other pack its link.
+ */
+async function claimChildrenForPack(
+  db: PackScannerDb,
+  packId: string,
+  claims: readonly PackLinkClaim[],
+  now: string,
+  width: number,
+  summary: ComponentScannerSummary
+): Promise<void> {
+  for (let start = 0; start < claims.length; start += width) {
+    const chunk = claims.slice(start, start + width);
+    try {
+      const affected = await db.write(async (client) => {
+        const orderingKey = await reserveComponentOrderingKey(client, now);
+        return await client.$executeRawUnsafe(
+          buildPackLinkClaimSql(chunk.length),
+          packId,
+          orderingKey,
+          ...packLinkClaimParams(chunk)
+        );
+      });
+      if (typeof affected === "number" && affected > 0) {
+        summary.packIdBackfills += affected;
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      gatewayLog.warn(
+        "component-scanner",
+        `backfillChildPackIds(${packId}): ${msg}`
       );
     }
   }
@@ -693,11 +767,14 @@ async function upsertInstalledPluginComponent(
  * (external_id prefix `installed-plugin|`) so it never touches pack-projected
  * plugin rows or any other kind.
  *
- * Advances `last_seen_at` alongside `uninstalled_at` so the tombstone is
+ * Advances the sync ordering key alongside `uninstalled_at` so the tombstone is
  * re-selected by the component-sync cursor, which pages by `(last_seen_at, id)`
- * (see `listAgentComponentCursorRows` in sync-source.ts). A tombstone that left
- * `last_seen_at` behind the cursor watermark would never reach the cloud, so
- * the uninstall would silently not sync.
+ * (see `listAgentComponentCursorRows` in sync-source.ts). A tombstone left behind
+ * the cursor would never reach the cloud, so the uninstall would silently not sync.
+ * ISS-6881 moved that write into {@link applyComponentTombstone} — it was derived
+ * here and then copied into neither of the two sibling writers, which is precisely
+ * how they lost it, and stamping `now` was in any case not enough to clear a cursor
+ * the lane may already have advanced to a same-instant sibling row.
  */
 async function tombstoneMissingInstalledPlugins(
   db: PackScannerDb,
@@ -731,16 +808,12 @@ async function tombstoneMissingInstalledPlugins(
       continue;
     }
     try {
-      await db.write((client) =>
-        client.$executeRawUnsafe(
-          `UPDATE agent_components
-           SET uninstalled_at = $1,
-               last_seen_at = $1
-           WHERE id = $2 AND uninstalled_at IS NULL`,
-          now,
-          row.id
-        )
-      );
+      await applyComponentTombstone(db, {
+        uninstalledAt: now,
+        scanInstant: now,
+        whereSql: "id = $3 AND uninstalled_at IS NULL",
+        whereParams: [row.id],
+      });
       summary.tombstoned++;
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);

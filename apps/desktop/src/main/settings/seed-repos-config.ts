@@ -3,6 +3,7 @@ import path from "node:path";
 import {
   loadReposConfig,
   saveReposConfig,
+  withReposConfigLock,
 } from "../../server/operations/repos-config-utils.js";
 import { computeSymphonyDir } from "../../server/operations/symphony-utils.js";
 import { normalizeScopePath } from "../../shared/sandbox-policy.js";
@@ -44,7 +45,6 @@ export async function seedReposConfig(
     mkdirSync(configDir, { recursive: true });
 
     // Ensure worktreeParentDir + worktreeParentDirConfirmed are both set.
-    // The health check (health-check.ts:176) requires BOTH to be truthy.
     // Rules:
     //   - If worktreeParentDir is missing or outside the sandbox → overwrite
     //     to sandboxBaseDirectory + confirmed. A stale dir outside the sandbox
@@ -54,39 +54,43 @@ export async function seedReposConfig(
     //   - If worktreeParentDir is within the sandbox but not confirmed →
     //     set confirmed only.
     // Single load → mutate in-memory → single save.
-    const config = await loadReposConfig(configDir);
-    if (options.isCancelled?.()) {
-      return;
-    }
-    let dirty = false;
+    // Other writers (the deploy routes, add and remove repo) take the same
+    // lock, so this read-modify-write cannot drop their change (ISS-11414).
+    await withReposConfigLock(configDir, async () => {
+      const config = await loadReposConfig(configDir);
+      if (options.isCancelled?.()) {
+        return;
+      }
+      let dirty = false;
 
-    const existingDir = config.settings.worktreeParentDir;
-    const normalizedExisting = existingDir
-      ? normalizeScopePath(existingDir)
-      : null;
-    const isWithinSandbox =
-      normalizedExisting != null &&
-      (normalizedExisting === sandboxBaseDirectory ||
-        normalizedExisting.startsWith(sandboxBaseDirectory + path.sep));
+      const existingDir = config.settings.worktreeParentDir;
+      const normalizedExisting = existingDir
+        ? normalizeScopePath(existingDir)
+        : null;
+      const isWithinSandbox =
+        normalizedExisting != null &&
+        (normalizedExisting === sandboxBaseDirectory ||
+          normalizedExisting.startsWith(sandboxBaseDirectory + path.sep));
 
-    if (!(existingDir && isWithinSandbox)) {
-      config.settings = {
-        ...config.settings,
-        worktreeParentDir: sandboxBaseDirectory,
-        worktreeParentDirConfirmed: true,
-      };
-      dirty = true;
-    } else if (!config.settings.worktreeParentDirConfirmed) {
-      config.settings = {
-        ...config.settings,
-        worktreeParentDirConfirmed: true,
-      };
-      dirty = true;
-    }
+      if (!(existingDir && isWithinSandbox)) {
+        config.settings = {
+          ...config.settings,
+          worktreeParentDir: sandboxBaseDirectory,
+          worktreeParentDirConfirmed: true,
+        };
+        dirty = true;
+      } else if (!config.settings.worktreeParentDirConfirmed) {
+        config.settings = {
+          ...config.settings,
+          worktreeParentDirConfirmed: true,
+        };
+        dirty = true;
+      }
 
-    if (dirty && !options.isCancelled?.()) {
-      await saveReposConfig(config, configDir);
-    }
+      if (dirty && !options.isCancelled?.()) {
+        await saveReposConfig(config, configDir);
+      }
+    });
   } catch (err) {
     // Best-effort — never block onboarding/settings/boot
     const message = err instanceof Error ? err.message : String(err);

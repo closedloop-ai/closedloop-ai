@@ -13,7 +13,12 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { AutonomyBand } from "@repo/api/src/types/session-activity-metrics";
+import { test } from "vitest";
+import {
+  activityCoverageRawRead,
+  getActivityCoverage,
+} from "../src/main/database/activity-coverage-read.js";
 import {
   autonomyIndexFromTurns,
   backfillActivityMetrics,
@@ -23,7 +28,7 @@ import {
 } from "../src/main/database/activity-metrics.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 import {
-  AutonomyBand,
+  CohortAxis,
   LengthBand,
 } from "../src/main/telemetry/attribution-metrics.js";
 
@@ -258,26 +263,26 @@ test("emits one cohort-keyed metrics row per session; coverage resolves and diff
     assert.equal(agent.length_band, LengthBand.Long);
     assert.ok(approx(agent.coverage, 0.0));
 
-    // Per-cohort GROUP BY resolves coverage that DIFFERS across the harness axis.
-    const byHarness = await db.prisma.client.$queryRawUnsafe<
-      { harness: string; covered: number; total: number; n: number | bigint }[]
-    >(
-      `SELECT harness,
-              SUM(covered_spend_usd) AS covered,
-              SUM(total_spend_usd)   AS total,
-              COUNT(*)               AS n
-       FROM session_activity_metrics
-       GROUP BY harness
-       ORDER BY harness`
+    // Per-cohort aggregation resolves coverage that DIFFERS across the harness
+    // axis. ISS-6758: this goes through the PRODUCTION read. It used to be an
+    // inline GROUP BY written here, which is how the FR-12 bar stayed green for
+    // a table whose only cohort reader lived in this file — the read the shipped
+    // app performs was never the read under test.
+    const coverage = await getActivityCoverage(
+      activityCoverageRawRead(db.prisma)
     );
-    const cc = byHarness.find((r) => r.harness === "claude_code");
-    const cx = byHarness.find((r) => r.harness === "codex");
+    const byHarness = coverage.axes.find(
+      (a) => a.axis === CohortAxis.Harness
+    )?.buckets;
+    assert.ok(byHarness);
+    const cc = byHarness.find((b) => b.bucket === "claude_code")?.cell;
+    const cx = byHarness.find((b) => b.bucket === "codex")?.cell;
     assert.ok(cc && cx);
-    assert.equal(Number(cc.n), 2);
+    assert.equal(cc.sessionCount, 2);
     // claude_code coverage = (3+2)/(4+2) = 0.8333…, codex = 0/5 = 0 → they differ.
-    assert.ok(approx(cc.covered / cc.total, 5 / 6));
-    assert.ok(approx(cx.covered / cx.total, 0));
-    assert.notEqual(cc.covered / cc.total, cx.covered / cx.total);
+    assert.ok(approx(cc.coverage, 5 / 6));
+    assert.ok(approx(cx.coverage, 0));
+    assert.notEqual(cc.coverage, cx.coverage);
   } finally {
     await db.close();
     await rm(dir, { recursive: true, force: true });

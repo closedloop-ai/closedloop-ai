@@ -43,8 +43,8 @@ export type CloudReadReadinessProjectionDeps = {
 };
 
 /**
- * The `getCloudReadReadiness` handler body. A `null` sample projects to an
- * explicitly UNKNOWN snapshot — never a drained one.
+ * The `getCloudReadReadiness` projection the runtime-status payload carries. A
+ * `null` sample projects to an explicitly UNKNOWN snapshot — never a drained one.
  */
 export function createCloudReadReadinessProjector(
   deps: CloudReadReadinessProjectionDeps

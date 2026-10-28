@@ -65,7 +65,8 @@ const stalled = createAgentSessionListItemFixture({
 });
 
 const meta = {
-  title: "App Core/Agents/Active Runs Panel",
+  title: "Composites v1.0/Agents/General/Active Runs Panel",
+  tags: ["deprecated"],
   component: ActiveRunsPanel,
   parameters: {
     layout: "padded",

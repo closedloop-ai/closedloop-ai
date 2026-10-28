@@ -4,8 +4,7 @@ import {
   BranchTagAvailability,
   BranchViewerScope,
 } from "@repo/api/src/types/branch";
-import { ChecksStatus } from "@repo/api/src/types/branch-checks";
-import { BranchSelectedPullRequestChecksAvailability } from "@repo/api/src/types/branch-selected-pull-request-checks";
+import { BranchDetailChecksDelivery } from "@repo/api/src/types/branch-associated-pull-request";
 import { TagColor } from "@repo/api/src/types/tag";
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -19,7 +18,9 @@ const mocks = vi.hoisted(() => ({
   deleteBranchArtifact: vi.fn(),
   enrichBranchDetail: vi.fn(),
   getBranchDetail: vi.fn(),
-  logError: vi.fn(),
+  readBranchPenseroNumerator: vi.fn(),
+  refreshBranchDetailPullRequest: vi.fn(),
+  waitUntil: vi.fn(),
   withAnyAuthOptions: [] as unknown[],
 }));
 
@@ -38,8 +39,11 @@ vi.mock("@/lib/auth/with-any-auth", () => ({
 vi.mock("@/app/branches/branch-read-service", () => ({
   branchReadService: {
     getBranchDetail: mocks.getBranchDetail,
+    refreshBranchDetailPullRequest: mocks.refreshBranchDetailPullRequest,
   },
 }));
+
+vi.mock("@vercel/functions", () => ({ waitUntil: mocks.waitUntil }));
 
 vi.mock("@/app/branches/branch-selected-pull-request-checks-service", () => ({
   branchSelectedPullRequestChecksService: {
@@ -47,8 +51,10 @@ vi.mock("@/app/branches/branch-selected-pull-request-checks-service", () => ({
   },
 }));
 
-vi.mock("@repo/observability/log", () => ({
-  log: { error: mocks.logError },
+// ISS-9814: mocked so this suite does not pull the real delivery-point read —
+// and its Prisma + PostHog import chain — into a route unit test.
+vi.mock("@/app/branches/branch-pensero-numerator", () => ({
+  readBranchPenseroNumerator: mocks.readBranchPenseroNumerator,
 }));
 
 vi.mock("@/app/branches/branch-service", () => ({
@@ -58,6 +64,7 @@ vi.mock("@/app/branches/branch-service", () => ({
 }));
 
 import { GET } from "./route";
+import { GET as GET_SELECTION } from "./selected-pull-request/route";
 
 const branchId = "11111111-1111-4111-8111-111111111111";
 
@@ -69,16 +76,19 @@ describe("GET /branches/[id]", () => {
     mocks.auth.authMethod = "session";
     mocks.auth.apiKeyScopes = undefined;
     mocks.getBranchDetail.mockResolvedValue(branchDetail());
+    // ISS-9814: the default production answer for a reader outside the display
+    // rollout. Set explicitly so the expectations below assert the real shape
+    // rather than whatever an unstubbed mock happens to return.
+    mocks.readBranchPenseroNumerator.mockResolvedValue(null);
+    mocks.refreshBranchDetailPullRequest.mockResolvedValue(undefined);
     mocks.enrichBranchDetail.mockImplementation(
-      async (_organizationId: string, _userId: string, branch: unknown) =>
-        branch
+      (_organizationId: string, _userId: string, detail: unknown) =>
+        Promise.resolve(detail)
     );
   });
 
   it("requires read scope and returns the org-scoped branch detail", async () => {
-    const branchRequest = request();
-    const requestSignal = branchRequest.signal;
-    const response = await GET(branchRequest, routeContext(branchId));
+    const response = await GET(request(), routeContext(branchId));
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -87,19 +97,66 @@ describe("GET /branches/[id]", () => {
       "org-1",
       branchId,
       { canApply: true, canRemove: true },
-      undefined
-    );
-    expect(mocks.enrichBranchDetail).toHaveBeenCalledWith(
-      "org-1",
-      "user-1",
-      branchDetail(),
-      requestSignal
+      undefined,
+      detailReadOptions()
     );
     expect(mocks.deleteBranchArtifact).not.toHaveBeenCalled();
     expect(body).toEqual({
       success: true,
       data: branchDetail(),
     });
+  });
+
+  it("serves the selected PR projection with the same org permissions and no branch evidence duplication", async () => {
+    const response = await GET_SELECTION(
+      request(
+        "repositoryFullName=ClosedLoop-AI%2FClosedLoop-AI&pullRequestNumber=17"
+      ),
+      routeContext(branchId)
+    );
+    expect(response.status).toBe(200);
+    expect(mocks.withAnyAuthOptions).toEqual([{ requiredScopes: ["read"] }]);
+    expect(mocks.getBranchDetail).toHaveBeenCalledWith(
+      "org-1",
+      branchId,
+      { canApply: true, canRemove: true },
+      {
+        repositoryFullName: "closedloop-ai/closedloop-ai",
+        pullRequestNumber: 17,
+      },
+      detailReadOptions()
+    );
+    const body = await response.json();
+    expect(body.data.prTitle).toBe(branchDetail().prTitle);
+    for (const key of ["sessions", "commits", "mergedTrace", "tags", "id"]) {
+      expect(body.data).not.toHaveProperty(key);
+    }
+    expect(mocks.enrichBranchDetail).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "",
+    "repositoryFullName=owner%2Frepo&pullRequestNumber=0",
+    "repositoryFullName=owner%2Frepo&pullRequestNumber=1&extra=true",
+  ])(
+    "rejects missing or unsupported selected-PR query fields: %s",
+    async (query) => {
+      const response = await GET_SELECTION(
+        request(query),
+        routeContext(branchId)
+      );
+      expect(response.status).toBe(400);
+      expect(mocks.getBranchDetail).not.toHaveBeenCalled();
+    }
+  );
+
+  it("returns a scoped miss from the selected PR route", async () => {
+    mocks.getBranchDetail.mockResolvedValueOnce(null);
+    const response = await GET_SELECTION(
+      request("repositoryFullName=owner%2Frepo&pullRequestNumber=1"),
+      routeContext(branchId)
+    );
+    expect(response.status).toBe(404);
   });
 
   it("returns not found when the branch detail service has no scoped match", async () => {
@@ -113,7 +170,8 @@ describe("GET /branches/[id]", () => {
       "org-1",
       branchId,
       { canApply: true, canRemove: true },
-      undefined
+      undefined,
+      detailReadOptions()
     );
     expect(body).toEqual({
       success: false,
@@ -132,14 +190,15 @@ describe("GET /branches/[id]", () => {
       "org-1",
       branchId,
       { canApply: false, canRemove: false },
-      undefined
+      undefined,
+      detailReadOptions()
     );
   });
 
   it("forwards a canonical complete selected-PR identity", async () => {
     const response = await GET(
       request(
-        "repositoryFullName=ClosedLoop-AI%2FSymphony-Alpha&pullRequestNumber=17"
+        "repositoryFullName=ClosedLoop-AI%2FClosedLoop-AI&pullRequestNumber=17"
       ),
       routeContext(branchId)
     );
@@ -150,10 +209,42 @@ describe("GET /branches/[id]", () => {
       branchId,
       { canApply: true, canRemove: true },
       {
-        repositoryFullName: "closedloop-ai/example-repo",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
         pullRequestNumber: 17,
-      }
+      },
+      detailReadOptions()
     );
+  });
+
+  it("ISS-9814: reads the Pensero numerator for the authenticated org and this branch", async () => {
+    await GET(request(), routeContext(branchId));
+
+    // The org id is the principal's, resolved by withAnyAuth — never anything
+    // the request named. The branch key is the artifact id from the path.
+    expect(mocks.readBranchPenseroNumerator).toHaveBeenCalledWith(
+      { userId: "user-1", clerkUserId: undefined },
+      "org-1",
+      branchId
+    );
+  });
+
+  it("ISS-9814: forwards a resolved Pensero numerator into the detail read", async () => {
+    // Without this case the whole route→service wiring could be deleted and the
+    // suite would stay green on the null default every other case asserts.
+    mocks.readBranchPenseroNumerator.mockResolvedValueOnce({
+      points: 20,
+      hasAmbiguousPoints: false,
+      hasUnreadablePointValues: false,
+    });
+
+    await GET(request(), routeContext(branchId));
+
+    const options = mocks.getBranchDetail.mock.calls[0]?.[4];
+    await expect(options?.penseroPoints).resolves.toEqual({
+      points: 20,
+      hasAmbiguousPoints: false,
+      hasUnreadablePointValues: false,
+    });
   });
 
   it("rejects a half selected-PR identity before service reads", async () => {
@@ -166,57 +257,138 @@ describe("GET /branches/[id]", () => {
     expect(mocks.getBranchDetail).not.toHaveBeenCalled();
   });
 
-  it("returns selected-PR evidence and corrected legacy fields from enrichment", async () => {
-    const enriched = {
-      ...branchDetail(),
-      checksStatus: ChecksStatus.Passing,
-      checksPassed: 28,
-      checksTotal: 28,
-      selectedPullRequestChecks: {
-        status: BranchSelectedPullRequestChecksAvailability.Available,
-        value: {
-          identity: {
-            githubId: "123",
-            repositoryFullName: "closedloop-ai/example-repo",
-            number: 7,
-            url: "https://github.com/closedloop-ai/example-repo/pull/7",
-          },
-        },
-      },
-    };
-    mocks.enrichBranchDetail.mockResolvedValueOnce(enriched);
+  it("ISS-12278: starts the detail read while the Pensero read is pending", async () => {
+    let releasePensero!: () => void;
+    mocks.readBranchPenseroNumerator.mockReturnValueOnce(
+      new Promise((resolve) => {
+        releasePensero = () => resolve(null);
+      })
+    );
 
-    const response = await GET(request(), routeContext(branchId));
+    const responsePromise = GET(request(), routeContext(branchId));
+    await vi.waitFor(() => {
+      expect(mocks.getBranchDetail).toHaveBeenCalled();
+    });
+
+    releasePensero();
+    expect((await responsePromise).status).toBe(200);
+  });
+
+  it("ISS-12278: schedules the stale-PR refresh past the response instead of awaiting it", async () => {
+    // Never settles: a route that awaited the refresh would never respond.
+    const pendingRefresh = new Promise<void>(() => undefined);
+    mocks.refreshBranchDetailPullRequest.mockReturnValueOnce(pendingRefresh);
+    mocks.getBranchDetail.mockImplementationOnce(readReportingRefreshDue);
+
+    const response = await GET(
+      request(
+        "repositoryFullName=ClosedLoop-AI%2FClosedLoop-AI&pullRequestNumber=17"
+      ),
+      routeContext(branchId)
+    );
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({
-      success: true,
-      data: enriched,
+    expect(mocks.refreshBranchDetailPullRequest).toHaveBeenCalledWith({
+      actor: {
+        authMethod: "session",
+        tagPermissions: { canApply: true, canRemove: true },
+        userId: "user-1",
+      },
+      branchId,
+      organizationId: "org-1",
+      requestedPullRequest: {
+        repositoryFullName: "closedloop-ai/closedloop-ai",
+        pullRequestNumber: 17,
+      },
+    });
+    expect(mocks.waitUntil).toHaveBeenCalledWith(pendingRefresh);
+  });
+
+  it("ISS-12278: omits the requested PR from the refresh when none was named", async () => {
+    mocks.getBranchDetail.mockImplementationOnce(readReportingRefreshDue);
+
+    await GET(request(), routeContext(branchId));
+
+    expect(mocks.refreshBranchDetailPullRequest).toHaveBeenCalledWith({
+      actor: {
+        authMethod: "session",
+        tagPermissions: { canApply: true, canRemove: true },
+        userId: "user-1",
+      },
+      branchId,
+      organizationId: "org-1",
     });
   });
 
-  it("keeps Branch detail available and clears unsafe legacy fields when enrichment throws", async () => {
-    const failure = new Error("enrichment failed");
-    mocks.enrichBranchDetail.mockRejectedValueOnce(failure);
-
+  it("ISS-12278: schedules no refresh when the read reports none pending", async () => {
     const response = await GET(request(), routeContext(branchId));
-    const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(body.data).toEqual({
-      ...branchDetail(),
-      checksStatus: null,
-      checksPassed: null,
-      checksTotal: null,
-    });
-    expect(mocks.logError).toHaveBeenCalledWith(
-      "[branch-detail] Selected-PR checks enrichment failed",
-      {
-        branchId,
-        organizationId: "org-1",
-        error: failure,
-      }
+    expect(mocks.refreshBranchDetailPullRequest).not.toHaveBeenCalled();
+    expect(mocks.waitUntil).not.toHaveBeenCalled();
+  });
+
+  it("ISS-12278: keeps selected-PR checks inline for a caller that has not opted into lazy checks", async () => {
+    const response = await GET(request(), routeContext(branchId));
+
+    expect(response.status).toBe(200);
+    expect(mocks.enrichBranchDetail).toHaveBeenCalledWith(
+      "org-1",
+      "user-1",
+      branchDetail(),
+      expect.any(AbortSignal)
     );
+  });
+
+  it("ISS-12278: skips inline checks for a checks=lazy caller", async () => {
+    const response = await GET(
+      request(`checks=${BranchDetailChecksDelivery.Lazy}`),
+      routeContext(branchId)
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.enrichBranchDetail).not.toHaveBeenCalled();
+  });
+
+  it("ISS-12278: answers not found when inline checks find the branch ineligible", async () => {
+    mocks.enrichBranchDetail.mockResolvedValueOnce(null);
+
+    const response = await GET(request(), routeContext(branchId));
+
+    expect(response.status).toBe(404);
+  });
+
+  it("ISS-12278: schedules no refresh when the flag reports only an in-flight one", async () => {
+    mocks.getBranchDetail.mockResolvedValueOnce({
+      ...branchDetail(),
+      pullRequestRefreshPending: true as const,
+    });
+
+    await GET(request(), routeContext(branchId));
+
+    expect(mocks.waitUntil).not.toHaveBeenCalled();
+  });
+
+  it("schedules no refresh for a branch the read did not find", async () => {
+    mocks.getBranchDetail.mockResolvedValueOnce(null);
+
+    await GET(request(), routeContext(branchId));
+
+    expect(mocks.refreshBranchDetailPullRequest).not.toHaveBeenCalled();
+    expect(mocks.waitUntil).not.toHaveBeenCalled();
+  });
+
+  it("does not turn a detail read failure into a stale success", async () => {
+    mocks.getBranchDetail.mockRejectedValueOnce(new Error("read failed"));
+
+    const response = await GET(request(), routeContext(branchId));
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({
+      success: false,
+      error: "Failed to fetch branch",
+    });
+    expect(mocks.refreshBranchDetailPullRequest).not.toHaveBeenCalled();
   });
 });
 
@@ -243,13 +415,13 @@ function branchDetail() {
     tagPermissions: { canApply: true, canRemove: true },
     branchName: "feature/branches-api",
     baseBranch: "main",
-    repoFullName: "closedloop-ai/example-repo",
+    repoFullName: "closedloop-ai/closedloop-ai",
     owner: "user-1",
     status: BranchStatus.Open,
     prNumber: 7,
     prTitle: "Add Branches API",
     prState: null,
-    prUrl: "https://github.com/closedloop-ai/example-repo/pull/7",
+    prUrl: "https://github.com/closedloop-ai/closedloop-ai/pull/7",
     multiPrWarning: false,
     checksStatus: null,
     checksPassed: null,
@@ -282,4 +454,25 @@ function branchDetail() {
     linkedPrNumbers: [7],
     linkedArtifacts: [{ slug: "FEA-2532" }],
   };
+}
+
+function detailReadOptions() {
+  return {
+    penseroPoints: expect.any(Promise),
+    onPullRequestRefreshDue: expect.any(Function),
+  };
+}
+
+function readReportingRefreshDue(
+  _organizationId: string,
+  _branchId: string,
+  _tagPermissions: unknown,
+  _requestedPullRequest: unknown,
+  options: { onPullRequestRefreshDue?: () => void }
+) {
+  options.onPullRequestRefreshDue?.();
+  return Promise.resolve({
+    ...branchDetail(),
+    pullRequestRefreshPending: true as const,
+  });
 }

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, test } from "node:test";
+import { afterEach, beforeEach, test } from "vitest";
 import {
   type DesktopSessionRecord,
   DesktopSessionStore,

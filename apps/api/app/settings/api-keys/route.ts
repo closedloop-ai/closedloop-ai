@@ -1,36 +1,11 @@
-import { withAuth } from "@/lib/auth/with-auth";
-import { errorResponse, successResponse } from "@/lib/route-utils";
-import { apiKeyService } from "../api-key-service";
-
-type ApiKeyInfoResponse = {
-  org: { isSet: boolean; lastFour: string | null; setAt: string | null };
-  user: { isSet: boolean; lastFour: string | null; setAt: string | null };
-};
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { loopsRemovedResponse } from "@/lib/loops-removed-response";
 
 /**
- * GET /settings/api-keys
- * Returns masked key info for both org and user levels.
+ * ISS-12435 (PRD-795): Loops are removed. This route is a 410 tombstone
+ * (`apps/api/AGENTS.md`) for installed Desktop builds, stale browser bundles
+ * and `sk_live_*` integrations that can still call it.
  */
-export const GET = withAuth<ApiKeyInfoResponse, "/settings/api-keys">(
-  async ({ user }) => {
-    try {
-      const [orgInfo, userInfo] = await Promise.all([
-        apiKeyService.getOrgKeyInfo(user.organizationId),
-        apiKeyService.getUserKeyInfo(user.id),
-      ]);
-
-      return successResponse({
-        org: {
-          ...orgInfo,
-          setAt: orgInfo.setAt ? orgInfo.setAt.toISOString() : null,
-        },
-        user: {
-          ...userInfo,
-          setAt: userInfo.setAt ? userInfo.setAt.toISOString() : null,
-        },
-      });
-    } catch (error) {
-      return errorResponse("Failed to fetch API key info", error);
-    }
-  }
+export const GET = withAnyAuth<never, "/settings/api-keys">(() =>
+  Promise.resolve(loopsRemovedResponse())
 );

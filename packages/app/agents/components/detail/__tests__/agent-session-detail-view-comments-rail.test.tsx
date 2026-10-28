@@ -1,8 +1,12 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { populatedAgentSessionDetailFixture } from "../agent-session-detail-fixtures";
+import {
+  createAgentSessionDetailFixture,
+  populatedAgentSessionDetailFixture,
+} from "../agent-session-detail-fixtures";
 import { AgentSessionDetailView } from "../agent-session-detail-view";
+import { TRACE_COMMENTS_EMPTY_TITLE } from "../trace-comments-rail";
 import {
   COLLAPSE_COMMENTS_BUTTON_NAME,
   COMMENT_BUTTON_NAME_RE,
@@ -59,7 +63,9 @@ describe("comments rail empty default (FEA-4233)", () => {
       ).toBeInTheDocument();
     });
     expect(document.querySelector(".sd3-cmts")).not.toBeInTheDocument();
-    expect(screen.queryByText("No trace comments yet")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(TRACE_COMMENTS_EMPTY_TITLE)
+    ).not.toBeInTheDocument();
     // The empty default never persists a preference — it is a live derivation.
     expect(localStorage.getItem("sessions:comments-rail:collapsed")).toBeNull();
   });
@@ -150,6 +156,83 @@ describe("comments rail empty default (FEA-4233)", () => {
     // The handle forces the full (empty) panel open via the reveal override —
     // even though the empty default and the saved preference both say collapsed.
     expect(document.querySelector(".sd3-cmts")).toBeInTheDocument();
-    expect(screen.getByText("No trace comments yet")).toBeInTheDocument();
+    expect(screen.getByText(TRACE_COMMENTS_EMPTY_TITLE)).toBeInTheDocument();
+  });
+
+  it("shows the new session's persisted trace comments when the mounted detail changes sessions", async () => {
+    const user = userEvent.setup();
+    const firstSession = createAgentSessionDetailFixture({
+      id: "session-one",
+      externalSessionId: "session-one",
+      name: "Session One",
+    });
+    const secondSession = createAgentSessionDetailFixture({
+      id: "session-two",
+      externalSessionId: "session-two",
+      name: "Session Two",
+      turnItems: [
+        {
+          type: "say",
+          _row: 0,
+          t: "2026-06-10T12:30:00.000Z",
+          tMs: Date.parse("2026-06-10T12:30:00.000Z"),
+          cum: 0,
+          actor: {
+            color: "var(--primary)",
+            harness: "codex",
+            human: null,
+            name: "gpt-5.5",
+            sessionId: "session-two",
+          },
+          text: "Second session trace row.",
+        },
+      ],
+    });
+    const { rerender } = render(
+      withProviders(
+        <AgentSessionDetailView
+          backHref="/sessions"
+          isLoading={false}
+          session={firstSession}
+        />
+      )
+    );
+
+    selectRenderedText(document.body, "shared session detail screen");
+    fireEvent.mouseUp(document.querySelector(".st") as HTMLElement);
+    await user.click(
+      screen.getByRole("button", { name: COMMENT_BUTTON_NAME_RE })
+    );
+    await user.type(
+      screen.getByPlaceholderText(INLINE_TRACE_COMMENT_PLACEHOLDER),
+      "First session note"
+    );
+    await user.click(screen.getByRole("button", { name: "Comment" }));
+    expect(screen.getByText("First session note")).toBeInTheDocument();
+
+    rerender(
+      withProviders(
+        <AgentSessionDetailView
+          backHref="/sessions"
+          isLoading={false}
+          session={secondSession}
+        />
+      )
+    );
+
+    expect(screen.getByText("Second session trace row.")).toBeInTheDocument();
+    // FEA-4233: the second session has zero trace comments, so once its comments
+    // read settles empty the rail collapses to the slim handle rather than an
+    // open panel reading "No trace comments yet". The first session's note is
+    // gone regardless of collapse.
+    await waitFor(() => {
+      expect(screen.queryByText("First session note")).not.toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: SHOW_COMMENTS_BUTTON_NAME })
+      ).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByText(TRACE_COMMENTS_EMPTY_TITLE)
+    ).not.toBeInTheDocument();
   });
 });

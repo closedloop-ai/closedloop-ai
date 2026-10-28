@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { RequiredCompatibilityMappingFields } from "../scripts/telemetry-contract-constants";
-import { CompatibilityAttributeProducerMapping } from "../src/attributes";
+import { CompatibilityAttributeProducerMapping } from "../src/attribute-producer-mapping";
 
 /**
  * Re-homed from the deleted `check-schema-update-gates` AST parser: every

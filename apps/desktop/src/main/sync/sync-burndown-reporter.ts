@@ -46,27 +46,36 @@
 import {
   areAllLanesFullySynced,
   classifyLaneDrainState,
-  detectCursorStall,
-  detectNoProgressStall,
   formatAllLanesVerdictLine,
-  formatCursorStallLine,
   formatLaneBurndownLine,
   formatLaneDrainedWithDeadLettersLine,
   formatLaneFullySyncedLine,
   formatLaneRemainingUnknownLine,
-  formatNoProgressStallLine,
-  type OldestPendingBasis,
   OldestPendingBasis as OldestPendingBasisValues,
+  remainderIsMeasured,
   type SyncBurndownSnapshot,
   type SyncLaneBurndown,
+  SyncLaneDeadLetteredBasis,
   SyncLaneDrainState,
   SyncLaneId,
-  SyncLaneStallKind,
+  SyncLaneRemainderBasis,
 } from "../../shared/sync-burndown-contract.js";
+import type { SessionCursorBoundary } from "../agent-sync/agent-session-sync-cursor-prefix.js";
+import type { OutboxResumeOutcome } from "../agent-sync/session-outbox-engine-state.js";
+import { SessionResumeHealth } from "../agent-sync/session-resume-health.js";
 import type {
   SyncBurndownQuery,
   SyncBurndownStoreSample,
 } from "../database/sync-burndown-store.js";
+import type { SignedInUserIdentity } from "../util/user-identity.js";
+import type {
+  LaneActivity,
+  SyncBurndownLaneInput,
+} from "./sync-burndown-lane-input.js";
+import {
+  type SyncLaneStallReport,
+  SyncLaneStallWatcher,
+} from "./sync-burndown-stall-detectors.js";
 
 /** Default sample cadence. Slow on purpose: this is a trend, not a heartbeat. */
 export const SYNC_BURNDOWN_INTERVAL_MS = 60_000;
@@ -86,34 +95,6 @@ export const SyncBurndownLogLevel = {
 export type SyncBurndownLogLevel =
   (typeof SyncBurndownLogLevel)[keyof typeof SyncBurndownLogLevel];
 
-/** What a detected stall reports to the monitored sink. */
-export type SyncLaneStallReport = {
-  lane: SyncLaneId;
-  workCompletedSincePrevious: number;
-  durableCursorAgeMs: number | null;
-  deadLetteredCount: number;
-  /**
-   * ISS-5973: WHY the stall was raised. OPTIONAL so a sink built against the
-   * pre-ISS-5973 shape keeps compiling and keeps working; a consumer that does
-   * not recognise the value must fall back to the cursor-frozen wording rather
-   * than drop the alert.
-   */
-  kind?: SyncLaneStallKind;
-  /**
-   * ISS-5973: items the lane still owed when the stall was raised, where the
-   * lane counts a queue. `null` when the lane has no per-item queue or the count
-   * was unmeasurable — never a fabricated 0.
-   */
-  itemsRemaining?: number | null;
-  /**
-   * ISS-5973: true when {@link itemsRemaining} is a FLOOR, because the lane's
-   * probe is bounded and hit its cap. Carried into the alert so a 3,500-session
-   * backlog cannot be reported as an exact, reassuring `200`. OPTIONAL and
-   * defaulting to exact, for the same version-skew reason as {@link kind}.
-   */
-  itemsRemainingIsLowerBound?: boolean;
-};
-
 export type SyncBurndownReporterOptions = {
   /** The live SQLite sync source, or null until the db host is ready. */
   getSource: () => SyncBurndownSource | null;
@@ -132,18 +113,41 @@ export type SyncBurndownReporterOptions = {
    * settled and this one is still owed.
    */
   getTranscriptComputeTargetId: () => string | null;
+  /**
+   * ISS-7096: the signed-in pair, so the invocation lane's remainder leaves out
+   * template sessions another identity owns, which promotion never sends. Null
+   * filters nothing, matching promotion.
+   */
+  getIdentity: () => SignedInUserIdentity | null;
+  /**
+   * ISS-10429: the row the session lane's durable cursor is waiting on, read
+   * from the lane's in-memory queues. Optional: without it the session lane
+   * reports no boundary, and `detectCursorStall` keeps the verdict it had
+   * before ISS-10429.
+   */
+  readSessionCursorBoundary?: () => SessionCursorBoundary | null;
   /** Per-lane live gates: is the lane actually able to deliver right now? */
   isSessionLaneRunning: () => boolean;
   isInvocationLaneRunning: () => boolean;
   isTranscriptLaneRunning: () => boolean;
   isComponentLaneRunning: () => boolean;
   /**
-   * Is the trace-comment lane able to deliver? Its gate is the single most
-   * likely reason for a backlog on this lane: no first-party session or no API
-   * origin and every pending comment simply sits there, which is
-   * `idle_not_running`, not `drained`.
+   * ISS-8768: does this machine's persisted consent say THIS LANE should be
+   * delivering? Read SEPARATELY from the `running` gates above, because it is the
+   * only thing that separates a shut gate a user ASKED for from one that closed
+   * on them — see {@link SyncLaneStallWatcher}, which consumes this.
+   *
+   * PER-LANE, and that is load-bearing rather than tidiness: the lanes do not
+   * share one consent axis. `metadata` tier permits session metadata while
+   * DELIBERATELY keeping transcripts local, so a single machine-wide predicate
+   * reports a metadata-tier user's transcript lane as consented-but-gated and
+   * pages them for the configuration they chose — the exact noise this detector's
+   * consent check exists to prevent.
+   *
+   * Required rather than optional so a new construction site has to answer it: an
+   * option defaulting to `false` would silently disarm the detector.
    */
-  isTraceCommentLaneRunning: () => boolean;
+  isLaneDeliveryConsented: (lane: SyncLaneId) => boolean;
   log: (level: SyncBurndownLogLevel, message: string) => void;
   /**
    * A lane is completing work its durable cursor is not recording. A raw log is
@@ -151,15 +155,18 @@ export type SyncBurndownReporterOptions = {
    * than inventing one here.
    */
   onLaneStall?: (report: SyncLaneStallReport) => void;
+  /**
+   * ISS-9246: the whole sample, for promotion to telemetry. Fires on EVERY
+   * sample, unlike {@link SyncBurndownReporterOptions.log}, whose emission
+   * policy is deliberately periodic-and-on-transition so an operator's log is
+   * not flooded. A gauge has the opposite requirement: the metrics pipeline is
+   * cumulative, so a series that skips a sample is carried forward at its last
+   * value, and a lane that quietly drained would keep publishing a backlog it no
+   * longer has.
+   */
+  onSample?: (snapshot: SyncBurndownSnapshot) => void;
   intervalMs?: number;
   now?: () => Date;
-};
-
-type LaneActivity = {
-  /** Units the lane was observed completing since the last sample. */
-  workCompleted: number;
-  /** Bytes the lane put on the wire since the last sample, or null when uncounted. */
-  bytesSent: number | null;
 };
 
 /**
@@ -173,6 +180,11 @@ type SyncBurndownScope = {
   invocationSourceKey: string | null;
   componentSourceKey: string | null;
   transcriptComputeTargetId: string | null;
+  /**
+   * Compared too: on an unpaired machine every key is null for every identity,
+   * yet the identity decides which template sessions the invocation lane owes.
+   */
+  identity: SignedInUserIdentity | null;
 };
 
 function isSameScope(a: SyncBurndownScope, b: SyncBurndownScope): boolean {
@@ -180,7 +192,9 @@ function isSameScope(a: SyncBurndownScope, b: SyncBurndownScope): boolean {
     a.sessionSourceKey === b.sessionSourceKey &&
     a.invocationSourceKey === b.invocationSourceKey &&
     a.componentSourceKey === b.componentSourceKey &&
-    a.transcriptComputeTargetId === b.transcriptComputeTargetId
+    a.transcriptComputeTargetId === b.transcriptComputeTargetId &&
+    a.identity?.userId === b.identity?.userId &&
+    a.identity?.organizationId === b.identity?.organizationId
   );
 }
 
@@ -229,19 +243,39 @@ export class SyncBurndownReporter {
   private previousAllSynced: boolean | null = null;
   private readonly emittedState = new Map<SyncLaneId, SyncLaneDrainState>();
   private readonly everRunningLanes = new Set<SyncLaneId>();
-  /** Lanes whose stall has already been reported to the monitored sink this episode. */
-  private readonly stalledLanes = new Set<SyncLaneId>();
   /**
-   * ISS-5973: consecutive samples in which each lane was `Draining` and completed
-   * zero work. Bounded by the lane set, so it cannot grow without bound.
+   * The four stall conditions and the per-lane episode state each keeps across
+   * samples (ISS-9823). A collaborator rather than four more fields here: the
+   * reporter samples and reports a burn-down, and judging a lane against a
+   * stall condition is its own responsibility with its own tally, latch and
+   * throttle rules — see `sync-burndown-stall-detectors.ts`.
    */
-  private readonly zeroWorkSamples = new Map<SyncLaneId, number>();
-  /** Lanes whose NO-PROGRESS stall has already been reported this episode. */
-  private readonly noProgressLanes = new Set<SyncLaneId>();
+  private readonly stallWatcher: SyncLaneStallWatcher;
   private sessionBatchSuccesses = 0;
   private sessionBytesSent = 0;
+  /**
+   * ISS-7401: outbox rows acks reported clearing since the last sample, or
+   * `null` while NO accepted batch in this window reported a count at all.
+   * Starts unmeasured on purpose: a zero here is published as a measured
+   * "cleared nothing", so a window nobody counted must not manufacture one.
+   */
+  private sessionRowsCleared: number | null = null;
   private invocationPartsSent = 0;
   private componentRecordsSent = 0;
+  /**
+   * ISS-9823: whether the session lane's resume read is currently failing.
+   *
+   * A LEVEL, deliberately NOT a per-window counter and deliberately NOT cleared
+   * by {@link resetActivityCounters}: that resets what one sampling window
+   * observed, and this condition outlives a window by construction — clearing it
+   * there would erase the fault between every sample and report the lane drained
+   * again on the next one. It is cleared at the LIFECYCLE boundary only, and by
+   * the lane's own `Seeded` outcome; the compute-target boundary deliberately
+   * leaves it alone (see `discardCrossTargetBaselines`), because that boundary
+   * is observed a window late and can only erase the incoming target's own
+   * already-reported fault.
+   */
+  private readonly sessionResumeHealth = new SessionResumeHealth();
   /** The identity the previous sample's counts and baselines belong to. */
   private previousScope: SyncBurndownScope | null = null;
   /**
@@ -254,6 +288,14 @@ export class SyncBurndownReporter {
 
   constructor(options: SyncBurndownReporterOptions) {
     this.options = options;
+    this.stallWatcher = new SyncLaneStallWatcher({
+      warn: (message) => options.log(SyncBurndownLogLevel.Warn, message),
+      onLaneStall: options.onLaneStall,
+      isLaneDeliveryConsented: (lane) => options.isLaneDeliveryConsented(lane),
+      // Read per sample, not captured, so a reconfigured interval reaches the
+      // throttle that computes its window from it.
+      intervalMs: () => options.intervalMs ?? SYNC_BURNDOWN_INTERVAL_MS,
+    });
   }
 
   start(): void {
@@ -292,10 +334,26 @@ export class SyncBurndownReporter {
     this.previousAllSynced = null;
     this.emittedState.clear();
     this.everRunningLanes.clear();
-    this.stalledLanes.clear();
-    this.zeroWorkSamples.clear();
-    this.noProgressLanes.clear();
+    this.stallWatcher.clear();
+    // ISS-9823: a LIFECYCLE boundary, so the level goes with everything else
+    // this run observed. Not a per-window reset — see the field's docstring. A
+    // fault that outlives the stop re-latches on the restarted lane's first
+    // hydration tick, because a failed read re-arms `hydratedSourceKey`.
+    this.sessionResumeHealth.clear();
     this.resetActivityCounters();
+  }
+
+  /**
+   * ISS-9823 tee: what the session lane's once-per-identity resume hydration
+   * answered on this pass.
+   *
+   * Folded into a level rather than counted. `ReadFailed` sets it, `Seeded`
+   * clears it, and `Discarded` leaves it alone — a superseded identity is an
+   * ordinary account or compute-target switch, and treating it as a fault would
+   * report a blocked lane on every sign-in.
+   */
+  recordSessionResumeOutcome(outcome: OutboxResumeOutcome): void {
+    this.sessionResumeHealth.record(outcome);
   }
 
   /**
@@ -304,12 +362,40 @@ export class SyncBurndownReporter {
    * failed and dead-lettered ones, because a batch that cost bytes and delivered
    * nothing is precisely the re-send amplification this is here to expose.
    */
-  recordSessionBatch(input: { accepted: boolean; payloadBytes: number }): void {
+  recordSessionBatch(input: {
+    accepted: boolean;
+    payloadBytes: number;
+    /**
+     * ISS-7401/ISS-7957: rows the ack's outbox delete ACTUALLY REMOVED — the
+     * delete's own count, NOT the number of ids it was asked about. Those two
+     * disagree exactly when an ack names an id whose row is already gone, and
+     * this field used to carry the ack length. It is carried to the alert, and
+     * the cursor-stall detector reads it only when the session lane's cursor
+     * boundary also moved (ISS-10429). Optional: a caller that does not measure
+     * one leaves it unmeasured rather than asserting zero deliveries.
+     */
+    durablyClearedRows?: number;
+  }): void {
     if (Number.isFinite(input.payloadBytes) && input.payloadBytes > 0) {
       this.sessionBytesSent += input.payloadBytes;
     }
-    if (input.accepted) {
-      this.sessionBatchSuccesses += 1;
+    if (!input.accepted) {
+      return;
+    }
+    this.sessionBatchSuccesses += 1;
+    const clearedRows = input.durablyClearedRows;
+    // An OMITTED count leaves the window UNMEASURED; a REPORTED zero promotes it
+    // to a measured zero. Collapsing the two publishes a caller that counted
+    // nothing as one that measured no deliveries — the alarming reading, on the
+    // alert whose whole job is telling those two populations apart. Non-finite
+    // and negative are refused rather than tallied, same shape as the byte
+    // counter above, so a nonsense value can never become part of a total.
+    if (
+      typeof clearedRows === "number" &&
+      Number.isFinite(clearedRows) &&
+      clearedRows >= 0
+    ) {
+      this.sessionRowsCleared = (this.sessionRowsCleared ?? 0) + clearedRows;
     }
   }
 
@@ -352,6 +438,7 @@ export class SyncBurndownReporter {
       invocationSourceKey: this.options.getInvocationSourceKey(),
       componentSourceKey: this.options.getComponentSourceKey(),
       transcriptComputeTargetId: this.options.getTranscriptComputeTargetId(),
+      identity: this.options.getIdentity(),
     };
     try {
       const store = await source.readSyncBurndown({
@@ -360,6 +447,7 @@ export class SyncBurndownReporter {
         invocationTemplateSourceKey: this.options.invocationTemplateSourceKey,
         componentSourceKey: scope.componentSourceKey,
         transcriptComputeTargetId: scope.transcriptComputeTargetId,
+        identity: scope.identity,
         // ISS-5973: the backoff boundary the outbox reads split ready work from
         // deferred work on. Resolved from the reporter's own clock, so a test can
         // pin it and so every lane in one sample uses one instant.
@@ -419,6 +507,7 @@ export class SyncBurndownReporter {
       invocationSourceKey: this.options.getInvocationSourceKey(),
       componentSourceKey: this.options.getComponentSourceKey(),
       transcriptComputeTargetId: this.options.getTranscriptComputeTargetId(),
+      identity: this.options.getIdentity(),
     };
     return isSameScope(this.previousScope, current) ? this.previous : null;
   }
@@ -426,6 +515,8 @@ export class SyncBurndownReporter {
   private resetActivityCounters(): void {
     this.sessionBatchSuccesses = 0;
     this.sessionBytesSent = 0;
+    // Back to UNMEASURED, not to zero: the next window has counted nothing yet.
+    this.sessionRowsCleared = null;
     this.invocationPartsSent = 0;
     this.componentRecordsSent = 0;
   }
@@ -444,9 +535,23 @@ export class SyncBurndownReporter {
     this.previousStore = null;
     this.previousAllSynced = null;
     this.emittedState.clear();
-    this.stalledLanes.clear();
-    this.zeroWorkSamples.clear();
-    this.noProgressLanes.clear();
+    // Every stall episode re-baselines, the resume one included (ISS-9823):
+    // an episode counted under the previous identity cannot be continued under
+    // this one. That is a different question from the LEVEL below, which is
+    // NOT cleared — an episode re-baseline delays an alert by a threshold's
+    // worth of samples, whereas clearing the level would publish `drained` for
+    // a lane already known to be wedged.
+    this.stallWatcher.clear();
+    // ISS-9823 review: the resume level is deliberately NOT cleared here. This
+    // runs at SAMPLE time, one 60s window after the switch it is reacting to,
+    // while the outcome is teed at the sync lane's own 5s tick — so the fault
+    // most likely to be on the level by now is the INCOMING target's, recorded
+    // by its first hydration. Clearing erased it and published `drained` for a
+    // lane already known to be wedged, which is a whole window of the exact
+    // false "up to date" this ticket exists to remove. Not clearing errs the
+    // other way and does so safely: a healthy incoming target reports
+    // `remaining_unknown` until its own hydration answers `Seeded`, which is one
+    // tick away because a failed read re-arms `hydratedSourceKey`.
     this.resetActivityCounters();
   }
 
@@ -466,11 +571,33 @@ export class SyncBurndownReporter {
         : store.cursorsBySourceKey[scope.componentSourceKey];
 
     const lanes: SyncLaneBurndown[] = [
-      this.buildSessionLane(store, nowMs, sessionCursor),
-      this.buildInvocationLane(store, nowMs),
+      this.buildSessionLane(
+        store,
+        nowMs,
+        { durable: sessionCursor, sourceKey: scope.sessionSourceKey },
+        deadLetteredBasisFor(
+          scope.sessionSourceKey,
+          SyncLaneDeadLetteredBasis.QueueStatusCount
+        )
+      ),
+      this.buildInvocationLane(
+        store,
+        nowMs,
+        deadLetteredBasisFor(
+          scope.invocationSourceKey,
+          SyncLaneDeadLetteredBasis.QueueStatusCount
+        )
+      ),
       this.buildTranscriptLane(store, nowMs),
-      this.buildComponentLane(store, nowMs, componentCursor),
-      this.buildTraceCommentLane(store, nowMs),
+      this.buildComponentLane(
+        store,
+        nowMs,
+        componentCursor,
+        deadLetteredBasisFor(
+          scope.componentSourceKey,
+          SyncLaneDeadLetteredBasis.AbandonedIdLedger
+        )
+      ),
     ];
     return { sampledAtIso: now.toISOString(), lanes };
   }
@@ -478,18 +605,26 @@ export class SyncBurndownReporter {
   private buildSessionLane(
     store: SyncBurndownStoreSample,
     nowMs: number,
-    cursor:
-      | { observedTopUpdatedAt: string | null; updatedAt: string }
-      | undefined
+    cursor: {
+      durable:
+        | { observedTopUpdatedAt: string | null; updatedAt: string }
+        | undefined;
+      sourceKey: string | null;
+    },
+    deadLetteredBasis: SyncLaneDeadLetteredBasis
   ): SyncLaneBurndown {
     const counts = store.sessionOutbox;
+    const boundary = this.options.readSessionCursorBoundary?.() ?? null;
     const activity: LaneActivity = {
       workCompleted: this.sessionBatchSuccesses,
       bytesSent: this.sessionBytesSent,
+      // ISS-7401: the only lane that durably deletes its own queue rows on ack.
+      queueRowsCleared: this.sessionRowsCleared,
     };
     return this.finishLane({
       lane: SyncLaneId.SessionMetadata,
       running: this.options.isSessionLaneRunning(),
+      remainderBasis: counts.remainderBasis,
       itemsRemaining: counts.pending,
       readyItemsRemaining: counts.readyPending,
       unmeasuredRows: counts.unmeasuredRows,
@@ -498,19 +633,34 @@ export class SyncBurndownReporter {
       bytesRemaining: null,
       chunksRemaining: null,
       deadLetteredCount: counts.deadLettered,
-      oldestPendingSinceIso: counts.oldestPendingEnqueuedAtIso,
-      oldestPendingBasis: OldestPendingBasisValues.EnqueuedAt,
+      deadLetteredBasis,
+      // ISS-9823: the only lane that can answer `true`. A failing resume read
+      // abandons every pass before `enqueueIncrementalUpdates`, so `pending`
+      // stays 0 on a caught-up device and every count below agrees the lane is
+      // drained while nothing is leaving the machine.
+      resumeBlocked: this.sessionResumeHealth.isResumeBlocked(),
+      oldestPendingSinceIso: counts.oldestPendingSinceIso,
+      oldestPendingBasis: OldestPendingBasisValues.PendingSince,
       tracksDurableCursor: true,
-      cursorValue: cursor?.observedTopUpdatedAt ?? null,
-      cursorWrittenAtIso: cursor?.updatedAt ?? null,
+      cursorValue: cursor.durable?.observedTopUpdatedAt ?? null,
+      cursorWrittenAtIso: cursor.durable?.updatedAt ?? null,
+      // A boundary read under another identity describes a different queue
+      // from the one this sample counted, so it is reported as unknown.
+      cursorBoundaryValue:
+        boundary?.sourceKey === cursor.sourceKey ? boundary.value : null,
       activity,
       nowMs,
+      // ISS-7096: another environment's parked rows — reported, never owed.
+      parkedCount: counts.parkedPending,
+      // ISS-7246: sessions with nothing substantive to send yet — same posture.
+      withheldCount: counts.withheld,
     });
   }
 
   private buildInvocationLane(
     store: SyncBurndownStoreSample,
-    nowMs: number
+    nowMs: number,
+    deadLetteredBasis: SyncLaneDeadLetteredBasis
   ): SyncLaneBurndown {
     const counts = store.invocationOutbox;
     // Remaining is parts already materialized PLUS sessions still awaiting
@@ -521,6 +671,7 @@ export class SyncBurndownReporter {
     return this.finishLane({
       lane: SyncLaneId.InvocationParts,
       running: this.options.isInvocationLaneRunning(),
+      remainderBasis: counts.remainderBasis,
       itemsRemaining,
       // The template probe is bounded, so when it caps out this total is a
       // FLOOR. The store already knows; dropping that here is what turned a
@@ -534,8 +685,12 @@ export class SyncBurndownReporter {
       bytesRemaining: counts.pendingPayloadBytes,
       chunksRemaining: counts.pendingParts,
       deadLetteredCount: counts.deadLettered,
-      oldestPendingSinceIso: counts.oldestPendingEnqueuedAtIso,
-      oldestPendingBasis: OldestPendingBasisValues.EnqueuedAt,
+      deadLetteredBasis,
+      // ISS-9823: structural `false` — this lane runs no once-per-identity
+      // resume hydration, so it has no such read to fail.
+      resumeBlocked: false,
+      oldestPendingSinceIso: counts.oldestPendingSinceIso,
+      oldestPendingBasis: OldestPendingBasisValues.PendingSince,
       // This lane's cursors live in `agent_component_invocation_sync_cursors`,
       // not `sync_state`; it keeps no watermark of the kind reported here.
       tracksDurableCursor: false,
@@ -548,6 +703,10 @@ export class SyncBurndownReporter {
         bytesSent: null,
       },
       nowMs,
+      // ISS-7246: this lane never writes `withheld` (only the session lane
+      // withholds), but reporting what the fold measured keeps a row carrying
+      // that status from being counted nowhere.
+      withheldCount: counts.withheld,
     });
   }
 
@@ -564,11 +723,17 @@ export class SyncBurndownReporter {
     return this.finishLane({
       lane: SyncLaneId.TranscriptArchive,
       running: this.options.isTranscriptLaneRunning(),
+      // Unscoped ledger reads — this lane has no source key to be missing, so
+      // its remainder is always read.
+      remainderBasis: SyncLaneRemainderBasis.Counted,
       itemsRemaining: counts.inFlightFiles + counts.strandedIdleFiles,
       unmeasuredRows: counts.unmeasuredRows,
       bytesRemaining: counts.bytesRemaining,
       chunksRemaining: null,
       deadLetteredCount: counts.deadFiles,
+      deadLetteredBasis: SyncLaneDeadLetteredBasis.QueueStatusCount,
+      // ISS-9823: structural `false` — no once-per-identity resume read here.
+      resumeBlocked: false,
       oldestPendingSinceIso: counts.oldestInFlightUpdatedAtIso,
       oldestPendingBasis: OldestPendingBasisValues.LastStateChange,
       // Durable state here is a per-file byte offset, not a `sync_state` row.
@@ -594,7 +759,8 @@ export class SyncBurndownReporter {
     nowMs: number,
     cursor:
       | { observedTopUpdatedAt: string | null; updatedAt: string }
-      | undefined
+      | undefined,
+    deadLetteredBasis: SyncLaneDeadLetteredBasis
   ): SyncLaneBurndown {
     // A cursor SWEEP keeps no queue table, but it is NOT unmeasurable: the rows
     // sitting past its keyset are countable with the lane's own predicate, and
@@ -608,6 +774,7 @@ export class SyncBurndownReporter {
     return this.finishLane({
       lane: SyncLaneId.ComponentInventory,
       running: this.options.isComponentLaneRunning(),
+      remainderBasis: counts.remainderBasis,
       itemsRemaining: counts.rowsRemaining,
       bytesRemaining: null,
       chunksRemaining: null,
@@ -615,8 +782,11 @@ export class SyncBurndownReporter {
       // lane's in-memory boundary tracker is process-scoped, but the ids it
       // ABANDONED are persisted, and a lane that gave up is not caught up.
       deadLetteredCount: counts.deadLetteredCount,
+      deadLetteredBasis,
+      // ISS-9823: structural `false` — no once-per-identity resume read here.
+      resumeBlocked: false,
       oldestPendingSinceIso: null,
-      oldestPendingBasis: OldestPendingBasisValues.EnqueuedAt,
+      oldestPendingBasis: OldestPendingBasisValues.NoPerItemTimestamp,
       tracksDurableCursor: true,
       cursorValue: cursor?.observedTopUpdatedAt ?? null,
       cursorWrittenAtIso: cursor?.updatedAt ?? null,
@@ -628,72 +798,7 @@ export class SyncBurndownReporter {
     });
   }
 
-  /**
-   * The fifth lane (`main/sync/AGENTS.md`). It has no send-path tee and no
-   * durable cursor: its queue lives on the entity row, so depth is the pending
-   * status count and per-pass progress is that count shrinking.
-   *
-   * `deadLetteredCount` is a REAL, permanent zero here, not an unmeasured one:
-   * this lane has no give-up state at all, so a comment the server keeps
-   * rejecting retries every 10 seconds forever and shows as `draining`
-   * indefinitely rather than ever reaching `drained_with_dead_letters`. An
-   * operator will never get an "abandoned" line from this lane — a backlog that
-   * never shrinks is the signal to read.
-   */
-  private buildTraceCommentLane(
-    store: SyncBurndownStoreSample,
-    nowMs: number
-  ): SyncLaneBurndown {
-    const counts = store.traceComments;
-    const previous = this.previousStore?.traceComments;
-    const itemsRemaining = counts.pendingComments + counts.pendingReplyComments;
-    const previousRemaining =
-      previous === undefined
-        ? null
-        : previous.pendingComments + previous.pendingReplyComments;
-    return this.finishLane({
-      lane: SyncLaneId.TraceComments,
-      running: this.options.isTraceCommentLaneRunning(),
-      itemsRemaining,
-      unmeasuredRows: counts.unmeasuredRows,
-      bytesRemaining: null,
-      chunksRemaining: null,
-      deadLetteredCount: 0,
-      oldestPendingSinceIso: counts.oldestPendingCreatedAtIso,
-      oldestPendingBasis: OldestPendingBasisValues.EnqueuedAt,
-      tracksDurableCursor: false,
-      cursorValue: null,
-      cursorWrittenAtIso: null,
-      activity: {
-        workCompleted: positiveDelta(previousRemaining, itemsRemaining),
-        bytesSent: null,
-      },
-      nowMs,
-    });
-  }
-
-  private finishLane(input: {
-    lane: SyncLaneId;
-    running: boolean;
-    itemsRemaining: number | null;
-    itemsRemainingIsLowerBound?: boolean;
-    /**
-     * Eligible-now depth. Omitted by the lanes that keep no per-row retry
-     * deadline, where it stays `null` — "cannot tell", never "none ready".
-     */
-    readyItemsRemaining?: number | null;
-    unmeasuredRows?: number;
-    bytesRemaining: number | null;
-    chunksRemaining: number | null;
-    deadLetteredCount: number;
-    oldestPendingSinceIso: string | null;
-    oldestPendingBasis: OldestPendingBasis;
-    tracksDurableCursor: boolean;
-    cursorValue: string | null;
-    cursorWrittenAtIso: string | null;
-    activity: LaneActivity;
-    nowMs: number;
-  }): SyncLaneBurndown {
+  private finishLane(input: SyncBurndownLaneInput): SyncLaneBurndown {
     // "Never started" vs "started but idle" is tracked by OBSERVATION: a lane
     // seen running even once this launch can never fall back to `never_started`,
     // so a lane that goes offline reports `idle_not_running` — the honest
@@ -702,23 +807,46 @@ export class SyncBurndownReporter {
       this.everRunningLanes.add(input.lane);
     }
     const unmeasuredRows = input.unmeasuredRows ?? 0;
+    // ISS-10082: every remainder a lane could not read is published as `null` —
+    // the value this contract already defines as "unknown" and every consumer
+    // already handles — rather than as the placeholder zero the store returns.
+    // Applied here rather than per lane so a lane added later cannot opt out.
+    const measured = remainderIsMeasured(input.remainderBasis);
+    const itemsRemaining = measured ? input.itemsRemaining : null;
+    const readyItemsRemaining = measured
+      ? (input.readyItemsRemaining ?? null)
+      : null;
+    // ISS-10082 review: the same placeholder, one column over. `parkedPending`
+    // and `withheld` are folds over rows the store never read, and each field's
+    // own contract says an absent count reads as unknown and NEVER as zero — so
+    // an unread lane must not report "no parked work" for a partition nobody
+    // counted.
+    // `unmeasuredRows` is deliberately left at `0`: it is typed non-nullable and
+    // the `null` remainder above already forces the verdict.
+    const parkedCount = measured ? (input.parkedCount ?? null) : null;
+    const withheldCount = measured ? (input.withheldCount ?? null) : null;
     const state = classifyLaneDrainState({
       started: this.everRunningLanes.has(input.lane),
       gateOpen: input.running,
-      itemsRemaining: input.itemsRemaining,
+      resumeBlocked: input.resumeBlocked,
+      itemsRemaining,
       deadLetteredCount: input.deadLetteredCount,
+      deadLetteredBasis: input.deadLetteredBasis,
       unmeasuredRows,
     });
     return {
       lane: input.lane,
       state,
-      itemsRemaining: input.itemsRemaining,
+      resumeBlocked: input.resumeBlocked,
+      itemsRemaining,
       itemsRemainingIsLowerBound: input.itemsRemainingIsLowerBound ?? false,
-      readyItemsRemaining: input.readyItemsRemaining ?? null,
+      readyItemsRemaining,
       unmeasuredRows,
-      bytesRemaining: input.bytesRemaining,
-      chunksRemaining: input.chunksRemaining,
+      bytesRemaining: measured ? input.bytesRemaining : null,
+      chunksRemaining: measured ? input.chunksRemaining : null,
       deadLetteredCount: input.deadLetteredCount,
+      deadLetteredBasis: input.deadLetteredBasis,
+      remainderBasis: input.remainderBasis,
       oldestPendingSinceIso: input.oldestPendingSinceIso,
       oldestPendingBasis: input.oldestPendingBasis,
       oldestPendingAgeMs: ageMsFrom(input.oldestPendingSinceIso, input.nowMs),
@@ -726,12 +854,19 @@ export class SyncBurndownReporter {
       durableCursorValue: input.cursorValue,
       durableCursorWrittenAtIso: input.cursorWrittenAtIso,
       durableCursorAgeMs: ageMsFrom(input.cursorWrittenAtIso, input.nowMs),
+      cursorBoundaryValue: input.cursorBoundaryValue ?? null,
       workCompletedSincePrevious: input.activity.workCompleted,
       bytesSentSincePrevious: input.activity.bytesSent,
+      queueRowsClearedSincePrevious: input.activity.queueRowsCleared ?? null,
+      parkedCount,
+      withheldCount,
     };
   }
 
   private emit(snapshot: SyncBurndownSnapshot): void {
+    // Unconditional and first: the log lines below are rate-limited by design,
+    // and a telemetry series must not inherit that policy (ISS-9246).
+    this.options.onSample?.(snapshot);
     for (const lane of snapshot.lanes) {
       this.emitLane(lane);
     }
@@ -748,63 +883,10 @@ export class SyncBurndownReporter {
       this.emitLaneVerdict(lane);
       this.emittedState.set(lane.lane, lane.state);
     }
-    this.maybeWarnCursorStall(lane);
-    this.maybeWarnNoProgress(lane);
-  }
-
-  /**
-   * ISS-5973: the lane is running, still owes work, and is completing none of it.
-   *
-   * Kept separate from {@link maybeWarnCursorStall} rather than folded into it:
-   * the two detectors have mutually exclusive preconditions (that one requires
-   * work completed > 0, this one requires exactly 0), they latch independently,
-   * and an operator acts on them differently — a frozen cursor means uploads are
-   * landing but not being recorded, a no-progress lane means nothing is being
-   * uploaded at all.
-   */
-  private maybeWarnNoProgress(lane: SyncLaneBurndown): void {
-    const previousLane =
-      this.previous?.lanes.find((entry) => entry.lane === lane.lane) ?? null;
-    const isZeroWorkSample =
-      lane.state === SyncLaneDrainState.Draining &&
-      (lane.workCompletedSincePrevious ?? 0) <= 0;
-    if (!isZeroWorkSample) {
-      // Progress, or the lane left `Draining`. Re-arm so a stall that recurs
-      // after a genuine advance is reported again.
-      this.zeroWorkSamples.delete(lane.lane);
-      this.noProgressLanes.delete(lane.lane);
-      return;
-    }
-    const consecutiveZeroWorkSamples =
-      (this.zeroWorkSamples.get(lane.lane) ?? 0) + 1;
-    this.zeroWorkSamples.set(lane.lane, consecutiveZeroWorkSamples);
-    if (
-      !detectNoProgressStall({
-        previous: previousLane,
-        current: lane,
-        consecutiveZeroWorkSamples,
-      })
-    ) {
-      return;
-    }
-    this.options.log(
-      SyncBurndownLogLevel.Warn,
-      formatNoProgressStallLine(lane)
-    );
-    if (this.noProgressLanes.has(lane.lane)) {
-      // Already reported this episode; the warn line above still carries the
-      // trend every sample, but the monitored signal fires once.
-      return;
-    }
-    this.noProgressLanes.add(lane.lane);
-    this.options.onLaneStall?.({
-      lane: lane.lane,
-      workCompletedSincePrevious: 0,
-      durableCursorAgeMs: lane.durableCursorAgeMs,
-      deadLetteredCount: lane.deadLetteredCount,
-      kind: SyncLaneStallKind.NoProgress,
-      itemsRemaining: lane.itemsRemaining,
-      itemsRemainingIsLowerBound: lane.itemsRemainingIsLowerBound,
+    this.stallWatcher.observe({
+      previous:
+        this.previous?.lanes.find((entry) => entry.lane === lane.lane) ?? null,
+      current: lane,
     });
   }
 
@@ -831,35 +913,6 @@ export class SyncBurndownReporter {
     }
   }
 
-  private maybeWarnCursorStall(lane: SyncLaneBurndown): void {
-    const previousLane =
-      this.previous?.lanes.find((entry) => entry.lane === lane.lane) ?? null;
-    if (!detectCursorStall({ previous: previousLane, current: lane })) {
-      // The cursor moved (or the lane went quiet). Re-arm, so a stall that
-      // recurs after a genuine advance is reported again instead of being
-      // suppressed by the previous episode's latch.
-      this.stalledLanes.delete(lane.lane);
-      return;
-    }
-    this.options.log(SyncBurndownLogLevel.Warn, formatCursorStallLine(lane));
-    if (this.stalledLanes.has(lane.lane)) {
-      // Already reported this episode. The warn line above still goes to the
-      // log every sample (it is the trend), but the monitored signal fires once
-      // per episode so a multi-hour stall is one alert, not one an interval.
-      return;
-    }
-    this.stalledLanes.add(lane.lane);
-    this.options.onLaneStall?.({
-      lane: lane.lane,
-      workCompletedSincePrevious: lane.workCompletedSincePrevious ?? 0,
-      durableCursorAgeMs: lane.durableCursorAgeMs,
-      deadLetteredCount: lane.deadLetteredCount,
-      kind: SyncLaneStallKind.CursorFrozen,
-      itemsRemaining: lane.itemsRemaining,
-      itemsRemainingIsLowerBound: lane.itemsRemainingIsLowerBound,
-    });
-  }
-
   private emitAllLanesVerdict(snapshot: SyncBurndownSnapshot): void {
     const allSynced = areAllLanesFullySynced(snapshot.lanes);
     if (allSynced === this.previousAllSynced) {
@@ -871,4 +924,25 @@ export class SyncBurndownReporter {
       formatAllLanesVerdictLine(snapshot.lanes)
     );
   }
+}
+
+/**
+ * ISS-9744: the dead-letter basis for a lane whose store read is SCOPED to a
+ * source key.
+ *
+ * With no key, `sync-burndown-store.ts` never queries the DEAD-LETTER
+ * population: `readSessionOutbox` and `readSessionParked` are skipped entirely,
+ * `readInvocationCounts` returns `EMPTY_INVOCATION_COUNTS` dead-letters down
+ * both of its null-key branches (the ISS-8768 template probe on one of them
+ * counts the BACKLOG, never the abandoned rows), and
+ * `readComponentInventoryCounts` returns `deadLetteredCount: 0` without reading
+ * the cursor row. The count is a placeholder, so labelling it as measured would
+ * assert a read that never happened, on exactly the unpaired/offline install the
+ * gate-shut alert fires for.
+ */
+function deadLetteredBasisFor(
+  sourceKey: string | null,
+  measured: SyncLaneDeadLetteredBasis
+): SyncLaneDeadLetteredBasis {
+  return sourceKey === null ? SyncLaneDeadLetteredBasis.Unmeasured : measured;
 }

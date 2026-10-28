@@ -1,8 +1,11 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { LinkType } from "@repo/api/src/types/artifact.js";
-import type {
-  ResolvedInlineImage,
-  ResolveInlineImagesResponse,
+import {
+  chunkInlineImageAttachmentIds,
+  extractInlineImageAttachmentIds,
+  type ResolvedInlineImage,
+  type ResolveInlineImagesResponse,
+  replaceInlineImageAttachmentRefs,
 } from "@repo/api/src/types/attachment.js";
 import type { DocumentDetail } from "@repo/api/src/types/document.js";
 import { log } from "@repo/observability/log";
@@ -12,7 +15,6 @@ import { McpApiError } from "../api-error.js";
 import {
   asRecord,
   DOCUMENT_DOC_HELP,
-  describeIdOrSlug,
   encodePathSegment,
   type McpUrlBuilder,
   PARENT_ARTIFACT_METADATA_HELP,
@@ -20,6 +22,7 @@ import {
   readNumber,
   readString,
   readTagSummaries,
+  requiredIdOrSlug,
   truncateString,
   withErrorHandling,
   withParentArtifactProjection,
@@ -27,10 +30,7 @@ import {
 
 const DEFAULT_CONTENT_MAX_CHARS = 4000;
 const MAX_CONTENT_MAX_CHARS = 120_000;
-const INLINE_IMAGE_REF_REGEX =
-  /!\[[^\]]*]\(attachment:\/\/([0-9a-fA-F-]{36})(?:\s+"[^"]*")?\)/g;
 const MARKDOWN_IMAGE_TOKEN_REGEX = /!\[[^\]]*]\([^)]*\)/g;
-const INLINE_IMAGE_RESOLVE_BATCH_SIZE = 50;
 const MCP_IMAGE_BLOCK_MAX_COUNT = 10;
 const MCP_IMAGE_BLOCK_MAX_BYTES = 2 * 1024 * 1024;
 const MCP_IMAGE_BLOCK_AGGREGATE_MAX_BYTES = 6 * 1024 * 1024;
@@ -110,6 +110,8 @@ export function shapeGetDocumentPayload(
   const rawContent = readString(version.content) ?? "";
   const resolvedContentMaxChars =
     options.contentMaxChars ?? DEFAULT_CONTENT_MAX_CHARS;
+  const contentTruncated = rawContent.length > resolvedContentMaxChars;
+  const returnedChars = Math.min(rawContent.length, resolvedContentMaxChars);
   const content =
     options.includeContent === true
       ? truncateString(rawContent, resolvedContentMaxChars)
@@ -121,6 +123,9 @@ export function shapeGetDocumentPayload(
     slug: readString(row.slug),
     type: readString(row.type),
     status: readString(row.status),
+    ...(row.statusMutation == null
+      ? {}
+      : { statusMutation: row.statusMutation }),
     projectId: readString(row.projectId),
     priority: readString(row.priority),
     dueDate: readString(row.dueDate),
@@ -130,7 +135,7 @@ export function shapeGetDocumentPayload(
     approverId: readString(row.approverId),
     approver: row.approver ?? null,
     tags: readTagSummaries(row.tags),
-    // Immutable per-document repository record, set at creation (PLN-602).
+    // Server-owned per-document repository record (PLN-602).
     repositorySnapshot: row.repositorySnapshot ?? null,
     // Stack-rank position within the project (PRD-421); lower sorts first,
     // null when unranked. Lets agents read order before calling move-artifact.
@@ -143,7 +148,9 @@ export function shapeGetDocumentPayload(
       createdAt: readString(version.createdAt),
       createdById: readString(version.createdById),
       contentLength: rawContent.length,
-      ...(options.includeContent === true ? { content } : {}),
+      ...(options.includeContent === true
+        ? { content, contentTruncated, returnedChars }
+        : {}),
     },
     ...(options.inlineImages ? { inlineImages: options.inlineImages } : {}),
     ...(options.inlineImageBlockSkips
@@ -161,29 +168,14 @@ export function shapeGetDocumentPayload(
     : withParentArtifactProjection(base, options.parentProjection);
 }
 
-export function extractInlineImageAttachmentIds(content: string): string[] {
-  const ids: string[] = [];
-  const seen = new Set<string>();
-  for (const match of content.matchAll(INLINE_IMAGE_REF_REGEX)) {
-    const id = match[1];
-    if (!seen.has(id)) {
-      seen.add(id);
-      ids.push(id);
-    }
-  }
-  return ids;
-}
-
 function replaceInlineImageRefs(
   content: string,
   resolvedById: Map<string, ResolvedInlineImage>
 ): string {
-  return content.replaceAll(INLINE_IMAGE_REF_REGEX, (match, attachmentId) => {
-    const resolved = resolvedById.get(attachmentId);
-    return resolved
-      ? match.replace(`attachment://${attachmentId}`, resolved.url)
-      : match;
-  });
+  return replaceInlineImageAttachmentRefs(
+    content,
+    (attachmentId) => resolvedById.get(attachmentId)?.url
+  );
 }
 
 function truncateMarkdownImageSafe(value: string, maxChars: number): string {
@@ -218,18 +210,6 @@ function buildContentWithResolvedInlineImages(
   );
 }
 
-function chunkIds(ids: string[]): string[][] {
-  const chunks: string[][] = [];
-  for (
-    let index = 0;
-    index < ids.length;
-    index += INLINE_IMAGE_RESOLVE_BATCH_SIZE
-  ) {
-    chunks.push(ids.slice(index, index + INLINE_IMAGE_RESOLVE_BATCH_SIZE));
-  }
-  return chunks;
-}
-
 function getInlineImageResolveFailureReason(error: unknown): string {
   if (error instanceof McpApiError && error.status === 404) {
     return "resolver_unavailable";
@@ -243,7 +223,7 @@ async function resolveInlineImagesForMcp(
   attachmentIds: string[]
 ): Promise<InlineImageResolution> {
   const chunkResults = await Promise.all(
-    chunkIds(attachmentIds).map(async (chunk) => {
+    chunkInlineImageAttachmentIds(attachmentIds).map(async (chunk) => {
       const images: ResolvedInlineImage[] = [];
       const skipped: InlineImageSkip[] = [];
 
@@ -533,11 +513,11 @@ export function registerGetDocument(
     {
       description: `Get one document — a PRD (PRD-*), implementation plan (PLN-*), or feature (FEA-*) — by UUID or slug. When the user references a record by its slug (e.g. "show me FEA-42"), pass that slug as documentId directly; no UUID lookup is needed. ${PARENT_ARTIFACT_METADATA_HELP}`,
       inputSchema: {
-        documentId: z
-          .string()
-          .describe(
-            describeIdOrSlug("Document", ["PRD-7", "PLN-12", "FEA-42"])
-          ),
+        documentId: requiredIdOrSlug(
+          "Document",
+          ["PRD-7", "PLN-12", "FEA-42"],
+          "Use list-documents to find one."
+        ),
         includeContent: z
           .boolean()
           .optional()

@@ -23,42 +23,52 @@ COPY patches/ patches/
 RUN corepack prepare --activate
 COPY tsconfig.json ./
 
-# Copy only the packages the MCP server depends on
+# Manifests only. pnpm needs every closure member's package.json on disk to
+# resolve the workspace symlinks; keeping source out of this layer is what lets
+# an edit to a workspace package reuse the cached install below (FEA-1560).
 COPY apps/mcp/package.json apps/mcp/tsconfig.json apps/mcp/
-COPY packages/api/ packages/api/
-COPY packages/loops-api/ packages/loops-api/
-# @repo/observability — mcp routes logging and bounded shutdown flushing through
-# @repo/observability/log and @repo/observability/shutdown. Consumed from source
-# (no exports map → root .ts files, resolved by tsx at runtime), so copy the
-# full package like relay does.
-COPY packages/observability/ packages/observability/
-# telemetry-contract is a transitive workspace dep declared by @repo/observability;
-# pnpm needs its manifest on disk to resolve the workspace symlink. mcp's log.ts
-# import graph never resolves it at runtime, so no dist/src is copied.
+COPY packages/api/package.json packages/api/
+COPY packages/loops-api/package.json packages/loops-api/
+COPY packages/observability/package.json packages/observability/
+COPY packages/database/package.json packages/database/
+COPY packages/redis/package.json packages/redis/
+# telemetry-contract and shared-platform reach mcp only transitively (via
+# @repo/observability and @repo/api). Nothing in mcp's import graph resolves
+# them, so their source is never copied — here or below; the manifest alone is
+# what pnpm needs to resolve the symlink.
 COPY packages/telemetry-contract/package.json packages/telemetry-contract/
-# shared-platform is a transitive workspace dep of @repo/api (which re-exports
-# its EngineerRoutingMode SSOT); pnpm needs its manifest on disk to resolve the
-# workspace symlink even though mcp does not import it directly. No dist/src is
-# needed until something in mcp's import graph actually resolves the module.
 COPY packages/shared-platform/package.json packages/shared-platform/
-# crewd is a transitive workspace dep of @repo/api (its harness-conversion
-# contract imports @repo/crewd/model); pnpm needs its manifest on disk to resolve
-# the workspace symlink even though mcp does not import it directly. No dist/src
-# is needed until something in mcp's import graph actually resolves the module.
-COPY packages/crewd/package.json packages/crewd/
-COPY packages/database/ packages/database/
-COPY packages/redis/ packages/redis/
-COPY packages/typescript-config/ packages/typescript-config/
+# vitest-config is a test-only devDependency (the reporter pin every vitest.config
+# imports). The builder's install is not `--prod`, so pnpm needs its manifest on
+# disk to resolve the workspace symlink; nothing in mcp's runtime import graph
+# ever resolves it, so no dist/src is copied.
+COPY packages/vitest-config/package.json packages/vitest-config/
+COPY packages/typescript-config/package.json packages/typescript-config/
 
 # Install dependencies (workspace mode, only for the MCP app and its deps)
 RUN pnpm install --frozen-lockfile --filter mcp... --ignore-scripts
+# The COPYs below mutate the tree between this install and the `pnpm exec`/`pnpm
+# run` steps that follow, which is what makes pnpm's pre-run deps check decide
+# node_modules is stale and launch an unfiltered network install — the FEA-2653
+# mechanism, here in the builder rather than at boot.
+ENV PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false
+
+# Workspace sources and tsconfig bases, after the install. None is an input to
+# `pnpm install`, which resolves from manifests alone, so keeping them below it is
+# what lets an edit to any of them reuse the cached install layer.
+COPY packages/typescript-config/ packages/typescript-config/
+COPY packages/database/ packages/database/
 # Generate Prisma client in clean CI checkouts where generated/ is absent.
 RUN pnpm --filter @repo/database exec prisma generate --no-hints --schema=./prisma/schema.prisma
+COPY packages/api/ packages/api/
+COPY packages/loops-api/ packages/loops-api/
+COPY packages/observability/ packages/observability/
+COPY packages/redis/ packages/redis/
 
 # Copy MCP source code
 COPY apps/mcp/src/ apps/mcp/src/
 
-# @closedloop-ai/loops-api is consumed from source (its exports resolve to ./src/*.ts),
+# @repo/loops-api is consumed from source (its exports resolve to ./src/*.ts),
 # so there is nothing to pre-build; runtime tsx resolves it directly. Build MCP itself.
 RUN pnpm --filter mcp build
 
@@ -86,9 +96,6 @@ COPY packages/loops-api/package.json packages/loops-api/
 # shared-platform manifest needed for the prod workspace-symlink resolution of
 # @repo/api (see builder stage); mcp does not import it, so no dist is copied.
 COPY packages/shared-platform/package.json packages/shared-platform/
-# crewd manifest for the prod workspace-symlink resolution of @repo/api (see
-# builder stage); mcp does not import it, so no dist/src is copied.
-COPY packages/crewd/package.json packages/crewd/
 COPY packages/database/package.json packages/database/
 COPY packages/redis/package.json packages/redis/
 # @repo/observability manifest for the prod workspace-symlink resolution; its
@@ -97,6 +104,9 @@ COPY packages/observability/package.json packages/observability/
 # telemetry-contract manifest — transitive workspace dep of @repo/observability;
 # needed for prod symlink resolution. Never resolved at runtime, so no dist/src.
 COPY packages/telemetry-contract/package.json packages/telemetry-contract/
+# vitest-config manifest for the prod workspace-symlink resolution (see builder
+# stage); it is a test-only devDependency, so no dist/src is copied.
+COPY packages/vitest-config/package.json packages/vitest-config/
 
 # Copy typescript-config (tsconfig bases) — needed by tsx for .ts resolution
 COPY --from=builder /app/packages/typescript-config/ packages/typescript-config/
@@ -137,6 +147,14 @@ ENV DD_LOGS_JSON=1
 ENV PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false
 
 EXPOSE 3010
+
+# Sizes V8's heap from the container's own cgroup limit before exec'ing CMD, so
+# the task definition's `memory` is the single place that number is configured
+# (ISS-8264). Must be ENTRYPOINT, not a --require preload: --max-old-space-size
+# is read at V8 init, which has already happened by the time any JS runs.
+COPY apps/mcp/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
 # pnpm --filter mcp exec sets CWD to /app/apps/mcp/, so paths are relative to that.
 # --require needs ./ prefix for CWD-relative resolution (not node_modules lookup).

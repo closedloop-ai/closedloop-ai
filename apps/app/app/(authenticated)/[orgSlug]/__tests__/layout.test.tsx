@@ -3,9 +3,7 @@ import { render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// ---------------------------------------------------------------------------
 // Mock setup — hoisted so vi.mock factories can reference them
-// ---------------------------------------------------------------------------
 
 const { mockAuth, mockOrgIdentityProvider } = vi.hoisted(() => ({
   mockAuth: vi.fn(),
@@ -32,9 +30,21 @@ const { mockNotFound } = vi.hoisted(() => ({
 
 vi.mock("next/navigation", () => ({ notFound: mockNotFound }));
 
-// ---------------------------------------------------------------------------
+// ISS-8370 D2: the layout hands the `@settings` slot to the client slot host.
+// The host's own decisions are exercised by settings-slot-host.test.tsx; here
+// the contract is only that the server layout wires the slot into it.
+const { mockSettingsSlotHost } = vi.hoisted(() => ({
+  mockSettingsSlotHost: vi.fn(),
+}));
+
+vi.mock("../settings-slot-host", () => ({
+  SettingsSlotHost: (props: { readonly children: ReactNode }) => {
+    mockSettingsSlotHost(props);
+    return <div>{props.children}</div>;
+  },
+}));
+
 // Component under test — imported after mocks are registered
-// ---------------------------------------------------------------------------
 
 import OrgSlugLayout from "../layout";
 
@@ -71,11 +81,14 @@ function isolateEnv(): void {
   }
 }
 
+const SETTINGS_SLOT = <div>settings slot</div>;
+
 async function renderLayout(): Promise<void> {
   render(
     await OrgSlugLayout({
       children: <div>child content</div>,
       params: Promise.resolve({ orgSlug: ORG_SLUG }),
+      settings: SETTINGS_SLOT,
     })
   );
 }
@@ -104,6 +117,17 @@ describe("OrgSlugLayout bypassClientOrgGate wiring", () => {
 
     expect(mockOrgIdentityProvider).toHaveBeenCalledWith(
       expect.objectContaining({ bypassClientOrgGate: false, orgSlug: ORG_SLUG })
+    );
+    expect(screen.getByText("child content")).toBeInTheDocument();
+  });
+
+  it("hands the @settings slot to the slot host, with the page as its children (ISS-8370)", async () => {
+    isolateEnv();
+
+    await renderLayout();
+
+    expect(mockSettingsSlotHost).toHaveBeenCalledWith(
+      expect.objectContaining({ slot: SETTINGS_SLOT })
     );
     expect(screen.getByText("child content")).toBeInTheDocument();
   });

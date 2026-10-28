@@ -4,7 +4,7 @@ import { GitHubPRState } from "@repo/api/src/types/github";
 /**
  * Pure lifecycle-decision helpers for the pull_request webhook handler.
  *
- * Split out of `pull-request-handler.ts` (which is a large, grandfathered file)
+ * Split out of `pull-request-handler.ts` (a large file)
  * because these are self-contained, side-effect-free predicates over a PR's
  * persisted state versus an incoming webhook payload — a distinct responsibility
  * from the handler's persistence orchestration. Kept side-effect-free so they

@@ -12,9 +12,9 @@ import { useApiClient } from "../../shared/api/use-api-client";
  *
  * It calls the dedicated org-wide `GET /compute-targets/has-connected-agent`
  * endpoint rather than the user-scoped `GET /compute-targets` listing (which
- * filters to the viewer's own + org-shared targets). The Sessions list is an
- * org-wide view, so the onboarding-vs-filters decision must be org-wide too:
- * otherwise a teammate's unshared desktop would be invisible to another user and
+ * filters to the viewer's own targets). The Sessions list is an org-wide view,
+ * so the onboarding-vs-filters decision must be org-wide too: otherwise a
+ * teammate's desktop would be invisible to another user and
  * that user's empty filtered/date result would be misclassified as "never
  * connected", flashing the onboarding CTA at an already-onboarded org.
  *

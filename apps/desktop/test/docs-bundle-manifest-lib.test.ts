@@ -10,8 +10,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { after, describe, test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { afterAll, describe, test } from "vitest";
 import {
   buildGroupIndex,
   collectMdxFiles,
@@ -66,7 +66,7 @@ const CASE_TIMEOUT_MS = 60_000;
 
 const tempDirs: string[] = [];
 
-after(() => {
+afterAll(() => {
   for (const dir of tempDirs) {
     rmSync(dir, { force: true, recursive: true });
   }

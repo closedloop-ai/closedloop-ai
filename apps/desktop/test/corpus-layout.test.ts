@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
+  assertExhaustiveClassification,
   classifyRawFiles,
   listDossierDirs,
   listDossierRawDirs,
 } from "../src/main/collectors/golden/corpus-layout.js";
+import { createTempDirManager } from "./helpers/temp-dir.js";
 
 // --- Helpers ---
 
@@ -17,7 +19,7 @@ import {
  * dot-dir, and a plain file.
  */
 function makeCorpus(): { corpusDir: string } {
-  const corpusDir = fs.mkdtempSync(path.join(os.tmpdir(), "cl-corpus-"));
+  const corpusDir = makeTempDir();
 
   // Non-dossier directories (NON_DOSSIER_DIRS set in implementation)
   fs.mkdirSync(path.join(corpusDir, "_templates"));
@@ -49,13 +51,35 @@ test("listDossierDirs skips _templates, collection-kit, dot-dirs, and plain file
   assert.equal(result[1].dir, path.join(corpusDir, "session-beta-002"));
 });
 
+test("listDossierDirs skips the contract-fixtures and reports directories (ISS-12552)", () => {
+  const corpusDir = makeTempDir();
+  fs.mkdirSync(path.join(corpusDir, "contract-fixtures"));
+  fs.mkdirSync(path.join(corpusDir, "reports"));
+  fs.mkdirSync(path.join(corpusDir, "session-a"));
+
+  assert.deepEqual(
+    listDossierDirs(corpusDir).map((d) => d.sessionId),
+    ["session-a"]
+  );
+});
+
+test("listDossierRawDirs carries each dossier's server/ captures beside raw/ (ISS-12552)", () => {
+  const corpusDir = makeTempDir();
+  fs.mkdirSync(path.join(corpusDir, "session-a"));
+
+  const [dossier] = listDossierRawDirs(corpusDir);
+
+  assert.equal(dossier?.serverDir, path.join(corpusDir, "session-a", "server"));
+  assert.equal(dossier?.rawDir, path.join(corpusDir, "session-a", "raw"));
+});
+
 test("listDossierDirs returns empty array when root does not exist", () => {
   const nonexistent = path.join(os.tmpdir(), `cl-missing-${Date.now()}`);
   assert.deepEqual(listDossierDirs(nonexistent), []);
 });
 
 test("listDossierDirs skips the node_modules directory", () => {
-  const corpusDir = fs.mkdtempSync(path.join(os.tmpdir(), "cl-nm-"));
+  const corpusDir = makeTempDir("cl-nm-");
   fs.mkdirSync(path.join(corpusDir, "node_modules"));
   fs.mkdirSync(path.join(corpusDir, "real-dossier"));
   const result = listDossierDirs(corpusDir);
@@ -64,7 +88,7 @@ test("listDossierDirs skips the node_modules directory", () => {
 });
 
 test("listDossierDirs returns empty array when corpus contains only non-dossier entries", () => {
-  const corpusDir = fs.mkdtempSync(path.join(os.tmpdir(), "cl-only-skipped-"));
+  const corpusDir = makeTempDir("cl-only-skipped-");
   fs.mkdirSync(path.join(corpusDir, "_templates"));
   fs.writeFileSync(path.join(corpusDir, "plain.txt"), "");
   assert.deepEqual(listDossierDirs(corpusDir), []);
@@ -148,3 +172,32 @@ test("classifyRawFiles: .db file present alongside rollout files → opencode wi
   // The .db branch triggers before the rollout branch in classifyRawFiles.
   assert.deepEqual(result, { kind: "opencode", dbFile: "store.db" });
 });
+
+// --- assertExhaustiveClassification (ISS-7504) ---
+
+const UNRECOGNISED_CURSOR_RE =
+  /unrecognised raw-file classification kind: cursor/;
+const UNRECOGNISED_COPILOT_RE =
+  /unrecognised raw-file classification kind: copilot/;
+
+test("assertExhaustiveClassification throws for an unrecognised classification kind", () => {
+  // Synthetic unknown classification via cast — exercises the runtime throw that
+  // both parseDossierRaw (golden-corpus.ts) and listStagedClaudeMains /
+  // listStagedCodexRollouts (rehearsal-build-store.ts) rely on. TypeScript's
+  // `never` annotation ensures both call sites are wired at compile time; this
+  // test proves the runtime half rejects rather than silently proceeding.
+  assert.throws(
+    () => assertExhaustiveClassification({ kind: "cursor" } as never),
+    { message: UNRECOGNISED_CURSOR_RE }
+  );
+});
+
+test("assertExhaustiveClassification includes the kind value in the error message", () => {
+  // A second synthetic kind verifies the message is dynamic, not a fixed string.
+  assert.throws(
+    () => assertExhaustiveClassification({ kind: "copilot" } as never),
+    { message: UNRECOGNISED_COPILOT_RE }
+  );
+});
+
+const { makeTempDir } = createTempDirManager("cl-corpus-");

@@ -121,8 +121,19 @@ import {
  *     keeps serving the pre-upgrade layout — the one the collector lane never
  *     produced — until its `opencode.db` happens to change again, which is the
  *     opposite of the cross-lane parity that re-root exists to establish.
+ *  3. ISS-10736 (whitlockk review) — a BYTE change: every `toolUse` record now
+ *     carries `outputFootprintTokens`, the count of the full result taken by the
+ *     collector before `output` is capped at 4 KiB. It cannot be recomputed from
+ *     the projection, so without this bump an untouched `opencode.db` keeps
+ *     serving footprint-free records and every OpenCode `tool`/`mcp` row stays
+ *     NULL after the DATA_REVISION 103 rebuild — the precise hole this ticket
+ *     exists to close, left open on one harness.
+ *  4. ISS-12251 (C7) — a BYTE change: the session header now carries the
+ *     optional `fileCreatedAt`, taken from the session row's `time_created`.
+ *     Without this bump an untouched `opencode.db` keeps serving headers
+ *     without it.
  */
-const OPENCODE_PROJECTION_REVISION = 2;
+const OPENCODE_PROJECTION_REVISION = 4;
 
 /**
  * Per-session serialized-body ceiling (256 MiB). A pathological session must not
@@ -207,6 +218,9 @@ export function serializeSessionToJsonl(session: NormalizedSession): string {
       permissionMode: session.permissionMode,
       entrypoint: session.entrypoint,
       fileModifiedAt: session.fileModifiedAt,
+      ...(session.fileCreatedAt === undefined
+        ? {}
+        : { fileCreatedAt: session.fileCreatedAt }),
       tokensByModel: session.tokensByModel,
       messageTimestamps: session.messageTimestamps,
       diffStats: session.diffStats,

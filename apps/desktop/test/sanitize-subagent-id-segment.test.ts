@@ -8,7 +8,7 @@
  * `import-metadata-builders.ts`, so they cannot drift from each other.
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import { sanitizeSubagentIdSegment } from "../src/main/database/import-metadata-builders.js";
 
 describe("sanitizeSubagentIdSegment", () => {

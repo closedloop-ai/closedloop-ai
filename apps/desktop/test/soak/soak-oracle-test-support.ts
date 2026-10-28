@@ -20,7 +20,12 @@ import { AGENT_SESSION_SYNC_SCHEMA_VERSION } from "@repo/api/src/types/agent-ses
 import type { MockCloudServer, MockCloudStats } from "./mock-cloud-server";
 import type { ReadBackEntry, RelationCounts } from "./soak-cloud-content";
 import { buildCycleRecord } from "./soak-cycle-record";
-import { newPageReadStats } from "./soak-page-read";
+import {
+  newPageReadStats,
+  PAGE_READ_DEADLINE_MS,
+  type PageReadSample,
+  type PageReadTimeoutPhase,
+} from "./soak-page-read";
 import type {
   CycleContext,
   CycleRecord,
@@ -284,4 +289,68 @@ export function recordFor(
     baseline: stats.syncedSessionIds,
     localSessionIds: stats.syncedSessionIds,
   });
+}
+
+/**
+ * ISS-6102 — the fixed instants every page-read race case is arithmetic
+ * against. No real clock is read, so nothing built on these is
+ * timing-dependent.
+ *
+ * Shared rather than redeclared: the phase-split suite and the dispatch-
+ * coverage suite drive the same `raceReadAgainstDeadline` entry point, and two
+ * copies of a read identity and its deadline instant would be free to drift
+ * into disagreeing about which read they describe.
+ */
+export const READ_STARTED_AT = 1_765_000_000_000;
+export const READ_ID = "page-read-7";
+/** The instant this read's 10s deadline fires at. */
+export const DEADLINE_AT = READ_STARTED_AT + PAGE_READ_DEADLINE_MS;
+export const EXPECTED_DEADLINE = { readId: READ_ID, deadlineAt: DEADLINE_AT };
+/** A renderer call that had settled 1.4s in, long before the deadline. */
+export const SETTLED_EARLY_AT = READ_STARTED_AT + 1400;
+/**
+ * The two injected halves of the race: an evaluation that never settles pins
+ * the timed-out branch, and a `sleep` that settles immediately fires the
+ * deadline without waiting on a real clock.
+ */
+export const NEVER = () => new Promise<never>(() => undefined);
+export const IMMEDIATELY = () => Promise.resolve();
+
+/**
+ * A page-data payload that grades `ok`: a non-empty page whose total is the
+ * population the fixtures establish. Shared by every suite that needs a read to
+ * pass grading, so none of them can drift into a literal that grades `short`
+ * against the others' expected total.
+ */
+export const OK_PAGE_DATA = { list: { items: [{ id: "a" }], total: 2962 } };
+
+/** One timed-out sample, in the shape the runner hands the recorder. */
+export function timeoutSample(
+  dispatchMs: number | null,
+  timeoutPhase: PageReadTimeoutPhase
+): PageReadSample {
+  return {
+    result: null,
+    elapsedMs: PAGE_READ_DEADLINE_MS,
+    timedOut: true,
+    rendererMs: null,
+    dispatchMs,
+    timeoutPhase,
+  };
+}
+
+/**
+ * One settled sample that grades `ok`, in the shape the runner hands the
+ * recorder. `dispatchMs` is the only axis a case varies, because it is the one
+ * the ok-population coverage tally is about.
+ */
+export function okSample(dispatchMs: number | null): PageReadSample {
+  return {
+    result: OK_PAGE_DATA,
+    elapsedMs: 42,
+    timedOut: false,
+    rendererMs: 20,
+    dispatchMs,
+    timeoutPhase: null,
+  };
 }

@@ -1,4 +1,14 @@
 import type { BranchRow } from "@repo/api/src/types/branch";
+import {
+  BranchLastActiveClassification,
+  classifyBranchLastActive,
+} from "@repo/api/src/types/branch-list-cohort";
+import { normalizeRepoFullName } from "@repo/api/src/types/branch-repository";
+import {
+  compareListQueryText,
+  ListQueryTextOrdering,
+  listQueryWindowBoundMs,
+} from "@repo/api/src/types/list-query-ordering-semantics";
 import type { SharedBranchesQuery } from "../../shared/shared-branches-contract.js";
 import type { BranchUsageEventWindowBounds } from "../database/branch-usage-event-window-sql.js";
 
@@ -37,20 +47,27 @@ export function hasUnsupportedCloudFilter(
   );
 }
 
-/** Parse a window bound to epoch ms; absent / unparseable → null (not applied). */
+/**
+ * Parse a window bound to epoch ms; absent / unparseable → null (not applied).
+ *
+ * Anchored rather than read with a bare `Date.parse` (ISS-9585): this bound
+ * decides which rows are in the population, and a zone-less one would otherwise
+ * take THIS machine's clock, so the same saved query selected a different set
+ * of branches here than the cloud selected from the same corpus.
+ */
 function parseWindowBoundMs(value: string | undefined): number | null {
   if (!value) {
     return null;
   }
-  const ms = Date.parse(value);
+  const ms = listQueryWindowBoundMs(value);
   return Number.isNaN(ms) ? null : ms;
 }
 
 /**
  * Window the projected branch rows to those last active within
- * [`startDate`, `endDate`]. Compares by true INSTANT via `Date.parse` —
- * mirroring the renderer's `filterBranchRowsByWindow` and the wire-side
- * `isoEpoch` sort — because the canonical value may be a mixed timestamp format
+ * [`startDate`, `endDate`]. Compares by true INSTANT through the shared
+ * `classifyBranchLastActive` — the same classifier the renderer's legacy-path
+ * window (`resolveBranchDisplayRows`) applies — because the canonical value may be a mixed timestamp format
  * (space- vs `T`-separated), where a
  * byte-wise compare would mis-drop a recent row (a space `0x20` sorts before
  * `T` `0x54`). A bound that is absent or unparseable is simply not applied; a
@@ -60,23 +77,115 @@ function parseWindowBoundMs(value: string | undefined): number | null {
  */
 export function filterBranchItemsByWindow(
   items: BranchRow[],
-  request: SharedBranchesQuery
+  request: SharedBranchesQuery,
+  evaluationNow: Date = new Date()
 ): BranchRow[] {
   const startMs = parseWindowBoundMs(request.startDate);
   const endMs = parseWindowBoundMs(request.endDate);
   if (startMs == null && endMs == null) {
     return items;
   }
-  return items.filter((item) => {
-    const ms = Date.parse(item.canonicalLastActiveAt?.value ?? "");
-    if (Number.isNaN(ms)) {
-      return true;
+  return items.filter(
+    (item) =>
+      classifyBranchItemLastActive(item, request, evaluationNow) !==
+      BranchLastActiveClassification.KnownOutOfWindow
+  );
+}
+
+/** Count rows retained because no trustworthy non-future timestamp exists. */
+export function countRetainedUnavailableBranches(
+  items: readonly BranchRow[],
+  request: SharedBranchesQuery,
+  evaluationNow: Date
+): number {
+  return items.filter(
+    (item) =>
+      classifyBranchItemLastActive(item, request, evaluationNow) ===
+      BranchLastActiveClassification.RetainedUnavailable
+  ).length;
+}
+
+/**
+ * Apply LIST-005 ordering before pagination using the same captured clock as
+ * membership and cohort counts. Every retained-unavailable row sorts last.
+ */
+export function sortBranchItemsByLastActive(
+  items: readonly BranchRow[],
+  request: SharedBranchesQuery,
+  evaluationNow: Date
+): BranchRow[] {
+  return [...items].sort((left, right) => {
+    const leftMs = trustedLastActiveMs(left, request, evaluationNow);
+    const rightMs = trustedLastActiveMs(right, request, evaluationNow);
+    if (leftMs !== rightMs) {
+      if (leftMs === null) {
+        return 1;
+      }
+      if (rightMs === null) {
+        return -1;
+      }
+      return rightMs - leftMs;
     }
-    if (startMs != null && ms < startMs) {
-      return false;
-    }
-    return endMs == null || ms <= endMs;
+    return compareBranchIdentity(left, right);
   });
+}
+
+function trustedLastActiveMs(
+  item: BranchRow,
+  request: SharedBranchesQuery,
+  evaluationNow: Date
+): number | null {
+  if (
+    classifyBranchItemLastActive(item, request, evaluationNow) ===
+    BranchLastActiveClassification.RetainedUnavailable
+  ) {
+    return null;
+  }
+  const value =
+    item.canonicalLastActiveAt === undefined
+      ? item.lastActivityAt
+      : item.canonicalLastActiveAt.value;
+  const parsed = typeof value === "string" ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
+ * The same repo / branch / id tie-break the two Branch list compilers apply to
+ * these three keys (ISS-9585), so this window's order cannot depend on the
+ * machine's locale the way a bare `localeCompare()` did.
+ */
+function compareBranchIdentity(left: BranchRow, right: BranchRow): number {
+  return (
+    compareListQueryText(
+      normalizeRepoFullName(left.repoFullName ?? ""),
+      normalizeRepoFullName(right.repoFullName ?? ""),
+      ListQueryTextOrdering.Collated
+    ) ||
+    compareListQueryText(
+      left.branchName,
+      right.branchName,
+      ListQueryTextOrdering.Collated
+    ) ||
+    compareListQueryText(left.id, right.id, ListQueryTextOrdering.Collated)
+  );
+}
+
+function classifyBranchItemLastActive(
+  item: BranchRow,
+  request: SharedBranchesQuery,
+  evaluationNow: Date
+): BranchLastActiveClassification {
+  return classifyBranchLastActive(
+    {
+      canonical: item.canonicalLastActiveAt,
+      legacy: item.lastActivityAt,
+    },
+    {
+      evaluationNow,
+      startDate: request.startDate,
+      endDate: request.endDate,
+    }
+  );
 }
 
 /** Union of the session ids across a set of branch rows. */

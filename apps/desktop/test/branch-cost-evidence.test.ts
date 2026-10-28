@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import {
   aggregateBranchCostCompleteness,
   BranchCostCompleteness,
@@ -11,6 +10,7 @@ import {
   TokenSourceIdentityAvailability,
 } from "@repo/api/src/types/token-cost-provenance.js";
 import { BRANCH_COST_COMPLETENESS_PARITY_CASES } from "@repo/lib/branches/__tests__/cost-completeness-parity-fixture.js";
+import { describe, test } from "vitest";
 import { buildDesktopBranchCostEvidence } from "../src/main/branch/branch-cost-evidence.js";
 import type { BranchUsageTokenRow } from "../src/main/database/branch-reads.js";
 

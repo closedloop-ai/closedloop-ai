@@ -5,13 +5,13 @@ import {
   BranchStatus,
 } from "@repo/api/src/types/branch";
 import { SessionArtifactLinkKind } from "@repo/api/src/types/session-artifact-link";
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import { ArtifactType, withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { persistedGitHubRepositoryAuthority } from "@/__tests__/fixtures/repository-default-authority";
 import {
-  autoRollbackTransaction,
-  createTestOrganization,
+  createCommittedTestOrganizationTracker,
   createTestUser,
 } from "@/__tests__/utils/db-helpers";
 import { branchReadService } from "@/app/branches/branch-read-service";
@@ -34,14 +34,17 @@ import { branchReadService } from "@/app/branches/branch-read-service";
  * a VALID linked session is `Ready` and part of the corpus. FEA-4225 then makes a
  * valid linked session a server-side ELIGIBILITY requirement, so a branch whose
  * only links are orphaned is not merely `NoSessions` — it is excluded from the
- * list and its detail 404s until a real session hydrates. Runs inside
- * `autoRollbackTransaction`.
+ * list and its detail 404s until a real session hydrates. Committed fixtures
+ * let corpus reads open their production repeatable-read transaction.
  */
 
 const hasDatabase = Boolean(keys().DATABASE_URL);
 const describeIfDb = hasDatabase ? describe : describe.skip;
 
 const PUSHED_AT = new Date("2026-07-01T00:00:00.000Z");
+const committedOrganizations = createCommittedTestOrganizationTracker();
+
+afterEach(() => committedOrganizations.cleanup());
 
 async function seedRemoteEvidenceBranch(
   db: Parameters<Parameters<typeof withDb>[0]>[0],
@@ -70,6 +73,7 @@ async function seedRemoteEvidenceBranch(
       pushSource: BranchPushSource.Session,
       lastActivityAt: PUSHED_AT,
     },
+    select: { artifactId: true },
   });
   await db.publicRepository.create({
     data: {
@@ -82,6 +86,7 @@ async function seedRemoteEvidenceBranch(
       name: branchName,
       htmlUrl: `https://github.com/acme/${branchName}`,
     },
+    select: { id: true },
   });
   return artifact.id;
 }
@@ -103,7 +108,7 @@ async function linkSession(
       organizationId,
       type: ArtifactType.SESSION,
       name: `session-for-${branchName}`,
-      status: BranchStatus.Open,
+      status: SESSION_STATUS.ACTIVE,
     },
     select: { id: true },
   });
@@ -123,13 +128,14 @@ async function linkSession(
     await db.sessionDetail.create({
       data: {
         artifactId: session.id,
-        userId: options.userId,
         computeTargetId: computeTarget.id,
         externalSessionId: `ext-${branchName}`,
         harness: "claude",
         sessionStartedAt: PUSHED_AT,
+        lastActivityAt: PUSHED_AT,
         sessionUpdatedAt: PUSHED_AT,
       },
+      select: { artifactId: true },
     });
   }
   await db.artifactLink.create({
@@ -141,6 +147,7 @@ async function linkSession(
       branchParticipation: BranchParticipationKind.Wrote,
       metadata: { linkKind: SessionArtifactLinkKind.SessionBranch },
     },
+    select: { id: true },
   });
   return session.id;
 }
@@ -149,7 +156,7 @@ describeIfDb(
   "branch requires a valid session to be first-class (FEA-4263)",
   () => {
     it("marks a branch with ≥1 valid linked session as Ready with the session counted", async () => {
-      await autoRollbackTransaction(async () => {
+      await committedOrganizations.run(async () => {
         const organizationId = await createTestOrganization();
         const user = await createTestUser(organizationId);
         const { branchId, sessionId } = await withDb(async (db) => {
@@ -182,7 +189,7 @@ describeIfDb(
     });
 
     it("excludes a branch whose only link is orphaned (no SessionDetail) from the corpus", async () => {
-      await autoRollbackTransaction(async () => {
+      await committedOrganizations.run(async () => {
         const organizationId = await createTestOrganization();
         // A session→branch link whose SESSION artifact has NO SessionDetail row —
         // exactly the orphaned link that previously inflated sessionIds and forced
@@ -219,7 +226,7 @@ describeIfDb(
     });
 
     it("flips a legacy orphaned-link branch into the corpus (Ready) once the session's detail lands (graceful, no mutation)", async () => {
-      await autoRollbackTransaction(async () => {
+      await committedOrganizations.run(async () => {
         const organizationId = await createTestOrganization();
         const user = await createTestUser(organizationId);
         const { branchId, sessionId } = await withDb(async (db) => {
@@ -260,13 +267,14 @@ describeIfDb(
           await db.sessionDetail.create({
             data: {
               artifactId: sessionId,
-              userId: user.id,
               computeTargetId: computeTarget.id,
               externalSessionId: "ext-later-hydrated",
               harness: "claude",
               sessionStartedAt: PUSHED_AT,
+              lastActivityAt: PUSHED_AT,
               sessionUpdatedAt: PUSHED_AT,
             },
+            select: { artifactId: true },
           });
         });
 
@@ -280,3 +288,7 @@ describeIfDb(
     });
   }
 );
+
+function createTestOrganization(): Promise<string> {
+  return committedOrganizations.create();
+}

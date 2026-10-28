@@ -3,7 +3,7 @@
  * @description ISS-4771: the two wrappers EVERY `desktop:db:*` handler is built
  * from — `withDb` (sender-trust gate + DB-readiness await + the first-IPC and
  * renderer-read signals) and `withPrisma` (the same, narrowed to the clone-safe
- * Prisma reader). Extracted out of the shrink-only grandfathered
+ * Prisma reader). Extracted out of
  * `agent-dashboard-design-system-runtime.ts` so the per-domain handler-group
  * modules can each be handed the SAME wrappers instead of re-implementing the
  * trust gate. The gate itself is unchanged.
@@ -14,6 +14,11 @@ import {
   type DbHostShuttingDownResult,
 } from "../../shared/db-host-shutdown-contract.js";
 import { isDbHostShutdownError } from "../../shared/db-host-shutdown-error.js";
+import {
+  DESKTOP_READ_CANCELLED_RESULT,
+  type DesktopReadCancelledResult,
+  isReadCancelledError,
+} from "../../shared/read-cancellation-contract.js";
 import { redriveOnDbHostExit } from "../database/db-host/db-host-exit-redrive.js";
 import type { DbHostAgentDatabase } from "../database/sqlite.js";
 import type { AgentDashboardDesignSystemRuntimeOptions } from "./agent-dashboard-runtime-options.js";
@@ -24,7 +29,10 @@ import type { AgentDashboardDesignSystemRuntimeOptions } from "./agent-dashboard
  * on the WRAPPER, not on each handler, so no handler body has to know the
  * sentinel exists.
  */
-export type WithDbResult<TResult> = TResult | DbHostShuttingDownResult;
+export type WithDbResult<TResult> =
+  | TResult
+  | DbHostShuttingDownResult
+  | DesktopReadCancelledResult;
 
 /**
  * Gates sender trust, resolves the agent database, and forwards it plus the IPC
@@ -166,6 +174,14 @@ export function createDbIpcHandlerWrappers(
         // never be laundered into "we were shutting down".
         if (isDbHostShutdownError(error)) {
           return DB_HOST_SHUTTING_DOWN_RESULT;
+        }
+        // ISS-9802: same reasoning, different non-failure. A read the CALLER
+        // cancelled is not a handler error, and letting it reject would print
+        // `Error occurred in handler for '<channel>'` on every panel switch.
+        // Positively classified, like the branch above — a genuine query failure
+        // must never be laundered into "you cancelled it".
+        if (isReadCancelledError(error)) {
+          return DESKTOP_READ_CANCELLED_RESULT;
         }
         throw error;
       }

@@ -1,12 +1,21 @@
 import { ArtifactType } from "@repo/api/src/types/artifact";
 import { Priority } from "@repo/api/src/types/common";
-import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
+import {
+  DocumentStatus,
+  DocumentType,
+  IssueStatus,
+  SourceLinkedPlanPolicy,
+} from "@repo/api/src/types/document";
 import type { BasicUser } from "@repo/api/src/types/user";
 import { describe, expect, test } from "vitest";
-import type { ArtifactWithDocumentDetail } from "@/app/documents/document-utils";
+import type {
+  ArtifactWithDocumentDetail,
+  RawDocumentWithContext,
+} from "@/app/documents/document-utils";
 import {
   splitDocumentPayload,
   toDocument,
+  toDocumentWithProject,
 } from "@/app/documents/document-utils";
 
 const ARTIFACT_CREATED_AT = new Date("2026-01-05T12:00:00Z");
@@ -81,10 +90,39 @@ describe("splitDocumentPayload", () => {
   test("keeps dueDate on the artifact payload", () => {
     const { artifact, detail } = splitDocumentPayload({
       dueDate: ARTIFACT_DUE_DATE,
+      sourceLinkedPlanPolicy: SourceLinkedPlanPolicy.ReuseOrCreate,
     });
 
     expect(artifact).toMatchObject({ dueDate: ARTIFACT_DUE_DATE });
     expect(detail).not.toHaveProperty("dueDate");
+    expect(artifact).not.toHaveProperty("sourceLinkedPlanPolicy");
+    expect(detail).not.toHaveProperty("sourceLinkedPlanPolicy");
+  });
+});
+
+describe("toDocumentWithProject", () => {
+  test("advertises subtype-aware status mutation metadata on list rows", () => {
+    const document = toDocumentWithProject(
+      buildRawDocumentWithContext({
+        status: IssueStatus.InProgress,
+        subtype: DocumentType.Feature,
+      })
+    );
+
+    expect(document.statusMutation).toEqual({
+      allowedStatuses: [
+        IssueStatus.Triage,
+        IssueStatus.Backlog,
+        IssueStatus.Todo,
+        IssueStatus.InProgress,
+        IssueStatus.InReview,
+        IssueStatus.Blocked,
+        IssueStatus.Done,
+        IssueStatus.Canceled,
+      ],
+      expectedStatusField: "expectedStatus",
+      expectedStatusByIdField: "expectedStatusById",
+    });
   });
 });
 
@@ -122,4 +160,20 @@ function buildArtifactWithDocumentDetail(
     },
     ...overrides,
   } as ArtifactWithDocumentDetail;
+}
+
+function buildRawDocumentWithContext(
+  overrides: Partial<RawDocumentWithContext> = {}
+): RawDocumentWithContext {
+  return {
+    ...buildArtifactWithDocumentDetail(),
+    project: {
+      id: "project-1",
+      organizationId: "org-1",
+      name: "Project",
+      teams: [],
+    },
+    tagArtifacts: [],
+    ...overrides,
+  } as RawDocumentWithContext;
 }

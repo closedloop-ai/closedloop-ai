@@ -11,6 +11,7 @@ import type {
   SyncedAgentSessionEvent,
   TurnItem,
 } from "@repo/api/src/types/agent-session";
+import { isRecord } from "@repo/lib/harness/type-guards";
 
 const LIMIT_LABEL_SPLIT_REGEX = /[-_.\s]+/;
 
@@ -78,11 +79,6 @@ export function formatStatusCodeLabel(
 /** True when `value` is a string with non-whitespace content. */
 export function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
-}
-
-/** True when `value` is a non-null, non-array object. */
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** A synced throttle-source's human limit label (title + provider/status). */

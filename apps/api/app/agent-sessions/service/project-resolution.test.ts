@@ -24,7 +24,6 @@ import type { AgentSessionUpsertTx, SessionProjectResolution } from "./records";
 const ARTIFACT_ID = "019f66f7-0804-7737-834f-900403b6f6ea";
 const LOOP_ID = "019f672d-f39d-72ee-9479-f67bed4a18c4";
 const PROJECT_FROM_ARTIFACT = "project-from-artifact";
-const PROJECT_FROM_LOOP = "project-from-loop";
 
 function makeSession(
   attribution: SyncedAgentSession["attribution"]
@@ -37,8 +36,6 @@ function makeResolution(
 ): SessionProjectResolution {
   return {
     artifactProjectById: new Map([[ARTIFACT_ID, PROJECT_FROM_ARTIFACT]]),
-    loopProjectById: new Map([[LOOP_ID, PROJECT_FROM_LOOP]]),
-    sameOrgLoopIds: new Set([LOOP_ID]),
     ...overrides,
   };
 }
@@ -52,21 +49,12 @@ describe("resolveProjectId", () => {
     );
   });
 
-  it("resolves via sourceLoopId lineage", () => {
+  it("leaves a session that names only a loop unparented (ISS-12435)", () => {
+    // Loops are removed, so a loop pointer from an older Desktop build is no
+    // longer lineage.
     const session = makeSession({ sourceLoopId: LOOP_ID });
 
-    expect(resolveProjectId(session, makeResolution())).toBe(PROJECT_FROM_LOOP);
-  });
-
-  it("prefers the source artifact over the loop when both are present", () => {
-    const session = makeSession({
-      sourceArtifactId: ARTIFACT_ID,
-      sourceLoopId: LOOP_ID,
-    });
-
-    expect(resolveProjectId(session, makeResolution())).toBe(
-      PROJECT_FROM_ARTIFACT
-    );
+    expect(resolveProjectId(session, makeResolution())).toBeNull();
   });
 
   it("returns null for repository-only attribution (FEA-1749)", () => {
@@ -111,7 +99,6 @@ describe("resolveProjectResolution", () => {
     const repoFindMany = vi.fn();
     const tx = {
       artifact: { findMany: vi.fn().mockResolvedValue([]) },
-      loop: { findMany: vi.fn().mockResolvedValue([]) },
       gitHubInstallationRepository: { findMany: repoFindMany },
     } as unknown as AgentSessionUpsertTx;
 
@@ -121,10 +108,10 @@ describe("resolveProjectResolution", () => {
 
     expect(repoFindMany).not.toHaveBeenCalled();
     expect(resolution.artifactProjectById.size).toBe(0);
-    expect(resolution.loopProjectById.size).toBe(0);
   });
 
-  it("still resolves lineage maps from source artifacts and loops", async () => {
+  it("still resolves lineage maps from source artifacts, and never reads loops", async () => {
+    const loopFindMany = vi.fn();
     const tx = {
       artifact: {
         findMany: vi
@@ -133,15 +120,7 @@ describe("resolveProjectResolution", () => {
             { id: ARTIFACT_ID, projectId: PROJECT_FROM_ARTIFACT },
           ]),
       },
-      loop: {
-        findMany: vi.fn().mockResolvedValue([
-          {
-            id: LOOP_ID,
-            artifactId: null,
-            artifact: { projectId: PROJECT_FROM_LOOP },
-          },
-        ]),
-      },
+      loop: { findMany: loopFindMany },
       gitHubInstallationRepository: { findMany: vi.fn() },
     } as unknown as AgentSessionUpsertTx;
 
@@ -152,6 +131,6 @@ describe("resolveProjectResolution", () => {
     expect(resolution.artifactProjectById.get(ARTIFACT_ID)).toBe(
       PROJECT_FROM_ARTIFACT
     );
-    expect(resolution.loopProjectById.get(LOOP_ID)).toBe(PROJECT_FROM_LOOP);
+    expect(loopFindMany).not.toHaveBeenCalled();
   });
 });

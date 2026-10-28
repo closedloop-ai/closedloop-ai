@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Idempotency ledger for bulk root-artifact rank rewrites (ISS-8999); no screen reads it."
+}

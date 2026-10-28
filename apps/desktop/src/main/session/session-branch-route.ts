@@ -32,8 +32,7 @@ import type {
   SessionBranchLinkKey,
 } from "../agent-sync/agent-session-sync-source.js";
 import {
-  type BranchDefaultEligibilitySource,
-  isEligibleBranchKey,
+  filterEligibleBranchRows,
   resolveBranchProductEligibilitySnapshot,
 } from "../branch/shared-branches-default-eligibility.js";
 
@@ -65,8 +64,8 @@ type SessionBranchLinkKeySource = Pick<
  *   be the same branch, so a session whose branch writes name something else
  *   (a mid-read write, an attribution that outran the artifact) withholds the
  *   link instead of pointing the user at a branch the row does not name.
- * - Authority is missing or the branch is the repository's exact authoritative
- *   default — the Branches detail read applies the same fail-closed policy.
+ * - The branch is not locally published; only a published branch can be a
+ *   destination.
  * - An AMBIGUOUS branch identity: two artifact rows carry the displayed branch
  *   name under different repo scopes (`computeIdentityKey` scopes a branch on
  *   `repoFullName ?? gitDir`, so an `owner/repo` row and a NULL-repo row for the
@@ -92,18 +91,11 @@ type SessionBranchLinkKeySource = Pick<
  */
 export async function resolveSessionBranchRouteId(input: {
   source: SessionBranchLinkKeySource;
-  eligibilitySource?: BranchDefaultEligibilitySource;
   sessionId: string;
   branch: string | null | undefined;
   displayedRepositoryFullName: string | null | undefined;
 }): Promise<string | undefined> {
-  const {
-    source,
-    eligibilitySource,
-    sessionId,
-    branch,
-    displayedRepositoryFullName,
-  } = input;
+  const { source, sessionId, branch, displayedRepositoryFullName } = input;
   if (!(branch && source.loadSessionBranchLinkKeys)) {
     return undefined;
   }
@@ -118,14 +110,8 @@ export async function resolveSessionBranchRouteId(input: {
   ) {
     return undefined;
   }
-  const snapshot = await resolveBranchProductEligibilitySnapshot(
-    [key],
-    eligibilitySource,
-    // A session detail projects a best-effort link, but eligibility still
-    // awaits the same bounded authority pass and fails closed when unresolved.
-    { scope: "list" }
-  );
-  if (!isEligibleBranchKey(key, snapshot)) {
+  const snapshot = resolveBranchProductEligibilitySnapshot([key]);
+  if (filterEligibleBranchRows([key], snapshot).length === 0) {
     return undefined;
   }
   return encodeBranchId({

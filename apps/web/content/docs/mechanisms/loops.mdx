@@ -3,33 +3,9 @@ title: Loops
 description: Execution runs that take a scoped artifact, run through gated phases, and return reviewable output.
 ---
 
-Loops are the execution backbone of Closedloop.ai. A loop is one concrete run of the `code` plugin's orchestrator against a PRD or implementation plan in a specific work directory.
-
-## Inputs
-
-- an artifact (PRD, plan, or ticket)
-- a repository target (path and branch, often a worktree)
-- a provider (Claude by default, Codex optional)
-- a compute target (the desktop client to execute on)
-- a context pack and task framing
-
-## Loop commands
-
-A loop carries a `command` value that determines what it does. The control plane exposes the full set in the loops table command filter, and each command has its own status badge.
-
-| Command | Runs on | Inputs | Outputs |
-|---|---|---|---|
-| `PLAN` | desktop or cloud | PRD or ticket | `plan.json`, `plan.md`, critic reviews |
-| `EXECUTE` | desktop | finalized plan + repo | code changes, PR(s), judge reports |
-| `CODE_REVIEW` | desktop or cloud | base ref + PR | review verdict, suggested fixes |
-| `CHAT` | cloud | conversation | reply messages |
-| `BOOTSTRAP` | desktop only | repo (current workdir) | structured agent roster (no artifact files) |
-
-`BOOTSTRAP` is the newest member of the family. It runs the [`bootstrap` plugin](./plugins/bootstrap), produces structured results (no prompt, artifacts, or repo are passed in by the caller), and pushes the generated agent roster into the [agents API](./agents-api) via `POST /agents/bulk-ingest`.
-
 ## Lifecycle
 
-A loop is driven by `plugins/code/scripts/run-loop.sh`, which relaunches `claude -p` with a fresh 200K-token context for each iteration. The orchestrator prompt at `plugins/code/prompts/prompt.md` drives the phased workflow; state persists entirely in files under the work directory.
+The orchestrator prompt at `plugins/code/prompts/prompt.md` drives the phased workflow; state persists entirely in files under the work directory.
 
 ### Phases
 
@@ -69,15 +45,12 @@ Loop agents exit a phase by emitting a promise token such as `<promise>PLAN_VALI
 
 ## Concurrency and locking
 
-The desktop client's cloud command executor serializes commands by lock key. The default lock key is derived from the operation ID and the scoped path from the request body (`repoPath | worktreePath | workDir | runDir | path`). This prevents two loops from stepping on the same worktree.
+The desktop client's cloud command executor serializes commands by lock key. The default lock key is derived from the operation ID and the scoped path from the request body (`repoPath | worktreePath | workDir | runDir | path`).
 
-A loop can safely run in parallel with another loop in a different worktree. See [Worktree](../glossary/worktree) for the underlying primitive that makes parallel feature development safe.
+## Amend
 
-## Cancel and amend
-
-- `/code:cancel-code` stops a running loop by removing its state file.
 - `/code:amend-plan` lets you inject directives, answer questions, or confirm changes without restarting the loop.
 
 ## Where the code lives
 
-The canonical entrypoint is `plugins/code/scripts/run-loop.sh` and the orchestrator is `plugins/code/prompts/prompt.md`. Phase-level contracts are encoded in the orchestrator prompt and enforced by the hooks in `plugins/code/hooks/hooks.json`.
+The orchestrator is `plugins/code/prompts/prompt.md`. Phase-level contracts are encoded in the orchestrator prompt and enforced by the hooks in `plugins/code/hooks/hooks.json`.

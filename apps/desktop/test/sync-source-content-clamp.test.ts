@@ -25,12 +25,12 @@
  * truncation is codepoint-safe (no split scalar / replacement char at the tail).
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import {
   SYNCED_COMPONENT_CONTENT_MAX_CHARS,
   SYNCED_COMPONENT_CONTENT_MAX_SERIALIZED_BYTES,
   serializedJsonUtf8ByteSize,
 } from "@repo/api/src/types/synced-component-content";
+import { test } from "vitest";
 import {
   COMPONENTS_CHUNK_BYTE_BUDGET,
   chunkComponentsByByteSize,

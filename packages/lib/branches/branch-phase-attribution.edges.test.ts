@@ -8,7 +8,10 @@ import {
   BranchVisibleLifecyclePhase,
 } from "@repo/api/src/types/branch-phase-attribution";
 import { describe, expect, it } from "vitest";
-import { expectIncompleteCoverage } from "./__tests__/coverage-narrowing";
+import {
+  expectIncompleteCoverage,
+  expectPartialCoverage,
+} from "./__tests__/coverage-narrowing";
 import { projectBranchPhaseAttribution } from "./branch-phase-attribution";
 
 // Epoch anchor for all tests in this file.
@@ -64,6 +67,26 @@ function writeEvent(offsetMs: number) {
 }
 
 describe("projectBranchPhaseAttribution edge cases — malformed inputs", () => {
+  it("preserves a missing global Branch divisor as typed incomplete evidence", () => {
+    const result = projectBranchPhaseAttribution({
+      sessions: [
+        {
+          sessionId: "s1",
+          participation: BranchParticipationKind.Wrote,
+          estimatedCostUsd: 2,
+          activitySegments: [seg(T + 5000, T + 10_000, 2)],
+          lifecycleEvents: [writeEvent(7000)],
+        },
+      ],
+      pullRequestCycles: [],
+    });
+
+    expect(expectIncompleteCoverage(result.coverage).reason).toBe(
+      BranchPhaseAttributionCompletenessReason.MissingBranchDivisor
+    );
+    expect(result.segments).toHaveLength(0);
+  });
+
   it("marks MalformedEvidence for a cycle with empty pullRequestId", () => {
     const result = projectBranchPhaseAttribution({
       sessions: [],
@@ -418,11 +441,12 @@ describe("projectBranchPhaseAttribution edge cases — participation and segment
         { pullRequestId: "pr-1", openedAt: iso(10_000), terminalAt: null },
       ],
     });
-    // Reviewed session without ReviewFeedback is filtered out
+    // The session is filtered out and its $3 of priced evidence goes with it,
+    // so coverage cannot claim to be Complete.
     expect(result.segments).toHaveLength(0);
     expect(result.coverage).toEqual({
-      completeness: BranchPhaseAttributionCompleteness.Complete,
-      subtotalUsd: 0,
+      completeness: BranchPhaseAttributionCompleteness.Unavailable,
+      reason: BranchPhaseAttributionCompletenessReason.LifecycleIncomplete,
     });
   });
 
@@ -524,6 +548,242 @@ describe("projectBranchPhaseAttribution edge cases — participation and segment
     // this one, where `reason` is absent) would satisfy vacuously.
     expect(result.coverage.completeness).toBe(
       BranchPhaseAttributionCompleteness.Complete
+    );
+    expect(result.segments).toHaveLength(0);
+  });
+});
+
+describe("projectBranchPhaseAttribution — evidence dropped at the Reviewed guard", () => {
+  // The guard discards the session's whole segment array, so the reason it
+  // records here stands in for everything projectSegment never got to say.
+
+  it("records LifecycleIncomplete when the session cost is null but a dropped segment is priced", () => {
+    const result = projectBranchPhaseAttribution({
+      sessions: [
+        {
+          sessionId: "s1",
+          participation: BranchParticipationKind.Reviewed,
+          branchCount: 1,
+          // Session-level cost absent while the segment IS priced. A gate reading
+          // session.estimatedCostUsd would miss this and reproduce the defect.
+          estimatedCostUsd: null,
+          activitySegments: [seg(T + 20_000, T + 30_000, 3)],
+          lifecycleEvents: [writeEvent(25_000)],
+        },
+      ],
+      pullRequestCycles: [
+        { pullRequestId: "pr-1", openedAt: iso(10_000), terminalAt: null },
+      ],
+    });
+    expect(result.segments).toHaveLength(0);
+    expect(expectIncompleteCoverage(result.coverage).reason).toBe(
+      BranchPhaseAttributionCompletenessReason.LifecycleIncomplete
+    );
+  });
+
+  it("records PricingIncomplete when a dropped null-cost segment carries spend evidence", () => {
+    const result = projectBranchPhaseAttribution({
+      sessions: [
+        {
+          sessionId: "s1",
+          participation: BranchParticipationKind.Reviewed,
+          branchCount: 1,
+          estimatedCostUsd: null,
+          // Unpriced, but sourceEventIds make segmentHasSpendEvidence() true.
+          // A gate reading only costUsd would let this drop silently; a gate that
+          // called it LifecycleIncomplete would overstate what was lost and cost
+          // the Branch its idle-time metric.
+          activitySegments: [
+            {
+              ...segWithId(T, T + 10_000, 0, "src-1"),
+              costUsd: null,
+              inputTokens: 0,
+              outputTokens: 0,
+            },
+          ],
+          lifecycleEvents: [writeEvent(5000)],
+        },
+      ],
+      pullRequestCycles: [],
+    });
+    expect(result.segments).toHaveLength(0);
+    expect(expectIncompleteCoverage(result.coverage).reason).toBe(
+      BranchPhaseAttributionCompletenessReason.PricingIncomplete
+    );
+  });
+
+  it("stays Complete when the dropped segments carry no cost and no spend evidence", () => {
+    const result = projectBranchPhaseAttribution({
+      sessions: [
+        {
+          sessionId: "s1",
+          participation: BranchParticipationKind.Reviewed,
+          branchCount: 1,
+          estimatedCostUsd: null,
+          // seg(), not segWithId(), because segWithId always injects
+          // sourceEventIds and that alone would count as spend evidence.
+          activitySegments: [
+            {
+              ...seg(T, T + 10_000, 0),
+              costUsd: null,
+              inputTokens: 0,
+              outputTokens: 0,
+            },
+          ],
+          lifecycleEvents: [writeEvent(5000)],
+        },
+      ],
+      pullRequestCycles: [],
+    });
+    expect(result.coverage.completeness).toBe(
+      BranchPhaseAttributionCompleteness.Complete
+    );
+    expect(result.segments).toHaveLength(0);
+  });
+
+  it("reports Partial and keeps the surviving segment when only one session is dropped", () => {
+    const result = projectBranchPhaseAttribution({
+      sessions: [
+        {
+          sessionId: "s1",
+          participation: BranchParticipationKind.Wrote,
+          branchCount: 1,
+          estimatedCostUsd: 4,
+          activitySegments: [seg(T, T + 10_000, 4)],
+          lifecycleEvents: [writeEvent(5000)],
+        },
+        {
+          sessionId: "s2",
+          participation: BranchParticipationKind.Reviewed,
+          branchCount: 1,
+          estimatedCostUsd: 3,
+          activitySegments: [seg(T + 20_000, T + 30_000, 3)],
+          lifecycleEvents: [writeEvent(25_000)],
+        },
+      ],
+      pullRequestCycles: [],
+    });
+    // Partial renders a number with an asterisk rather than the unavailable
+    // hedge, so the subtotal it carries is part of the contract.
+    const coverage = expectPartialCoverage(result.coverage);
+    expect(coverage.subtotalUsd).toBe(4);
+    expect(coverage.reason).toBe(
+      BranchPhaseAttributionCompletenessReason.LifecycleIncomplete
+    );
+    expect(result.segments).toHaveLength(1);
+    expect(result.segments[0].sessionId).toBe("s1");
+    expect(result.segments[0].estimatedCostUsd).toBe(4);
+  });
+
+  it("outranks a PricingIncomplete raised by a different session", () => {
+    const result = projectBranchPhaseAttribution({
+      sessions: [
+        {
+          sessionId: "s1",
+          participation: BranchParticipationKind.Wrote,
+          branchCount: 1,
+          estimatedCostUsd: null,
+          activitySegments: [
+            {
+              ...segWithId(T, T + 10_000, 0, "src-1"),
+              costUsd: null,
+              inputTokens: 0,
+              outputTokens: 0,
+            },
+          ],
+          lifecycleEvents: [writeEvent(5000)],
+        },
+        {
+          sessionId: "s2",
+          participation: BranchParticipationKind.Reviewed,
+          branchCount: 1,
+          estimatedCostUsd: 3,
+          activitySegments: [seg(T + 20_000, T + 30_000, 3)],
+          lifecycleEvents: [writeEvent(25_000)],
+        },
+      ],
+      pullRequestCycles: [],
+    });
+    expect(expectIncompleteCoverage(result.coverage).reason).toBe(
+      BranchPhaseAttributionCompletenessReason.LifecycleIncomplete
+    );
+  });
+
+  it("records AmbiguousEvidence for conflicting duplicates dropped here", () => {
+    const result = projectBranchPhaseAttribution({
+      sessions: [
+        {
+          sessionId: "s1",
+          participation: BranchParticipationKind.Reviewed,
+          branchCount: 1,
+          estimatedCostUsd: 3,
+          activitySegments: [
+            segWithId(T, T + 10_000, 1, "src-dup"),
+            segWithId(T, T + 10_000, 2, "src-dup"),
+          ],
+          lifecycleEvents: [writeEvent(5000)],
+        },
+      ],
+      pullRequestCycles: [],
+    });
+    // distinctSegments now runs ahead of the drop, so the conflict it detects is
+    // named directly instead of being flattened into the priced-evidence reason.
+    // It also withholds the conflicting pair, so no priced segment survives to
+    // raise LifecycleIncomplete.
+    expect(expectIncompleteCoverage(result.coverage).reason).toBe(
+      BranchPhaseAttributionCompletenessReason.AmbiguousEvidence
+    );
+  });
+
+  it("records MalformedEvidence, not Complete, when the only dropped segment is malformed", () => {
+    const result = projectBranchPhaseAttribution({
+      sessions: [
+        {
+          sessionId: "s1",
+          participation: BranchParticipationKind.Reviewed,
+          branchCount: 1,
+          estimatedCostUsd: null,
+          // endMs precedes startMs, so validSegment() rejects it. Unpriced with
+          // no spend evidence, so neither reason arm below the drop fires: a
+          // scan of the RAW array records nothing here and reports Complete.
+          activitySegments: [
+            {
+              ...seg(T + 10_000, T, 0),
+              costUsd: null,
+              inputTokens: 0,
+              outputTokens: 0,
+            },
+          ],
+          lifecycleEvents: [writeEvent(5000)],
+        },
+      ],
+      pullRequestCycles: [],
+    });
+    expect(expectIncompleteCoverage(result.coverage).reason).toBe(
+      BranchPhaseAttributionCompletenessReason.MalformedEvidence
+    );
+    expect(result.segments).toHaveLength(0);
+  });
+
+  it("records MalformedEvidence, not LifecycleIncomplete, for a malformed priced segment", () => {
+    const result = projectBranchPhaseAttribution({
+      sessions: [
+        {
+          sessionId: "s1",
+          participation: BranchParticipationKind.Reviewed,
+          branchCount: 1,
+          estimatedCostUsd: 3,
+          // A negative cost is not a price, it is corrupt evidence. A raw scan
+          // reads costUsd !== null and calls this LifecycleIncomplete, which
+          // claims the segment was priced and merely unplaceable.
+          activitySegments: [seg(T, T + 10_000, -5)],
+          lifecycleEvents: [writeEvent(5000)],
+        },
+      ],
+      pullRequestCycles: [],
+    });
+    expect(expectIncompleteCoverage(result.coverage).reason).toBe(
+      BranchPhaseAttributionCompletenessReason.MalformedEvidence
     );
     expect(result.segments).toHaveLength(0);
   });

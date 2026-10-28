@@ -1,0 +1,11 @@
+-- ISS-10720: WHICH SOURCE attributed an invocation to its component.
+--
+-- The cloud half of the desktop migration of the same name. A SECOND AXIS
+-- beside `evidence_class`, not a widening of it: `genuineSourceOccurrence`
+-- reads `evidence_class` to build the component-detail surface's on-disk
+-- source pointer, so an attribution answer written into that column would
+-- delete a pointer that is still perfectly well known.
+--
+-- Purely additive: one new NULLABLE column with no default. NULL means "the
+-- transcript attributed it", which is every row written before this migration.
+ALTER TABLE "agent_component_invocations" ADD COLUMN "attribution_source" TEXT;

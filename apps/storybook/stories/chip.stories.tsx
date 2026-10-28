@@ -3,9 +3,9 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { GitPullRequest, Play, Sparkles } from "lucide-react";
 
 const meta = {
-  title: "Design System/Primitives/Chip",
+  title: "Primitives v1.0/Data Display/Chip",
   component: Chip,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: {
     layout: "centered",
   },
@@ -28,6 +28,11 @@ const meta = {
       options: ["sm", "default", "lg"],
       control: { type: "radio" },
     },
+    interactive: {
+      control: "boolean",
+      description:
+        "Adds the focus-visible ring and hover treatment, so a chip that means to be reached by keyboard (e.g. a tooltip trigger) is not a plain, unfocusable <span>.",
+    },
   },
   args: {
     children: "Shared chip",
@@ -39,7 +44,36 @@ type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {};
 
+/** The three real `size` values — only `default` (this story's own implicit
+ * render) was ever shown before; `sm` and `lg` had no story of their own. */
+export const Sizes: Story = {
+  tags: ["!manifest"],
+  render: () => (
+    <div className="flex flex-wrap items-center gap-2">
+      <Chip size="sm">Small</Chip>
+      <Chip size="default">Default</Chip>
+      <Chip size="lg">Large</Chip>
+    </div>
+  ),
+  parameters: { controls: { disable: true } },
+};
+
+/**
+ * `interactive` on its own, as the real "keyboard-reachable trigger" pattern
+ * this prop exists for (`resolution-badge.tsx`): a plain `<span>` chip is not
+ * focusable by default, so a chip that opens a tooltip pairs `interactive`
+ * with `tabIndex={0}` to put it in the tab order and give it a visible focus
+ * ring. Tab to it to see the ring; without `interactive` it would not appear.
+ */
+export const Interactive: Story = {
+  args: {
+    interactive: true,
+    tabIndex: 0,
+  },
+};
+
 export const AllVariants: Story = {
+  tags: ["!manifest"],
   render: () => (
     <div className="flex flex-wrap gap-2">
       <Chip variant="default">Default</Chip>
@@ -53,9 +87,11 @@ export const AllVariants: Story = {
       <Chip variant="outline">Outline</Chip>
     </div>
   ),
+  parameters: { controls: { disable: true } },
 };
 
 export const Variants: Story = {
+  tags: ["!manifest"],
   render: () => (
     <div className="flex flex-wrap gap-2">
       <Chip variant="outline">
@@ -72,4 +108,5 @@ export const Variants: Story = {
       </Chip>
     </div>
   ),
+  parameters: { controls: { disable: true } },
 };

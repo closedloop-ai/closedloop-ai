@@ -16,10 +16,10 @@ import {
  * @description The agent-components detail read's version-history lane: its own
  * row bound, the bounded read, and the ISS-5029 "this history is partial" fold.
  *
- * Extracted from `detail-read.ts` (ISS-5029) — that module is a grandfathered
- * over-size composition root, and this is one cohesive concern ("what revisions
- * does the detail show, and does it show all of them"), so it moves out rather
- * than pushing the root further past the ceiling.
+ * Extracted from `detail-read.ts` (ISS-5029) — that module is the detail
+ * composition root, and this is one cohesive concern ("what revisions does the
+ * detail show, and does it show all of them"), so it moves out rather than
+ * growing the root.
  */
 
 /**

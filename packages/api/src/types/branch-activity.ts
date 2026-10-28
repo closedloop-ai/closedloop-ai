@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MonitoredSessionActivityEventKind } from "./branch-activity-kind.ts";
 
 /** Version of the additive canonical Branch activity atom wire contract. */
 export const BranchActivityAtomVersion = {
@@ -14,6 +15,12 @@ export const BranchActivitySource = {
   PullRequestReview: "pull_request_review",
   GitHubWebhook: "github_webhook",
   MonitoredSession: "monitored_session",
+  /**
+   * ISS-10009: per-push LOC evidence, deliberately NOT canonical activity — it
+   * is excluded by `canonicalBranchActivitySources`, so it never reaches the
+   * Last-active aggregate that orders the Branches list.
+   */
+  PushLoc: "push_loc",
   /** Read-side compatibility classification for a newer producer lane. */
   Unknown: "unknown",
 } as const;
@@ -74,6 +81,7 @@ const branchActivityAtomSchema = z
     sourceIdentity: z.string().trim().min(1).max(128).optional(),
     sourceEventId: z.string().trim().min(1).max(512),
     occurredAt: z.iso.datetime(),
+    kind: z.enum(MonitoredSessionActivityEventKind).optional(),
     attribution: branchAttributionValidator,
     completeness: atomCompletenessValidator,
   })
@@ -99,6 +107,16 @@ const branchActivityAtomSchema = z
         path: ["sourceIdentity"],
       });
     }
+    if (
+      atom.kind !== undefined &&
+      atom.source !== BranchActivitySource.MonitoredSession
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "kind is reserved for monitored Session activity",
+        path: ["kind"],
+      });
+    }
   });
 
 /** One provenance-bearing canonical Branch activity observation. */
@@ -117,18 +135,31 @@ export const branchActivityAtomProducerValidator =
         path: ["source"],
       });
     }
+    if (
+      atom.source === BranchActivitySource.MonitoredSession &&
+      atom.kind === undefined
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "monitored Session activity requires kind",
+        path: ["kind"],
+      });
+    }
   });
+
+/** Public atom projection; internal monitored kind never crosses Branch APIs. */
+export type BranchActivityPublicAtom = Omit<BranchActivityAtom, "kind">;
 
 /** Additive latest-evidence projection carried by current Branch API rows. */
 export type BranchActivityEvidenceProjection =
   | {
       completeness: typeof BranchActivityEvidenceCompleteness.Complete;
-      latestAtom: BranchActivityAtom;
+      latestAtom: BranchActivityPublicAtom;
       reason?: never;
     }
   | {
       completeness: typeof BranchActivityEvidenceCompleteness.Partial;
-      latestAtom: BranchActivityAtom;
+      latestAtom: BranchActivityPublicAtom;
       reason:
         | typeof BranchActivityEvidenceReason.HistoricalCoverage
         | typeof BranchActivityEvidenceReason.UnknownSource;
@@ -146,6 +177,7 @@ const compatibilityAtomValidator = z.object({
   sourceIdentity: z.unknown().optional(),
   sourceEventId: z.string().trim().min(1).max(512),
   occurredAt: z.iso.datetime(),
+  kind: z.unknown().optional(),
   attribution: branchAttributionValidator,
   completeness: z.unknown(),
 });
@@ -160,7 +192,9 @@ export function normalizeBranchActivityAtom(
 ): BranchActivityAtom | undefined {
   const known = branchActivityAtomSchema.safeParse(value);
   if (known.success) {
-    return known.data.source === BranchActivitySource.Unknown
+    return known.data.source === BranchActivitySource.Unknown ||
+      (known.data.source === BranchActivitySource.MonitoredSession &&
+        known.data.kind === undefined)
       ? {
           ...known.data,
           completeness: BranchActivityEvidenceCompleteness.Partial,
@@ -187,15 +221,26 @@ export function normalizeBranchActivityAtom(
     compatible.data.completeness,
     atomCompletenessValues
   );
+  const kind = constValue(
+    compatible.data.kind,
+    MonitoredSessionActivityEventKind
+  );
+  const kindIsUnsupported =
+    compatible.data.kind !== undefined && kind === undefined;
   return {
     version: BranchActivityAtomVersion.V1,
     source,
     ...(sourceIdentity === undefined ? {} : { sourceIdentity }),
     sourceEventId: compatible.data.sourceEventId,
     occurredAt: compatible.data.occurredAt,
+    ...(source === BranchActivitySource.MonitoredSession && kind
+      ? { kind }
+      : {}),
     attribution: compatible.data.attribution,
     completeness:
-      source === BranchActivitySource.Unknown
+      source === BranchActivitySource.Unknown ||
+      (source === BranchActivitySource.MonitoredSession &&
+        (kind === undefined || kindIsUnsupported))
         ? BranchActivityEvidenceCompleteness.Partial
         : (completeness ?? BranchActivityEvidenceCompleteness.Partial),
   };

@@ -10,20 +10,32 @@ import {
   getSessionSyncStatus,
   type SessionSyncTone,
 } from "@repo/app/agents/lib/session-sync-status";
+// ISS-12529 (PR #8877 review): the upload-state tones live in shared/ so the
+// upload queue view reads the same map; a slice may import shared/.
+import {
+  SESSION_UPLOAD_STATE_TONE,
+  SessionUploadState,
+} from "@repo/app/shared/lib/upload-state";
+import { Button } from "@repo/design-system/components/ui/button";
 import { ToneBadge } from "@repo/design-system/components/ui/primitives/status-badge";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@repo/design-system/components/ui/tooltip";
-import type { ReactNode } from "react";
+import { cn } from "@repo/design-system/lib/utils";
+import { type ReactNode, useEffect, useRef } from "react";
 
 /**
  * PRD-536 G1 (Phase 3): the per-session transcript freshness affordance on a
  * Sessions LIST row. Reuses the SSOT {@link getSessionSyncStatus} derivation
- * (never re-implementing the fold). ISS-5366 retired the
- * `sessions-transcript-sync-status` gate this and the detail Properties Sync row
- * shared, so both now ship unconditionally.
+ * (never re-implementing the fold). Unconditional — ISS-5366 retired the
+ * `sessions-transcript-sync-status` gate.
+ *
+ * It has no production render site today: ISS-5666 cleared the Name cell and
+ * ISS-5770 deleted the `Signals` column that hosted it, so this currently
+ * renders only in Storybook and its own tests. Restoring a host is a UI
+ * decision for the Sessions surface, not a gate that can be flipped.
  *
  * On a dense list you show the exception, not the steady state: the healthy
  * `synced` verdict — and a freshness-only row whose `lastSyncedAt` on the cloud
@@ -36,16 +48,26 @@ import type { ReactNode } from "react";
  * gives the badge a single shape — the colored attention pill — rather than
  * inventing a nominal icon-plus-text treatment the detail never has.
  *
- * Renders nothing when the flag is off, when the session carries no
- * attention-worthy verdict (nominal / freshness-only / no data), or when a
- * version-skewed producer omits both fields — the row is then unchanged, never
- * an empty labeled affordance, never a fabricated verdict for a row with no data.
+ * Renders nothing when the session carries no attention-worthy verdict
+ * (nominal / freshness-only / no data), or when a version-skewed producer omits
+ * both fields — the row is then unchanged, never an empty labeled affordance,
+ * never a fabricated verdict for a row with no data.
+ *
+ * ISS-12532 extends the badge with a second form: pass `uploadState` (and its
+ * copy) instead of `session` to show a session's upload state — see
+ * {@link SessionUploadStateBadgeProps}. A `session` caller is unaffected.
  */
-export function SessionSyncStatusBadge({
-  session,
-}: {
-  session: Pick<AgentSessionListItem, "lastSyncedAt" | "transcriptDisposition">;
-}): ReactNode {
+export function SessionSyncStatusBadge(
+  props: SessionSyncStatusBadgeProps
+): ReactNode {
+  // ISS-12532: the upload-state form. Every existing caller passes `session`
+  // only, so `uploadState` is undefined there and it takes the
+  // transcript-verdict path below unchanged. (A value check, not `in`: both
+  // union members declare the key now, so `in` would no longer narrow.)
+  if (props.uploadState !== undefined) {
+    return <SessionUploadStateBadge {...props} />;
+  }
+  const { session } = props;
   const verdict = resolveSessionSyncStatusVerdict(session);
   if (verdict === null) {
     return null;
@@ -108,13 +130,15 @@ const TRANSCRIPT_SYNCING_TOOLTIP = getCloudSyncDisclosureCopy(
  * row has any qualifiers; a hook cannot answer that inside a per-row render
  * callback.
  *
- * ISS-5366 retired `sessions-transcript-sync-status` to its enabled state, so
- * this no longer takes a resolved flag and there is no hook wrapper left to keep
- * in step with it. ONE derivation — the badge, the row's qualifier list, and the
- * overflow counter cannot disagree about whether this chip shows.
+ * Unconditional — ISS-5366 retired `sessions-transcript-sync-status`. ONE
+ * derivation, so the badge and any future host cannot disagree about whether
+ * this chip shows.
  */
 export function resolveSessionSyncStatusVerdict(
-  session: Pick<AgentSessionListItem, "lastSyncedAt" | "transcriptDisposition">
+  session: Pick<
+    AgentSessionListItem,
+    "lastSyncedAt" | "transcriptDisposition" | "transcriptDispositionReason"
+  >
 ): { label: string; tone: SessionSyncTone } | null {
   const syncStatus = getSessionSyncStatus(session);
   // List rows surface only the attention verdicts (stale/syncing/failed*). A
@@ -127,4 +151,143 @@ export function resolveSessionSyncStatusVerdict(
     label: syncStatus.dispositionLabel,
     tone: syncStatus.tone ?? "muted",
   };
+}
+
+type SessionTranscriptSyncBadgeProps = {
+  session: Pick<
+    AgentSessionListItem,
+    "lastSyncedAt" | "transcriptDisposition" | "transcriptDispositionReason"
+  >;
+  /**
+   * PR #8843 review: `never`, so the two forms are discriminated. Without it a
+   * caller passing `session` and `uploadState` together typechecks against
+   * this member and silently gets the upload form.
+   */
+  uploadState?: never;
+};
+
+/**
+ * ISS-12532 (PRD-807): the upload-state form of this badge — whether ONE
+ * session is local-only, uploading, shared, or failed to upload.
+ *
+ * The same badge, extended rather than duplicated: the same `ToneBadge` pill at
+ * the same height, weight and type scale, chosen by passing `uploadState`
+ * instead of `session`. The two forms answer different questions (is the
+ * session in the cloud at all, versus is an uploaded transcript fresh), so they
+ * never share a render — a host picks one per slot.
+ *
+ * Presentational only: the state, every string, and the retry handler come
+ * from the host, and this component authors no copy (ISS-12532 ground rules).
+ * No production host renders this form yet.
+ */
+export type SessionUploadStateBadgeProps = {
+  /** The state's visible text. Supplied by the host. */
+  label: string;
+  className?: string;
+  /** `never`: the upload form takes no session (see the transcript form). */
+  session?: never;
+} & (
+  | {
+      uploadState: Exclude<
+        SessionUploadState,
+        typeof SessionUploadState.Failed
+      >;
+    }
+  | {
+      uploadState: typeof SessionUploadState.Failed;
+      /**
+       * The failed state's retry path (AC-002). Required, so a failed badge
+       * can never ship without a way out.
+       */
+      onRetry: () => void;
+      /** The retry control's text. Supplied by the host. */
+      retryLabel: string;
+      /**
+       * While a retry is in flight the control is disabled. The host flipping
+       * this back to `false` is also what re-arms the retry latch (see
+       * `UploadRetryButton`).
+       */
+      isRetrying?: boolean;
+    }
+);
+
+export type SessionSyncStatusBadgeProps =
+  | SessionTranscriptSyncBadgeProps
+  | SessionUploadStateBadgeProps;
+
+const UPLOAD_STATE_TONE: Record<SessionUploadState, SessionSyncTone> =
+  SESSION_UPLOAD_STATE_TONE;
+
+function SessionUploadStateBadge(props: SessionUploadStateBadgeProps) {
+  const { uploadState, label, className } = props;
+  return (
+    <span
+      className={cn("inline-flex shrink-0 items-center gap-2", className)}
+      data-state={uploadState}
+      data-testid="session-upload-state-badge"
+    >
+      {/* The dot pulses only while an upload is in flight; the pulse is
+          decorative and stills under reduced motion, and the label carries the
+          state either way. */}
+      <ToneBadge
+        label={label}
+        pulse={uploadState === SessionUploadState.Uploading}
+        tone={UPLOAD_STATE_TONE[uploadState]}
+      />
+      {props.uploadState === SessionUploadState.Failed ? (
+        <UploadRetryButton
+          isRetrying={props.isRetrying}
+          label={props.retryLabel}
+          onRetry={props.onRetry}
+        />
+      ) : null}
+    </span>
+  );
+}
+
+/**
+ * PR #8843 review: the failed state's retry control, latched so one click
+ * calls `onRetry` once.
+ *
+ * `isRetrying` comes from the host, so two fast clicks land before the host's
+ * mutation can flip it, and both would call `onRetry`. Whether the upload
+ * retry is idempotent server side is unknown (no upload-retry endpoint exists
+ * yet), so the badge does not rely on it. Same one-outcome latch as the share
+ * review sheet (ISS-12533, `endOnce`). It re-arms when the host reports the
+ * retry settled (`isRetrying` is false again), and a state change away from
+ * Failed unmounts this control, so a later failure starts unlatched.
+ */
+function UploadRetryButton({
+  isRetrying,
+  label,
+  onRetry,
+}: {
+  isRetrying: boolean | undefined;
+  label: string;
+  onRetry: () => void;
+}) {
+  const latched = useRef(false);
+  useEffect(() => {
+    if (!isRetrying) {
+      latched.current = false;
+    }
+  }, [isRetrying]);
+  const retryOnce = () => {
+    if (latched.current) {
+      return;
+    }
+    latched.current = true;
+    onRetry();
+  };
+  return (
+    <Button
+      disabled={isRetrying}
+      onClick={retryOnce}
+      size="sm"
+      type="button"
+      variant="outline"
+    >
+      {label}
+    </Button>
+  );
 }

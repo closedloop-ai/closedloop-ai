@@ -1,7 +1,5 @@
-import {
-  AgentSessionStateActionRemoval,
-  type AgentSessionStateUpdateResponse,
-} from "@repo/api/src/types/agent-session";
+import type { AgentSessionStateUpdateResponse } from "@repo/api/src/types/agent-session";
+import { AgentSessionStateActionRemoval } from "@repo/api/src/types/agent-session-state-action-removal";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { goneResponse } from "@/lib/route-utils";
 

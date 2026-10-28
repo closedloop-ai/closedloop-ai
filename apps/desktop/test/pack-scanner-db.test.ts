@@ -11,7 +11,7 @@
  * guards against the community adapter silently not de-duplicating.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { _internals } from "../src/main/packs/pack-scanner.js";
 import { openTestPrisma, type RawDb } from "./prisma-test-utils.js";
 

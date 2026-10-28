@@ -1,8 +1,10 @@
+import { SearchEntityType } from "@repo/api/src/types/search-entity-kind";
 import {
+  OFFERED_STATUS_VALUES,
   PRIORITY_VALUES,
+  RETIRED_LOOP_STATUS_VALUES,
   SearchFilterKey,
   SearchFilterOperator,
-  STATUS_VALUES,
 } from "@repo/api/src/types/search-query";
 import { describe, expect, it } from "vitest";
 import {
@@ -67,7 +69,21 @@ describe("intellisenseStateAt, surface classification by caret", () => {
     const state = intellisenseStateAt("status:", 7);
     expect(state.mode).toBe(IntellisenseMode.StaticValues);
     expect(state.operator).toBe(SearchFilterOperator.Eq);
-    expect(state.staticValues).toEqual(STATUS_VALUES);
+    expect(state.staticValues).toEqual(OFFERED_STATUS_VALUES);
+  });
+
+  // ISS-12435 (PRD-795 3.4): `type:loop` and the loop statuses still parse but
+  // are never suggested.
+  it("suggests no retired loop kind after `type:` or loop status after `status:`", () => {
+    const type = intellisenseStateAt("type:", 5);
+    expect(type.mode).toBe(IntellisenseMode.StaticValues);
+    expect(type.staticValues).toContain(SearchEntityType.Document);
+    expect(type.staticValues).not.toContain(SearchEntityType.Loop);
+
+    const status = intellisenseStateAt("status:", 7);
+    for (const retired of RETIRED_LOOP_STATUS_VALUES) {
+      expect(status.staticValues).not.toContain(retired);
+    }
   });
 
   it("preserves an explicit comparison operator on priority", () => {

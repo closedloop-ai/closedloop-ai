@@ -1,7 +1,4 @@
-import {
-  AgentSessionState,
-  AgentSessionStateActionRemoval,
-} from "@repo/api/src/types/agent-session";
+import { AgentSessionStateActionRemoval } from "@repo/api/src/types/agent-session-state-action-removal";
 import { expect, it, vi } from "vitest";
 import type { AuthContext } from "@/lib/auth/with-auth";
 import {
@@ -13,8 +10,10 @@ import {
 let mockAuthContext: AuthContext = createTestAuthContext();
 
 vi.mock("@/lib/auth/with-any-auth", () => ({
-  withAnyAuth: (handler: any) => async (request: any, context: any) =>
-    handler(mockAuthContext, request, context.params),
+  withAnyAuth:
+    (handler: (...args: unknown[]) => Promise<Response>) =>
+    async (request: unknown, context: { params: Promise<unknown> }) =>
+      handler(mockAuthContext, request, context.params),
 }));
 
 import { PATCH } from "./route";
@@ -26,7 +25,7 @@ it("returns a non-mutating 410 tombstone for stale state-action clients", async 
     createMockRequest({
       method: "PATCH",
       url: "http://localhost:3002/agent-sessions/session-1/state",
-      body: { state: AgentSessionState.InReview },
+      body: { state: "IN_REVIEW" },
     }),
     createMockRouteContext({ id: "session-1" })
   );

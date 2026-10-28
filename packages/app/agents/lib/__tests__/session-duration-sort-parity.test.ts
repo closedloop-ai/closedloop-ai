@@ -22,9 +22,8 @@ import { describe, expect, it } from "vitest";
  *
  * Each case is checked against EVERY spelling a producer can serve for that
  * shape (`servedStatuses`), because the cloud folds staleness server-side while
- * the desktop Local producer serves the raw canonical status with the
- * `sessions-displayed-status-parity` Labs gate off. The cell must answer
- * identically for both, or the two surfaces do not share one oracle.
+ * a version-skewed producer can still serve the raw canonical status. The cell
+ * must answer identically for both, or the two surfaces do not share one oracle.
  */
 
 const NOW = new Date("2026-08-14T12:00:00.000Z");

@@ -14,7 +14,6 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { AppExceptionOrigin } from "@closedloop-ai/telemetry-contract/app-exception-origin";
 import { TelemetryAttribute } from "@closedloop-ai/telemetry-contract/attributes";
 import {
@@ -25,6 +24,7 @@ import {
   SpanKind as OTelSpanKind,
   SpanStatusCode as OTelSpanStatusCode,
 } from "@opentelemetry/api";
+import { test } from "vitest";
 import { parseRendererOtelBridgePayload } from "../src/shared/renderer-otel-bridge.js";
 import {
   DesktopOtelSignal,
@@ -513,6 +513,9 @@ test("only non-retryable renderer export reasons are terminal", () => {
   const retryable = [
     RendererOtelExportFailureReason.ExportFailed,
     RendererOtelExportFailureReason.InvalidPayload,
+    // ISS-6329: the main runtime is still booting. Latching here is what
+    // silenced a whole window off one startup-race exception.
+    RendererOtelExportFailureReason.NotStarted,
     RendererOtelExportFailureReason.RateLimited,
   ];
   for (const reason of retryable) {
@@ -522,6 +525,14 @@ test("only non-retryable renderer export reasons are terminal", () => {
       `${reason} must leave the renderer free to retry`
     );
   }
+
+  // A reason nobody classified is the ISS-6329 defect waiting to happen, so
+  // every member of the contract has to appear in exactly one bucket above.
+  assert.deepEqual(
+    [...terminal, ...retryable].sort(),
+    Object.values(RendererOtelExportFailureReason).sort(),
+    "every export failure reason must be classified terminal or retryable"
+  );
 });
 
 /**

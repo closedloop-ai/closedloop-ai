@@ -1,8 +1,14 @@
+import type { DashboardDateRange } from "@repo/app/insights/lib/dashboard-range";
+import { dashboardRangeHidesSessions } from "@repo/app/insights/lib/dashboard-range-hides-sessions";
 import { useEffect, useRef, useState } from "react";
 import { LOCAL_SESSION_SOURCE_STATUSES } from "../../../shared/local-session-source-status";
+import { isBootImportSettled } from "../../hooks/ingest-progress-terminal";
 import { DesktopAppCoreMode } from "../../shared-agent-sessions/desktop-app-core-mode";
 import { useDesktopAppCoreMode } from "../../shared-agent-sessions/desktop-app-core-provider";
-import { useSessionsImportProgress } from "../sessions/sessions-summary-cards-state";
+import {
+  isLocalImportInProgress,
+  useSessionsImportProgress,
+} from "../sessions/sessions-summary-cards-state";
 import {
   useLocalSessionSourceStatus,
   useSessionsReadGate,
@@ -53,9 +59,8 @@ export type DashboardStateInput = {
   sessionSourceUnavailable: boolean;
   /** A user-driven retry is in flight. */
   retrying: boolean;
-  /** The local import has been observed growing (`grew`) and has not settled. */
-  grew: boolean;
-  settled: boolean;
+  /** The live local import is actively preparing or has sources left to import. */
+  sessionImportActive: boolean;
   /**
    * A successful session read landed AFTER the local store proved it can serve
    * rows (see {@link useSessionsCountFresh}). Deliberately not "the read has
@@ -65,6 +70,24 @@ export type DashboardStateInput = {
    */
   sessionsCountFresh: boolean;
   sessionsTotal: number;
+  /** ISS-11927: the selected Dashboard range. */
+  dateRange: DashboardDateRange;
+  /**
+   * ISS-11927: the selected range's own sessions KPI
+   * (`utilizationWindowSessionCount`), or `null` when the payload cannot answer
+   * for this range yet.
+   */
+  windowSessionCount: number | null;
+  /**
+   * ISS-11927: the reader has sessions of their own over all time, in the SAME
+   * viewer scope the KPIs read (Me or Org), or `null` while that read has not
+   * answered. `sessionsTotal` cannot answer it in cloud mode: that read carries
+   * no viewer scope, so it counts the whole org while the KPIs follow Me, and a
+   * reader with only a teammate's history was offered "Show all time" that
+   * could reveal nothing of theirs (whitlockk, review of #8982). A failed read is
+   * `false`, never `null`, so it cannot hold the page in loading.
+   */
+  viewerHasSessions: boolean | null;
 };
 
 export type DashboardState = {
@@ -83,10 +106,29 @@ export type DashboardState = {
   /**
    * The page is still working toward a trustworthy picture — the header's
    * "Analyzing locally", the progress bar, and the Recent Sessions "Parsing…"
-   * caption. Derived from the SAME evidence as `loading` so a stuck readiness
-   * probe cannot leave those three saying "analyzing" over rendered rows.
+   * caption. Built from the same two facts `loading` is, so a stuck readiness
+   * probe cannot leave those three saying "analyzing" over a page that has no
+   * import running.
+   *
+   * ISS-10651 made it a SUPERSET of `loading` rather than an equal: a running
+   * import over rows already parsed now draws the real page, and these three
+   * keep reporting that import truthfully above it.
    */
   analyzing: boolean;
+  /**
+   * Active import evidence, with terminal session failure outranking it so a
+   * wedged import snapshot cannot pin the page. Still the exact fact the
+   * progress bar and the "Parsing…" caption report; since ISS-10651 it only
+   * ALSO holds the skeleton while no row has been parsed yet.
+   */
+  sessionImportPending: boolean;
+  /**
+   * WHICH of the four branches the page drew, as one closed value — folded from
+   * the booleans above so a consumer asking "what is on screen" reads the one
+   * answer instead of recombining them into a fifth. See
+   * {@link DesktopDashboardContent}.
+   */
+  content: DesktopDashboardContent;
 };
 
 /**
@@ -96,30 +138,67 @@ export type DashboardState = {
  * cannot bury the Retry button. What changed for ISS-6002 is that the session
  * read now participates: it must have settled, and the store must be proven up,
  * before an absent row count is reported to the user as an empty install.
+ *
+ * ISS-9992 names that verdict as {@link DashboardState.content} too. Derived
+ * from the booleans this function already computed — never a second reading of
+ * the inputs — so the name and the branch the page takes cannot disagree.
  */
 export function resolveDashboardState(
   input: DashboardStateInput
 ): DashboardState {
   const hasData = input.sessionsTotal > 0;
-  // Rows in hand are themselves proof the store is up — the same reasoning as
-  // `collapseStartingWhenDataHeld`'s `hasHeldListData` on the Sessions view.
-  const sessionsCountKnown = hasData || input.sessionsCountFresh;
   // A read that cannot be serviced is not evidence of an empty Mac, but it is
   // terminal: waiting on it would hold the skeleton forever over insights that
   // already resolved, so it stops loading and routes to the localized failure.
   const sessionsFailed = input.sessionsError || input.sessionSourceUnavailable;
+  const sessionImportPending = input.sessionImportActive && !sessionsFailed;
+  // ISS-11927: the range verdict's two settled facts, read before `loading`
+  // because an unanswered viewer read is the one thing still missing. A window
+  // zero read while the import is still landing rows is not settled.
+  const rangeMayHide =
+    hasData &&
+    !sessionImportPending &&
+    dashboardRangeHidesSessions({
+      dateRange: input.dateRange,
+      windowSessionCount: input.windowSessionCount,
+      hasSessionsOutsideWindow: true,
+    });
+  const viewerHistoryPending = rangeMayHide && input.viewerHasSessions === null;
+  // Rows in hand are themselves proof the store is up — the same reasoning as
+  // `collapseStartingWhenDataHeld`'s `hasHeldListData` on the Sessions view.
+  const sessionsCountKnown = hasData || input.sessionsCountFresh;
   const analyticsPending = !(input.analyticsLoaded || input.analyticsError);
   // Not yet entitled to an opinion about the count.
   const sessionsUnknown = !(sessionsFailed || sessionsCountKnown);
-  // A terminal session read also ends the import wait: `settled` is latched by
-  // the poll's `dataUpdatedAt`, which stops advancing once the read fails, so a
-  // failure after `grew` would otherwise pin `importPending` true forever.
-  const importPending = input.grew && !input.settled && !sessionsFailed;
-  const analyzing = sessionsUnknown || importPending;
+  const analyzing = sessionsUnknown || sessionImportPending;
+  // ISS-10651: real rows outrank a running import. Onboarding is
+  // non-dismissible and already controls access, so there is nothing left for
+  // the skeleton to withhold — the reader watches the heatmap fill from what
+  // has actually been parsed. With no rows yet the import still holds loading,
+  // which is what keeps the settled-empty verdict below out of reach until it
+  // finishes, and keeps a true zero from being drawn over a live import.
+  //
+  // Deliberately UNGATED. A PostHog key cannot serve this change's subject: the
+  // guest walking first-launch onboarding is signed out, and
+  // `useDesktopPostHogFlagAssignment` closes a session with no account to
+  // `flags: {}`, then adopts only the ISS-11945 anonymous keys
+  // (`desktop-posthog-flag-assignment.ts`, the `!authedUserId`
+  // branch), so every other key reads false for exactly the reader the operator asked
+  // to reach. A gate here would be permanently shut where it matters.
+  const importHoldsLoading = sessionImportPending && !hasData;
   const loading =
-    input.retrying || analyticsPending || (!input.analyticsError && analyzing);
+    input.retrying ||
+    (!input.analyticsError && viewerHistoryPending) ||
+    (analyticsPending && !hasData) ||
+    (!input.analyticsError && (sessionsUnknown || importHoldsLoading));
   const showError = !loading && input.analyticsError;
   const empty = !(loading || input.analyticsError || sessionsFailed || hasData);
+  // ISS-11927: the established "sessions exist outside the window" the shared
+  // rule asks for is the VIEWER's all-time history, in the KPIs' scope. A
+  // dormant install used to draw "Ready" with every tile zeroed for the
+  // selected range.
+  const rangeHidden =
+    !(loading || showError) && rangeMayHide && input.viewerHasSessions === true;
   return {
     loading,
     showError,
@@ -128,12 +207,21 @@ export function resolveDashboardState(
     sessionsFailed,
     sessionsCountKnown,
     analyzing,
+    sessionImportPending,
+    content: resolveDashboardContent({
+      loading,
+      showError,
+      empty,
+      rangeHidden,
+    }),
   };
 }
 
 export type DashboardSessionSource = {
   /** The local session store has proven it can serve rows this render session. */
   ready: boolean;
+  /** Live local import progress reports preparation or unprocessed sources. */
+  importInProgress: boolean;
   /**
    * The local monitor reports the source is `unavailable` and the gate never
    * opened — terminal for this render session, not a slow start. Never set in
@@ -174,13 +262,18 @@ export function useDashboardSessionSource(): DashboardSessionSource {
       canReadLocalSessions ||
       status === LOCAL_SESSION_SOURCE_STATUSES.starting
   );
+  // ISS-6207: any terminal boot-import state, not completion specifically. Not
+  // behind the Labs gate — see `isBootImportSettled`: `complete` alone no longer
+  // goes true on a degraded terminal, so gating this would leave the read
+  // disabled for the whole session rather than restore the old behaviour.
   const ready = useSessionsReadGate({
     isCloudMode,
     canReadLocalSessions,
-    ingestComplete: ingestProgress?.complete === true,
+    ingestSettled: isBootImportSettled(ingestProgress),
   });
   return {
     ready,
+    importInProgress: !isCloudMode && isLocalImportInProgress(ingestProgress),
     // Scoped to a gate that never opened. A source that goes `unavailable` AFTER
     // proving itself leaves the read to report its own failure (or to keep
     // serving cached rows), which is the more specific signal of the two.
@@ -247,7 +340,6 @@ export function useBackfillSettleDetection({
   dataUpdatedAt,
   sessionSourceReady,
   settled,
-  setGrew,
   setSettled,
 }: {
   sessionsTotal: number;
@@ -255,10 +347,8 @@ export function useBackfillSettleDetection({
   dataUpdatedAt: number | undefined;
   sessionSourceReady: boolean;
   settled: boolean;
-  setGrew: (v: boolean) => void;
   setSettled: (v: boolean) => void;
 }) {
-  const initialTotalRef = useRef<number | null>(null);
   const lastTotalRef = useRef<number | null>(null);
   const stableHitsRef = useRef(0);
   // biome-ignore lint/correctness/useExhaustiveDependencies: dataUpdatedAt is the intended trigger — it advances on every poll even when the total is unchanged, which is how we count consecutive no-growth polls.
@@ -268,11 +358,6 @@ export function useBackfillSettleDetection({
     }
     if (!(sessionSourceReady || sessionsTotal > 0)) {
       return;
-    }
-    if (initialTotalRef.current === null) {
-      initialTotalRef.current = sessionsTotal;
-    } else if (sessionsTotal > initialTotalRef.current) {
-      setGrew(true);
     }
     if (lastTotalRef.current === sessionsTotal) {
       stableHitsRef.current += 1;
@@ -289,7 +374,77 @@ export function useBackfillSettleDetection({
     dataUpdatedAt,
     sessionSourceReady,
     settled,
-    setGrew,
     setSettled,
   ]);
+}
+
+/**
+ * ISS-9992 — what the dashboard DREW, as one closed value.
+ *
+ * Deliberately a DESKTOP-LOCAL vocabulary. ISS-9397 makes `DashboardSurfaceV2`
+ * the single owner of Dashboard presentation across both hosts and replaces
+ * this with the shared `DashboardContentState` at that cutover; promoting it
+ * here would move the same code twice, so this is the seam, not the answer.
+ *
+ * There is no `Quiet` member because Desktop has no quiet population to name.
+ * Its session read carries no date window, so `sessionsTotal` is an ALL-TIME
+ * count for the active scope and a dormant install has a non-zero one — it
+ * draws the full dashboard with zeroed tiles for the selected period and never
+ * reaches the empty branch. Web needs that member because its Recent Sessions
+ * card is pinned to a fixed seven-day window, where a zero cannot tell a
+ * brand-new org from a dormant one.
+ */
+export const DesktopDashboardContent = {
+  Loading: "loading",
+  Error: "error",
+  Empty: "empty",
+  /**
+   * ISS-11927: sessions exist, and the selected range hides all of them. The
+   * body is the shared date-range empty with "Show all time"
+   * (`DashboardRangeEmptyBody`), the same one web draws. Desktop's quiet
+   * population, named: no rows are drawn, so nothing anchors a tour beat.
+   */
+  RangeHidden: "range-hidden",
+  Ready: "ready",
+} as const;
+export type DesktopDashboardContent =
+  (typeof DesktopDashboardContent)[keyof typeof DesktopDashboardContent];
+
+/**
+ * The same precedence {@link resolveDashboardState} already resolved, named.
+ *
+ * Takes the computed booleans rather than the raw input so there is exactly one
+ * derivation: a second reading of `sessionsTotal` here is how the name and the
+ * branch `DashboardBody` actually takes would come to disagree.
+ *
+ *
+ * ISS-10567 considered folding a terminal session failure holding no rows in
+ * here too, and did not: reaching this function at all requires `analyticsLoaded`,
+ * so on that branch the insights queries have already SUCCEEDED and their tiles
+ * carry real figures. Naming it `Empty` would have replaced them with a static
+ * skeleton asserting a zero none of them reported. `Ready` with the Recent
+ * Sessions card's localized failure is the honest screen, and is what ISS-9992
+ * already chose.
+ */
+function resolveDashboardContent({
+  loading,
+  showError,
+  empty,
+  rangeHidden,
+}: Pick<DashboardState, "loading" | "showError" | "empty"> & {
+  rangeHidden: boolean;
+}): DesktopDashboardContent {
+  if (loading) {
+    return DesktopDashboardContent.Loading;
+  }
+  if (showError) {
+    return DesktopDashboardContent.Error;
+  }
+  if (empty) {
+    return DesktopDashboardContent.Empty;
+  }
+  if (rangeHidden) {
+    return DesktopDashboardContent.RangeHidden;
+  }
+  return DesktopDashboardContent.Ready;
 }

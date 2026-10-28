@@ -182,9 +182,9 @@ const SUMMARY_CARD_LABEL_REFLOW_CLASS =
 // desktop Branches fallback) and not jump when the data landed. It is gone, and
 // it is not coming back, because the literals it was correcting are the actual
 // defect: one shared constant cannot describe both hosts (a Sessions card
-// renders a caption-only `CardContent`, a Branches `BranchKpiCard` renders a
-// delta chip row above that caption, so the height each gives back differs by
-// that reservation), and deriving a per-host number would be two unmeasured
+// renders a caption-only `CardContent`, a Branches card renders a delta chip
+// row above that caption, so the height each gives back differs by that
+// reservation), and deriving a per-host number would be two unmeasured
 // constants where there was one.
 //
 // The Sessions strip no longer has a literal to correct. Its loading state is
@@ -194,9 +194,10 @@ const SUMMARY_CARD_LABEL_REFLOW_CLASS =
 // resolves, and no measurement has to be kept in sync. That is why the
 // deferral note that used to sit here is gone rather than updated.
 //
-// The desktop Branches fallback (`branches-loading.tsx`) and the dashboard
-// (`dashboard-loading.tsx`) still reserve `h-[112px]` slabs. They are outside
-// this change's surface, and the same treatment is what closes them.
+// The desktop Branches fallback (`branches-loading.tsx`) still reserves
+// `h-[112px]` slabs. It is outside this change's surface, and the same treatment
+// is what closes it. The dashboard's (`dashboard-loading.tsx`) now draws the
+// shared row skeletons (ISS-12110).
 
 /**
  * The auto-fit track template every grid-laid summary strip shares: fit as many
@@ -229,7 +230,49 @@ const SUMMARY_CARD_AUTO_FIT_TRACKS_CLASS =
 // so cards fill a two-column grid instead of forcing horizontal scroll on a
 // phone. The width class reads the same custom property, so a caller that does
 // not opt into `wrapBelow` renders byte-identically to the fixed 260px row.
-export const SUMMARY_CARD_CLASS = "w-[var(--summary-card-min)] shrink-0";
+export const SUMMARY_CARD_CLASS =
+  "w-[var(--summary-card-min)] shrink-0 grow-0 basis-auto";
+
+/**
+ * The card class for a single-rank strip whose cards ABSORB the band's spare
+ * width instead of pinning to `--summary-card-min` and stranding the rest of it
+ * as a dead gutter (#7544).
+ *
+ * It is `SUMMARY_CARD_CLASS` plus one flex rule, and the pairing is the whole
+ * point: `basis-[var(--summary-card-min)]` with `shrink-0` keeps the published
+ * floor as a hard minimum, and `grow` hands each card an equal share of
+ * whatever is left over. So the rank fills its band flush when the cards fit,
+ * and OVERFLOWS its host's `overflow-x-auto` scroller — one rank, exactly as
+ * before — when they do not.
+ *
+ * That second half is why this is not `wrapBelow`'s auto-fit grid. A wrapping
+ * grid answers a band too narrow for one rank by stacking, and the strip's band
+ * is a non-shrinking flex item beside the table's `min-h-0 flex-1` scroll
+ * region (`GridTableListSurface`): every rank it gains comes straight out of
+ * the table. Measured on the launched desktop shell at 768x800, four stacked
+ * cards took the band from 188.57px to 549px and left the scroll region
+ * 0px tall — the rows still laid out, still reported visible, and could not be
+ * clicked, which is the ISS-7053 collapse that band's fixed rank existed to
+ * prevent. A row that cannot gain a rank cannot spend the table.
+ */
+export const SUMMARY_CARD_STRETCH_CLASS =
+  "shrink-0 grow basis-[var(--summary-card-min)]";
+
+/**
+ * ISS-10314's narrow treatment for a band that does NOT set `wrapBelow`: with the
+ * row staying a single rank below `md`, the cards need somewhere to go at phone
+ * width, and it is the BAND that scrolls sideways rather than the page body.
+ *
+ * Here rather than at each band, because it was written out character-for-character
+ * at three of them — the Sessions band, the Branches band (then still split into a
+ * surface and a stacked arm, both gone with ISS-11472's `layout` prop) and the
+ * Documents band — for one decision taken once. Three copies is how the Sessions
+ * band ends up with a different gutter from the Branches band (visual-qa review on
+ * ISS-8936). Two of the three now spread `SUMMARY_CARD_SURFACE_BAND_PROPS`;
+ * Documents still writes it out and is the remaining copy (ISS-11494).
+ */
+export const SUMMARY_CARD_SCROLL_CLASS =
+  "min-w-0 max-w-full overflow-x-auto pb-1 [scrollbar-width:thin]";
 
 // The `wrapBelow` companion: the card ALWAYS fills its grid cell (`w-full`), at
 // every width. Below `md` that's the two-column mobile grid; at `md+` it's the
@@ -287,11 +330,12 @@ const SUMMARY_CARD_LABEL_LEADING_CLASS =
 // this same fallback held permanently — a FLOOR of two lines, not a clamp, so a
 // label that genuinely needs a third line still gets it (and that card alone
 // gives up the shared baseline) rather than being elided.
-const SUMMARY_CARD_LABEL_ROW_BASELINE_CLASS = `[&_[data-slot=card-description]]:min-h-[var(--summary-card-label-min,2rem)] ${SUMMARY_CARD_LABEL_LEADING_CLASS}`;
+export const SUMMARY_CARD_LABEL_ROW_BASELINE_CLASS = `[&_[data-slot=card-description]]:min-h-[var(--summary-card-label-min,2rem)] ${SUMMARY_CARD_LABEL_LEADING_CLASS}`;
 
 export function SummaryCardRow({
   children,
   className,
+  density: pinnedDensity,
   minWidth,
   wrapBelow = false,
   busy = false,
@@ -299,11 +343,21 @@ export function SummaryCardRow({
   children: ReactNode;
   className?: string;
   /**
+   * ISS-10540 (operator ruling, Tamsin, 2026-09-21): pin the density tier
+   * instead of measuring it. The Sessions and Branches listing strips both pass
+   * `Compact` so the two read at one vertical rhythm: measured, three Branches
+   * cards resolved Comfortable while five Sessions cards resolved Compact, and
+   * the value-to-caption seam differed by 12px between two strips that are
+   * meant to read as one product. Omit it to keep the track-width-keyed tier
+   * below, which the agents workspace still uses.
+   */
+  density?: CardDensity;
+  /**
    * Per-card minimum width in px, published as `--summary-card-min` for the
    * card class to consume. Omit it to take the row's own floor: the ISS-5068
-   * dense floor at compact density, or 260 at comfortable. An explicit value
-   * always wins, so a caller that has measured its own surface is never
-   * overridden by the resolved tier.
+   * dense floor at compact density, or 260 at comfortable — whether that density
+   * was pinned or measured. An explicit value always wins, so a caller that has
+   * measured its own surface is never overridden by the resolved tier.
    */
   minWidth?: number;
   /**
@@ -333,7 +387,10 @@ export function SummaryCardRow({
   // measures the track it is laid into and lays out compact only where the
   // compact floor is what buys a single rank — comfortable above that band (the
   // cards already fit) and comfortable below it too (nothing fits at either
-  // floor, so a cramped card buys nothing and costs legibility).
+  // floor, so a cramped card buys nothing and costs legibility). Since
+  // ISS-10540 that rule governs only the mounts that do not pin `density`; the
+  // two listing strips pin Compact, which switches the measurement off entirely
+  // rather than running it for an answer nothing reads.
   //
   // The tighter card interior and the lower floor it pays for are ONE decision,
   // not two: the floor is only safe because the padding came down, so applying
@@ -350,15 +407,22 @@ export function SummaryCardRow({
     belowMdColumns: wrapBelow ? MOBILE_PAIRED_COLUMN_COUNT : undefined,
     comfortableMinWidth: DEFAULT_CARD_MIN_WIDTH,
     compactMinWidth: DENSE_CARD_MIN_WIDTH,
+    // A pinned row never reads the answer, so it does not pay for one: the hook
+    // keeps its observers off rather than re-rendering both listing strips on
+    // every resize to compute a tier `pinnedDensity` immediately discards.
+    enabled: pinnedDensity === undefined,
   });
   // A `null` measurement is "not measured yet", NOT "comfortable", so the strip
   // renders compact from the first frame and never flashes the roomier card on
   // the way in. Only a tier that actually MEASURED a width where compact buys
-  // nothing hands the roomy card back.
+  // nothing hands the roomy card back — and only on a row that did not pin its
+  // tier (ISS-10540): a pinned row does not measure at all, so this reads `null`
+  // there and the pin below is the whole answer.
   const density =
-    measuredDensity === CardDensity.Comfortable
+    pinnedDensity ??
+    (measuredDensity === CardDensity.Comfortable
       ? CardDensity.Comfortable
-      : CardDensity.Compact;
+      : CardDensity.Compact);
   const resolvedMinWidth =
     minWidth ??
     (density === CardDensity.Compact
@@ -408,8 +472,8 @@ export function SummaryCardRow({
         // grid at `md+` that wraps cards onto multiple rows when the width can't
         // hold them all — never a non-wrapping flex row that pushes the last
         // cards off-screen behind horizontal scroll (FEA-3574 review). Non-`wrap`
-        // callers (Branches) keep the fixed-width, horizontally-scrolling flex
-        // row byte-for-byte.
+        // callers keep the fixed-width, horizontally-scrolling flex row
+        // byte-for-byte.
         wrapBelow
           ? // Below `md` the two-column grid can orphan a half-width last card
             // when the count is odd (five cards → 2 + 2 + 1). Let an odd final
@@ -442,6 +506,39 @@ export function summaryCardClass(wrapBelow = false): string {
   return wrapBelow ? SUMMARY_CARD_WRAP_CLASS : SUMMARY_CARD_CLASS;
 }
 
+/**
+ * The card class for a strip that may be missing cards.
+ *
+ * A stretching row divides itself into one `1fr` track per surviving card, so a
+ * partial strip inflates its survivors to widths nobody designed. The
+ * non-stretching `--summary-card-min` width is composed onto the caller's class
+ * rather than replacing it, because a host's `cardClassName` is presentational
+ * and need not carry a width at all.
+ *
+ * A `wrapBelow` row keeps its phone behaviour through that: below `md` it is
+ * still the two-column grid, whose tracks are narrower than
+ * `--summary-card-min`, so pinning the fixed width at every breakpoint would
+ * push each card past its own track (codex review on #6914). The fixed width
+ * starts at `md+`, where the auto-fit grid is what needs holding back.
+ */
+export function partialStripCardClass({
+  anyCardHidden,
+  cardClassName,
+  wrapBelow = false,
+}: {
+  anyCardHidden: boolean;
+  cardClassName?: string;
+  wrapBelow?: boolean;
+}): string {
+  if (anyCardHidden) {
+    return cn(
+      cardClassName,
+      wrapBelow ? SUMMARY_CARD_PARTIAL_WRAP_CLASS : SUMMARY_CARD_CLASS
+    );
+  }
+  return cardClassName ?? summaryCardClass(wrapBelow);
+}
+
 // ISS-4787 follow-up (stage review): a `SUMMARY_CARD_GRID_CLASS` export used to
 // live here so the desktop Sessions and Branches strips could lay out in a grid
 // instead of this row's default flex line. It is gone, and the desktop hosts now
@@ -455,3 +552,39 @@ export function summaryCardClass(wrapBelow = false): string {
 // web. Both divergences disappear by construction now that one layout owner is
 // left. The `md+` auto-fit derivation the follow-up actually needed is unchanged —
 // it is `SUMMARY_CARD_AUTO_FIT_TRACKS_CLASS` above, which the row already applied.
+
+// The partial-strip width for a `wrapBelow` row: fluid inside the two-column
+// grid below `md`, then the same non-stretching `--summary-card-min` the fixed
+// row uses once the auto-fit tracks take over.
+const SUMMARY_CARD_PARTIAL_WRAP_CLASS = "w-full md:w-[var(--summary-card-min)]";
+
+/**
+ * The whole metric-band treatment, as one spreadable prop set.
+ *
+ * ISS-11472 (operator ruling, Marisol, 2026-09-28): every metric bar gets the SAME
+ * treatment and it is NOT configurable. A band that wants a metrics strip spreads
+ * this and is done.
+ *
+ * - `cardClassName` — cards take the band's spare width instead of pinning to
+ *   `--summary-card-min` and stranding the remainder as a dead gutter to the
+ *   right of the last card (#7544 on Branches, reported again on Sessions
+ *   because the fix had lived at one call site). This is the deliverable: it is
+ *   what spans the bar across the row.
+ * - `className` — the band, not the page body, scrolls sideways at phone width
+ *   (ISS-10314).
+ * - `wrapBelow: false` — the rank is FIXED, and that is the half that is not a
+ *   preference. `GridTableListSurface` seats this band as a non-shrinking flex
+ *   item beside the table's `min-h-0 flex-1` scroll region, whose scaled
+ *   flex-shrink factor is zero, so every rank the strip gains comes straight out
+ *   of the table. Measured on the launched desktop shell at 768x800, the
+ *   `wrapBelow` grid stacked four cards, took the band from 188.57px to 549px and
+ *   left the scroll region 0px tall with its rows still reporting visible and
+ *   unclickable (ISS-7053 on Branches, ISS-10314 on Sessions at 390px). A row
+ *   that cannot gain a rank cannot spend the table; `className` above is how the
+ *   cards stay reachable instead.
+ */
+export const SUMMARY_CARD_SURFACE_BAND_PROPS = {
+  cardClassName: SUMMARY_CARD_STRETCH_CLASS,
+  className: SUMMARY_CARD_SCROLL_CLASS,
+  wrapBelow: false,
+} as const;

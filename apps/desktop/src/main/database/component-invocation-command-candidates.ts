@@ -16,16 +16,14 @@ import {
   isAdmissibleCommandComponentKey,
   normalizeCommandComponentKey,
 } from "@repo/lib/sessions/command-user-turn-id";
+import type { ToolCandidateContext } from "./component-invocation-candidate-context.js";
+import type { MarkdownCandidateFn } from "./component-invocation-markdown-candidate.js";
 import type { AgentComponentInvocationCandidate } from "./component-invocation-row-writer.js";
 import {
   bareComponentName,
   type SkillShadowSkillOccurrence,
   skillShadowedCommandIndexes,
 } from "./component-invocation-skill-shadow.js";
-import type {
-  MarkdownCandidateFn,
-  ToolCandidateContext,
-} from "./component-invocations.js";
 
 /**
  * ISS-4775 / ISS-4810: a slash-invoked SKILL yields BOTH a `<command-name>`
@@ -109,6 +107,7 @@ export function commandCandidates(
           anchorKind: AgentComponentInvocationAnchorKind.UserTurn,
           anchorValue: externalInvocationId,
           snapshot: command.definitionSnapshot,
+          ...(command.usage ? { usage: command.usage } : {}),
           focusedEvidence:
             context.evidenceByInvocationId.get(externalInvocationId),
           externalAgentId: null,

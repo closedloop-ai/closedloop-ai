@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import { test } from "vitest";
 import { createSqliteDashboardQueries } from "../src/main/database/dashboard-queries.js";
 import type { DesktopPrisma } from "../src/main/database/prisma-client.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
@@ -489,59 +489,6 @@ test("ISS-4857: headline success rate is all-agent, the per-type breakdown is su
   }
 });
 
-test("FEA-1421: workflow tool flow counts PreToolUse invocations only", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "dashboard-tool-flow-"));
-  const dataDir = path.join(dir, "agent-dashboard.pgdata");
-  const db = await openSqliteAgentDatabase({
-    dataDir,
-    detectBillingMode: () => "metered_api",
-    now: () => NOW,
-  });
-  try {
-    await db.run(
-      `INSERT INTO sessions (id, name, status, started_at, updated_at, harness)
-       VALUES ($1, $2, $3, $4, $4, $5)`,
-      "s1",
-      "Tool flow session",
-      "inactive",
-      T1,
-      "claude"
-    );
-
-    const events: [string, string, string, string][] = [
-      ["e1", "PreToolUse", "Bash", "2026-06-20T10:00:00.000Z"],
-      ["e2", "PostToolUse", "Bash", "2026-06-20T10:00:01.000Z"],
-      ["e3", "PreToolUse", "Read", "2026-06-20T10:00:02.000Z"],
-      ["e4", "PostToolUse", "Read", "2026-06-20T10:00:03.000Z"],
-    ];
-    for (const [id, eventType, toolName, createdAt] of events) {
-      await db.run(
-        `INSERT INTO events (id, session_id, event_type, tool_name, created_at)
-         VALUES ($1, 's1', $2, $3, $4)`,
-        id,
-        eventType,
-        toolName,
-        createdAt
-      );
-    }
-
-    const workflow = await db.dashboard.getWorkflowData(new Date(NOW));
-    assert.deepEqual(workflow.toolFlow.transitions, [
-      { source: "Bash", target: "Read", value: 1 },
-    ]);
-
-    const toolCounts = new Map(
-      workflow.toolFlow.toolCounts.map((tool) => [tool.toolName, tool.count])
-    );
-    assert.equal(toolCounts.size, 2);
-    assert.equal(toolCounts.get("Bash"), 1);
-    assert.equal(toolCounts.get("Read"), 1);
-  } finally {
-    await db.close();
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
 test("FEA-2345: getTokenAnalytics sources all facets from token_events over a 30-calendar-day window", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "token-analytics-"));
   const dataDir = path.join(dir, "agent-dashboard.pgdata");
@@ -864,6 +811,7 @@ test("ISS-4976: the invocation-telemetry integrity read counts impossible values
       outOfRangeTokenRows: 0,
       outOfRangeCostRows: 0,
       nonSubagentUsageRows: 0,
+      invalidLineRows: 0,
     });
 
     // A negative count, an out-of-range cost, and subagent-only usage on a tool
@@ -875,11 +823,25 @@ test("ISS-4976: the invocation-telemetry integrity read counts impossible values
       estimated_cost: 100_000_000,
     });
     await insertInvocationRow(db, "wrong-kind", "tool", { input_tokens: 10 });
+    // ISS-10730: the three ways a stored LINE attribution is impossible rather
+    // than absent. A fractional count is the one a range check alone admits; a
+    // half-written pair is not a smaller measurement but a corrupt one; and a
+    // delta on a kind nothing measures lines for is a value nothing computed.
+    await insertInvocationRow(db, "bad-line-fraction", "tool", {
+      lines_added: 1.5,
+      lines_removed: 0,
+    });
+    await insertInvocationRow(db, "bad-line-half", "tool", { lines_added: 7 });
+    await insertInvocationRow(db, "bad-line-kind", "subagent", {
+      lines_added: 3,
+      lines_removed: 1,
+    });
 
     const dirty = await db.runInvocationTelemetryIntegrityCheck();
     assert.equal(dirty.outOfRangeTokenRows, 1);
     assert.equal(dirty.outOfRangeCostRows, 1);
     assert.equal(dirty.nonSubagentUsageRows, 1);
+    assert.equal(dirty.invalidLineRows, 3);
   } finally {
     await db.close();
     await rm(dir, { recursive: true, force: true });
@@ -989,6 +951,8 @@ async function insertInvocationRow(
   telemetry: {
     input_tokens?: number;
     estimated_cost?: number;
+    lines_added?: number;
+    lines_removed?: number;
   }
 ): Promise<void> {
   await db.run(
@@ -996,16 +960,18 @@ async function insertInvocationRow(
        id, session_id, external_invocation_id, component_kind, component_key,
        relationship, invoked_at, sequence, anchor_kind, anchor_value,
        attribution_status, evidence_class, input_tokens, estimated_cost,
-       created_at, updated_at
+       lines_added, lines_removed, created_at, updated_at
      )
      VALUES ($1, 's-inv', $2, $3, 'Read', 'direct', $4, 0, 'event', $5,
-             'unresolved', 'none', $6, $7, $4, $4)`,
+             'unresolved', 'none', $6, $7, $8, $9, $4, $4)`,
     id,
     `external-${id}`,
     kind,
     T1,
     JSON.stringify({ eventId: `event-${id}` }),
     telemetry.input_tokens ?? null,
-    telemetry.estimated_cost ?? null
+    telemetry.estimated_cost ?? null,
+    telemetry.lines_added ?? null,
+    telemetry.lines_removed ?? null
   );
 }

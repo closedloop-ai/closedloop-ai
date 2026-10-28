@@ -12,23 +12,17 @@
  * readout through a `role="status"` live region: a screen-reader user paging
  * through gets a sentence, not three numbers.
  *
- * The upper bound is the rows ACTUALLY on screen, not `(page + 1) * pageSize`.
- * On the last page those differ, and asserting the arithmetic bound would claim
- * rows the reader cannot see.
- *
- * #4480 (whitlockk + stage): the readout also has to know when its OWN inputs
- * disagree. Both shells hold the list query with `keepPreviousData`, so on a
- * page click the page index moves immediately while `items` and `total` are
- * still the previous page's — jump from page 1 to page 10 of 240 and an
- * ungated readout says "Showing 226-240 of 240" over page 1's rows, and claims
- * 15 rows while 25 are rendered. The body has no such window because it just
- * re-renders the same rows; only a readout that ASSERTS a range can contradict
- * them. So the settled-ness is a required input, not a caller's discipline, and
- * an unsettled page returns `null` — no readout at all — rather than a range
- * that is about to be wrong. That also covers the bookmarked out-of-range page,
- * whose one paint before the clamp effect lands is exactly this state.
+ * ISS-9216: the RANGE and the state that suppresses it are `listPageRange`'s,
+ * shared with Branches — this module is the Sessions SENTENCE over it and
+ * nothing else. What that helper decides, and why an unsettled page states no
+ * range at all rather than one that is about to be wrong (#4480), is documented
+ * there.
  */
 import { formatNumber } from "@repo/app/shared/lib/format-utils";
+import {
+  type ListPageRange,
+  listPageRange,
+} from "@repo/app/shared/lib/list-pagination-readout";
 
 /**
  * "Showing 1-25 of 240 sessions" for the current page, or `null` when the page
@@ -55,14 +49,29 @@ export function sessionsRangeReadout({
    */
   isPlaceholderPage?: boolean;
 }): string | null {
-  if (isPlaceholderPage) {
-    return null;
-  }
+  const range = listPageRange({
+    isPagingPlaceholder: isPlaceholderPage,
+    pageIndex,
+    pageSize,
+    rowsOnPage,
+    total,
+  });
+  return range ? sessionsRangeSentence(range, total) : null;
+}
+
+/**
+ * ISS-9225: the sentence alone, over a range `ListSurfacePaginationFooter` has
+ * already derived. The v2 surface reads this so the footer that renders it and
+ * the pager beside it describe one page; the v1 desktop view still calls
+ * {@link sessionsRangeReadout}, which derives that range the same way.
+ */
+export function sessionsRangeSentence(
+  { from, to }: ListPageRange,
+  total: number
+): string {
   const unit = total === 1 ? "session" : "sessions";
-  if (total === 0 || rowsOnPage === 0) {
+  if (to === 0) {
     return `Showing 0 of ${formatNumber(total)} ${unit}`;
   }
-  const from = pageIndex * pageSize + 1;
-  const to = Math.min(from + rowsOnPage - 1, total);
   return `Showing ${formatNumber(from)}-${formatNumber(to)} of ${formatNumber(total)} ${unit}`;
 }

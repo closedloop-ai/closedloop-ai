@@ -20,9 +20,15 @@ import {
 } from "@repo/api/src/types/token-cost-provenance";
 import { z } from "zod";
 import type { NormalizedTokenRecord } from "../collectors/types.js";
+import { effectiveParsePolicy } from "../parse-policy/effective-parse-policy.js";
 import { EVENT_INSERT_PARAM_CAP } from "./db-constants.js";
 import { tokenCountValue } from "./db-helpers.js";
 import type { Prisma } from "./generated/client.js";
+import {
+  CANONICAL_UTC_TIMESTAMP_GLOB_SQL,
+  canonicalizeHealableTimestampSql,
+  isCanonicalUtcTimestamp,
+} from "./session-timestamp-form.js";
 import { buildValuesTuples, chunkRowsByParamCap } from "./sql-values-tuples.js";
 import {
   buildLegacyTokenEventIdentityCounts,
@@ -64,6 +70,32 @@ type PersistedReplayRowWithTransportId = PersistedReplayRow & {
 };
 
 /**
+ * ISS-7448: which text form BOTH sides of an append's high-water-mark
+ * comparison are expressed in. `token_events.created_at` is TEXT outside
+ * `HEALED_COLUMNS`, so `MAX` and the JS `<`/`===` below it are all byte
+ * compares, and byte order is instant order only when every operand carries the
+ * same fixed-width canonical spelling.
+ */
+const TokenEventTimestampForm = {
+  Canonical: "canonical",
+  Stored: "stored",
+} as const;
+
+type TokenEventTimestampForm =
+  (typeof TokenEventTimestampForm)[keyof typeof TokenEventTimestampForm];
+
+type TokenEventHighWaterMark = {
+  form: TokenEventTimestampForm;
+  value: string | null;
+};
+
+type TokenEventHighWaterMarkRow = {
+  stored_hwm: string | null;
+  canonical_hwm: string | null;
+  stored_form: string;
+};
+
+/**
  * Replace a session's complete token-event derivation. Generated fallback IDs
  * include the stable array occurrence, so equal-content records stay distinct
  * and a replay of the same normalized series produces the same IDs.
@@ -71,7 +103,8 @@ type PersistedReplayRowWithTransportId = PersistedReplayRow & {
 export async function replaceTokenEvents(
   tx: Prisma.TransactionClient,
   sessionId: string,
-  records: readonly TokenEventRecord[]
+  records: readonly TokenEventRecord[],
+  ownerAttribution: boolean = effectiveParsePolicy().attributionEvidence
 ): Promise<PersistedTokenEventRecord[]> {
   const reusableTransportIds = await loadReusableTokenEventTransportIds(
     tx,
@@ -86,7 +119,12 @@ export async function replaceTokenEvents(
     "DELETE FROM token_events WHERE session_id = $1",
     sessionId
   );
-  await insertTokenEventsBatched(tx, sessionId, persistedRecords);
+  await insertTokenEventsBatched(
+    tx,
+    sessionId,
+    persistedRecords,
+    ownerAttribution
+  );
   return persistedRecords;
 }
 
@@ -94,32 +132,40 @@ export async function replaceTokenEvents(
  * Append live records newer than the stored high-water mark. Equal-timestamp
  * rows are admitted and the persisted transport identity—not content—decides
  * replay. A reused ID with different immutable usage fails loudly.
+ *
+ * The mark and the two comparisons below it share ONE text form — see
+ * {@link loadTokenEventHighWaterMark}.
  */
 export async function appendTokenEvents(
   tx: Prisma.TransactionClient,
   sessionId: string,
-  records: readonly TokenEventRecord[]
+  records: readonly TokenEventRecord[],
+  ownerAttribution: boolean = effectiveParsePolicy().attributionEvidence
 ): Promise<PersistedTokenEventRecord[]> {
   const persistedRecords = materializeTokenEventRecords(sessionId, records);
-  const hwmResult = await tx.$queryRawUnsafe<{ hwm: string | null }[]>(
-    "SELECT MAX(created_at) AS hwm FROM token_events WHERE session_id = $1",
-    sessionId
+  const hwm = await loadTokenEventHighWaterMark(
+    tx,
+    sessionId,
+    persistedRecords
   );
-  const hwm = hwmResult[0]?.hwm ?? null;
   const replayRowsByTransportId = await loadOlderExplicitReplayRows(
     tx,
     sessionId,
     records,
     persistedRecords,
-    hwm
+    hwm.value
   );
   const legacyIdentityCounts =
-    hwm !== null && persistedRecords.some((record) => record.timestamp === hwm)
-      ? await loadLegacyTokenEventIdentityCounts(tx, sessionId)
+    hwm.value !== null &&
+    persistedRecords.some((record) => record.timestamp === hwm.value)
+      ? await loadLegacyTokenEventIdentityCounts(tx, sessionId, hwm.form)
       : new Map<string, number>();
   const insertedRecords: PersistedTokenEventRecord[] = [];
   for (const [index, record] of persistedRecords.entries()) {
-    if (!record.timestamp || (hwm !== null && record.timestamp < hwm)) {
+    if (
+      !record.timestamp ||
+      (hwm.value !== null && record.timestamp < hwm.value)
+    ) {
       if (
         record.timestamp &&
         records[index]?.transportId !== undefined &&
@@ -135,12 +181,17 @@ export async function appendTokenEvents(
       continue;
     }
     if (
-      record.timestamp === hwm &&
+      record.timestamp === hwm.value &&
       consumeLegacyTokenEventIdentity(legacyIdentityCounts, sessionId, record)
     ) {
       continue;
     }
-    const inserted = await insertTokenEvent(tx, sessionId, record);
+    const inserted = await insertTokenEvent(
+      tx,
+      sessionId,
+      record,
+      ownerAttribution
+    );
     if (inserted > 0) {
       insertedRecords.push(record);
       continue;
@@ -321,19 +372,124 @@ async function loadReusableTokenEventTransportIds(
   return buildReusableTokenEventTransportIds(sessionId, rows);
 }
 
+/**
+ * ISS-7448: the pre-0043 content identities, keyed in the SAME text form the
+ * mark is. The identity hash covers `created_at`, so in canonical mode a legacy
+ * row still spelled `…T06:59:00Z` would not match today's `…T06:59:00.000Z`
+ * re-derivation of the same event — and, having moved out of the `<` branch when
+ * the mark canonicalized, would be re-inserted on every hook event. The stored
+ * form is unchanged and so is the pre-0043 sync id built from it
+ * (`buildReusableTokenEventTransportIds`); only this count map's bucket key
+ * moves.
+ */
 async function loadLegacyTokenEventIdentityCounts(
   tx: Prisma.TransactionClient,
-  sessionId: string
+  sessionId: string,
+  form: TokenEventTimestampForm
 ): Promise<Map<string, number>> {
+  const createdAtExpr =
+    form === TokenEventTimestampForm.Canonical
+      ? canonicalizeHealableTimestampSql("created_at")
+      : "created_at";
   const rows = await tx.$queryRawUnsafe<StoredTokenEventIdentityRow[]>(
-    `SELECT transport_id, model, created_at, input_tokens, output_tokens,
-            cache_read_tokens, cache_write_tokens, cache_write_5m_tokens,
-            cache_write_1h_tokens
+    `SELECT transport_id, model, ${createdAtExpr} AS created_at, input_tokens,
+            output_tokens, cache_read_tokens, cache_write_tokens,
+            cache_write_5m_tokens, cache_write_1h_tokens
        FROM token_events
       WHERE session_id = $1 AND transport_id IS NULL`,
     sessionId
   );
   return buildLegacyTokenEventIdentityCounts(sessionId, rows);
+}
+
+/**
+ * ISS-7448: the session's newest stored instant, plus the text form it and the
+ * caller's comparisons are expressed in. Two modes, never mixed — ISS-5497's
+ * rule, and load-bearing here rather than conservative.
+ *
+ * CANONICAL requires both sides to be canonical already: every stored
+ * `created_at` re-expressible by `canonicalizeHealableTimestampSql` (the SSOT
+ * for what a stored timestamp's text form means), AND every incoming record
+ * already carrying the canonical spelling. Then `MAX` returns the true latest
+ * instant and the caller's `<`/`===` over the records' own text are exact.
+ * Requiring the incoming side to be canonical rather than canonicalizing it is
+ * what keeps the comparison single-reader: no JS timestamp parser is involved,
+ * so the ISS-5496 zone-less disagreement between `Date.parse` and SQLite's
+ * default parse cannot reach this decision. It also keeps a record whose
+ * spelling drifted from its stored row on the STORED-form path, where its own
+ * byte-equal `===` still finds the legacy identity.
+ *
+ * The stored side has a SECOND requirement, and it is the one that keeps this
+ * mode from trading a silent drop for a duplicate (whitlockk review): every
+ * noncanonical row must be a pre-0043 `transport_id IS NULL` row. Healing the
+ * mark moves such a row's re-presentation off the `<` branch and onto the
+ * insert path, so something has to recognize it there. For a NULL-transport row
+ * {@link loadLegacyTokenEventIdentityCounts} does, by re-deriving its content
+ * hash from the SAME canonicalized `created_at`. For a row carrying a GENERATED
+ * id nothing can: that id hashes the record's array `occurrence`, which is not a
+ * column, so a stored row's generated id is unrecoverable from the row — and a
+ * re-presentation spelled canonically hashes to a DIFFERENT id, which the
+ * partial unique index on `(session_id, transport_id)` then reads as a new
+ * event and inserts alongside the old one. Declining the mode is not a widening
+ * of the guard; it is this function's own rule applied to the dissenter that
+ * has no stable identity across the heal.
+ *
+ * Any dissenter on either side yields STORED — `MAX(created_at)` verbatim, which
+ * cannot regress anything because it is what shipped. Dropping the dissenting
+ * operand instead of the whole mode is the OTHER half of ISS-5497's rule, and it
+ * is the one that bites here: `MAX(canonical)` ignores the NULL a declined shape
+ * yields, so the row that could have won is exactly the row it discards.
+ *
+ * KNOWN COST, accepted. The old `MAX(created_at)` was a single index seek; this
+ * walks the session's entries in the same covering index
+ * (`idx_token_events_session_created` — `EXPLAIN QUERY PLAN` reports
+ * `SEARCH … USING COVERING INDEX … (session_id=?)` for both), two GLOBs per row
+ * on the common all-canonical store. Measured on the bundled engine at 1,000
+ * rows: 1.3us seek -> 4.0ms scan. That is not a new asymptotic class — the live
+ * hook re-presents the WHOLE series on every event, so `appendTokenEvents` was
+ * already linear per call, and its `generatedTransportId` hashing alone measures
+ * 7.5ms at the same width. The derived table keeps the canonicalization to one
+ * evaluation per row rather than one per aggregate.
+ */
+async function loadTokenEventHighWaterMark(
+  tx: Prisma.TransactionClient,
+  sessionId: string,
+  records: readonly PersistedTokenEventRecord[]
+): Promise<TokenEventHighWaterMark> {
+  const rows = await tx.$queryRawUnsafe<TokenEventHighWaterMarkRow[]>(
+    `SELECT MAX(created_at) AS stored_hwm,
+            MAX(canonical) AS canonical_hwm,
+            CASE WHEN COUNT(canonical) = COUNT(created_at)
+                      AND COUNT(unhealable_identity) = 0
+                 THEN '${TokenEventTimestampForm.Canonical}'
+                 ELSE '${TokenEventTimestampForm.Stored}' END AS stored_form
+       FROM (
+         SELECT created_at,
+                ${canonicalizeHealableTimestampSql("created_at")} AS canonical,
+                CASE WHEN transport_id IS NOT NULL
+                          AND created_at NOT GLOB ${CANONICAL_UTC_TIMESTAMP_GLOB_SQL}
+                     THEN 1 END AS unhealable_identity
+           FROM token_events
+          WHERE session_id = $1
+       )`,
+    sessionId
+  );
+  const row = rows[0];
+  const canonical =
+    row?.stored_form === TokenEventTimestampForm.Canonical &&
+    records.every(
+      (record) => !record.timestamp || isCanonicalUtcTimestamp(record.timestamp)
+    );
+  if (canonical) {
+    return {
+      form: TokenEventTimestampForm.Canonical,
+      value: row?.canonical_hwm ?? null,
+    };
+  }
+  return {
+    form: TokenEventTimestampForm.Stored,
+    value: row?.stored_hwm ?? null,
+  };
 }
 
 function generatedTransportId(
@@ -362,13 +518,14 @@ function generatedTransportId(
 async function insertTokenEventsBatched(
   tx: Prisma.TransactionClient,
   sessionId: string,
-  records: readonly PersistedTokenEventRecord[]
+  records: readonly PersistedTokenEventRecord[],
+  ownerAttribution: boolean
 ): Promise<void> {
   const rows = records.flatMap((record) => {
     if (!record.timestamp) {
       return [];
     }
-    return [tokenEventInsertRow(sessionId, record)];
+    return [tokenEventInsertRow(sessionId, record, ownerAttribution)];
   });
   for (const chunk of chunkRowsByParamCap(
     rows,
@@ -386,9 +543,10 @@ async function insertTokenEventsBatched(
 function insertTokenEvent(
   tx: Prisma.TransactionClient,
   sessionId: string,
-  record: PersistedTokenEventRecord
+  record: PersistedTokenEventRecord,
+  ownerAttribution: boolean
 ): Promise<number> {
-  const row = tokenEventInsertRow(sessionId, record);
+  const row = tokenEventInsertRow(sessionId, record, ownerAttribution);
   const placeholders = row.map((_, index) => `$${index + 1}`).join(", ");
   return tx.$executeRawUnsafe(
     `INSERT INTO token_events (${TOKEN_EVENT_INSERT_COLUMNS})
@@ -401,7 +559,8 @@ function insertTokenEvent(
 
 function tokenEventInsertRow(
   sessionId: string,
-  record: PersistedTokenEventRecord
+  record: PersistedTokenEventRecord,
+  ownerAttribution: boolean
 ): unknown[] {
   const storageCounts = normalizeTokenEventRecord(record, "token_events");
   return [
@@ -421,6 +580,9 @@ function tokenEventInsertRow(
         record.costSummary ?? legacyUnavailableCostSummary()
       )
     ),
+    // ISS-12552: NULL is the main agent, and every owner with the attribution
+    // policy off (PRD-800 "Rollout"), as before PRD-800.
+    ownerAttribution ? (record.subagentId ?? null) : null,
   ];
 }
 
@@ -647,16 +809,48 @@ function unavailableCostSummary(
   };
 }
 
-const StoredTokenCostSummaryOrigin = {
+/** Discriminant of the persisted local-cost envelope. Exported so a fixture
+ *  cannot re-declare the raw `"local"` and go on passing after a rename. */
+export const StoredTokenCostSummaryOrigin = {
   Local: "local",
 } as const;
 
+/**
+ * ISS-7822: the persisted local-cost envelope, and it is deliberately
+ * `.passthrough()` where every sibling schema in this file is `.strict()`.
+ *
+ * Which side of the `.strict()`-boundary rule this sits on is the whole
+ * decision. A strict schema is right at a TRUST boundary — a wire payload, an
+ * IPC/worker message, a cross-repo contract — where an unknown key is evidence
+ * that the peer is speaking a shape this build cannot honour and the loud
+ * rejection is the point. The inner {@link tokenCostSummarySchema} is exactly
+ * that and stays strict.
+ *
+ * This envelope is not that. It is a SELF-AUTHORED local cache: the only writer
+ * is {@link serializeTokenEventCostSummary} a few lines up, in this same
+ * codebase, and the only reader is this build reading its own SQLite file. The
+ * sole way an unknown key gets here is a NEWER build of this same program
+ * adding one — version skew against ourselves — and strictness against that
+ * buys nothing while costing everything: the parse fails, both fallbacks below
+ * it fail, and a real locally-computed cost sitting inside the envelope's own
+ * `summary` is reported as `Unavailable`/`Unknown` instead. That degraded value
+ * then reaches the cloud through `token-event-sync.ts`, AND stops the row
+ * reading as locally derived, so `producerCostSummary`
+ * (`token-cost-maintenance.ts`) treats it as authoritative producer evidence
+ * and the reprice sweep built to reheal it can no longer see the row.
+ *
+ * So: do not "re-harden" this to `.strict()`. Tolerating an additive key from a
+ * future build is what lets an older reader keep the cost it already has. The
+ * discriminant (`origin`) and the payload (`summary`) are still validated, so a
+ * blob that is not this envelope is still rejected here and falls through to the
+ * producer-shape parse exactly as before.
+ */
 const storedLocalTokenCostSummarySchema = z
   .object({
     origin: z.literal(StoredTokenCostSummaryOrigin.Local),
     summary: tokenCostSummarySchema,
   })
-  .strict();
+  .passthrough();
 
 const knownSourceIdentityDiscriminantSchema = z
   .object({ availability: z.enum(TokenSourceIdentityAvailability) })
@@ -680,5 +874,5 @@ function transportIdDiagnostic(transportId: string): string {
 }
 
 const TOKEN_EVENT_INSERT_COLUMNS =
-  "session_id, transport_id, model, created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cache_write_5m_tokens, cache_write_1h_tokens, source_identity, cost_summary";
-const TOKEN_EVENT_INSERT_COLUMN_COUNT = 12;
+  "session_id, transport_id, model, created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cache_write_5m_tokens, cache_write_1h_tokens, source_identity, cost_summary, agent_id";
+const TOKEN_EVENT_INSERT_COLUMN_COUNT = 13;

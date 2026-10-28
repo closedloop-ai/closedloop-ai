@@ -29,6 +29,10 @@ import type { BranchesDataSource } from "../../data-source/branches-data-source"
 import { BranchesDataSourceProvider } from "../../data-source/provider";
 import { BranchDetailErrorKind, BranchDetailPage } from "../branch-detail-page";
 import {
+  BRANCH_DETAILS_PANEL_CONTENT_CLASS,
+  BRANCH_DETAILS_PANEL_SCROLL_CLASS,
+} from "../branch-detail-panel-classes";
+import {
   baseProps,
   makeCommentsResponse,
   makeDetail,
@@ -90,6 +94,10 @@ const fakeTraceCommentsSource = createFakeTraceCommentsSource({
 const BACK_TO_BRANCHES_RE = /back to branches/i;
 const SESSIONS_TIMELINE_TAB_RE = /sessions & timeline/i;
 const LEAD_TIME_FOR_CHANGE_RE = /^lead time for change$/i;
+const COST_BREAKDOWN_TITLE = "Cost breakdown";
+const NO_SESSIONS_TITLE = "No sessions on this branch yet";
+const BRANCH_SYNC_TITLE = "Branch sync in progress";
+const ISSUE_LINK_NAME = "Issue FEA-3595";
 const REPLY_BUTTON_NAME_RE = /reply to comment/i;
 // The two Sessions & timeline section headers each render "· N session(s)" in a
 // `.bq-act-sub`: the PR timeline (FEA-4269 distinct-session count) and the
@@ -172,7 +180,7 @@ describe("BranchDetailPage", () => {
       />
     );
 
-    const link = screen.getByRole("link", { name: "Issue FEA-3595" });
+    const link = screen.getByRole("link", { name: ISSUE_LINK_NAME });
     expect(link).toHaveAttribute("href", "/acme/issues/FEA-3595");
   });
 
@@ -187,7 +195,7 @@ describe("BranchDetailPage", () => {
 
     expect(screen.getByText("FEA-3595")).toBeInTheDocument();
     expect(
-      screen.queryByRole("link", { name: "Issue FEA-3595" })
+      screen.queryByRole("link", { name: ISSUE_LINK_NAME })
     ).not.toBeInTheDocument();
   });
 
@@ -218,9 +226,7 @@ describe("BranchDetailPage", () => {
         {...baseProps({ detail: makeDetail({ sessions: [] }) })}
       />
     );
-    expect(
-      screen.getByText("No sessions on this branch yet")
-    ).toBeInTheDocument();
+    expect(screen.getByText(NO_SESSIONS_TITLE)).toBeInTheDocument();
     // No tab chrome in the empty state — just the invite CTA.
     expect(screen.queryByRole("tab")).not.toBeInTheDocument();
   });
@@ -238,10 +244,8 @@ describe("BranchDetailPage", () => {
       />
     );
 
-    expect(screen.getByText("Branch sync in progress")).toBeInTheDocument();
-    expect(
-      screen.queryByText("No sessions on this branch yet")
-    ).not.toBeInTheDocument();
+    expect(screen.getByText(BRANCH_SYNC_TITLE)).toBeInTheDocument();
+    expect(screen.queryByText(NO_SESSIONS_TITLE)).not.toBeInTheDocument();
     expect(screen.queryByRole("tab")).not.toBeInTheDocument();
   });
 
@@ -259,9 +263,7 @@ describe("BranchDetailPage", () => {
     );
 
     expect(screen.getByText("Branch no longer present")).toBeInTheDocument();
-    expect(
-      screen.queryByText("No sessions on this branch yet")
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(NO_SESSIONS_TITLE)).not.toBeInTheDocument();
     expect(screen.queryByRole("tab")).not.toBeInTheDocument();
   });
 
@@ -278,12 +280,8 @@ describe("BranchDetailPage", () => {
       />
     );
 
-    expect(
-      screen.getByText("No sessions on this branch yet")
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByText("Branch sync in progress")
-    ).not.toBeInTheDocument();
+    expect(screen.getByText(NO_SESSIONS_TITLE)).toBeInTheDocument();
+    expect(screen.queryByText(BRANCH_SYNC_TITLE)).not.toBeInTheDocument();
 
     rerender(
       <BranchDetailPage
@@ -296,9 +294,7 @@ describe("BranchDetailPage", () => {
       />
     );
 
-    expect(
-      screen.getByText("No sessions on this branch yet")
-    ).toBeInTheDocument();
+    expect(screen.getByText(NO_SESSIONS_TITLE)).toBeInTheDocument();
   });
 
   it("falls back to ready rendering for unknown newer dataState values with sessions", () => {
@@ -312,10 +308,8 @@ describe("BranchDetailPage", () => {
       />
     );
 
-    expect(screen.getByText("Cost breakdown")).toBeInTheDocument();
-    expect(
-      screen.queryByText("No sessions on this branch yet")
-    ).not.toBeInTheDocument();
+    expect(screen.getByText(COST_BREAKDOWN_TITLE)).toBeInTheDocument();
+    expect(screen.queryByText(NO_SESSIONS_TITLE)).not.toBeInTheDocument();
   });
 
   it("renders both tabs with Branch details active by default", () => {
@@ -329,9 +323,25 @@ describe("BranchDetailPage", () => {
     // Branch-details panels (Epic D) are shown; the sessions-tab slots are not
     // yet mounted (deferred to Epic E). Properties sits above the tabs. The
     // The cost panel retains the PRD/prototype heading across lifecycle states.
-    expect(screen.getByText("Cost breakdown")).toBeInTheDocument();
+    expect(screen.getByText(COST_BREAKDOWN_TITLE)).toBeInTheDocument();
     expect(screen.getByText("Properties")).toBeInTheDocument();
     expect(screen.queryByText("Contributing sessions")).not.toBeInTheDocument();
+  });
+
+  it("ISS-12308: keeps the Branch details scroller free of the reading-measure width", () => {
+    render(<BranchDetailPage {...baseProps({ detail: makeDetail() })} />);
+    // Legacy `TabsContent` is the scroller itself; the 1000px measure must
+    // live one element in, or the scrollbar sits at the measure's edge.
+    const panel = screen.getByRole("tabpanel", { name: "Branch details" });
+    for (const token of BRANCH_DETAILS_PANEL_SCROLL_CLASS.split(" ")) {
+      expect(panel).toHaveClass(token);
+    }
+    expect(panel).not.toHaveClass("max-w-[1000px]");
+    const content = panel.querySelector(`.${CSS.escape("max-w-[1000px]")}`);
+    expect(content).not.toBeNull();
+    for (const token of BRANCH_DETAILS_PANEL_CONTENT_CLASS.split(" ")) {
+      expect(content).toHaveClass(token);
+    }
   });
 
   it("shows the selected-cycle lead-time card and matching waterfall heading", () => {
@@ -356,7 +366,7 @@ describe("BranchDetailPage", () => {
     ).toHaveAttribute("aria-selected", "true");
     // The trace tab is live on first paint, so a mention's commented trace is
     // on screen immediately rather than behind the default Branch-details tab.
-    expect(screen.queryByText("Cost breakdown")).not.toBeInTheDocument();
+    expect(screen.queryByText(COST_BREAKDOWN_TITLE)).not.toBeInTheDocument();
   });
 
   it("switches to the Sessions & timeline tab", async () => {
@@ -374,7 +384,7 @@ describe("BranchDetailPage", () => {
     // Phase 2: awaited, since the tab fetches the trace on open); the
     // Branch-details cost panel is no longer mounted on this tab.
     expect(await screen.findByText("done")).toBeInTheDocument();
-    expect(screen.queryByText("Cost breakdown")).not.toBeInTheDocument();
+    expect(screen.queryByText(COST_BREAKDOWN_TITLE)).not.toBeInTheDocument();
   });
 
   it("unmounts the Sessions trace on return to Branch details, then restores it from cache on re-open", async () => {
@@ -394,7 +404,7 @@ describe("BranchDetailPage", () => {
     // onto the Branch details tab (FEA-2337). The Branch-details cost panel is
     // back, and the trace's "done" row is gone.
     await user.click(screen.getByRole("tab", { name: "Branch details" }));
-    expect(screen.getByText("Cost breakdown")).toBeInTheDocument();
+    expect(screen.getByText(COST_BREAKDOWN_TITLE)).toBeInTheDocument();
     expect(screen.queryByText("done")).not.toBeInTheDocument();
 
     // Re-opening restores the trace instantly from the query cache (staleTime is
@@ -404,7 +414,7 @@ describe("BranchDetailPage", () => {
       screen.getByRole("tab", { name: SESSIONS_TIMELINE_TAB_RE })
     );
     expect(await screen.findByText("done")).toBeInTheDocument();
-    expect(screen.queryByText("Cost breakdown")).not.toBeInTheDocument();
+    expect(screen.queryByText(COST_BREAKDOWN_TITLE)).not.toBeInTheDocument();
     expect(traceSpy).toHaveBeenCalledTimes(1);
   });
 

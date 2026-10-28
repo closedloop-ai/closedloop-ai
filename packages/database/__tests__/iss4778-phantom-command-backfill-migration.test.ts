@@ -3,7 +3,7 @@
  * migration `20260802180000_iss4778_backfill_phantom_command_components`.
  *
  * Runs the committed migration SQL verbatim against a REAL Postgres (the same
- * migrated database the CI `test` job provisions), inside a transaction that is
+ * migrated database the CI `test-shard` job provisions), inside a transaction that is
  * always rolled back, so the suite seeds its own fixture and leaves nothing
  * behind. Only a real database can prove the two things that matter here: that
  * the usage merge does not trip the
@@ -441,8 +441,8 @@ async function seedFixture(client: Client): Promise<void> {
   await client.query(
     `INSERT INTO session_detail (
        artifact_id, compute_target_id, external_session_id,
-       session_started_at, session_updated_at, updated_at
-     ) VALUES ($1, $2, 'external-iss4778', $3, $3, $3)`,
+       session_started_at, session_updated_at, last_activity_at, updated_at
+     ) VALUES ($1, $2, 'external-iss4778', $3, $3, $3, $3)`,
     [SESSION_ID, TARGET_ID, AT]
   );
   await seedComponents(client);

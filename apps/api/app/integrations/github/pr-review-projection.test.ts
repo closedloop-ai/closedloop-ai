@@ -1,5 +1,10 @@
 import { ReviewDecision } from "@repo/api/src/types/branch-checks";
 import { describe, expect, it, vi } from "vitest";
+// ISS-7148: the one `Prisma.sql` tree renderer. This suite carried a private
+// copy that was a strict subset of it — same recursion, but blind to the
+// `separator` a `Prisma.join` fragment sets, so a joined fragment rendered as
+// nothing rather than as its elements.
+import { renderSql } from "@/__tests__/support/branches/branch-read-service.test-helpers";
 import { persistLatestGitHubPRReview } from "./pr-review-projection";
 
 describe("persistLatestGitHubPRReview", () => {
@@ -14,7 +19,7 @@ describe("persistLatestGitHubPRReview", () => {
       state: ReviewDecision.Approved,
       body: "looks good",
       htmlUrl:
-        "https://github.com/closedloop-ai/example-repo/pull/42#pullrequestreview-1",
+        "https://github.com/closedloop-ai/closedloop-ai/pull/42#pullrequestreview-1",
       submittedAt: new Date("2026-07-03T06:00:00.000Z"),
       fetchCredentialType: "github_app",
       fetchCredentialOwnerId: null,
@@ -40,27 +45,3 @@ describe("persistLatestGitHubPRReview", () => {
     expect(sql).toContain('EXCLUDED."state" = \'DISMISSED\'::"ReviewDecision"');
   });
 });
-
-function renderSql(value: unknown): string {
-  if (!isMockSql(value)) {
-    return String(value);
-  }
-  return value.strings
-    .map((sqlPart, index) => {
-      const nested = value.values?.[index];
-      return nested === undefined ? sqlPart : `${sqlPart}${renderSql(nested)}`;
-    })
-    .join("");
-}
-
-function isMockSql(value: unknown): value is {
-  strings: readonly string[];
-  values?: readonly unknown[];
-} {
-  return Boolean(
-    value &&
-      typeof value === "object" &&
-      "strings" in value &&
-      Array.isArray((value as { strings?: unknown }).strings)
-  );
-}

@@ -8,7 +8,7 @@
  * (one failing read can't wedge the gate), and the cap is configurable.
  */
 import assert from "node:assert/strict";
-import { afterEach, describe, it } from "node:test";
+import { afterEach, describe, it } from "vitest";
 import {
   createColdReadGate,
   DEFAULT_COLD_READ_CONCURRENCY,
@@ -29,9 +29,9 @@ describe("createColdReadGate", () => {
     const makeRead = (id: number) => async () => {
       active++;
       maxActive = Math.max(maxActive, active);
-      // Yield across a couple of turns so a broken gate would certainly let more
-      // than MAX reads co-peak.
-      await new Promise((resolve) => setTimeout(resolve, 2));
+      // Yield a macrotask so a broken gate would let more than MAX reads
+      // co-peak.
+      await new Promise((resolve) => setTimeout(resolve, 0));
       active--;
       return id;
     };
@@ -57,7 +57,7 @@ describe("createColdReadGate", () => {
     const makeRead = () => async () => {
       active++;
       maxActive = Math.max(maxActive, active);
-      await new Promise((resolve) => setTimeout(resolve, 1));
+      await new Promise((resolve) => setTimeout(resolve, 0));
       active--;
     };
 
@@ -104,7 +104,7 @@ describe("createColdReadGate", () => {
     const makeRead = () => async () => {
       active++;
       maxActive = Math.max(maxActive, active);
-      await new Promise((resolve) => setTimeout(resolve, 1));
+      await new Promise((resolve) => setTimeout(resolve, 0));
       active--;
     };
     await Promise.all([gate.run(makeRead()), gate.run(makeRead())]);

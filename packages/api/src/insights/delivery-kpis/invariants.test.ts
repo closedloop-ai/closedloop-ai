@@ -167,29 +167,28 @@ function representativeFixtures(): {
 // ---------------------------------------------------------------------------
 
 describe("SSOT invariant — numerator ⊆ denominator (merge rate)", () => {
-  it.each(
-    representativeFixtures()
-  )("mergedCount ≤ decidedCount and mergeRate ∈ [0,100] for: $name", ({
-    rows,
-  }) => {
-    const merged = kpiValue(rows, DeliveryKpiKey.MergedCount);
-    const decided = kpiValue(rows, DeliveryKpiKey.DecidedCount);
-    // Counts are always finite (0 on empty), never null.
-    expect(isFiniteNumber(merged)).toBe(true);
-    expect(isFiniteNumber(decided)).toBe(true);
-    // Numerator ⊆ denominator: every merged PR is also decided.
-    expect(merged as number).toBeLessThanOrEqual(decided as number);
+  it.each(representativeFixtures())(
+    "mergedCount ≤ decidedCount and mergeRate ∈ [0,100] for: $name",
+    ({ rows }) => {
+      const merged = kpiValue(rows, DeliveryKpiKey.MergedCount);
+      const decided = kpiValue(rows, DeliveryKpiKey.DecidedCount);
+      // Counts are always finite (0 on empty), never null.
+      expect(isFiniteNumber(merged)).toBe(true);
+      expect(isFiniteNumber(decided)).toBe(true);
+      // Numerator ⊆ denominator: every merged PR is also decided.
+      expect(merged as number).toBeLessThanOrEqual(decided as number);
 
-    const rate = kpiValue(rows, DeliveryKpiKey.MergeRate);
-    if (decided === 0) {
-      // Never divide by zero: an undefined rate is null, not NaN/0.
-      expect(rate).toBeNull();
-    } else {
-      expect(isFiniteNumber(rate)).toBe(true);
-      expect(rate as number).toBeGreaterThanOrEqual(0);
-      expect(rate as number).toBeLessThanOrEqual(100);
+      const rate = kpiValue(rows, DeliveryKpiKey.MergeRate);
+      if (decided === 0) {
+        // Never divide by zero: an undefined rate is null, not NaN/0.
+        expect(rate).toBeNull();
+      } else {
+        expect(isFiniteNumber(rate)).toBe(true);
+        expect(rate as number).toBeGreaterThanOrEqual(0);
+        expect(rate as number).toBeLessThanOrEqual(100);
+      }
     }
-  });
+  );
 
   it("mergeRate is null (not NaN/0) whenever decidedCount is 0", () => {
     // Only open PRs: nothing is decided, so the rate must be unavailable.
@@ -244,18 +243,19 @@ describe("SSOT invariant — derived-KPI round-trip consistency", () => {
     );
   });
 
-  it("tokensPerKloc × kloc == tokens (tokens divisible by kloc)", () => {
-    // 1 merged PR, 2000 gross lines → KLOC 2.0; tokens 6000 → 3000/KLOC.
-    // 3000 × 2.0 == 6000.
+  it("tokensPerLoc × merged lines == tokens", () => {
+    // ISS-8184 rulings 4+5: the base is raw lines now, so 2000 lines and 6000
+    // tokens read 3 per line where this pinned 3000 per thousand. The round-trip
+    // invariant is unchanged — 3 × 2000 == 6000.
     const rows = makeRows({
       prs: [makePr({ additions: 2000, deletions: 0 })],
       sessions: [makeSession({ costUsd: 0, tokens: 6000 })],
     });
     const tokens = kpiValue(rows, DeliveryKpiKey.SessionTokensTotal);
-    const kloc = kpiValue(rows, DeliveryKpiKey.Kloc);
-    const perKloc = kpiValue(rows, DeliveryKpiKey.TokensPerKloc);
-    expect(perKloc).toBe(3000);
-    expect((perKloc as number) * (kloc as number)).toBeCloseTo(
+    const loc = kpiValue(rows, DeliveryKpiKey.Loc);
+    const perLoc = kpiValue(rows, DeliveryKpiKey.TokensPerLoc);
+    expect(perLoc).toBe(3);
+    expect((perLoc as number) * (loc as number)).toBeCloseTo(
       tokens as number,
       1
     );
@@ -282,40 +282,44 @@ describe("SSOT invariant — derived-KPI round-trip consistency", () => {
     expect(kpiValue(withMerge, DeliveryKpiKey.CostPerMergedPr)).not.toBeNull();
   });
 
-  it("tokensPerKloc is null exactly when kloc is 0/absent", () => {
-    // No merged PRs → KLOC null (sum over empty) → tokensPerKloc null.
-    const noKloc = makeRows({
+  it("tokensPerLoc is null exactly when loc is 0/absent", () => {
+    // No merged PRs → Loc null (sum over empty) → tokensPerLoc null.
+    const noLoc = makeRows({
       sessions: [makeSession({ tokens: 5000 })],
     });
-    expect(kpiValue(noKloc, DeliveryKpiKey.Kloc)).toBeNull();
-    expect(kpiValue(noKloc, DeliveryKpiKey.TokensPerKloc)).toBeNull();
+    expect(kpiValue(noLoc, DeliveryKpiKey.Loc)).toBeNull();
+    expect(kpiValue(noLoc, DeliveryKpiKey.TokensPerLoc)).toBeNull();
 
-    const withKloc = makeRows({
+    const withLoc = makeRows({
       prs: [makePr({ additions: 1000, deletions: 0 })],
       sessions: [makeSession({ tokens: 5000 })],
     });
-    expect(kpiValue(withKloc, DeliveryKpiKey.TokensPerKloc)).not.toBeNull();
+    expect(kpiValue(withLoc, DeliveryKpiKey.TokensPerLoc)).not.toBeNull();
   });
 
-  it("derived KPIs divide by the RAW denominator, so a sub-1.0 KLOC still yields a rate", () => {
-    // 40 gross lines → KLOC raw 0.04 (display-rounds to 0.0). The derived KPI must
-    // use the raw 0.04 denominator, never the display 0 — otherwise it would wrongly
-    // null despite real lines. This is the surface-drift trap the SSOT closes.
+  it("derived KPIs divide by the RAW denominator, not the display-rounded one", () => {
+    // ISS-8184 ruling 4 retargeted this. It used to ride a sub-1.0 thousands
+    // value that
+    // `round: 1` collapsed to 0.0; a raw line count is an integer, so `round: 0`
+    // rounds nothing and that base can no longer show the trap. `Cost` still
+    // can — `round: 2` displays a sub-cent total as 0.00, and a ratio dividing
+    // the DISPLAY value would blow up instead of returning a real rate.
     const rows = makeRows({
       prs: [makePr({ additions: 40, deletions: 0 })],
-      sessions: [makeSession({ tokens: 8000 })],
+      sessions: [makeSession({ costUsd: 0.004, tokens: 8000 })],
     });
-    // Display KLOC rounds to 0, but tokens-per-KLOC is a real finite number.
-    expect(kpiValue(rows, DeliveryKpiKey.Kloc)).toBe(0);
-    expect(kpiValue(rows, DeliveryKpiKey.TokensPerKloc)).toBe(200_000);
+    expect(kpiValue(rows, DeliveryKpiKey.Cost)).toBe(0);
+    expect(kpiValue(rows, DeliveryKpiKey.MergedLocPerDollar)).toBe(10_000);
+    expect(kpiValue(rows, DeliveryKpiKey.Loc)).toBe(40);
+    expect(kpiValue(rows, DeliveryKpiKey.TokensPerLoc)).toBe(200);
   });
 });
 
 describe("SSOT invariant — no double-count across relations/branches", () => {
-  it("a PR is counted once in mergedCount and once in KLOC regardless of branch fan-out", () => {
+  it("a PR is counted once in mergedCount and once in Loc regardless of branch fan-out", () => {
     // Model a single logical merged PR alongside branch rows that could tempt a
     // naive join to count its lines twice. The PR population reads rows.prs only;
-    // branch rows must not inflate mergedCount or the PR-sourced KLOC.
+    // branch rows must not inflate mergedCount or the PR-sourced Loc.
     const single = makeRows({
       prs: [makePr({ additions: 1000, deletions: 0, mergedAt: 100 })],
     });
@@ -323,8 +327,8 @@ describe("SSOT invariant — no double-count across relations/branches", () => {
       prs: [makePr({ additions: 1000, deletions: 0, mergedAt: 100 })],
       branches: [
         // Two branch rows referencing "the same" work — a fan-out that a
-        // relation-based join could double-count. KLOC is PR-sourced, so these
-        // must have ZERO effect on mergedCount or KLOC.
+        // relation-based join could double-count. Loc is PR-sourced, so these
+        // must have ZERO effect on mergedCount or Loc.
         {
           status: NormalizedBranchStatus.Merged,
           additions: 1000,
@@ -346,12 +350,12 @@ describe("SSOT invariant — no double-count across relations/branches", () => {
     expect(kpiValue(withDupeBranches, DeliveryKpiKey.MergedCount)).toBe(
       kpiValue(single, DeliveryKpiKey.MergedCount)
     );
-    expect(kpiValue(withDupeBranches, DeliveryKpiKey.Kloc)).toBe(
-      kpiValue(single, DeliveryKpiKey.Kloc)
+    expect(kpiValue(withDupeBranches, DeliveryKpiKey.Loc)).toBe(
+      kpiValue(single, DeliveryKpiKey.Loc)
     );
     // And the single PR counts exactly once.
     expect(kpiValue(withDupeBranches, DeliveryKpiKey.MergedCount)).toBe(1);
-    expect(kpiValue(withDupeBranches, DeliveryKpiKey.Kloc)).toBe(1);
+    expect(kpiValue(withDupeBranches, DeliveryKpiKey.Loc)).toBe(1000);
   });
 
   it("decidedPrs (merged ∪ closed) never double-counts a single PR", () => {
@@ -390,10 +394,10 @@ describe("SSOT invariant — edge matrix (finiteness, no NaN/Infinity)", () => {
     // Counts are 0; sum/median/derived KPIs are null (unavailable, not fabricated).
     expect(kpis[DeliveryKpiKey.MergedCount]?.value).toBe(0);
     expect(kpis[DeliveryKpiKey.CapturedPrCount]?.value).toBe(0);
-    expect(kpis[DeliveryKpiKey.Kloc]?.value).toBeNull();
+    expect(kpis[DeliveryKpiKey.Loc]?.value).toBeNull();
     expect(kpis[DeliveryKpiKey.MergeRate]?.value).toBeNull();
     expect(kpis[DeliveryKpiKey.CostPerMergedPr]?.value).toBeNull();
-    expect(kpis[DeliveryKpiKey.TokensPerKloc]?.value).toBeNull();
+    expect(kpis[DeliveryKpiKey.TokensPerLoc]?.value).toBeNull();
   });
 
   it("single PR: counts are 1 and every value is finite or null", () => {
@@ -430,9 +434,10 @@ describe("SSOT invariant — edge matrix (finiteness, no NaN/Infinity)", () => {
         expect(Number.isFinite(value)).toBe(true);
       }
     }
-    // 5 merged PRs × 200 gross = 1000 → KLOC 1.0; merged=decided → rate 100.
+    // 5 merged PRs × 200 gross = 1000 lines (ISS-8184 ruling 4: unscaled);
+    // merged=decided → rate 100.
     expect(values.get(DeliveryKpiKey.MergedCount)).toBe(5);
-    expect(values.get(DeliveryKpiKey.Kloc)).toBe(1);
+    expect(values.get(DeliveryKpiKey.Loc)).toBe(1000);
     expect(values.get(DeliveryKpiKey.MergeRate)).toBe(100);
     // cost 25 / 5 merged == 5.00.
     expect(values.get(DeliveryKpiKey.CostPerMergedPr)).toBe(5);
@@ -555,7 +560,7 @@ describe("FEA-3118 invariant — conservation (parts sum to the total)", () => {
     expect(raw(r, DeliveryKpiKey.Cost)).toBe(expected); // 4.0
   });
 
-  it("Kloc === round1(Σ linesGross(merged PRs) / 1000)", () => {
+  it("Loc === Σ linesGross(merged PRs), unscaled", () => {
     const prs = [
       makePr({ additions: 500, deletions: 250, mergedAt: 100 }),
       makePr({ additions: 300, deletions: 0, mergedAt: 100 }),
@@ -568,7 +573,10 @@ describe("FEA-3118 invariant — conservation (parts sum to the total)", () => {
       (s, p) => s + (p.additions ?? 0) + (p.deletions ?? 0),
       0
     );
-    expect(raw(r, DeliveryKpiKey.Kloc)).toBe(round(grossSum / 1000, 1)); // 1.3
+    // ISS-8184 ruling 4: the sum IS the value — no /1000 and nothing to round.
+    // Derived from the same `grossSum` the assertion sums, so a producer change
+    // cannot satisfy it by agreeing with its own mistake.
+    expect(raw(r, DeliveryKpiKey.Loc)).toBe(grossSum); // 1250
   });
 
   it("MergedCount and DecidedCount equal the raw state counts", () => {
@@ -592,7 +600,7 @@ describe("FEA-3118 invariant — conservation (parts sum to the total)", () => {
 });
 
 describe("FEA-3118 invariant — enrichment policy holds jointly", () => {
-  it("an un-enriched (unmeasured) merged PR folds as 0 into KLOC and is excluded from PrSize", () => {
+  it("an un-enriched (unmeasured) merged PR folds as 0 into Loc and is excluded from PrSize", () => {
     const enrichedOnly = makeRows({
       prs: [
         makePr({ additions: 100, deletions: 0, enriched: true, mergedAt: 100 }),
@@ -615,8 +623,8 @@ describe("FEA-3118 invariant — enrichment policy holds jointly", () => {
     const a = computeDeliveryKpis(enrichedOnly);
     const b = computeDeliveryKpis(withUnenriched);
 
-    // KLOC unchanged: the unmeasured PR contributes 0 gross lines.
-    expect(b[DeliveryKpiKey.Kloc]?.value).toBe(a[DeliveryKpiKey.Kloc]?.value);
+    // Loc unchanged: the unmeasured PR contributes 0 gross lines.
+    expect(b[DeliveryKpiKey.Loc]?.value).toBe(a[DeliveryKpiKey.Loc]?.value);
     // PrSize unchanged: the unmeasured PR is excluded from the median entirely.
     expect(b[DeliveryKpiKey.PrSize]?.value).toBe(
       a[DeliveryKpiKey.PrSize]?.value

@@ -10,7 +10,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../api-client.js";
 import { McpApiError } from "../api-error.js";
 import {
-  extractInlineImageAttachmentIds,
   registerGetDocument,
   shapeGetDocumentPayload,
 } from "../tools/get-document.js";
@@ -89,7 +88,7 @@ const pullRequestParentProjection = {
     subtype: null,
     name: "PR #1170",
     slug: null,
-    externalUrl: "https://github.com/closedloop-ai/example-repo/pull/1170",
+    externalUrl: "https://github.com/closedloop-ai/closedloop-ai/pull/1170",
   },
 };
 
@@ -164,7 +163,7 @@ describe("MCP document parent artifact shaping", () => {
         type: ArtifactType.Branch,
         subtype: null,
         slug: null,
-        externalUrl: "https://github.com/closedloop-ai/example-repo/pull/1170",
+        externalUrl: "https://github.com/closedloop-ai/closedloop-ai/pull/1170",
       },
     });
 
@@ -260,10 +259,20 @@ describe("MCP document parent artifact shaping", () => {
   });
 
   it("list-documents fetches parent projections from artifact-link parents endpoint", async () => {
+    // ISS-6137: the tool now asks the server for the page, so the fixture
+    // answers with the paged envelope a current API returns. The page this case
+    // asserts on is unchanged; only the query that fetched it, and the shape it
+    // came back in, moved.
     const apiClient = {
       get: vi
         .fn()
-        .mockResolvedValueOnce([routeRow])
+        .mockResolvedValueOnce({
+          items: [routeRow],
+          total: 1,
+          limit: 25,
+          offset: 0,
+          hasMore: false,
+        })
         .mockResolvedValueOnce([documentParentProjection]),
     } as unknown as ApiClient;
     const handler = createToolHarness(registerListDocuments, apiClient);
@@ -271,7 +280,11 @@ describe("MCP document parent artifact shaping", () => {
     const result = await handler({ limit: 25, offset: 0 });
     const payload = parseToolPayload(result);
 
-    expect(apiClient.get).toHaveBeenNthCalledWith(1, "/documents", {});
+    expect(apiClient.get).toHaveBeenNthCalledWith(1, "/documents", {
+      includeTotal: "true",
+      limit: "25",
+      offset: "0",
+    });
     expect(apiClient.get).toHaveBeenNthCalledWith(
       2,
       "/artifact-links/parents",
@@ -377,22 +390,6 @@ describe("MCP document parent artifact shaping", () => {
 
     expect(apiClient.get).toHaveBeenCalledTimes(1);
     expect(payload).not.toHaveProperty("parentArtifact");
-  });
-
-  it("extracts unique attachment:// inline image references in document order", () => {
-    const firstId = "00000000-0000-4000-8000-000000000001";
-    const secondId = "00000000-0000-4000-8000-000000000002";
-
-    expect(
-      extractInlineImageAttachmentIds(
-        [
-          `![diagram](attachment://${firstId})`,
-          `![duplicate](attachment://${firstId} "same")`,
-          `![second](attachment://${secondId})`,
-          "![external](https://example.com/image.png)",
-        ].join("\n")
-      )
-    ).toEqual([firstId, secondId]);
   });
 
   it("get-document resolves inline image refs without mutating canonical content", async () => {

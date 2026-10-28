@@ -1,5 +1,7 @@
+import { OperationKind } from "@repo/api/src/types/attribution-evidence";
 import type { MemberPackInstallResponse } from "@repo/api/src/types/member-pack-install";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { withOperationReceipts } from "@/lib/operation-receipts/operation-receipt-recorder";
 import { parseBody } from "@/lib/route-utils";
 import { dispatchMemberPackInstall } from "../../member-pack-install-service";
 import { memberPackInstallValidator } from "../../validators";
@@ -15,20 +17,26 @@ import { memberPackInstallValidator } from "../../validators";
 export const POST = withAnyAuth<
   MemberPackInstallResponse,
   "/compute-targets/[id]/member-installs"
->(async ({ user }, request, params) => {
-  const { id: targetId } = await params;
-  const { body, errorResponse: parseError } = await parseBody(
-    request,
-    memberPackInstallValidator
-  );
-  if (parseError || !body) {
-    return parseError;
-  }
+>(
+  withOperationReceipts(
+    OperationKind.OrganizationWrite,
+    async ({ user }, request, params, receipts) => {
+      const { id: targetId } = await params;
+      const { body, errorResponse: parseError } = await parseBody(
+        request,
+        memberPackInstallValidator
+      );
+      if (parseError || !body) {
+        return parseError;
+      }
 
-  return dispatchMemberPackInstall({
-    targetId,
-    packId: body.packId,
-    harness: body.harness,
-    user,
-  });
-});
+      return dispatchMemberPackInstall({
+        targetId,
+        packId: body.packId,
+        harness: body.harness,
+        user,
+        receipts,
+      });
+    }
+  )
+);

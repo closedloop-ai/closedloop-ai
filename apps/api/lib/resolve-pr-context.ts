@@ -1,5 +1,6 @@
 import "server-only";
 
+import { parseRepositoryFullName } from "@repo/api/src/types/branch-repository";
 import { ArtifactType, GitHubInstallationStatus, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 
@@ -28,16 +29,6 @@ type BranchRepositoryCredential = {
   installationId: string;
   credentialSource: BranchViewContextCredentialSource;
 };
-
-function parseRepositoryFullName(
-  fullName: string
-): { owner: string; repo: string } | null {
-  const [owner, repo, ...extra] = fullName.split("/");
-  if (!(owner && repo) || extra.length > 0) {
-    return null;
-  }
-  return { owner, repo };
-}
 
 export type PrContext = {
   externalLink: {
@@ -107,7 +98,6 @@ export type PrContext = {
     id: string;
     // FEA-2732: nullable for desktop-produced PRs in non-App repos.
     repositoryId: string | null;
-    documentId: string | null;
     githubId: string | null;
     headSha: string | null;
     number: number;
@@ -328,10 +318,6 @@ async function resolveBranchArtifactContext(
       currentPullRequestDetail: rawCurrentPr,
     });
   }
-  const producingDocumentId = await resolveProducingDocumentId(
-    artifact.id,
-    organizationId
-  );
 
   return {
     externalLink: {
@@ -392,7 +378,6 @@ async function resolveBranchArtifactContext(
       ? {
           id: currentPr.id,
           repositoryId: currentPr.repositoryId,
-          documentId: producingDocumentId,
           githubId: currentPr.githubId,
           headSha: branch.headSha,
           number: currentPr.number,
@@ -524,27 +509,6 @@ async function resolveBranchRepositoryCredential(
 }
 
 /**
- * Find the artifact that PRODUCES the PR (typically a Document), if any.
- * Returns the source artifact id — used to populate `PrContext.documentId`.
- */
-async function resolveProducingDocumentId(
-  branchArtifactId: string,
-  organizationId: string
-): Promise<string | null> {
-  const link = await withDb((db) =>
-    db.artifactLink.findFirst({
-      where: {
-        organizationId,
-        targetId: branchArtifactId,
-        source: { type: ArtifactType.DOCUMENT },
-      },
-      select: { sourceId: true },
-    })
-  );
-  return link?.sourceId ?? null;
-}
-
-/**
  * Whether a branch's `currentPullRequestDetail` relation actually belongs to that
  * branch.
  *
@@ -580,10 +544,8 @@ async function resolveProducingDocumentId(
  * `repositoryFullName` (non-nullable on `BranchDetail`, populated on
  * `PullRequestDetail` by both producers), never the surrogate.
  *
- * Applied today by exactly two readers: the primary resolver above and the
- * Branch View missing-context fallback in
- * `app/branch-view/[externalLinkId]/service/fallback-pr-context.ts`. Three other
- * readers define this same relation rule and now disagree with it —
+ * Applied today by the primary resolver above. Three other readers define this
+ * same relation rule and now disagree with it —
  * `getOwnedCurrentPullRequestDetail` (`app/branches/branch-remote-evidence.ts`),
  * `loadValidCurrentPullRequestDetailId` (`app/integrations/github/service.ts`),
  * and `findExistingBranchPr`

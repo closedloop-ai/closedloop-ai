@@ -12,9 +12,9 @@ import { ComputeTargetSyncTable } from "./compute-target-sync-table";
  * others; there is now one column set, so `Default` is the only shape.
  */
 const meta = {
-  title: "App Core/Compute/Compute Target Sync Table",
+  title: "Composites v1.0/Compute/Compute Target Sync Table",
   component: ComputeTargetSyncTable,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   args: {
     rows: [
       {

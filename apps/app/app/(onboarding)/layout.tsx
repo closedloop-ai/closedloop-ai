@@ -1,4 +1,4 @@
-import { auth, currentUser } from "@repo/auth/server";
+import { auth } from "@repo/auth/server";
 import { ModeToggle } from "@repo/design-system/components/ui/mode-toggle";
 import Image from "next/image";
 import type { ReactNode } from "react";
@@ -8,12 +8,11 @@ type OnboardingLayoutProps = {
 };
 
 const OnboardingLayout = async ({ children }: OnboardingLayoutProps) => {
-  const [{ redirectToSignUp }, user] = await Promise.all([
-    auth(),
-    currentUser(),
-  ]);
+  // ISS-10335: see the (authenticated) layout — the signed-in check reads the
+  // session JWT instead of spending a Clerk Backend API call on it.
+  const { redirectToSignUp, userId } = await auth();
 
-  if (!user) {
+  if (!userId) {
     // FEA-632: keep the unauthenticated default consistent with the main
     // (authenticated) layout — send new visitors to sign-up, not sign-in.
     return redirectToSignUp();

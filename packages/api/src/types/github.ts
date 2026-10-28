@@ -131,9 +131,15 @@ export type ConfirmDifferentAccountResetResponse = {
 export const GitHubBackfillStatus = {
   Completed: "completed",
   DryRunCompleted: "dry_run_completed",
-  FirstSliceStarted: "first_slice_started",
   NotStarted: "not_started",
   OwnerApprovalRequired: "owner_approval_required",
+  /**
+   * ISS-7408: Apply-mode backfill was accepted and is running off the request
+   * path. It is a claim about the RUN, not about the data — no counts exist
+   * yet, which is why the 202 carries this status instead of a zeroed summary.
+   * Resolves to a terminal status on the next `GET /integrations/github/backfill`.
+   */
+  Running: "running",
   Degraded: "degraded",
 } as const;
 export type GitHubBackfillStatus =
@@ -153,6 +159,10 @@ export type GitHubBackfillSummary = {
   pullRequestCount: number;
   branchProjectionChangeCount: number;
   pullRequestProjectionChangeCount: number;
+  /** Additive dry-run/apply count for immutable PR lifecycle atom rows. */
+  lifecycleAtomProjectionChangeCount?: number;
+  /** Additive dry-run/apply count for monotonic Branch Last-active writes. */
+  branchLastActivityProjectionChangeCount?: number;
   reviewDecisionProjectionChangeCount: number;
   checkProjectionChangeCount: number;
   issueCommentProjectionChangeCount: number;
@@ -185,6 +195,15 @@ export type GitHubBranch = {
 
 export type GetBranchesResponse = {
   branches: GitHubBranch[];
+  /** True when the provider reported more branch pages after this bounded read. */
+  hasMore?: boolean;
+  /**
+   * True when the read stopped on its own page ceiling before satisfying the
+   * requested limit. Only producers that can observe the provider's more-pages
+   * signal set it, so absence means "no truncation reported" rather than proof
+   * that the list is exhaustive.
+   */
+  truncated?: boolean;
 };
 
 export const GitHubPRState = SharedGitHubPRState;
@@ -203,6 +222,11 @@ export type GitHubPullRequestSummary = {
   title: string;
   htmlUrl: string;
   headBranch: string;
+  /**
+   * The PR's own base ref; `""` means no producer measured one (ISS-8155). Not
+   * widened to `| null`: installed Desktop builds validate it with `z.string()`
+   * and fail Branch hydration closed on a null.
+   */
   baseBranch: string;
   headSha: string | null;
   state: GitHubPRState;
@@ -214,13 +238,30 @@ export type GitHubPullRequestSummary = {
   mergedAt: string | null;
   mergeCommitSha: string | null;
   updatedAt: string;
+  /**
+   * The PR author's login; `""` means unattributed (ISS-8155). It replaced a
+   * literal `"unknown"`, which a real GitHub account can hold, so an absence
+   * read as a measurement. Same `z.string()` skew constraint as `baseBranch`.
+   */
   author: string;
+  /**
+   * CI rollup for this PR's head. Absent means unmeasured — the PR is superseded
+   * on its branch, or no producer has reached it. Never default it to a passing,
+   * failing, or "no checks" state (ISS-8155 absent-value contract).
+   */
   checksStatus?: ChecksStatus | null;
   reviewDecision?: ReviewDecision | null;
   /** Additive fork-head authority, independent from the selected/base repository. */
   headRepository?: RepositoryDefaultAuthority;
   /** Typed fork-head absence when the provider cannot expose its identity. */
   headRepositoryUnavailable?: RepositoryDefaultUnavailableObservation;
+  /**
+   * ISS-12344: the head GitHub itself reported, set only when it lives in this
+   * PR's repository (`gitHubConfirmedHeadBranch`). `headBranch` can instead be
+   * the filing Branch's name. Omitted when unconfirmed, never null; installed
+   * Desktop builds pass unknown keys through and ignore it.
+   */
+  gitHubHeadBranch?: string;
 };
 
 export type TrackedGitHubBranch = {
@@ -229,6 +270,14 @@ export type TrackedGitHubBranch = {
   htmlUrl: string;
   pullRequestUrl: string | null;
 };
+
+/** Optional targeting breadth for repository pull-request reads. */
+export const GitHubPullRequestTrackingScope = {
+  Organization: "organization",
+  Project: "project",
+} as const;
+export type GitHubPullRequestTrackingScope =
+  (typeof GitHubPullRequestTrackingScope)[keyof typeof GitHubPullRequestTrackingScope];
 
 export type GetPullRequestsResponse = {
   pullRequests: GitHubPullRequestSummary[];
@@ -242,23 +291,14 @@ export type GetPullRequestsResponse = {
   stopReason?: GitHubBundledPullRequestsStopReason;
   /** Target PR numbers that were not found before paging stopped. */
   missingTargetNumbers?: number[];
+  /** True when tracked-target discovery itself exceeded its bounded window. */
+  targetDiscoveryTruncated?: boolean;
   /** PR htmlUrl values already tracked by branch current PR detail. */
   trackedPrUrls: string[];
   /** Branch artifacts already tracked for this repository/project. */
   trackedBranches?: TrackedGitHubBranch[];
   /** Stable repository-scoped keys for tracked branches. */
   trackedBranchKeys?: string[];
-};
-
-export type GitHubContributor = {
-  login: string;
-  avatarUrl: string;
-  contributions: number;
-  htmlUrl: string;
-};
-
-export type GetContributorsResponse = {
-  contributors: GitHubContributor[];
 };
 
 export const GitHubRepositorySource = SharedGitHubRepositorySource;
@@ -282,16 +322,6 @@ export type StatusCheckRollupState = SharedStatusCheckRollupState;
  */
 export const PUBLIC_GITHUB_REPOS_FEATURE_FLAG_KEY =
   "public-github-repos" as const;
-
-/**
- * PLN-1535 M3.1 PostHog rollout key. When enabled, the repository branch and
- * pull-request read routes serve from the cloud projection (Postgres) instead of
- * a live GitHub GraphQL call, eliminating that read cost. Default off: the live
- * path stays authoritative until a repo's projection is proven complete (post-M4
- * bootstrap), so the closed-by-default data-source cutover can roll out per org.
- */
-export const GITHUB_PROJECTION_READS_FEATURE_FLAG_KEY =
-  "github-projection-reads" as const;
 
 export type PublicRepository = {
   id: string;
@@ -321,7 +351,7 @@ export type DeletePublicRepositoryResponse = {
  *
  * `OauthUser` (the Clerk-sourced OAuth App token) is the planned primary for
  * user-attributed reads and becomes resolvable once the Clerk GitHub
- * connection carries `repo read:org` (gated on the PRD-562 rule-5 amendment);
+ * connection carries `repo` (gated on the PRD-562 rule-5 amendment);
  * until then resolution lands on `GithubAppUser` or `Installation`.
  */
 export const GitHubCredentialKind = {
@@ -340,7 +370,7 @@ export type GitHubCredentialKind =
  * single remediation, and the surface can render it straight from this map:
  *
  * - `not_connected` — no GitHub connection: "Connect GitHub".
- * - `insufficient_scope` — scopes lack `repo`/`read:org`: "Reconnect to grant
+ * - `insufficient_scope` — scopes lack `repo`: "Reconnect to grant
  *   repository access".
  * - `revoked` — 401 observed (or token expired): "Reconnect GitHub".
  * - `org_restricted` — member of the org, but an OAuth App access restriction
@@ -383,6 +413,135 @@ export const GitHubAccessDenialReason = {
   RateLimited: "rate_limited",
   BudgetDeferred: "budget_deferred",
   Unavailable: "unavailable",
+  /**
+   * A concurrent draw won the claim on every candidate (ISS-8270). The org's
+   * credential is provably usable — someone else is holding it right now — so
+   * this is the one denial that is a statement about TIMING, not about the
+   * link, the grant, or the provider. Consumers must retry or defer, and must
+   * never re-tier, prompt a reconnect, or count a failure against the repo.
+   */
+  Contention: "contention",
 } as const;
 export type GitHubAccessDenialReason =
   (typeof GitHubAccessDenialReason)[keyof typeof GitHubAccessDenialReason];
+
+/**
+ * Response from POST /integrations/github/clerk-link (PLN-1742 M3). The web
+ * linking page calls it after Clerk verifies a GitHub external account, so
+ * the token-less registry row exists before the user lands back on a
+ * connection-gated surface. `linked` is the same verdict the credential
+ * reads make; `reason` explains a false verdict.
+ */
+export type GitHubClerkLinkSyncResponse = {
+  linked: boolean;
+  reason?: GitHubAccessDenialReason;
+};
+
+/**
+ * Response from `POST /integrations/github/backfill` in Apply mode (ISS-7408).
+ *
+ * Apply mode used to run the whole sweep before responding, which put 90s-180s
+ * on a route a customer hits while onboarding. It now claims the run, hands it
+ * to `waitUntil`, and returns 202 immediately; `GET /integrations/github/backfill`
+ * is the status surface that reports the terminal summary.
+ *
+ * Deliberately NOT a `GitHubBackfillSummary` with zeroed counts: at 202 time no
+ * repository has been read, and a `branchCount: 0` would be a fabricated value
+ * for data that has not been looked at yet.
+ */
+export type GitHubBackfillAcceptedResponse = {
+  accepted: true;
+  status: GitHubBackfillStatus;
+};
+
+/**
+ * Machine-readable reasons `POST /integrations/github/backfill` refused to
+ * start a run.
+ *
+ * Shared rather than route-local because the web client branches on it: a
+ * `Deferred` 429 means a run IS already in flight and the caller should follow
+ * it, while any OTHER 429 (a platform throttle, an edge rate limiter) means no
+ * run was started and must not be mistaken for one.
+ */
+export const GitHubBackfillRetryErrorCode = {
+  Deferred: "GITHUB_BACKFILL_RETRY_DEFERRED",
+} as const;
+export type GitHubBackfillRetryErrorCode =
+  (typeof GitHubBackfillRetryErrorCode)[keyof typeof GitHubBackfillRetryErrorCode];
+
+/**
+ * Response from `POST /integrations/github/clerk-link/client-failure`
+ * (ISS-11244). The browser reports a link failure this API could not otherwise
+ * observe; the ack exists so the caller can tell a recorded report from a
+ * rejected one, and carries nothing the reporting page acts on — it is already
+ * on its terminal failure panel.
+ */
+export type GitHubClerkLinkClientFailureResponse = {
+  recorded: boolean;
+};
+
+/**
+ * Which client-observed path produced the report (ISS-11244). Every one of these
+ * is terminal for the user and invisible to the server: three resolved without
+ * refusing and without the value the next step needs, and the fourth threw
+ * somewhere the API never saw. Without this the four arrive at the monitor
+ * indistinguishable — several carry no error code at all — so the record would
+ * say a browser failed and nothing about where.
+ */
+export const GitHubClerkLinkClientFailureStage = {
+  /** `createExternalAccount` resolved with no consent redirect URL. */
+  HandoffNoRedirect: "handoff_no_redirect",
+  /**
+   * `reauthorize()` resolved with no consent URL on the narrow-scope re-link,
+   * so the page falls back to the `insufficient_scope` denial it already had —
+   * which the API deliberately does NOT record before consent, because before
+   * consent it is a step inside a link that normally then succeeds.
+   */
+  ReauthorizeNoConsentUrl: "reauthorize_no_consent_url",
+  /** The link POST answered `linked: false` carrying no reason. */
+  SyncNoReason: "sync_no_reason",
+  /**
+   * ISS-11315: the SIGN-UP hand-off leg — `/connect/github`'s `signIn.sso`
+   * answered `{ error }` or rejected, so the provider's authorize screen never
+   * opened. Its own stage rather than {@link Threw} because it is a different
+   * ROUTE on a different half of the journey: this one runs before any account
+   * exists, and a refusal here drops the person into a generic sign-in that
+   * finishes the account without GitHub as its provider — which is what then
+   * makes `requiresGitHubStep` owe a step the GitHub door was meant to satisfy.
+   * Reported into the SAME `github_clerk_link_failed` monitor because the
+   * question an operator asks is "could this person connect GitHub", and
+   * splitting the answer across two monitors by route would hide half of it.
+   */
+  SignUpHandoffRefused: "signup_handoff_refused",
+  /**
+   * ISS-11315: the user dismissed Clerk's re-verification prompt, so the SSO
+   * call it was gating never ran again. A deliberate cancellation and not a
+   * refusal — kept apart from {@link Threw} so the monitor does not read a
+   * person changing their mind as a platform failure, and so the rate of it
+   * is visible at all.
+   */
+  ReverificationCancelled: "reverification_cancelled",
+  /** Something in the link routine threw. */
+  Threw: "threw",
+} as const;
+export type GitHubClerkLinkClientFailureStage =
+  (typeof GitHubClerkLinkClientFailureStage)[keyof typeof GitHubClerkLinkClientFailureStage];
+
+/**
+ * Request body for `POST /integrations/github/clerk-link/client-failure`
+ * (ISS-11244).
+ *
+ * Every field but `stage` is optional and OMITTED when absent rather than sent
+ * as `null`: a report carries whatever the browser actually observed, and an
+ * older client that sends fewer keys still records. `apiErrorCode` /
+ * `apiErrorStatus` come from `ApiError` on the sync leg, which carries no
+ * `errors[]` array at all — without them every sync-leg throw reached the
+ * monitor as one codeless record with a timeout, an expired session and a
+ * refused POST indistinguishable.
+ */
+export type GitHubClerkLinkClientFailureReport = {
+  stage: GitHubClerkLinkClientFailureStage;
+  clerkErrorCode?: string;
+  apiErrorCode?: string;
+  apiErrorStatus?: number;
+};

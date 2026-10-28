@@ -1,9 +1,11 @@
 import type { z } from "zod";
+import { desktopClientAttributionHeaders } from "./desktop-client-attribution-provider.js";
 
 /**
  * Options for {@link fetchJsonAndParse}.
  *
- * `token` is sent as `Authorization: Bearer <token>`; `headers` supplies any
+ * `token` is sent as `Authorization: Bearer <token>`, and `null` sends no
+ * `Authorization` at all (ISS-11945's signed-out flag read); `headers` supplies any
  * additional request headers (e.g. `Accept: application/json`). `unwrap` is
  * applied to the decoded JSON body before schema validation — pass
  * `unwrapApiEnvelope` / `unwrapApiResultData` from {@link ./api-response-utils}
@@ -13,7 +15,7 @@ import type { z } from "zod";
  */
 export type FetchJsonAndParseOptions<Sentinel> = {
   apiOrigin: string;
-  token: string;
+  token: string | null;
   unwrap: (body: unknown) => unknown;
   sentinel: Sentinel;
   headers?: Record<string, string>;
@@ -24,12 +26,11 @@ export type FetchJsonAndParseOptions<Sentinel> = {
 /**
  * Shared fetch-JSON-and-validate scaffold for the desktop main API clients.
  *
- * This is deliberately GET-only and always sends `Authorization: Bearer
- * <token>` — it is for authenticated read endpoints that return a JSON envelope.
- * It is not a general request helper; callers needing a POST body or an
- * unauthenticated request should not use it.
+ * This is deliberately GET-only — it is for first-party read endpoints that
+ * return a JSON envelope. It is not a general request helper; callers needing a
+ * POST body should not use it.
  *
- * Builds `new URL(path, apiOrigin)`, issues a Bearer-authenticated GET, and
+ * Builds `new URL(path, apiOrigin)`, issues the GET, and
  * validates the JSON body against `schema` after `unwrap`. Every failure mode —
  * a malformed URL, a transport/timeout error, a non-2xx status, unparseable
  * JSON, or a schema mismatch — returns the caller's `sentinel` instead of
@@ -59,8 +60,20 @@ export async function fetchJsonAndParse<Schema extends z.ZodTypeAny, Sentinel>(
     response = await (options.fetchImpl ?? fetch)(url, {
       method: "GET",
       headers: {
+        // ISS-8749: attribution belongs on THIS scaffold, not on the
+        // `fetchSessionJson` façade above it. Every caller here is a
+        // first-party cl-api read, and several reach this helper
+        // directly rather than through that façade (`/me`, `/users`, the pack
+        // analytics and assigned-distributions reads) — stamping only the
+        // façade left those indistinguishable from an old Desktop build.
+        // Merged BENEATH the caller's headers so a lane that needs to say
+        // something different still wins, and empty until the composition root
+        // publishes — an unpublished value is omitted, never placeheld.
+        ...desktopClientAttributionHeaders(),
         ...options.headers,
-        Authorization: `Bearer ${options.token}`,
+        ...(options.token === null
+          ? {}
+          : { Authorization: `Bearer ${options.token}` }),
       },
       // `signal: undefined` is treated identically to an absent signal.
       signal:

@@ -1,9 +1,16 @@
-import type {
-  SyncedActivitySegmentRow,
-  SyncedAgentSession,
+import {
+  MAX_SYNCED_ACTIVITY_SEGMENTS,
+  type SyncedActivitySegmentRow,
+  type SyncedAgentSession,
 } from "@repo/api/src/types/agent-session";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { persistSessionActivitySegments } from "./activity-segment-persistence";
+import { POSTGRES_MAX_BIND_PARAMETERS } from "@/lib/postgres-bind-parameters";
+import {
+  ACTIVITY_SEGMENT_BIND_PARAMETERS_PER_ROW,
+  ActivityTilingSkipReason,
+  type ActivityTilingSkipReport,
+  persistSessionActivitySegments,
+} from "./activity-segment-persistence";
 import type { AgentSessionUpsertTx } from "./records";
 
 // FEA-3568 T3: persistSessionActivitySegments is exercised against a mock
@@ -292,6 +299,10 @@ describe("persistSessionActivitySegments — ISS-4541 multi-part tiling", () => 
     // tiling PLUS stale slices, mixed versions with overlapping spans that
     // double-count in the per-phase aggregation. The append lane version-guards it.
     const { tx, deleteMany, createMany } = makeTx(5);
+    // ISS-8603: the same refusal, reported to the caller so the batch can count
+    // it. Asserted here, at the branch itself, because the reason is the only
+    // thing that tells this arm from its sibling.
+    const skips: ActivityTilingSkipReport = { refusalReason: null };
     await persistSessionActivitySegments(
       tx,
       ARTIFACT_ID,
@@ -300,19 +311,25 @@ describe("persistSessionActivitySegments — ISS-4541 multi-part tiling", () => 
         index: 1,
         total: 2,
       }),
-      /* shouldReplace */ false
+      /* shouldReplace */ false,
+      skips
     );
     expect(deleteMany).not.toHaveBeenCalled();
     expect(createMany).not.toHaveBeenCalled();
     expect(mockLog.warn).toHaveBeenCalledTimes(1);
+    expect(skips.refusalReason).toBe(ActivityTilingSkipReason.VersionMismatch);
   });
 
-  it("an append slice arriving before any chunk 0 is staged (no stored tiling) is skipped, not blindly inserted", async () => {
-    // A later chunk that reaches the receiver before its own chunk 0 opened the
-    // sequence has no stored tiling to attest against; appending it would seed a
-    // headless partial tiling. Skip it — the sequence self-repairs when chunk 0
-    // lands.
-    const { tx, deleteMany, createMany } = makeTx(null);
+  it("appends a slice that opened on an empty stored tiling (ISS-10259)", async () => {
+    // The sibling this replaces asserted the opposite, on a premise the sequence
+    // gate makes unreachable: a later chunk CANNOT reach the receiver before its
+    // own chunk 0, because `resolveChunkGating` flags it foreign with no marker
+    // staged ("flags a non-first chunk when no sequence is staged", its own
+    // suite) and `resolveGateRefusal` returns before any write. What the refusal
+    // actually caught was a paginated tiling whose chunk 0 cleared and stored
+    // nothing — so it dropped the tiling instead of protecting it.
+    const { tx, createMany } = makeTx(null);
+    const skips: ActivityTilingSkipReport = { refusalReason: null };
     await persistSessionActivitySegments(
       tx,
       ARTIFACT_ID,
@@ -321,11 +338,15 @@ describe("persistSessionActivitySegments — ISS-4541 multi-part tiling", () => 
         index: 1,
         total: 2,
       }),
-      /* shouldReplace */ false
+      /* shouldReplace */ false,
+      skips
     );
-    expect(deleteMany).not.toHaveBeenCalled();
-    expect(createMany).not.toHaveBeenCalled();
-    expect(mockLog.warn).toHaveBeenCalledTimes(1);
+    expect(createMany).toHaveBeenCalledTimes(1);
+    expect(createMany).toHaveBeenCalledWith(
+      expect.objectContaining({ skipDuplicates: true })
+    );
+    expect(skips.refusalReason).toBeNull();
+    expect(mockLog.warn).not.toHaveBeenCalled();
   });
 
   it("an opening chunk with an EMPTY slice still clears the prior revision's tiling (multi-part)", async () => {
@@ -453,3 +474,289 @@ describe("persistSessionActivitySegments — ISS-4541 multi-part tiling", () => 
     expect(createMany.mock.calls[1]?.[0].skipDuplicates).toBe(true);
   });
 });
+
+/**
+ * ISS-8185: both `createMany` lanes used to hand the WHOLE tiling to one
+ * statement, and at 11 bind parameters per row that statement goes over the
+ * driver ceiling INSIDE the validated wire contract — no bypass required. A
+ * payload carrying the schema's own maximum, `MAX_SYNCED_ACTIVITY_SEGMENTS`
+ * rows, binds 55,000 parameters, and Prisma's Postgres driver rejects anything
+ * past 32,767 (see `POSTGRES_MAX_BIND_PARAMETERS`). The rejection rolls the
+ * session transaction back and the desktop retries the identical permanently
+ * failing payload forever.
+ *
+ * The fixture is therefore sized AT the cap the route enforces rather than at a
+ * larger round number: a population the validator would reject proves nothing
+ * about what the service can be handed. Both lanes are covered — bounding only
+ * one of them leaves the bug live on the other.
+ */
+describe("activity-segment write chunking (ISS-8185)", () => {
+  const OVER_LIMIT_ROW_COUNT = MAX_SYNCED_ACTIVITY_SEGMENTS;
+
+  it("replace lane keeps every statement under the bind-parameter limit without dropping a span", async () => {
+    const { tx, createMany } = makeTx(null);
+    const tiling = longTiling(OVER_LIMIT_ROW_COUNT);
+
+    await persistSessionActivitySegments(
+      tx,
+      ARTIFACT_ID,
+      ORGANIZATION_ID,
+      sessionWith(tiling),
+      /* shouldReplace */ true
+    );
+
+    const emitted = emittedSegmentStatements(createMany);
+    expect(emitted.length).toBeGreaterThan(0);
+    for (const statement of emitted) {
+      expect(statement.bindParameters).toBeLessThanOrEqual(
+        POSTGRES_MAX_BIND_PARAMETERS
+      );
+    }
+    // Bounding the write must not drop spans: every startMs still lands, in order.
+    expect(emitted.flatMap((statement) => statement.startsMs)).toEqual(
+      tiling.map((segment) => segment.startMs)
+    );
+  });
+
+  it("append lane keeps every statement under the bind-parameter limit and stays skipDuplicates", async () => {
+    // Stored classifier version 4 matches the fixture rows', so the slice is admitted.
+    const { tx, createMany } = makeTx(4);
+    const tiling = longTiling(OVER_LIMIT_ROW_COUNT);
+
+    await persistSessionActivitySegments(
+      tx,
+      ARTIFACT_ID,
+      ORGANIZATION_ID,
+      chunkedSessionWith(tiling, { index: 1, total: 2 }),
+      /* shouldReplace */ false
+    );
+
+    const emitted = emittedSegmentStatements(createMany);
+    expect(emitted.length).toBeGreaterThan(0);
+    for (const statement of emitted) {
+      expect(statement.bindParameters).toBeLessThanOrEqual(
+        POSTGRES_MAX_BIND_PARAMETERS
+      );
+    }
+    expect(emitted.flatMap((statement) => statement.startsMs)).toEqual(
+      tiling.map((segment) => segment.startMs)
+    );
+    for (const call of createMany.mock.calls) {
+      expect(call[0].skipDuplicates).toBe(true);
+    }
+  });
+});
+
+function longTiling(count: number): SyncedActivitySegmentRow[] {
+  return Array.from({ length: count }, (_, index) =>
+    row({ startMs: index * 1000, endMs: index * 1000 + 500 })
+  );
+}
+
+/** What each emitted `createMany` would cost on the wire, and what it carried. */
+function emittedSegmentStatements(
+  createMany: ReturnType<typeof vi.fn>
+): Array<{ bindParameters: number; startsMs: number[] }> {
+  const calls = createMany.mock.calls as [{ data: { startMs: bigint }[] }][];
+  return calls.map(([args]) => ({
+    bindParameters: args.data.length * ACTIVITY_SEGMENT_BIND_PARAMETERS_PER_ROW,
+    startsMs: args.data.map((segment) => Number(segment.startMs)),
+  }));
+}
+
+/**
+ * ISS-10259: the desktop's REAL chunk order, run end to end through the cloud
+ * persistence lanes.
+ *
+ * Every case above hands ONE chunk to one call against a fixed stored version,
+ * which is what let this ship. The opening-chunk cases give chunk 0 a non-empty
+ * slice — a shape the desktop never sends when the tiling paginates — and the
+ * explicit-empty case asserts the clear and stops before any append. The real
+ * sequence is the join of the two: `appendRequiredStreamChunks` packs the EVENTS
+ * stream before the tiling and `createChunkBuilders.baseFor` stamps
+ * `activitySegmentRows: []` on every non-tiling chunk of a paginated tiling, so
+ * chunk 0 is an events chunk that CLEARS and stores nothing, and the tiling's
+ * own rows ride chunks 1..N against an empty stored tiling.
+ */
+describe("persistSessionActivitySegments — the desktop's paginated chunk order (ISS-10259)", () => {
+  const CLASSIFIER_VERSION = 16;
+  const SLICES = [
+    { index: 1, startMs: 2000 },
+    { index: 2, startMs: 4000 },
+  ] as const;
+
+  /**
+   * Chunk 0: the events chunk, carrying the explicit empty tiling.
+   *
+   * `shouldReplace` is the caller's, because `resolveChunkGating` gives chunk 0
+   * of a re-send a DIFFERENT answer depending on what the session already has
+   * (review, tamsinb): `true` when the revision advances past the high-water
+   * mark, `false` when the sequence is redelivered at the revision already
+   * COMMITTED (`reopensCommittedSequence`). Both are real chunk 0s and only the
+   * first may clear.
+   */
+  function applyOpeningChunk(
+    tx: AgentSessionUpsertTx,
+    skips: ActivityTilingSkipReport,
+    shouldReplace: boolean
+  ): Promise<boolean> {
+    return persistSessionActivitySegments(
+      tx,
+      ARTIFACT_ID,
+      ORGANIZATION_ID,
+      chunkedSessionWith([], { index: 0, total: 3 }),
+      shouldReplace,
+      skips
+    );
+  }
+
+  /** Chunks 1..N: the tiling's own disjoint slices. */
+  async function applyTilingSlices(
+    tx: AgentSessionUpsertTx,
+    skips: ActivityTilingSkipReport
+  ): Promise<void> {
+    for (const slice of SLICES) {
+      await persistSessionActivitySegments(
+        tx,
+        ARTIFACT_ID,
+        ORGANIZATION_ID,
+        chunkedSessionWith(
+          [
+            row({
+              startMs: slice.startMs,
+              endMs: slice.startMs + 1000,
+              version: CLASSIFIER_VERSION,
+            }),
+          ],
+          { index: slice.index, total: 3 }
+        ),
+        /* shouldReplace */ false,
+        skips
+      );
+    }
+  }
+
+  it("stores every slice of the tiling, over the prior revision's", async () => {
+    // Seeded with a prior revision at an older classifier version, so this also
+    // pins that chunk 0's clear is still happening — the fix admits the append,
+    // it does not buy that by keeping stale spans alive.
+    const { tx, storedStartsMs } = makeSequenceTx([
+      { startMs: 0, classifierVersion: 15 },
+    ]);
+    const skips: ActivityTilingSkipReport = { refusalReason: null };
+
+    await applyOpeningChunk(tx, skips, /* shouldReplace */ true);
+    // The state the append lane used to refuse: chunk 0 landed and stored
+    // nothing, because its own slice was empty. The prior revision's span is
+    // gone, so nothing but the slices behind it can restore the tiling.
+    expect(storedStartsMs()).toEqual([]);
+
+    await applyTilingSlices(tx, skips);
+
+    expect(storedStartsMs()).toEqual([2000, 4000]);
+    expect(skips.refusalReason).toBeNull();
+  });
+
+  it("re-prepared at an ADVANCING revision: chunk 0 clears, the slices restore the same tiling", async () => {
+    // The desktop re-derives the session and sends a NEW `dataRevision`, so its
+    // chunk 0 advances past the high-water mark and DOES clear
+    // (`shouldReplace = true`). The tiling stored by the previous sequence goes,
+    // and only the slices behind this chunk 0 can put it back — which is the
+    // append this ticket admits.
+    const { tx, storedStartsMs } = makeSequenceTx();
+    const skips: ActivityTilingSkipReport = { refusalReason: null };
+
+    await applyOpeningChunk(tx, skips, /* shouldReplace */ true);
+    await applyTilingSlices(tx, skips);
+    await applyOpeningChunk(tx, skips, /* shouldReplace */ true);
+    expect(storedStartsMs()).toEqual([]);
+    await applyTilingSlices(tx, skips);
+
+    expect(storedStartsMs()).toEqual([2000, 4000]);
+    expect(skips.refusalReason).toBeNull();
+  });
+
+  it("redelivered at the COMMITTED revision: chunk 0 does NOT clear, and the re-sent slices are idempotent", async () => {
+    // The 109-redelivery production shape (review, tamsinb). A re-send at the
+    // revision already COMMITTED takes `reopensCommittedSequence`, which stages
+    // without replacing, so chunk 0 arrives with `shouldReplace = false` and its
+    // explicit-empty slice must NOT clear: `isMultiPartOpening` requires
+    // `shouldReplace`, and the early return at `rows.length === 0` no-ops
+    // instead. That is the whole point of the ISS-6167 arm — a complete session
+    // must not be exposed as a partial one for the width of the re-send — and
+    // the re-sent slices then collide on the unique `(agentSessionId, startMs)`
+    // key under `skipDuplicates`.
+    const { tx, storedStartsMs } = makeSequenceTx();
+    const skips: ActivityTilingSkipReport = { refusalReason: null };
+
+    await applyOpeningChunk(tx, skips, /* shouldReplace */ true);
+    await applyTilingSlices(tx, skips);
+    expect(storedStartsMs()).toEqual([2000, 4000]);
+
+    await applyOpeningChunk(tx, skips, /* shouldReplace */ false);
+    // No gap: the committed tiling stays readable while the re-send is in flight.
+    expect(storedStartsMs()).toEqual([2000, 4000]);
+    await applyTilingSlices(tx, skips);
+
+    expect(storedStartsMs()).toEqual([2000, 4000]);
+    expect(skips.refusalReason).toBeNull();
+  });
+});
+
+/**
+ * A mock transaction whose `findFirst` answers from what `createMany` inserted
+ * and `deleteMany` removed, so a whole chunk SEQUENCE can run through the real
+ * lanes. `makeTx` pins one stored version for one call; a sequence needs chunk
+ * 0's write — or its clear — to be what chunk 1 reads. One session per tx, so
+ * the unique `(agentSessionId, startMs)` key is modelled by `startMs` alone.
+ */
+function makeSequenceTx(
+  seed: readonly { startMs: number; classifierVersion: number }[] = []
+) {
+  const stored = [...seed];
+  const findFirst = vi.fn(() =>
+    Promise.resolve(
+      stored.length === 0
+        ? null
+        : {
+            classifierVersion: stored.reduce(
+              (max, segment) => Math.max(max, segment.classifierVersion),
+              Number.NEGATIVE_INFINITY
+            ),
+          }
+    )
+  );
+  const deleteMany = vi.fn(() => {
+    const count = stored.length;
+    stored.length = 0;
+    return Promise.resolve({ count });
+  });
+  const createMany = vi.fn(
+    (args: {
+      data: { startMs: bigint; classifierVersion: number }[];
+      skipDuplicates?: true;
+    }) => {
+      let count = 0;
+      for (const segment of args.data) {
+        const startMs = Number(segment.startMs);
+        const collides = stored.some((held) => held.startMs === startMs);
+        if (args.skipDuplicates && collides) {
+          continue;
+        }
+        stored.push({ startMs, classifierVersion: segment.classifierVersion });
+        count += 1;
+      }
+      return Promise.resolve({ count });
+    }
+  );
+  const tx = {
+    agentSessionActivitySegment: { findFirst, deleteMany, createMany },
+  } as unknown as AgentSessionUpsertTx;
+  return {
+    tx,
+    storedStartsMs: (): number[] =>
+      stored
+        .map((segment) => segment.startMs)
+        .sort((left, right) => left - right),
+  };
+}

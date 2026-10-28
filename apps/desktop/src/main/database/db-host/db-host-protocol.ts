@@ -10,17 +10,22 @@
  *
  * All payloads are structured-clone-safe: invoke args and result values are the
  * same plain objects the in-process runtime already returns (query rows are
- * POJOs, no Date/Map/class instances), so nothing needs custom (de)serialization.
+ * POJOs, no Date/Map/class instances). A store result crosses as the bytes the
+ * store thread `v8.serialize`d (ISS-12022, `db-host-result-codec.ts`).
  */
 
-import type {
-  ScheduledReviewRequest,
-  ScheduledReviewResult,
-} from "../../../shared/scheduled-review-contract.js";
+import {
+  type StorageExhaustionReason,
+  storageReasonOf,
+} from "../../../shared/storage-exhaustion.js";
 import {
   DesktopMigrationError,
   type MigrationRefusalKind,
 } from "../../lifecycle/migration-refusal.js";
+import type { DurableLogLevel } from "../../logging/durable-log-sink.js";
+import type { ParsePolicy } from "../../parse-policy/parse-policy.js";
+import { isTelemetryEventPayload } from "../../telemetry/telemetry-event-payload.js";
+import type { TelemetryEventPayload } from "../../telemetry/telemetry-protocol.js";
 import {
   isMemoryPressureLevel,
   type MemoryPressureLevel,
@@ -31,9 +36,18 @@ export const DbHostRequestKind = {
   Invoke: "invoke",
   SetUserIdentity: "set-user-identity",
   Close: "close",
-  // FEA-4143: main → child REPLY to a ScheduledReviewRun request the child
-  // raised. Correlated by `id` to the originating child request.
-  ScheduledReviewResult: "scheduled-review-result",
+  // ISS-9802: main → child request to ABANDON an in-flight read, named by the
+  // renderer cancellation token the originating Invoke carried. Fire-and-forget
+  // — it correlates to no reply, and the Invoke it cancels settles as a
+  // cancellation on its own path. A child that predates this kind ignores it
+  // (`isDbHostRequest` refuses it, and the dispatch switch has a `default`
+  // return), which leaves the read running exactly as it does today.
+  CancelRead: "cancel-read",
+  // ISS-12022: main → child request for the next page of a result that arrived
+  // with `encodedByteLength` past its first page. Correlated by the Invoke's
+  // `id`; answered by a `ResultPage`, or by a failed `Result` when the child no
+  // longer holds that result.
+  ResultPagePull: "result-page-pull",
 } as const;
 export type DbHostRequestKind =
   (typeof DbHostRequestKind)[keyof typeof DbHostRequestKind];
@@ -44,19 +58,24 @@ export const DbHostResponseKind = {
   Emit: "emit",
   SessionTerminal: "session-terminal",
   Log: "log",
-  // FEA-3814 (PRD-553 M2): the crewd scheduler (in this child) changed its tasks
-  // or runs; main forwards desktop:scheduled-tasks:changed to the renderer.
-  SchedulerChanged: "scheduler-changed",
-  // FEA-4143: child → main REQUEST to run a scheduled review pass through the
-  // main-process AuditService (the daemon in this child has neither the access
-  // token nor the shell PATH, and must never run the cascade against the live
-  // checkout). Main replies with a correlated ScheduledReviewResult request.
-  ScheduledReviewRun: "scheduled-review-run",
   // ISS-4823: child → main publication of this worker's memory-pressure level,
   // sampled by the heap watchdog. Main caches it (with a staleness bound) so the
   // main-process DATA_REVISION rebuild's adaptive write-pause gate can consult
   // the db-host pressure arm it declares. See DbHostMemoryPressureResponse.
   MemoryPressure: "memory-pressure",
+  // ISS-7109: child → main telemetry raised inside this worker. `Observability`
+  // is only ever `init`ed in main, so an event emitted here reaches a null
+  // transport and is discarded; main re-emits it on the child's behalf, the same
+  // way it already emits the child's unexpected-exit event for it.
+  Telemetry: "telemetry",
+  // ISS-7882: child → main durable main-log line. The file transport is
+  // configured in `startup.ts` alone, i.e. only in main, so a `writePersistentLog`
+  // call in this worker was taken by the pre-init buffer and never drained —
+  // every warning it produced reached no file at all. Main writes the line to
+  // `main.log` on the child's behalf, at the child's level.
+  DurableLog: "durable-log",
+  // ISS-12022: child → main, one page of a paged `Result`, sent per pull.
+  ResultPage: "result-page",
 } as const;
 export type DbHostResponseKind =
   (typeof DbHostResponseKind)[keyof typeof DbHostResponseKind];
@@ -72,6 +91,11 @@ export type DbHostInitOptions = {
   dataDir: string;
   staleMinutes?: number;
   identity?: DbHostUserIdentity;
+  /**
+   * ISS-12552 (PRD-800 "Rollout"): main's parse policy, which the store
+   * adopts before it opens. Optional; absent, the store runs the base policy.
+   */
+  parsePolicy?: ParsePolicy;
 };
 
 export type DbHostInitRequest = {
@@ -101,6 +125,29 @@ export type DbHostInvokeRequest = {
    * Only an explicit `true` yields.
    */
   background?: boolean;
+  /**
+   * ISS-9802: the renderer's cancellation token for this read, forwarded to the
+   * store thread so a later {@link DbHostCancelReadRequest} can abandon it at a
+   * statement boundary.
+   *
+   * Optional and OMITTED when absent, for the reason `background` above states:
+   * an interactive caller's wire shape stays byte-identical, and a child that
+   * has never heard of the field ignores it and runs the read to completion —
+   * which is precisely today's behaviour, not a degraded one.
+   */
+  cancellationToken?: string;
+};
+
+/**
+ * ISS-9802 — abandon the in-flight read carrying {@link token}.
+ *
+ * Carries no `id`: it is not correlated and never answered. The read it names
+ * rejects through its OWN pending entry, so nothing here needs a reply, and a
+ * token naming nothing in flight is a no-op on the child rather than an error.
+ */
+export type DbHostCancelReadRequest = {
+  kind: typeof DbHostRequestKind.CancelRead;
+  token: string;
 };
 
 export type DbHostSetUserIdentityRequest = {
@@ -113,28 +160,15 @@ export type DbHostCloseRequest = {
   id: number;
 };
 
-/**
- * FEA-4143 — main → child reply to a {@link DbHostScheduledReviewRunResponse}.
- * Carries the structured result (or a serialized error) back to the child's
- * dispatch, correlated by the originating request `id` AND `generation`.
- *
- * `generation` (Tzqf1): the reverse-RPC `id` restarts at 1 with every forked
- * worker, but this reply travels through whatever child `DbHostClient.child`
- * owns at delivery time. If the DB-host worker crashes mid-audit and a
- * replacement forks, a late reply for old-worker-id=1 would otherwise resolve an
- * UNRELATED id=1 pending review in the replacement child. Main echoes the
- * originating worker's `generation` verbatim (it is opaque to main); the child
- * drops any reply whose generation ≠ its own, so a stale result can never
- * cross-talk into the replacement worker.
- */
-export type DbHostScheduledReviewResultRequest = {
-  kind: typeof DbHostRequestKind.ScheduledReviewResult;
+/** ISS-12022 — see {@link DbHostRequestKind.ResultPagePull}. */
+export type DbHostResultPagePullRequest = {
+  kind: typeof DbHostRequestKind.ResultPagePull;
   id: number;
-  /** The originating worker's generation, echoed back verbatim (opaque to main). */
-  generation: string;
-  ok: boolean;
-  value?: ScheduledReviewResult;
-  error?: DbHostError;
+  /**
+   * Bytes main already holds; the page asked for starts here. The abandon
+   * offset (`DB_HOST_RESULT_ABANDON_OFFSET`) ends the delivery instead.
+   */
+  offset: number;
 };
 
 export type DbHostRequest =
@@ -142,7 +176,8 @@ export type DbHostRequest =
   | DbHostInvokeRequest
   | DbHostSetUserIdentityRequest
   | DbHostCloseRequest
-  | DbHostScheduledReviewResultRequest;
+  | DbHostCancelReadRequest
+  | DbHostResultPagePullRequest;
 
 /** Serialized error — Error instances don't structured-clone with stack/message. */
 export type DbHostError = {
@@ -159,6 +194,16 @@ export type DbHostError = {
    * for a version-skewed child that never sets it.
    */
   refusalKind?: MigrationRefusalKind;
+  /**
+   * ISS-6337: the bounded disk-full verdict, when the child classified this
+   * error as one. Carried for the same reason as `refusalKind` above — the
+   * driver's result code sits on a `cause` link that structured clone flattens
+   * away — and so that the main side never has to re-derive the verdict from
+   * message text, which can quote a pack-install child's captured output (see
+   * `../storage-exhaustion.ts`). Optional and additive: absent for every other
+   * error, and a child that never sets it simply yields no verdict.
+   */
+  storageExhaustionReason?: StorageExhaustionReason;
 };
 
 export type DbHostReadyResponse = {
@@ -172,7 +217,25 @@ export type DbHostResultResponse = {
   id: number;
   ok: boolean;
   value?: unknown;
+  /**
+   * ISS-12022: the successful value as the store thread `v8.serialize`d it.
+   * When present it replaces `value`, which a child-local answer still uses.
+   */
+  encoded?: ArrayBuffer;
+  /**
+   * The whole encoding's length, set only when `encoded` is its FIRST page;
+   * main pulls the rest with `ResultPagePull`.
+   */
+  encodedByteLength?: number;
   error?: DbHostError;
+};
+
+/** ISS-12022 — one page of a paged `Result`, starting at `offset`. */
+export type DbHostResultPageResponse = {
+  kind: typeof DbHostResponseKind.ResultPage;
+  id: number;
+  offset: number;
+  encoded: ArrayBuffer;
 };
 
 /** Child → main: a session mutated; main forwards desktop:db:changed. */
@@ -198,35 +261,6 @@ export type DbHostLogResponse = {
 };
 
 /**
- * Child → main: the crewd scheduler ticked / started / stopped and its tasks or
- * runs may have changed. Payload-free — main forwards a bare
- * desktop:scheduled-tasks:changed and the renderer refetches list + runs
- * (FEA-3814 / PRD-553 M2).
- */
-export type DbHostSchedulerChangedResponse = {
-  kind: typeof DbHostResponseKind.SchedulerChanged;
-};
-
-/**
- * FEA-4143 — child → main request to run a scheduled review pass through the
- * main-process AuditService. `id` correlates the reply
- * ({@link DbHostScheduledReviewResultRequest}). `request` is the already-validated
- * night-crew config for the fired task.
- */
-export type DbHostScheduledReviewRunResponse = {
-  kind: typeof DbHostResponseKind.ScheduledReviewRun;
-  id: number;
-  /**
-   * Tzqf1 — the forking worker's generation token, minted once per worker
-   * instance. Main echoes it back on the reply so a stale result from a crashed
-   * worker cannot be delivered into an unrelated same-`id` request in the
-   * replacement worker (whose `id` counter also restarts at 1).
-   */
-  generation: string;
-  request: ScheduledReviewRequest;
-};
-
-/**
  * ISS-4823 — child → main memory-pressure publication. Carries only the bounded
  * level enum, never the raw byte counters: main's sole consumer is a boolean
  * "should the rebuild take the full cooperative pause?" gate, and the byte
@@ -239,15 +273,49 @@ export type DbHostMemoryPressureResponse = {
   level: MemoryPressureLevel;
 };
 
+/**
+ * ISS-7109 — child → main telemetry relay. `event` is the verbatim
+ * {@link TelemetryEventPayload} the child's emit path produced; main hands it to
+ * the real transport untouched, so the child never has to know the wire format,
+ * the endpoint, or the auth.
+ *
+ * The payload is validated in {@link isDbHostResponse} down to exactly the three
+ * fields the transport requires, and NO further: over-validating here would turn
+ * a version-skewed child's extra diagnostics into the very silent drop this
+ * message exists to end. Unknown fields ride along and are adjudicated once, by
+ * the server-side schema, which already answers `telemetry.validation_failed`
+ * out loud.
+ */
+export type DbHostTelemetryResponse = {
+  kind: typeof DbHostResponseKind.Telemetry;
+  event: TelemetryEventPayload;
+};
+
+/**
+ * ISS-7882 — child → main durable log relay. `line` is ALREADY FORMATTED: it is
+ * what the child's file transport would have written, so main appends it and
+ * neither side has to know the other's line format.
+ *
+ * `level` is the PRODUCER's contract, not a runtime guarantee: this crosses a
+ * process boundary, so {@link isDbHostResponse} checks only `line` and
+ * `writeRelayedDurableLog` normalises whatever `level` actually arrives.
+ */
+export type DbHostDurableLogResponse = {
+  kind: typeof DbHostResponseKind.DurableLog;
+  level: DurableLogLevel;
+  line: string;
+};
+
 export type DbHostResponse =
   | DbHostReadyResponse
   | DbHostResultResponse
   | DbHostEmitResponse
   | DbHostSessionTerminalResponse
   | DbHostLogResponse
-  | DbHostSchedulerChangedResponse
-  | DbHostScheduledReviewRunResponse
-  | DbHostMemoryPressureResponse;
+  | DbHostMemoryPressureResponse
+  | DbHostTelemetryResponse
+  | DbHostDurableLogResponse
+  | DbHostResultPageResponse;
 
 export function serializeDbHostError(error: unknown): DbHostError {
   if (error instanceof DesktopMigrationError) {
@@ -260,10 +328,21 @@ export function serializeDbHostError(error: unknown): DbHostError {
       refusalKind: error.kind,
     };
   }
+  // ISS-6337: classify HERE, in the child, where the driver's result code still
+  // exists — it is on a `cause` link the clone below flattens away. Omitted
+  // (never `null`) when this is not an exhaustion error, so the field stays
+  // absent for the overwhelming majority of errors.
+  const storageExhaustionReason = storageReasonOf(error);
+  const carried = storageExhaustionReason ? { storageExhaustionReason } : {};
   if (error instanceof Error) {
-    return { message: error.message, stack: error.stack, name: error.name };
+    return {
+      message: error.message,
+      stack: error.stack,
+      name: error.name,
+      ...carried,
+    };
   }
-  return { message: String(error) };
+  return { message: String(error), ...carried };
 }
 
 export function isDbHostResponse(value: unknown): value is DbHostResponse {
@@ -282,14 +361,32 @@ export function isDbHostResponse(value: unknown): value is DbHostResponse {
   if (kind === DbHostResponseKind.MemoryPressure) {
     return isMemoryPressureLevel((value as { level?: unknown }).level);
   }
+  // ISS-7109: the second payload-validated response, for the opposite reason to
+  // the one above. Nothing is cached, so a malformed event evicts nothing — but
+  // main hands this straight to the transport on the child's behalf, so an event
+  // missing the fields the transport routes by would become an unattributable
+  // rejection at the far end. Rejecting it here keeps the failure on this side
+  // of the boundary, where `handleMessage` logs it locally.
+  if (kind === DbHostResponseKind.Telemetry) {
+    return isTelemetryEventPayload((value as { event?: unknown }).event);
+  }
+  // ISS-7882: `line` ONLY, and the asymmetry with the two kinds above is the
+  // point. Refusing a message here drops it in silence — `handleMessage` routes a
+  // refusal to `reportRefusedChildTelemetry`, which returns early for every kind
+  // but `telemetry`. For a telemetry event that silence is the lesser evil; for a
+  // DURABLE LOG LINE it is precisely the defect this relay exists to end, so the
+  // only field checked is the one main cannot write without. An unusable `level`
+  // is degraded and stated by `writeRelayedDurableLog` instead of costing the line.
+  if (kind === DbHostResponseKind.DurableLog) {
+    return typeof (value as { line?: unknown }).line === "string";
+  }
   return (
     kind === DbHostResponseKind.Ready ||
     kind === DbHostResponseKind.Result ||
+    kind === DbHostResponseKind.ResultPage ||
     kind === DbHostResponseKind.Emit ||
     kind === DbHostResponseKind.SessionTerminal ||
-    kind === DbHostResponseKind.Log ||
-    kind === DbHostResponseKind.SchedulerChanged ||
-    kind === DbHostResponseKind.ScheduledReviewRun
+    kind === DbHostResponseKind.Log
   );
 }
 
@@ -303,7 +400,8 @@ export function isDbHostRequest(value: unknown): value is DbHostRequest {
     kind === DbHostRequestKind.Invoke ||
     kind === DbHostRequestKind.SetUserIdentity ||
     kind === DbHostRequestKind.Close ||
-    kind === DbHostRequestKind.ScheduledReviewResult
+    kind === DbHostRequestKind.CancelRead ||
+    kind === DbHostRequestKind.ResultPagePull
   );
 }
 
@@ -338,4 +436,26 @@ export class DbHostDataCloneError extends Error {
  * survives serialization/version skew across the desktop bundle). */
 export function isDbHostDataCloneError(value: unknown): boolean {
   return value instanceof Error && value.name === DB_HOST_DATA_CLONE_ERROR_NAME;
+}
+
+/**
+ * True when `request`'s `id` was allocated from `DbHostClient.nextId` into the
+ * `pending` map — i.e. Init, Invoke, Close, or a ResultPagePull, which carries
+ * the id of the Invoke whose result it is assembling. Those are the only kinds a
+ * main-side correlated lookup (`this.pending.get(id)`) may consult;
+ * SetUserIdentity has no `id`.
+ */
+export function isPendingCorrelatedRequest(
+  request: DbHostRequest
+): request is
+  | DbHostInitRequest
+  | DbHostInvokeRequest
+  | DbHostCloseRequest
+  | DbHostResultPagePullRequest {
+  return (
+    request.kind === DbHostRequestKind.Init ||
+    request.kind === DbHostRequestKind.Invoke ||
+    request.kind === DbHostRequestKind.Close ||
+    request.kind === DbHostRequestKind.ResultPagePull
+  );
 }

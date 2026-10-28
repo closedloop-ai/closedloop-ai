@@ -1,4 +1,11 @@
 import { DesktopAnalyticsEventName } from "@repo/api/src/types/desktop-analytics";
+import {
+  OnboardingAccountMode,
+  OnboardingAnalyticsEvent,
+  OnboardingAnalyticsProperty,
+  OnboardingFailureReason,
+} from "@repo/api/src/types/onboarding-analytics";
+import { Surface } from "@repo/api/src/types/surface-analytics";
 import { describe, expect, it } from "vitest";
 import {
   FORBIDDEN_IDENTITY_PROPERTY_KEY_VALUES,
@@ -23,28 +30,29 @@ describe("parseDesktopAnalyticsPayload — FR11 identity attribution guard", () 
   // Import the parser's own forbidden-key contract and assert every key is
   // dropped — so the coverage tracks the parser (add a key there, this test
   // demands it be enforced) rather than a hand-maintained list that can drift.
-  it.each(
-    FORBIDDEN_IDENTITY_PROPERTY_KEY_VALUES
-  )("silently drops payload-supplied %s instead of trusting it", (identityKey) => {
-    const result = parseDesktopAnalyticsPayload({
-      event: VALID_EVENT,
-      occurredAt: OCCURRED_AT,
-      properties: {
-        [identityKey]: "org-attacker-controlled",
-        // A legitimate allowed property alongside it survives, proving the
-        // drop is targeted at identity keys, not a blanket reject.
-        outcome: "success",
-      },
-    });
+  it.each(FORBIDDEN_IDENTITY_PROPERTY_KEY_VALUES)(
+    "silently drops payload-supplied %s instead of trusting it",
+    (identityKey) => {
+      const result = parseDesktopAnalyticsPayload({
+        event: VALID_EVENT,
+        occurredAt: OCCURRED_AT,
+        properties: {
+          [identityKey]: "org-attacker-controlled",
+          // A legitimate allowed property alongside it survives, proving the
+          // drop is targeted at identity keys, not a blanket reject.
+          outcome: "success",
+        },
+      });
 
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      // The forged identity key never reaches the sanitized properties, so it
-      // cannot influence the server-stamped org/user/target attribution.
-      expect(result.payload.properties).not.toHaveProperty(identityKey);
-      expect(result.payload.properties).toEqual({ outcome: "success" });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        // The forged identity key never reaches the sanitized properties, so it
+        // cannot influence the server-stamped org/user/target attribution.
+        expect(result.payload.properties).not.toHaveProperty(identityKey);
+        expect(result.payload.properties).toEqual({ outcome: "success" });
+      }
     }
-  });
+  );
 
   it("rejects an unknown NON-identity property (no silent passthrough)", () => {
     const result = parseDesktopAnalyticsPayload({
@@ -74,4 +82,43 @@ describe("parseDesktopAnalyticsPayload — FR11 identity attribution guard", () 
       });
     }
   });
+});
+
+it.each([
+  [OnboardingAccountMode.Created, OnboardingAccountMode.LoggedOut],
+  [OnboardingAccountMode.CreationUnconfirmed],
+  [OnboardingAccountMode.CreationUnattempted],
+  [OnboardingAccountMode.Unknown],
+])("accepts new failed-account payload: %s", (...accountMode) => {
+  const properties = {
+    [OnboardingAnalyticsProperty.Surface]: Surface.Desktop,
+    [OnboardingAnalyticsProperty.Step]: "account",
+    [OnboardingAnalyticsProperty.AccountMode]: accountMode,
+    [OnboardingAnalyticsProperty.FailureReason]:
+      OnboardingFailureReason.Cancelled,
+  };
+  const result = parseDesktopAnalyticsPayload({
+    event: OnboardingAnalyticsEvent.StepFailed,
+    occurredAt: OCCURRED_AT,
+    properties,
+  });
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.payload.properties).toEqual(properties);
+  }
+});
+it("continues accepting old completed events without the new fields", () => {
+  expect(
+    parseDesktopAnalyticsPayload({
+      event: OnboardingAnalyticsEvent.StepCompleted,
+      occurredAt: OCCURRED_AT,
+      properties: {
+        [OnboardingAnalyticsProperty.Surface]: Surface.Desktop,
+        [OnboardingAnalyticsProperty.Step]: "account",
+        [OnboardingAnalyticsProperty.AccountMode]: [
+          OnboardingAccountMode.SignedIn,
+        ],
+      },
+    }).ok
+  ).toBe(true);
 });

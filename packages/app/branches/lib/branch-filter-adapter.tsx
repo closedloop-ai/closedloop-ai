@@ -1,18 +1,16 @@
 import { BranchSessionPresence } from "@repo/api/src/types/branch";
-import type { FilterMenuGroup } from "@repo/design-system/components/ui/table-filters";
-import {
-  CircleDotIcon,
-  ClockIcon,
-  CodeXmlIcon,
-  FolderGitIcon,
-  GitBranchIcon,
-  GitPullRequestIcon,
-  MessageSquareIcon,
-  TagsIcon,
-  UserIcon,
-  UsersIcon,
-} from "lucide-react";
+import type { BranchListFacets } from "@repo/api/src/types/branch-list-contract";
+import type { PriorityFilterValue } from "@repo/api/src/types/priority-filter";
+import { PRIORITY_UNSET_VALUE } from "@repo/api/src/types/search-query";
+import type {
+  FilterMenuGroup,
+  TableFilterOption,
+} from "@repo/design-system/components/ui/table-filters";
+import { priorityLabel } from "@repo/design-system/lib/priority-order";
+import { compareFacetOptions } from "@repo/lib/branches/branch-list-page";
 import { toggleFacetValue } from "../../shared/lib/facet-filter";
+import { branchColumnLabel } from "./branch-column-view-model";
+import { repositoryDisplayLabels } from "./branch-repository-display-labels";
 import {
   BRANCH_STATUS_CONFIG,
   BranchFilterFacet,
@@ -44,8 +42,7 @@ export function legacyBranchFilterFacetGroups(
   return [
     {
       id: "status",
-      label: "Status",
-      icon: <CircleDotIcon className="size-4" />,
+      label: branchColumnLabel("status"),
       options: Object.values(BranchRowStatus).map((status) => ({
         id: status,
         label: BRANCH_STATUS_CONFIG[status].label,
@@ -60,8 +57,7 @@ export function legacyBranchFilterFacetGroups(
     },
     {
       id: "owner",
-      label: "Owner",
-      icon: <UserIcon className="size-4" />,
+      label: branchColumnLabel("owner"),
       options: sortedOptions(owners),
       selectedValues: filters.owners,
       onToggle: (value) =>
@@ -72,8 +68,7 @@ export function legacyBranchFilterFacetGroups(
     },
     {
       id: "repo",
-      label: "Repository",
-      icon: <FolderGitIcon className="size-4" />,
+      label: branchColumnLabel("repo"),
       options: sortedOptions(repositories),
       selectedValues: filters.repos,
       onToggle: (value) =>
@@ -81,8 +76,7 @@ export function legacyBranchFilterFacetGroups(
     },
     {
       id: "session",
-      label: "Linked Sessions",
-      icon: <MessageSquareIcon className="size-4" />,
+      label: branchColumnLabel("sessions"),
       options: [
         { id: BranchSessionPresence.Has, label: "Has session" },
         { id: BranchSessionPresence.None, label: "No session" },
@@ -97,8 +91,7 @@ export function legacyBranchFilterFacetGroups(
     {
       kind: "range",
       id: "loc",
-      label: "Changes",
-      icon: <CodeXmlIcon className="size-4" />,
+      label: branchColumnLabel("changes"),
       min: filters.locMin,
       max: filters.locMax,
       minPlaceholder: "Min",
@@ -122,6 +115,151 @@ const LAST_ACTIVE_OPTIONS = [
 ] as const;
 
 /**
+ * Build approved controls from producer-owned pre-pagination facet counts.
+ *
+ * `priorityFacetValues` is the priority facet's option list, RESOLVED by the
+ * caller (`useBranchToolbarFacetGroups`): the order every priority menu offers
+ * (`usePriorityOptions`) and whether "No priority" is offered at all
+ * (`ARTIFACT_PRIORITY_UNSET_FLAG_KEY`) are both flag reads, and this module is
+ * a plain function that must not read one. An option ARRAY crosses the
+ * boundary rather than a boolean, so nothing threads a flag.
+ */
+export function branchServerFacetGroups(
+  facets: BranchListFacets,
+  filters: BranchFilters,
+  onChange: (next: BranchFilters) => void,
+  priorityFacetValues: readonly PriorityFilterValue[]
+): FilterMenuGroup[] {
+  return [
+    serverFacetGroup(
+      BranchFilterFacet.Name,
+      branchColumnLabel("name"),
+      facets.names.options,
+      filters.names,
+      (values) => onChange({ ...filters, names: values })
+    ),
+    serverFacetGroup(
+      BranchFilterFacet.Owner,
+      branchColumnLabel("owner"),
+      facets.owners.options,
+      filters.owners,
+      (values) => onChange({ ...filters, owners: values })
+    ),
+    serverFacetGroup(
+      BranchFilterFacet.Collaborators,
+      branchColumnLabel("collaborators"),
+      facets.collaborators.options,
+      filters.collaborators,
+      (values) => onChange({ ...filters, collaborators: values })
+    ),
+    {
+      kind: "range",
+      id: BranchFilterFacet.Changes,
+      label: branchColumnLabel("changes"),
+      min: filters.locMin,
+      max: filters.locMax,
+      minPlaceholder: "Min",
+      maxPlaceholder: "Any",
+      onChange: (next) => {
+        const { min, max } = clampBranchLocRange(next);
+        onChange({ ...filters, locMin: min, locMax: max });
+      },
+    },
+    serverFacetGroup(
+      BranchFilterFacet.Status,
+      branchColumnLabel("status"),
+      facets.statuses.options,
+      filters.statuses,
+      (values) => onChange({ ...filters, statuses: values })
+    ),
+    serverFacetGroup(
+      BranchFilterFacet.PullRequest,
+      branchColumnLabel("pr"),
+      facets.pullRequests.options,
+      filters.pullRequests,
+      (values) => onChange({ ...filters, pullRequests: values })
+    ),
+    serverFacetGroup(
+      BranchFilterFacet.LastActive,
+      branchColumnLabel("lastActivity"),
+      facets.lastActiveRanges.options,
+      filters.lastActiveRanges,
+      (values) => onChange({ ...filters, lastActiveRanges: values })
+    ),
+    serverFacetGroup(
+      BranchFilterFacet.Repository,
+      branchColumnLabel("repo"),
+      facets.repositories.options,
+      filters.repos,
+      (values) => onChange({ ...filters, repos: values })
+    ),
+    serverFacetGroup(
+      BranchFilterFacet.Tags,
+      branchColumnLabel("tags"),
+      facets.tags.options,
+      filters.tags,
+      (values) => onChange({ ...filters, tags: values })
+    ),
+    // ISS-10332: a fixed-vocabulary facet with NO producer option counts
+    // (PLN-2086 Milestone 1 ships none), so its options are the vocabulary the
+    // caller resolved rather than a `facets.*` read.
+    priorityFacetGroup(filters, onChange, priorityFacetValues),
+  ];
+}
+
+/**
+ * The priority facet, one option per resolved value in the order the caller
+ * hands down — the same order the cell's editor offers, unset last when it is
+ * offered — each labelled with the word the editor's menu and the group header
+ * render for it. Counts are omitted rather than fabricated: this build has no
+ * producer-side count for the facet, and a client-side count over one page
+ * would answer a question about the whole corpus with a number about this page.
+ */
+function priorityFacetGroup(
+  filters: BranchFilters,
+  onChange: (next: BranchFilters) => void,
+  priorityFacetValues: readonly PriorityFilterValue[]
+): FilterMenuGroup {
+  return {
+    id: BranchFilterFacet.Priority,
+    label: branchColumnLabel("priority"),
+    options: priorityFacetValues.map(priorityFilterOption),
+    selectedValues: filters.priorities,
+    onToggle: (value) =>
+      onChange({
+        ...filters,
+        priorities: toggleFacetValue(filters.priorities, value),
+      }),
+  };
+}
+
+/** One priority facet option, named by its label. */
+function priorityFilterOption(value: PriorityFilterValue): TableFilterOption {
+  const label = priorityLabel(value === PRIORITY_UNSET_VALUE ? null : value);
+  return {
+    id: value,
+    label,
+    searchText: label,
+  };
+}
+
+function serverFacetGroup(
+  id: string,
+  label: string,
+  options: BranchListFacets["names"]["options"],
+  selectedValues: string[],
+  onChange: (values: string[]) => void
+): FilterMenuGroup {
+  return {
+    id,
+    label,
+    options,
+    selectedValues,
+    onToggle: (value) => onChange(toggleFacetValue(selectedValues, value)),
+  };
+}
+
+/**
  * Build the approved Branches facets. Each option count applies the current
  * date cohort and every other facet while excluding its own selections.
  */
@@ -129,6 +267,7 @@ export function branchFilterFacetGroups(
   rows: BranchRow[],
   filters: BranchFilters,
   onChange: (next: BranchFilters) => void,
+  priorityFacetValues: readonly PriorityFilterValue[],
   now: number = Date.now()
 ): FilterMenuGroup[] {
   const names = includeZeroCounts(
@@ -194,8 +333,7 @@ export function branchFilterFacetGroups(
   return [
     {
       id: BranchFilterFacet.Name,
-      label: "Name",
-      icon: <GitBranchIcon className="size-4" />,
+      label: branchColumnLabel("name"),
       options: sortedOptions(names),
       selectedValues: filters.names,
       onToggle: (value) =>
@@ -203,8 +341,7 @@ export function branchFilterFacetGroups(
     },
     {
       id: BranchFilterFacet.Owner,
-      label: "Owner",
-      icon: <UserIcon className="size-4" />,
+      label: branchColumnLabel("owner"),
       options: sortedOptions(owners, (key) => ownerLabel(rows, key)),
       selectedValues: filters.owners,
       onToggle: (value) =>
@@ -215,8 +352,7 @@ export function branchFilterFacetGroups(
     },
     {
       id: BranchFilterFacet.Collaborators,
-      label: "Collaborators",
-      icon: <UsersIcon className="size-4" />,
+      label: branchColumnLabel("collaborators"),
       options: sortedOptions(collaborators, (key) =>
         collaboratorLabel(rows, key)
       ),
@@ -230,8 +366,7 @@ export function branchFilterFacetGroups(
     {
       kind: "range",
       id: BranchFilterFacet.Changes,
-      label: "Changes",
-      icon: <CodeXmlIcon className="size-4" />,
+      label: branchColumnLabel("changes"),
       min: filters.locMin,
       max: filters.locMax,
       minPlaceholder: "Min",
@@ -243,8 +378,7 @@ export function branchFilterFacetGroups(
     },
     {
       id: BranchFilterFacet.Status,
-      label: "Status",
-      icon: <CircleDotIcon className="size-4" />,
+      label: branchColumnLabel("status"),
       options: Object.values(BranchRowStatus).map((status) => ({
         id: status,
         label: BRANCH_STATUS_CONFIG[status].label,
@@ -259,8 +393,7 @@ export function branchFilterFacetGroups(
     },
     {
       id: BranchFilterFacet.PullRequest,
-      label: "Pull request",
-      icon: <GitPullRequestIcon className="size-4" />,
+      label: branchColumnLabel("pr"),
       options: [
         {
           id: BranchPullRequestPresence.Linked,
@@ -280,8 +413,7 @@ export function branchFilterFacetGroups(
     },
     {
       id: BranchFilterFacet.LastActive,
-      label: "Last active",
-      icon: <ClockIcon className="size-4" />,
+      label: branchColumnLabel("lastActivity"),
       options: LAST_ACTIVE_OPTIONS.map((option) => ({
         ...option,
         count: activity.get(option.id) ?? 0,
@@ -295,8 +427,7 @@ export function branchFilterFacetGroups(
     },
     {
       id: BranchFilterFacet.Repository,
-      label: "Repository",
-      icon: <FolderGitIcon className="size-4" />,
+      label: branchColumnLabel("repo"),
       options: sortedOptions(
         repositories,
         (repo) => repositoryLabels.get(repo) ?? repo
@@ -307,34 +438,14 @@ export function branchFilterFacetGroups(
     },
     {
       id: BranchFilterFacet.Tags,
-      label: "Tags",
-      icon: <TagsIcon className="size-4" />,
+      label: branchColumnLabel("tags"),
       options: sortedOptions(tags, (id) => tagLabel(rows, id)),
       selectedValues: filters.tags,
       onToggle: (value) =>
         onChange({ ...filters, tags: toggleFacetValue(filters.tags, value) }),
     },
+    priorityFacetGroup(filters, onChange, priorityFacetValues),
   ];
-}
-
-/** Full identity is always the key; compact labels are used only if unique. */
-export function repositoryDisplayLabels(
-  rows: readonly BranchRow[]
-): ReadonlyMap<string, string> {
-  const fullNamesByShortName = new Map<string, Set<string>>();
-  for (const row of rows) {
-    const shortName = shortRepoName(row.repo);
-    const identities = fullNamesByShortName.get(shortName) ?? new Set<string>();
-    identities.add(row.repo);
-    fullNamesByShortName.set(shortName, identities);
-  }
-  return new Map(
-    rows.map((row) => {
-      const shortName = shortRepoName(row.repo);
-      const collides = (fullNamesByShortName.get(shortName)?.size ?? 0) > 1;
-      return [row.repo, collides ? row.repo : shortName] as const;
-    })
-  );
 }
 
 function facetRows(
@@ -398,6 +509,13 @@ function includeZeroCounts(
   );
 }
 
+/**
+ * ISS-9585: ranked by `compareFacetOptions`, the comparator both Branch list
+ * mirrors already share, rather than a third `localeCompare()`. These are the
+ * CLIENT-mode owner / repo / tag menus over the same corpus the server-mode
+ * menus describe, so a bare locale compare ordered them by the reader's host
+ * while the server-mode menus were host-independent.
+ */
 function sortedOptions(
   counts: ReadonlyMap<string, number>,
   labelFor: (key: string) => string = (key) => key
@@ -408,7 +526,7 @@ function sortedOptions(
       label: labelFor(key),
       count: counts.get(key) ?? 0,
     }))
-    .sort((left, right) => left.label.localeCompare(right.label));
+    .sort(compareFacetOptions);
 }
 
 function ownerLabel(rows: readonly BranchRow[], key: string): string {

@@ -3,7 +3,7 @@
  * @description ISS-4771: the renderer-payload coercers the Agent Dashboard DB
  * IPC handlers validate their untrusted arguments with, plus the one read-source
  * narrowing (`toBranchSyncSource`) the branch handlers and the runtime both use.
- * Extracted out of the shrink-only grandfathered
+ * Extracted out of
  * `agent-dashboard-design-system-runtime.ts` so the handler-group modules and the
  * runtime share one definition of each; every coercion rule is unchanged.
  */
@@ -17,18 +17,83 @@ import {
   InsightsSection as InsightsSectionValues,
 } from "@closedloop-ai/loops-api/insights";
 import { branchSelectedPullRequestQuerySchema } from "@repo/api/src/types/branch-associated-pull-request";
+import { BranchListPageMode } from "@repo/api/src/types/branch-list-contract";
+import {
+  branchServerPageQuerySchema,
+  branchServerPageQueryShape,
+} from "@repo/api/src/types/branch-list-contract-schema";
+import { z } from "zod";
 import type {
   DashboardListWindow,
   SessionPageRequest,
 } from "../../shared/agent-db-contract.js";
-import type { SharedBranchesDetailRequest } from "../../shared/shared-branches-contract.js";
+import type { DiagnosticsRequest } from "../../shared/diagnostics-contract.js";
+import type {
+  SharedAgentSessionsListRequest,
+  SharedAgentSessionsQuery,
+} from "../../shared/shared-agent-sessions-contract.js";
+import {
+  sharedAgentSessionsListRequestSchema,
+  sharedAgentSessionsQuerySchema,
+} from "../../shared/shared-agent-sessions-contract-schema.js";
+import type {
+  SharedBranchesDetailRequest,
+  SharedBranchesListRequest,
+} from "../../shared/shared-branches-contract.js";
+import { compileBranchListQueryRequest } from "../branch/branch-list-query-compiler.js";
 import type { BranchSyncSource } from "../branch/shared-branches-api.js";
 import type { DbHostAgentDatabase } from "../database/sqlite.js";
+import { compileSessionListQueryRequest } from "../session/session-list-query-compiler.js";
 
 export function coerceSharedQuery(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null
     ? (value as Record<string, unknown>)
     : {};
+}
+
+const desktopBranchServerPageRequestSchema = z
+  .object({
+    ...branchServerPageQueryShape,
+    forceRefresh: z.boolean().optional(),
+    skipCloudHydration: z.boolean().optional(),
+  })
+  .strict()
+  .refine(
+    (query) =>
+      query.locMin === undefined ||
+      query.locMax === undefined ||
+      query.locMin <= query.locMax,
+    { message: "locMin must be less than or equal to locMax", path: ["locMin"] }
+  );
+
+/**
+ * Strictly validate new server-page IPC while preserving legacy coercion. A
+ * `listQuery` expression (PRD-721) is lowered into the legacy params first
+ * (`compileBranchListQueryRequest`), so the schema judges what it lowered to;
+ * an expression this host cannot serve rejects the read, because dropping it
+ * would answer with every row.
+ */
+export function coerceSharedBranchesQuery(
+  value: unknown
+): SharedBranchesListRequest {
+  const raw = coerceSharedQuery(compileBranchListQueryRequest(value));
+  if (raw.pageMode !== BranchListPageMode.Server) {
+    return raw;
+  }
+  const parsed = desktopBranchServerPageRequestSchema.parse(raw);
+  branchServerPageQuerySchema.parse(withoutDesktopReadHints(parsed));
+  return parsed;
+}
+
+function withoutDesktopReadHints(
+  value: z.infer<typeof desktopBranchServerPageRequestSchema>
+) {
+  const {
+    forceRefresh: _forceRefresh,
+    skipCloudHydration: _skipCloudHydration,
+    ...query
+  } = value;
+  return query;
 }
 
 /**
@@ -62,6 +127,12 @@ export function coerceSharedBranchDetailRequest(
     typeof request.forceRefresh !== "boolean"
   ) {
     throw new TypeError("Invalid Branch detail forceRefresh value.");
+  }
+  if (
+    request.skipCloudHydration !== undefined &&
+    typeof request.skipCloudHydration !== "boolean"
+  ) {
+    throw new TypeError("Invalid Branch detail skipCloudHydration value.");
   }
   return {
     id: request.id,
@@ -136,7 +207,12 @@ export function coerceLookbackDays(value: unknown): number | null | undefined {
 // defaulting to 30 for anything out of range or non-numeric (matches the prior
 // inline clamp the three handlers shared before the ISS-4403 extraction).
 export function coerceWindowDays(value: unknown): number {
-  return typeof value === "number" && value > 0 && value <= 365 ? value : 30;
+  return typeof value === "number" &&
+    Number.isInteger(value) &&
+    value > 0 &&
+    value <= 365
+    ? value
+    : 30;
 }
 
 // ISS-4403: the optional content-scope fingerprint threaded from the renderer's
@@ -163,4 +239,79 @@ export function coerceDashboardWindowRequest(
     limit: typeof request.limit === "number" ? request.limit : undefined,
     offset: typeof request.offset === "number" ? request.offset : undefined,
   };
+}
+
+/**
+ * ISS-6758: the diagnostics read's opt-in flags.
+ *
+ * Deliberately NOT `.strict()`. Zod's default object strips unknown keys, so a
+ * renderer that starts sending a second, newer request field still gets its
+ * `includeActivityCoverage` honored; `.strict()` would reject the whole payload
+ * and silently turn the coverage read back off — a capability disappearing
+ * because an unrelated field was added. A malformed payload (a string, an array)
+ * still falls back to the empty request, so the expensive read stays OFF unless
+ * the renderer actually asked for it.
+ */
+const diagnosticsRequestSchema = z.object({
+  includeActivityCoverage: z.boolean().optional(),
+});
+
+export function coerceDiagnosticsRequest(value: unknown): DiagnosticsRequest {
+  const parsed = diagnosticsRequestSchema.safeParse(value ?? {});
+  return parsed.success ? parsed.data : {};
+}
+
+/**
+ * ISS-9428: the Sessions read request, for the four
+ * `desktop:shared-agent-sessions:*` read channels.
+ *
+ * `coerceSharedQuery` above is a CAST, not a validation — it proves the payload
+ * is a non-null object and then asserts a type onto it, so every field
+ * downstream was `unknown` wearing a `string`. These two replace it at the
+ * Sessions channels with the real shape, and the schema module states why it
+ * strips rather than rejects.
+ *
+ * Downstream semantics are deliberately UNCHANGED, which is the whole design:
+ *
+ * - A malformed modelled field degrades to `undefined`, which is exactly what
+ *   `sanitizeQuery` already saw for a missing one — `clampLimit` still floors a
+ *   bad `limit` to the default, `coerceSessionQuality` still resolves an
+ *   unrecognized quality to `all`. Nothing here newly throws or newly clamps.
+ *   A malformed ARRAY entry degrades only ITSELF: a mixed `userIds`/`ids` keeps
+ *   its valid entries, the same fold `coerceStringArray`/`sanitizeIds` apply, so
+ *   one bad entry can neither widen an owner-scoped read nor empty an id-scoped
+ *   one.
+ * - An unknown key is dropped instead of riding along in the request object.
+ *   Nothing in desktop main reads one: `viewerScope` is a response-side literal
+ *   in the folds, and neither `projectIds` nor `comparison` is read off a
+ *   request anywhere in `src/main`. So stripping removes no capability.
+ * - `ids` keeps its THREE-way distinction, which is the subtle one.
+ *   `explicitIdsFromRequest` discriminates on `Object.hasOwn(request, "ids")`:
+ *   absent means "no id narrowing", present-but-not-an-array means "narrow to
+ *   nothing". Zod omits a missing optional key entirely and keeps a present
+ *   malformed one (as `undefined`), so both branches survive the schema. A
+ *   `.default([])` here would have collapsed the first into the second and
+ *   silently emptied every unfiltered list.
+ * - ISS-9479: a `listQuery` expression is lowered into the legacy params first
+ *   (`compileSessionListQueryRequest`), so the schema judges what it lowered
+ *   to. It is the one input that throws here: an expression this host cannot
+ *   serve rejects the read, because dropping it would answer with every row.
+ */
+export function coerceSharedAgentSessionsQuery(
+  value: unknown
+): SharedAgentSessionsQuery {
+  const parsed = sharedAgentSessionsQuerySchema.safeParse(
+    compileSessionListQueryRequest(value ?? {})
+  );
+  return parsed.success ? parsed.data : {};
+}
+
+/** The list/pageData/analytics request: {@link coerceSharedAgentSessionsQuery} plus `ids`. */
+export function coerceSharedAgentSessionsListRequest(
+  value: unknown
+): SharedAgentSessionsListRequest {
+  const parsed = sharedAgentSessionsListRequestSchema.safeParse(
+    compileSessionListQueryRequest(value ?? {})
+  );
+  return parsed.success ? parsed.data : {};
 }

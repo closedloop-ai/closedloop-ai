@@ -4,6 +4,7 @@ import * as React from "react"
 import { AlertDialog as AlertDialogPrimitive } from "radix-ui"
 
 import { cn } from "@closedloop-ai/design-system/lib/utils"
+import { ModalDialogOpenMarker } from "@closedloop-ai/design-system/hooks/use-modal-dialog-open"
 import { buttonVariants } from "@closedloop-ai/design-system/components/ui/button"
 
 function AlertDialog({
@@ -46,6 +47,7 @@ function AlertDialogOverlay({
 
 function AlertDialogContent({
   className,
+  children,
   ...props
 }: React.ComponentProps<typeof AlertDialogPrimitive.Content>) {
   return (
@@ -58,7 +60,10 @@ function AlertDialogContent({
           className
         )}
         {...props}
-      />
+      >
+        {children}
+        <ModalDialogOpenMarker />
+      </AlertDialogPrimitive.Content>
     </AlertDialogPortal>
   )
 }

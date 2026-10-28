@@ -2,15 +2,17 @@ import {
   AgentComponentKind,
   Harness,
 } from "@repo/api/src/types/agent-component";
-import { describe, expect, it } from "vitest";
 import {
   type AgentComponentFilters,
   DEFAULT_AGENT_COMPONENT_FILTERS,
-} from "../../../hooks/use-agent-components-filter-state";
+} from "@repo/api/src/utils/agent-component-reduce";
+import { describe, expect, it } from "vitest";
+import {
+  emptyStateMessage,
+  pluginHarnessScope,
+} from "../../../lib/agents-empty-state-copy";
 import { AgentsTimeRange } from "../../../lib/agents-timeframe";
-import { emptyStateMessage, pluginHarnessScope } from "../agents-grouped-list";
 
-// ---------------------------------------------------------------------------
 // FEA-4086: honest installed-plugins inventory empty-state copy.
 //
 // The Plugins tab is an installed-plugins inventory (the desktop
@@ -24,7 +26,6 @@ import { emptyStateMessage, pluginHarnessScope } from "../agents-grouped-list";
 // covered as an integration test in agents-grouped-list.test.tsx; these are the
 // pure copy/scoping helpers, kept in a sibling file so the grandfathered
 // integration file does not grow.
-// ---------------------------------------------------------------------------
 
 const ALL_TYPES = "all" as const;
 

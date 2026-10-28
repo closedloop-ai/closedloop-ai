@@ -1,3 +1,4 @@
+import { STATUS_DISPLAY_ORDER } from "@repo/api/src/types/artifact-status-display-order";
 import { DocumentStatus, IssueStatus } from "@repo/api/src/types/document";
 import { describe, expect, it } from "vitest";
 import {
@@ -5,7 +6,6 @@ import {
   compareStatusValues,
   NAME_SORT_OPTIONS,
 } from "../sort-comparators";
-import { STATUS_DISPLAY_ORDER } from "../status-grouping";
 
 describe("compareStatusValues", () => {
   describe("lifecycle order (combined Document+Feature default order)", () => {

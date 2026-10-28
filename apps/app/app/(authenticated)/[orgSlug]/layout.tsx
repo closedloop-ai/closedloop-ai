@@ -3,14 +3,18 @@ import { auth } from "@repo/auth/server";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
 import OrgIdentityProvider from "./org-identity-provider";
+import { SettingsSlotHost } from "./settings-slot-host";
 
 type OrgSlugLayoutProps = {
   readonly children: ReactNode;
+  /** The `@settings` parallel slot (ISS-8370 D2). */
+  readonly settings: ReactNode;
   readonly params: Promise<{ orgSlug: string }>;
 };
 
 export default async function OrgSlugLayout({
   children,
+  settings,
   params,
 }: OrgSlugLayoutProps) {
   const [authState, { orgSlug }] = await Promise.all([auth(), params]);
@@ -30,7 +34,7 @@ export default async function OrgSlugLayout({
       bypassClientOrgGate={isLocalTrustedAuthActive()}
       orgSlug={orgSlug}
     >
-      {children}
+      <SettingsSlotHost slot={settings}>{children}</SettingsSlotHost>
     </OrgIdentityProvider>
   );
 }

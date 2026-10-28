@@ -1,7 +1,10 @@
 import { TelemetryAttribute } from "@closedloop-ai/telemetry-contract/attributes";
 import { TelemetryEmitMetadataKey } from "@closedloop-ai/telemetry-contract/emit";
 import { TelemetrySchemaName } from "@closedloop-ai/telemetry-contract/schema-name";
-import { SpanTelemetrySchema } from "@closedloop-ai/telemetry-contract/span";
+import {
+  type SpanErrorSource,
+  SpanTelemetrySchema,
+} from "@closedloop-ai/telemetry-contract/span";
 import { log } from "../log";
 
 const CONTROL_CHARACTER_MAX_CODE = 0x1f;
@@ -18,6 +21,54 @@ export type RequestCompletedSpanInput = {
   method: string;
   statusCode: number;
   durationMs: number;
+  /**
+   * Per-request attribution the caller resolved, all optional. Each field is
+   * OMITTED from the span when absent rather than defaulted (ISS-7221,
+   * ISS-8748): an unauthenticated or rejected request has neither a tenant nor
+   * an actor, and inventing either would make "which org is failing" and "who
+   * was affected" answerable and wrong.
+   */
+  attribution?: RequestCompletedSpanAttribution;
+};
+
+/** Optional per-request span attribution resolved by the API layer. */
+export type RequestCompletedSpanAttribution = {
+  /** Internal organization id — the join key desktop telemetry already carries. */
+  organizationId?: string;
+  /**
+   * Internal database user id (ISS-8748). Pseudonymous operational attribution
+   * only — never an email, a display name, or a Clerk id.
+   */
+  userId?: string;
+  /**
+   * Desktop install that made the call (ISS-8749). CALLER-ATTESTED: read off a
+   * request header the client writes for itself, so it is telemetry and never
+   * evidence — nothing may authenticate, authorize, scope, or route on it.
+   */
+  installationId?: string;
+  /**
+   * Desktop build that made the call (ISS-8749). Same caller-attested standing
+   * as `installationId`, and deliberately NOT `service.version`, which on this
+   * span names the API's own build.
+   */
+  clientVersion?: string;
+  /** Which layer produced a 5xx (ISS-7217). */
+  errorSource?: SpanErrorSource;
+  /** Identifier-shaped exception class or error code (ISS-7217). */
+  errorType?: string;
+  /** Canonical artifact subtype the request touched (ISS-7224). */
+  artifactType?: string;
+  /** Canonical artifact status the request touched (ISS-7224). */
+  artifactStatus?: string;
+  /**
+   * Client-generated sync batch id the request body carried (ISS-7227). The
+   * join key between a desktop sync failure record and the server request that
+   * produced it. Read off the body under the same UUID constraint the ingest
+   * schema applies, so a body that carries no readable id — every rejection the
+   * desktop cannot name either — stays honestly unjoinable rather than
+   * carrying a guessed one.
+   */
+  syncBatchId?: string;
 };
 
 /**
@@ -53,6 +104,7 @@ export function buildRequestCompletedContractAttributes(
         input.requestUrl
       ),
       [TelemetryAttribute.DurationMs]: input.durationMs,
+      ...attributionAttributes(input.attribution),
     });
 
     if (!attributesResult.success) {
@@ -123,6 +175,91 @@ function containsControlCharacter(value: string): boolean {
     }
   }
   return false;
+}
+
+/**
+ * Span attributes carrying per-request attribution.
+ *
+ * Declared as an exhaustive `Record` over the attribution fields so a new field
+ * fails `tsc` here until someone writes down which span attribute it becomes —
+ * which is the moment to ask whether it can carry user content.
+ */
+const SpanAttributionAttribute = {
+  organizationId: TelemetryAttribute.AppOrganizationId,
+  userId: TelemetryAttribute.UserId,
+  installationId: TelemetryAttribute.AppInstallationId,
+  clientVersion: TelemetryAttribute.AppClientVersion,
+  errorSource: TelemetryAttribute.AppErrorSource,
+  errorType: TelemetryAttribute.ErrorType,
+  artifactType: TelemetryAttribute.ArtifactType,
+  artifactStatus: TelemetryAttribute.ArtifactStatus,
+  syncBatchId: TelemetryAttribute.SyncBatchId,
+} as const satisfies Record<
+  keyof RequestCompletedSpanAttribution,
+  keyof typeof SpanTelemetrySchema.shape
+>;
+
+/**
+ * Project the resolved attribution onto span attributes, dropping any single
+ * value the span schema rejects.
+ *
+ * Per-attribute validation is the point. `SpanTelemetrySchema` is `.strict()`,
+ * so folding an unvalidated attribution value into the parse would let ONE bad
+ * optional field — a blank org id, a status from a version-skewed producer —
+ * fail the whole `safeParse` and silently drop `url.path`, `duration_ms`, and
+ * the status code along with it. A bad optional value costs itself and nothing
+ * else.
+ */
+function attributionAttributes(
+  attribution: RequestCompletedSpanAttribution | undefined
+): Record<string, string> {
+  if (!attribution) {
+    return {};
+  }
+  return {
+    ...spanAttribute(
+      SpanAttributionAttribute.organizationId,
+      attribution.organizationId
+    ),
+    ...spanAttribute(SpanAttributionAttribute.userId, attribution.userId),
+    ...spanAttribute(
+      SpanAttributionAttribute.installationId,
+      attribution.installationId
+    ),
+    ...spanAttribute(
+      SpanAttributionAttribute.clientVersion,
+      attribution.clientVersion
+    ),
+    ...spanAttribute(
+      SpanAttributionAttribute.errorSource,
+      attribution.errorSource
+    ),
+    ...spanAttribute(SpanAttributionAttribute.errorType, attribution.errorType),
+    ...spanAttribute(
+      SpanAttributionAttribute.artifactType,
+      attribution.artifactType
+    ),
+    ...spanAttribute(
+      SpanAttributionAttribute.artifactStatus,
+      attribution.artifactStatus
+    ),
+    ...spanAttribute(
+      SpanAttributionAttribute.syncBatchId,
+      attribution.syncBatchId
+    ),
+  };
+}
+
+function spanAttribute(
+  attribute: keyof typeof SpanTelemetrySchema.shape,
+  value: string | undefined
+): Record<string, string> {
+  if (value === undefined) {
+    return {};
+  }
+  return SpanTelemetrySchema.shape[attribute].safeParse(value).success
+    ? { [attribute]: value }
+    : {};
 }
 
 function logRequestCompletedContractFailure(

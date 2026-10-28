@@ -2,7 +2,7 @@
  * @file agent-dashboard-runtime-paths.ts
  * @description The two userData-rooted locations the Agent Dashboard runtime
  * owns: the SQLite database file and the collector/materializer ingest state
- * dir. Extracted out of the shrink-only grandfathered
+ * dir. Extracted out of
  * `agent-dashboard-design-system-runtime.ts` so the db-host lifecycle module and
  * the IPC registration modules can each resolve them without importing the
  * runtime (which would be a cycle).

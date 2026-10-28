@@ -6,8 +6,9 @@ import {
   CardTitle,
 } from "@closedloop-ai/design-system/components/ui/card";
 import { formatTime } from "@repo/app/shared/lib/date-utils";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isRecord } from "../../../shared/type-guards";
+import { cleanIpcError } from "../../clean-ipc-error";
 
 type LogEntry = {
   timestamp?: string;
@@ -73,45 +74,79 @@ export function LogsPanel() {
   const [error, setError] = useState<string | null>(null);
   const [logFilePath, setLogFilePath] = useState<string>("");
 
-  const load = useCallback(
-    async (force = false) => {
-      if (paused && !force) {
+  // The token of the polling window that is currently live. Refresh reads it at
+  // click time, so a manual read is torn down by the same Pause that tears down
+  // the poll rather than landing behind it.
+  const activeToken = useRef<LoadToken>({ cancelled: false });
+
+  const load = useCallback(async (token: LoadToken) => {
+    setLoading(true);
+    try {
+      const logs = await window.desktopApi.getLogs();
+      if (token.cancelled) {
         return;
       }
-
-      setLoading(true);
-      try {
-        const logs = await window.desktopApi.getLogs();
-        setEntries(toLogEntries(logs));
-        setError(null);
-      } catch (loadError) {
-        setError(
-          loadError instanceof Error ? loadError.message : "Failed to load logs"
-        );
-      } finally {
+      setEntries(toLogEntries(logs));
+      setError(null);
+    } catch (loadError) {
+      if (token.cancelled) {
+        return;
+      }
+      setError(cleanIpcError(loadError, "Failed to load logs"));
+    } finally {
+      if (!token.cancelled) {
         setLoading(false);
       }
-    },
-    [paused]
-  );
+    }
+  }, []);
 
   useEffect(() => {
-    void load(true);
-    const interval = window.setInterval(() => void load(), 3000);
-    return () => window.clearInterval(interval);
-  }, [load]);
+    const token: LoadToken = { cancelled: false };
+    activeToken.current = token;
+
+    if (paused) {
+      // Pause has to stop the answer the user is already waiting on, not just
+      // the next tick. The cleanup above cancelled that read, and a cancelled
+      // read never releases `loading`, so this branch owns the release —
+      // otherwise pausing during the very first read strands the panel on
+      // "Loading logs...". Refresh still forces a read through `activeToken`.
+      setLoading(false);
+      return () => {
+        token.cancelled = true;
+      };
+    }
+
+    void load(token);
+    const interval = window.setInterval(() => void load(token), 3000);
+    return () => {
+      token.cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [load, paused]);
 
   useEffect(() => {
+    let cancelled = false;
     window.desktopApi
       .getLogFilePath()
-      .then((path) => setLogFilePath(path))
-      .catch(() => setLogFilePath(""));
+      .then((path) => {
+        if (!cancelled) {
+          setLogFilePath(path);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setLogFilePath("");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const visibleEntries = useMemo(() => entries.slice(-500), [entries]);
 
   const handleRefresh = () => {
-    void load(true);
+    void load(activeToken.current);
   };
 
   const handleClear = async () => {
@@ -120,11 +155,7 @@ export function LogsPanel() {
       setEntries([]);
       setError(null);
     } catch (clearError) {
-      setError(
-        clearError instanceof Error
-          ? clearError.message
-          : "Failed to clear logs"
-      );
+      setError(cleanIpcError(clearError, "Failed to clear logs"));
     }
   };
 
@@ -133,11 +164,7 @@ export function LogsPanel() {
       const result = await window.desktopApi.openLogFile();
       setError(resultError(result));
     } catch (openError) {
-      setError(
-        openError instanceof Error
-          ? openError.message
-          : "Failed to open log file"
-      );
+      setError(cleanIpcError(openError, "Failed to open log file"));
     }
   };
 
@@ -231,3 +258,10 @@ export function LogsPanel() {
     </div>
   );
 }
+
+/**
+ * Marks a polling window. Set once by the effect run that owns it and flipped in
+ * that run's cleanup, so a read started under a torn-down window is dropped
+ * instead of committed.
+ */
+type LoadToken = { cancelled: boolean };

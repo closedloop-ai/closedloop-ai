@@ -10,16 +10,14 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, test } from "node:test";
-import {
-  registerSettingsIpcHandlers,
-  SettingsIpcChannel,
-} from "../src/main/ipc/settings-ipc.js";
+import { afterEach, test } from "vitest";
+import { registerSettingsIpcHandlers } from "../src/main/ipc/settings-ipc.js";
 import {
   ApiKeyStore,
   type SafeStorageLike,
 } from "../src/main/settings/api-key-store.js";
 import { SettingsStore } from "../src/main/settings/settings-store.js";
+import { SettingsIpcChannel } from "../src/shared/settings-ipc-channel.js";
 
 const tempDirs: string[] = [];
 

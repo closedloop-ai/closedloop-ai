@@ -1,9 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ArtifactFlag,
-  GRID_TABLE_V2_FEATURE_FLAG_KEY,
   PROJECT_ARTIFACTS_PAGINATION_FEATURE_FLAG_KEY,
-  STACK_RANK_PROJECT_PAGE_FEATURE_FLAG_KEY,
 } from "../feature-flags";
 
 // Kebab-case (lowercase alphanumerics joined by single hyphens), matching the
@@ -23,12 +21,6 @@ describe("ArtifactFlag.BranchDetail", () => {
     expect(ArtifactFlag.BranchDetail).not.toBe(ArtifactFlag.Branches);
     expect(ArtifactFlag.Branches).toBe("branches-nav");
   });
-
-  it("is distinct from the unrelated stack-rank project page flag", () => {
-    expect(ArtifactFlag.BranchDetail).not.toBe(
-      STACK_RANK_PROJECT_PAGE_FEATURE_FLAG_KEY
-    );
-  });
 });
 
 describe("PROJECT_ARTIFACTS_PAGINATION_FEATURE_FLAG_KEY", () => {
@@ -41,14 +33,5 @@ describe("PROJECT_ARTIFACTS_PAGINATION_FEATURE_FLAG_KEY", () => {
       "project-artifacts-pagination"
     );
     expect(PROJECT_ARTIFACTS_PAGINATION_FEATURE_FLAG_KEY).toMatch(KEBAB_CASE);
-  });
-
-  it("is its own key, not a fold into the shared grid-table rollout", () => {
-    // The project artifact table is `DocumentsView`, not `GridTable`; sharing
-    // `grid-table-v2` would flip Sessions, Branches, Agents, Routines and Packs
-    // the moment anyone enabled paging on this page.
-    expect(PROJECT_ARTIFACTS_PAGINATION_FEATURE_FLAG_KEY).not.toBe(
-      GRID_TABLE_V2_FEATURE_FLAG_KEY
-    );
   });
 });

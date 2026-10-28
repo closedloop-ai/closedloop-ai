@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import { createStoreIntegrityProbe } from "../src/main/database/database-integrity/store-integrity-probe.js";
 import {
   classifyForeignKeyIntegrity,
@@ -22,7 +22,13 @@ import {
   type ForeignKeyIntegrityReader,
   type ForeignKeyIntegrityResult,
   foreignKeyIntegrityCheck,
+  runForeignKeyIntegrityCheck,
 } from "../src/main/database/foreign-key-integrity.js";
+import type {
+  DesktopPrisma,
+  DesktopPrismaReadClient,
+  DesktopPrismaReader,
+} from "../src/main/database/prisma-client.js";
 import type {
   StoreIntegrityDiagnostics,
   StoreIntegrityIssue,
@@ -217,6 +223,15 @@ describe("ISS-5102: classifyForeignKeyIntegrity", () => {
   });
 });
 
+test("ISS-7581: a missing orphan COUNT row throws the named broken-read error", async () => {
+  const fake = missingOrphanCountPrisma();
+
+  await assert.rejects(runForeignKeyIntegrityCheck(fake.prisma), {
+    message: "foreign_key_check: orphan COUNT(*) returned no row — broken read",
+  });
+  assert.equal(fake.reads(), 2, "both snapshot reads were attempted");
+});
+
 describe("ISS-5102: the wire schema rejects contradictory counts", () => {
   function parses(value: unknown): boolean {
     return FOREIGN_KEY_INTEGRITY_SCHEMA.safeParse(value).success;
@@ -371,3 +386,28 @@ describe("ISS-5102: version-skew degradation", () => {
     assert.equal(diag.healthy, true);
   });
 });
+
+function missingOrphanCountPrisma(): {
+  prisma: DesktopPrisma;
+  reads: () => number;
+} {
+  let reads = 0;
+  const tx = {
+    $queryRawUnsafe: <T>(): Promise<T> => {
+      reads += 1;
+      return Promise.resolve([] as unknown as T);
+    },
+  } as unknown as DesktopPrismaReader;
+  const reader = {
+    $transaction: <T>(
+      transaction: (client: DesktopPrismaReader) => Promise<T>
+    ): Promise<T> => transaction(tx),
+  } as unknown as DesktopPrismaReadClient;
+  const prisma = {
+    read: <T>(
+      callback: (client: DesktopPrismaReadClient) => Promise<T>
+    ): Promise<T> => callback(reader),
+  } as unknown as DesktopPrisma;
+
+  return { prisma, reads: () => reads };
+}

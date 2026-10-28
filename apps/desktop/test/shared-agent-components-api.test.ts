@@ -14,7 +14,6 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import {
   AgentComponentInvocationAnchorKind,
   AgentComponentInvocationAttributionStatus,
@@ -22,6 +21,7 @@ import {
   AgentComponentInvocationKind,
   AgentComponentInvocationRelationship,
 } from "@repo/api/src/types/agent-component-invocation";
+import { test } from "vitest";
 import type { AgentSessionSyncSource } from "../src/main/agent-sync/agent-session-sync-source.js";
 import { rawKeyInClause } from "../src/main/dashboard/hash-scope-predicates.js";
 import {
@@ -1111,7 +1111,7 @@ test("getAgentComponentDetailLocal returns a bounded deterministic exact invocat
         localComponentId: "c-read-page",
         localComponentVersionId: "v-exact",
         gitBranch: "feat/read-page",
-        repositoryFullName: "closedloop-ai/example-repo",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
       },
       {
         id: "inv-agent",
@@ -1252,8 +1252,7 @@ test("getAgentComponentDetailLocal returns a bounded deterministic exact invocat
       sourcePath: "/repo/.claude/skills/deep-research.md",
       sourceModifiedAt: "2026-07-22T11:59:00.000Z",
       capturedAt: "2026-07-22T12:00:01.000Z",
-      repositoryFullName: "closedloop-ai/example-repo",
-      branchName: "feat/read-page",
+      repositoryFullName: "closedloop-ai/closedloop-ai",
     });
     assert.deepEqual(page.items[1].anchor, {
       kind: AgentComponentInvocationAnchorKind.Agent,

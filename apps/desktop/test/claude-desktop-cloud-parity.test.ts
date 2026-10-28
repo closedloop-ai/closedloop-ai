@@ -14,17 +14,18 @@
  * assert little beyond message roles.
  *
  * The fixture deliberately has NO `subagents/` directory, which makes the
- * desktop-only merge a no-op and leaves the two routes comparable. `parseQuality`
- * and `fileModifiedAt` are the sanctioned differences: the cloud never reads a
- * file, so it has no mtime, and it is handed lines rather than counting them off
- * disk.
+ * desktop-only merge a no-op and leaves the two routes comparable. `parseQuality`,
+ * `fileModifiedAt` and `fileCreatedAt` are the sanctioned differences: the cloud
+ * never reads a file, so it has no mtime or birth time, and it is handed lines
+ * rather than counting them off disk.
  */
+import "./support/attribution-parse-policy.js";
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
-import { afterEach, describe, test } from "node:test";
-import { parseClaudeTranscript } from "@repo/lib/harness/claude/parse-claude-core";
+import { parseClaudeTranscript } from "@repo/lib/harness/claude/parse-claude";
 import type { NormalizedSession } from "@repo/lib/harness/types";
+import { afterEach, describe, test } from "vitest";
 import { parseSessionFile } from "../src/main/collectors/claude/claude-parser.js";
 import {
   cleanupTempDirs,
@@ -138,8 +139,9 @@ const TRANSCRIPT_LINES: string[] = [
 
 /** Fields the two routes are ALLOWED to differ on, and why. */
 const ROUTE_SPECIFIC_KEYS = [
-  // The cloud never touches a file, so it has no mtime to stamp.
+  // The cloud never touches a file, so it has no mtime or birth time to stamp.
   "fileModifiedAt",
+  "fileCreatedAt",
   // The desktop counts lines off disk and folds each agent file's quality in;
   // the cloud is handed an array it did not read.
   "parseQuality",

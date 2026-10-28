@@ -1,11 +1,11 @@
-import { SESSIONS_GRID_FOLD_LEGIBILITY_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
+import type { SessionTableRow } from "@repo/app/agents/lib/session-list-row";
 import { AppCoreStoryProviders } from "@repo/app/shared/storybook/decorators";
 import { stubResizableContainerWidthPx } from "@repo/app/test/mocks/container-width";
 import { tooltipMockModule } from "@repo/app/test/mocks/tooltip";
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SessionsTable } from "../session-detail-table";
 import { createSessionTableRowFixture } from "../session-list-fixtures";
-import { SessionsTable, type SessionTableRow } from "../sessions-table";
 
 vi.mock("@repo/design-system/components/ui/tooltip", () => tooltipMockModule);
 
@@ -50,13 +50,9 @@ function renderedLeadWidthPx(): number {
   return Number(lead[1]);
 }
 
-function renderTable(enabled: boolean) {
+function renderTable() {
   render(
-    <AppCoreStoryProviders
-      enabledFlags={
-        enabled ? [SESSIONS_GRID_FOLD_LEGIBILITY_FEATURE_FLAG_KEY] : []
-      }
-    >
+    <AppCoreStoryProviders>
       <SessionsTable
         items={[ROW]}
         mode="expanded"
@@ -81,20 +77,9 @@ describe("SessionsTable fold-fit damping (ISS-4906)", () => {
     vi.useRealTimers();
   });
 
-  it("flag OFF: re-fits on every measurement, so the lead tracks the width immediately", () => {
+  it("holds the fitted lead still while the width keeps changing", () => {
     container = stubResizableContainerWidthPx(NARROW_WIDTH_PX);
-    renderTable(false);
-    const before = renderedLeadWidthPx();
-
-    act(() => container?.setWidth(WIDER_WIDTH_PX));
-
-    // ISS-4889's shipped behavior, and the state the flag-off path must keep.
-    expect(renderedLeadWidthPx()).not.toBe(before);
-  });
-
-  it("flag ON: holds the fitted lead still while the width keeps changing", () => {
-    container = stubResizableContainerWidthPx(NARROW_WIDTH_PX);
-    renderTable(true);
+    renderTable();
     const settledLead = renderedLeadWidthPx();
 
     // A drag: each frame lands before the settle window elapses.
@@ -107,9 +92,9 @@ describe("SessionsTable fold-fit damping (ISS-4906)", () => {
     }
   });
 
-  it("flag ON: re-fits once the width stops changing, so the fold still lands on a boundary at rest", () => {
+  it("re-fits once the width stops changing, so the fold still lands on a boundary at rest", () => {
     container = stubResizableContainerWidthPx(NARROW_WIDTH_PX);
-    renderTable(true);
+    renderTable();
     const settledLead = renderedLeadWidthPx();
 
     act(() => container?.setWidth(WIDER_WIDTH_PX));

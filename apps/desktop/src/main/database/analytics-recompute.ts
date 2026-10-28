@@ -2,7 +2,7 @@
  * @file analytics-recompute.ts
  * @description Re-derivation of the `session_analytics` rollups (and their
  * FEA-2273 activity-metrics rows) for an explicit set of session ids, extracted
- * from sqlite.ts (ISS-5064) to shrink that grandfathered file.
+ * from sqlite.ts (ISS-5064) to shrink that file rather than grow it.
  *
  * This is NOT boot-only work, which is why it is its own module rather than part
  * of ./boot-maintenance.js: `recomputeAnalyticsRollupsFor` backs BOTH the
@@ -94,11 +94,12 @@ export type AnalyticsRollupRecomputeResult = {
  * `failed` and a silent failure got a session SEALED with stale cohort keys.
  *
  * The old docstring claimed "the boot backfill remains the safety net on the
- * next open". It is not: `backfillActivityMetrics` selects
- * `WHERE sam.session_id IS NULL OR sam.version < seg.version`, and this
- * recompute deliberately does not bump `session_activity_segments.version`, so
- * an existing metrics row at the same version is never re-selected. Withholding
- * the stamp is the heal path — the session stays retryable.
+ * next open". It is not: every disjunct of `backfillActivityMetrics`'s predicate
+ * is a VERSION comparison — missing row, `sam.version < seg.version`, or
+ * (ISS-6759) `sam.metric_version < ATTRIBUTION_METRIC_VERSION` — and this
+ * recompute bumps neither version while changing the cohort INPUTS, so an
+ * existing metrics row at the same versions is never re-selected. Withholding the
+ * stamp is the heal path — the session stays retryable.
  *
  * @returns true when the metrics rollup committed; false when it failed (logged).
  */

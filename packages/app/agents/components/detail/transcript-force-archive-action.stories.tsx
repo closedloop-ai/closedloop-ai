@@ -50,9 +50,9 @@ const transcriptTransportDecorator: Decorator = (Story, context) => (
 const FORCE_BUTTON_NAME = "Sync this transcript anyway";
 
 const meta = {
-  title: "App Core/Agents/Transcript Force Archive Action",
+  title: "Composites v1.0/Agents/Detail/Transcript Force Archive Action",
   component: TranscriptForceArchiveAction,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   decorators: [transcriptTransportDecorator],
   args: {
@@ -88,7 +88,10 @@ export const WebSurfaceRendersNothing: Story = {
  * only one of them is obvious from the props.
  */
 export const MissingHarnessIdentity: Story = {
-  parameters: { transcriptTransport: desktopTransport(() => neverSettles()) },
+  parameters: {
+    transcriptTransport: desktopTransport(() => neverSettles()),
+    controls: { include: ["fileKey", "onArchived"] },
+  },
   render: (args) => (
     <TranscriptForceArchiveAction
       externalSessionId={undefined}

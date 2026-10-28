@@ -18,40 +18,9 @@
  * CLI) — lands these global curated rows. Accepts either a `PrismaClient` or a
  * transaction client so it can participate in the seed's single transaction.
  */
-import { createHash } from "node:crypto";
 import type { PrismaClient } from "../../generated/client";
 import type { TransactionClient } from "../../generated/internal/prismaNamespace";
-
-// ---------------------------------------------------------------------------
-// Deterministic UUID (v5-style) — mirrors packages/database/scripts/seed/helpers.ts
-// Uses a fixed seed namespace so keys are stable across environments.
-// ---------------------------------------------------------------------------
-const SEED_NAMESPACE = "6ba7b810-9dad-11d1-80b4-00c04fd430c8";
-
-function deterministicUuid(key: string): string {
-  const namespaceHex = SEED_NAMESPACE.replace(/-/g, "");
-  const namespaceBytes = Buffer.from(namespaceHex, "hex");
-  const keyBytes = Buffer.from(key, "utf8");
-
-  const hash = createHash("sha1")
-    .update(namespaceBytes)
-    .update(keyBytes)
-    .digest();
-
-  // biome-ignore lint/suspicious/noBitwiseOperators: UUID v5 generation requires bitwise operations (RFC 4122)
-  hash[6] = (hash[6] & 0x0f) | 0x50;
-  // biome-ignore lint/suspicious/noBitwiseOperators: UUID v5 generation requires bitwise operations (RFC 4122)
-  hash[8] = (hash[8] & 0x3f) | 0x80;
-
-  const hex = hash.toString("hex");
-  return [
-    hex.slice(0, 8),
-    hex.slice(8, 12),
-    hex.slice(12, 16),
-    hex.slice(16, 20),
-    hex.slice(20, 32),
-  ].join("-");
-}
+import { deterministicUuid } from "../../scripts/seed/helpers";
 
 // ---------------------------------------------------------------------------
 // Curated catalog item definitions

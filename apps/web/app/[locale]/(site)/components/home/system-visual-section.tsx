@@ -7,11 +7,6 @@
  *   - Sidebar:             apps/app/app/(authenticated)/components/sidebar.tsx
  *   - Sidebar teams group: apps/app/app/(authenticated)/components/sidebar-teams.tsx
  *   - Top nav / header:    apps/app/app/(authenticated)/components/header.tsx
- *   - Active loops banner: NO LONGER MIRRORS PRODUCTION. ISS-5355 replaced that
- *     strip with `.../projects/[projectId]/components/project-active-sessions-status.tsx`,
- *     which counts active sessions instead of loops. This marketing mock was
- *     deliberately left on the old visual — re-styling the landing page is not
- *     ISS-5355's scope; retiring the Loops vocabulary everywhere is ISS-4477's.
  *   - Artifacts toolbar:   apps/app/app/(authenticated)/teams/[teamId]/projects/[projectId]/page.tsx (filters row)
  *   - Table header:        apps/app/components/document-table/table-header.tsx
  *   - Table row:           apps/app/components/document-table/document-row.tsx
@@ -19,21 +14,18 @@
  *
  * Colors use design-system semantic tokens (bg-sidebar, bg-muted, border-border,
  * text-muted-foreground, etc.) so the mock tracks theme updates automatically.
- * The blue-500 running spinner matches the product's own active-loops banner.
  *
  * Columns shown here are only Assignee / Priority per the marketing brief —
- * the real product supports more columns (see DocumentColumn). There is no
- * Loop column: the product removed it, and a hero advertising a column the
- * app does not have is worse than a thinner mock.
- *
- * Loop STATE is still modelled on each artifact, because the product still
- * surfaces it in two places this mock mirrors — the per-row status icon's
- * `thinking` spinner, and the "N loops running" banner above the table.
+ * the real product supports more columns (see DocumentColumn).
  */
 
 import { PriorityIcon } from "@repo/design-system/components/ui/priority-icon";
 import type { StatusIconStatus } from "@repo/design-system/components/ui/status-icon";
 import { StatusIcon } from "@repo/design-system/components/ui/status-icon";
+import {
+  PRIORITY_LABELS,
+  type PriorityValue,
+} from "@repo/design-system/lib/priority-order";
 import {
   ArrowUpDown,
   Boxes,
@@ -46,21 +38,17 @@ import {
   InboxIcon,
   Layers2Icon,
   ListFilter,
-  Loader2,
   MonitorIcon,
   MoreHorizontal,
   PanelLeft,
   PlusIcon,
-  RotateCcwIcon,
   Search,
   Settings2,
   Star,
   UsersIcon,
 } from "lucide-react";
 
-type LoopState = "running" | "completed" | "none";
-
-type Priority = "LOW" | "MEDIUM" | "HIGH" | "URGENT";
+type Priority = PriorityValue;
 
 type Assignee = {
   initials: string;
@@ -72,7 +60,6 @@ type Artifact = {
   slug: string;
   title: string;
   assignee: Assignee;
-  loop: LoopState;
   priority: Priority;
 };
 
@@ -145,21 +132,18 @@ const statusGroups: StatusGroup[] = [
         slug: "FEA-241",
         title: "Add bulk actions to saved views",
         assignee: ASSIGNEES.jordan,
-        loop: "running",
         priority: "MEDIUM",
       },
       {
         slug: "PRD-218",
         title: "Empty state for saved filters",
         assignee: ASSIGNEES.riley,
-        loop: "running",
         priority: "HIGH",
       },
       {
         slug: "PLN-402",
         title: "Background job queue migration",
         assignee: ASSIGNEES.sam,
-        loop: "running",
         priority: "MEDIUM",
       },
     ],
@@ -174,21 +158,18 @@ const statusGroups: StatusGroup[] = [
         slug: "FEA-233",
         title: "Export audit log to CSV",
         assignee: ASSIGNEES.ada,
-        loop: "completed",
         priority: "HIGH",
       },
       {
         slug: "PRD-214",
         title: "Webhook retry and backoff policy",
         assignee: ASSIGNEES.morgan,
-        loop: "none",
         priority: "MEDIUM",
       },
       {
         slug: "FEA-229",
         title: "Per-channel notification preferences",
         assignee: ASSIGNEES.casey,
-        loop: "none",
         priority: "LOW",
       },
     ],
@@ -203,30 +184,17 @@ const statusGroups: StatusGroup[] = [
         slug: "PLN-398",
         title: "Mobile onboarding redesign",
         assignee: ASSIGNEES.priya,
-        loop: "none",
         priority: "MEDIUM",
       },
       {
         slug: "PRD-210",
         title: "Team admin permission tiers",
         assignee: ASSIGNEES.ellis,
-        loop: "none",
         priority: "HIGH",
       },
     ],
   },
 ];
-
-const runningCount = statusGroups
-  .flatMap((group) => group.artifacts)
-  .filter((artifact) => artifact.loop === "running").length;
-
-const PRIORITY_LABELS: Record<Priority, string> = {
-  LOW: "Low",
-  MEDIUM: "Medium",
-  HIGH: "High",
-  URGENT: "Urgent",
-};
 
 export const SystemVisualSection = () => {
   return (
@@ -309,7 +277,6 @@ const SidebarSearch = () => {
 const workspaceItems = [
   { label: "My Tasks", icon: Boxes, badge: null },
   { label: "Notifications", icon: InboxIcon, badge: 3 },
-  { label: "Loops", icon: RotateCcwIcon, badge: null },
 ];
 
 const WorkspaceGroup = () => {
@@ -461,7 +428,6 @@ const ProjectView = () => {
       <ProjectHeader />
       <ProjectTabs />
       <ArtifactsToolbar />
-      <ActiveLoopsBanner />
       <ArtifactsTable />
     </div>
   );
@@ -587,19 +553,6 @@ const ArtifactsToolbar = () => {
   );
 };
 
-/* Active loops banner — mirrors active-loops-status.tsx exactly. */
-const ActiveLoopsBanner = () => {
-  return (
-    <div className="flex items-center gap-2 border-border border-b bg-muted/50 px-6 py-2">
-      <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
-      <MonitorIcon className="h-3.5 w-3.5 text-muted-foreground" />
-      <span className="text-muted-foreground text-sm">
-        {runningCount} loops running
-      </span>
-    </div>
-  );
-};
-
 /* Table — mirrors document-table/table-header.tsx + documents-view.tsx.
    Column set is restricted to Assignee / Priority per the marketing brief. */
 const ArtifactsTable = () => {
@@ -706,11 +659,7 @@ const NameCell = ({
         {artifact.slug}
       </span>
       <div className="flex h-7 w-7 shrink-0 items-center justify-center">
-        <StatusIcon
-          size={16}
-          status={rowStatus}
-          thinking={artifact.loop === "running"}
-        />
+        <StatusIcon size={16} status={rowStatus} />
       </div>
       <div className="ml-2 min-w-0 flex-1">
         <span className="block truncate font-medium text-base text-foreground">

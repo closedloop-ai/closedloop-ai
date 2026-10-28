@@ -26,6 +26,7 @@ vi.mock("@repo/observability/telemetry/metrics", () => ({
 }));
 
 import {
+  activeOrgRow,
   group,
   hoursAgo,
   type IngestGroup,
@@ -34,7 +35,6 @@ import {
   NOW,
   ORG_STALLED,
   type PresenceGroup,
-  policyRow,
   routeGroupBy,
 } from "@/__tests__/support/cron/sample-session-ingestion-health/service.test-fixtures";
 import {
@@ -104,8 +104,8 @@ describe("sampleSessionIngestionHealth — platform-quiet withholding (ISS-4829)
       ]
     );
     mocks.organizationFindMany.mockResolvedValue([
-      policyRow("org-quiet-a", true),
-      policyRow("org-quiet-b", true),
+      activeOrgRow("org-quiet-a"),
+      activeOrgRow("org-quiet-b"),
     ]);
 
     const summary = await sampleSessionIngestionHealth(new Date());
@@ -144,8 +144,8 @@ describe("sampleSessionIngestionHealth — platform-quiet withholding (ISS-4829)
       ]
     );
     mocks.organizationFindMany.mockResolvedValue([
-      policyRow("org-quiet-a", true),
-      policyRow("org-quiet-b", true),
+      activeOrgRow("org-quiet-a"),
+      activeOrgRow("org-quiet-b"),
     ]);
 
     const summary = await sampleSessionIngestionHealth(new Date());
@@ -169,9 +169,7 @@ describe("sampleSessionIngestionHealth — platform-quiet withholding (ISS-4829)
     pinGroups([
       group(ORG_STALLED, hoursAgo(SESSION_INGESTION_STALL_THRESHOLD_HOURS + 3)),
     ]);
-    mocks.organizationFindMany.mockResolvedValue([
-      policyRow(ORG_STALLED, true),
-    ]);
+    mocks.organizationFindMany.mockResolvedValue([activeOrgRow(ORG_STALLED)]);
 
     const summary = await sampleSessionIngestionHealth(new Date());
 

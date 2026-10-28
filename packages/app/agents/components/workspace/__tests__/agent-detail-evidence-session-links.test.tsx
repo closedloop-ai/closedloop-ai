@@ -116,6 +116,7 @@ function detailFixture(
 function detailSource(detail: AgentComponentDetail): AgentComponentsDataSource {
   return {
     scope: "test-evidence-session-links",
+    honorsDateWindow: false,
     list: () => Promise.reject(new Error("list unused in these tests")),
     detail: () => Promise.resolve(detail),
   };

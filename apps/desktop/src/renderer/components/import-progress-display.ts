@@ -1,6 +1,7 @@
+import { clampNonNegativeCount } from "@repo/api/src/utils/math";
 import type { CloudSyncLaneRemainder } from "../../shared/cloud-read-readiness-contract";
 import type { QuarantinedStageCounts } from "../../shared/ingest-quarantine-contract";
-import { SyncLaneId } from "../../shared/sync-burndown-contract";
+import { isSyncLaneId, SyncLaneId } from "../../shared/sync-burndown-contract";
 import type { IngestProgress } from "../hooks/use-ingest-progress";
 
 export type ImportProgressDisplay = {
@@ -20,9 +21,11 @@ export function describeImportProgress(
   processed: number,
   total: number
 ): ImportProgressDisplay {
-  const displayTotal = normalizeCount(total);
+  const displayTotal = clampNonNegativeCount(total);
   const displayProcessed =
-    displayTotal > 0 ? Math.min(normalizeCount(processed), displayTotal) : 0;
+    displayTotal > 0
+      ? Math.min(clampNonNegativeCount(processed), displayTotal)
+      : 0;
   const pct = displayTotal > 0 ? (displayProcessed / displayTotal) * 100 : 0;
 
   return {
@@ -32,14 +35,6 @@ export function describeImportProgress(
   };
 }
 
-function normalizeCount(value: number): number {
-  if (!Number.isFinite(value)) {
-    return 0;
-  }
-
-  return Math.max(0, Math.floor(value));
-}
-
 /**
  * ISS-4444: how many local SOURCE TRANSCRIPTS the boot import had to quarantine
  * (their parse wedged repeatedly). Clamped to a non-negative integer so a
@@ -47,19 +42,16 @@ function normalizeCount(value: number): number {
  * nonsense count; `null`/absent → 0.
  *
  * ISS-5281 moved it here, beside the other renderer progress-count normalizers,
- * so the React-free import-splash derivation can share the one clamp instead of
- * re-declaring it. This population is NOT the session count: one poison source
+ * so every reader shares the one clamp instead of re-declaring it. Those readers
+ * are the startup-readiness fold, the Sessions summary cards, and the cloud-sync
+ * progress hook. This population is NOT the session count: one poison source
  * (an OpenCode DB) can hold many sessions, and because it never parsed we cannot
  * know how many — which is exactly why the two are counted separately.
  */
 export function resolveCouldNotImportCount(
   ingest: IngestProgress | null
 ): number {
-  const raw = ingest?.quarantinedCount;
-  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) {
-    return 0;
-  }
-  return Math.floor(raw);
+  return clampCount(ingest?.quarantinedCount);
 }
 
 /**
@@ -86,11 +78,9 @@ export function resolveQuarantinedStageCounts(
   };
 }
 
+/** The shared count coercion, widened for an optional split field. */
 function clampCount(value: number | undefined): number {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-    return 0;
-  }
-  return Math.floor(value);
+  return value === undefined ? 0 : clampNonNegativeCount(value);
 }
 
 /**
@@ -153,8 +143,9 @@ export function formatCount(count: number, singular: string): string {
 
 /**
  * ISS-5768: the ONE sentence the app uses to report work that will never reach
- * the cloud, shared by the read-source badge (`cloud-read-cutover-copy.ts`) and
- * the Settings → History Sync cell (`use-ingest-progress.ts`).
+ * the cloud, shared by the Sessions sync banner
+ * (retired with the legacy consent takeover, ISS-10195) and the Settings → History Sync cell
+ * (`use-cloud-sync-progress.ts`).
  *
  * It was typed out twice and had already begun to diverge — one copy carried a
  * terminal period, the other did not. Two indicators on one screen describing
@@ -189,7 +180,7 @@ export function describeItemsRemaining(
  * ISS-6206: what each sync lane's items ARE, in the user's words.
  *
  * The lanes count genuinely different things — outbox rows, transcript files,
- * rows past a cursor, comments — which is exactly why their totals were never
+ * rows past a cursor — which is exactly why their totals were never
  * summable. Naming the unit is what makes a per-lane count readable: "12
  * transcripts" tells someone what is pending in a way "12 items" cannot.
  */
@@ -198,7 +189,6 @@ const SYNC_LANE_NOUN: Record<SyncLaneId, string> = {
   [SyncLaneId.InvocationParts]: "session detail",
   [SyncLaneId.TranscriptArchive]: "transcript",
   [SyncLaneId.ComponentInventory]: "activity record",
-  [SyncLaneId.TraceComments]: "comment",
 };
 
 /** How many lanes a single line names before it collapses the rest into a count. */
@@ -213,7 +203,7 @@ const MAX_NAMED_LANES = 2;
  * `laneRemainders` is deliberately empty.
  *
  * Long tails collapse ("2,900 sessions, 12 transcripts and 2 other kinds")
- * because a five-clause sentence in a status cell is unreadable. The breakdown
+ * because a six-clause sentence in a status cell is unreadable. The breakdown
  * arrives in the burn-down's canonical lane order (see `cloudSyncLaneRemainders`),
  * so the sequence is the same on every sample rather than reshuffling as
  * unrelated counts cross. What the collapse hides is reachable in full from
@@ -241,10 +231,12 @@ export function describeLaneRemainders(
 
 /** One lane's remainder, hedged when the lane's own count is a floor. */
 function formatLaneRemainder(remainder: CloudSyncLaneRemainder): string {
-  const items = formatCount(
-    remainder.itemsRemaining,
-    SYNC_LANE_NOUN[remainder.lane]
-  );
+  // ISS-10375: a lane a newer main process added has no noun in this build, so
+  // it keeps its count under the generic unit rather than losing it.
+  const noun = isSyncLaneId(remainder.lane)
+    ? SYNC_LANE_NOUN[remainder.lane]
+    : "item";
+  const items = formatCount(remainder.itemsRemaining, noun);
   return remainder.itemsRemainingIsLowerBound ? `at least ${items}` : items;
 }
 
@@ -260,7 +252,7 @@ function joinLaneClauses(clauses: readonly string[]): string {
  * ISS-6206 (whitlockk review on #5050): every lane's remainder, named — the DETAIL
  * behind the collapsed label {@link describeLaneRemainders} produces.
  *
- * The collapse exists because a five-clause sentence is unreadable in a status
+ * The collapse exists because a six-clause sentence is unreadable in a status
  * cell, but applying it to the detail too meant the tail lanes were never
  * reachable anywhere: a third lane owing a million transcripts read as "and 1
  * more" in the label AND in the detail, so the count a reader would act on was

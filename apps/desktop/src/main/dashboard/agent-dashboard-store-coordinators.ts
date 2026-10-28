@@ -8,7 +8,7 @@
  * blocks the single JS thread and starves renderer DB reads.
  *
  *   - pack scan — `packScanner.run` → a compute worker (the recursive walk)
- *   - catalog fetch — `catalog.fetch.run` → this process (~20 gh/HTTPS calls)
+ *   - catalog fetch — `catalog.fetch.run` → this process (~20 HTTPS calls)
  *
  * Golden mode builds NEITHER: it runs an in-process collector model and does no
  * network egress, so both ops stay on their in-db-host implementations. That is
@@ -24,7 +24,6 @@
  * when a change would push a file over.
  */
 
-import { resolveBinaryFromLoginShell } from "../../server/shell-path.js";
 import {
   type CatalogFetchCoordinator,
   createCatalogFetchCoordinator,
@@ -43,21 +42,6 @@ export type AgentDashboardStoreCoordinators = {
   /** Clear the catalog timer and refuse further fetches. Idempotent. */
   stopCatalog: () => void;
 };
-
-/**
- * `gh` availability for the main process.
- *
- * The ASYNC resolver, always. The catalog fetcher's own `ghCliAvailable()`
- * spawns a SYNCHRONOUS login shell — 2,667ms of `resolveExecutablesOnPathSync`
- * in the perf baseline — which on this thread is a hard UI freeze, strictly
- * worse than the db-host stall this whole change removes.
- */
-function resolveGhAvailable(): Promise<boolean> {
-  return resolveBinaryFromLoginShell("gh").then(
-    (result) =>
-      result.source !== "fallback" && result.source !== "override_invalid"
-  );
-}
 
 export function createAgentDashboardStoreCoordinators(deps: {
   golden: unknown;
@@ -91,7 +75,6 @@ export function createAgentDashboardStoreCoordinators(deps: {
 
   const catalog = createCatalogFetchCoordinator({
     rawStoreOp: deps.rawStoreOp,
-    resolveGhAvailable,
     log: (message) => deps.log("catalog-fetch", message),
   });
 

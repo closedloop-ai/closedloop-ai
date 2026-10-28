@@ -31,3 +31,12 @@ export declare function stressLane(
   testFile: string,
   census: { vitest: string[] }
 ): StressLane;
+
+/** The suites a stress run hunts in when `STRESS_FILE` is unset (ISS-6258). */
+export declare const DEFAULT_STRESS_FILES: string[];
+
+/**
+ * `STRESS_FILE` as a comma-separated list; unset or blank means
+ * {@link DEFAULT_STRESS_FILES}.
+ */
+export declare function stressFiles(value: string | undefined): string[];

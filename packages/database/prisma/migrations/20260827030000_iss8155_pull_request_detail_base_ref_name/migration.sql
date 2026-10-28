@@ -1,0 +1,26 @@
+-- ISS-8155: give PullRequestDetail its OWN base ref.
+--
+-- `mapProjectionPullRequest` served `branch_detail.base_branch`, which tracks the
+-- BRANCH's current base. A branch reused for a second PR to a different target
+-- moved that value, so every historical PR on that branch claimed the newer base
+-- — a confident wrong answer, not a gap.
+--
+-- NULL MEANS ONE THING: no producer has measured this PR's base. The read serves
+-- an explicit absence for it and the surface says unknown; the live producers
+-- fill it forward as PRs are re-projected.
+--
+-- NO BACKFILL, DELIBERATELY. Copying `branch_detail.base_branch` onto the branch's
+-- current PR looked safe — the writer stamps `base_branch` and
+-- `base_branch_source = 'pull_request_base'` from the same `pull_request.base.ref`
+-- — but it is not: `writeExistingBranchPullRequestProjection` SKIPS that branch
+-- write in `BranchProjectionMode.PointerOnly` (every `synchronize` webhook) while
+-- writing `current_pull_request_detail_id` in a separate, ungated statement. A
+-- second PR on the same branch can therefore become the current PR while
+-- `base_branch` still holds the FIRST PR's base under a `pull_request_base`
+-- source. A backfill keyed on that pairing would have written PR #1's base into
+-- PR #2's column as a measured value — reproducing the exact lie this ticket
+-- removes, and making it permanent for a closed or merged PR that receives no
+-- further webhook. An honest NULL is the correct historical answer.
+
+-- AlterTable
+ALTER TABLE "pull_request_detail" ADD COLUMN     "base_ref_name" TEXT;

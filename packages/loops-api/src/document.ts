@@ -129,21 +129,58 @@ export const ISSUE_STATUS_OPTIONS = Object.values(IssueStatus);
 // That default lives in the create paths, not in a separate options list.
 
 /**
- * Terminal Document lifecycle statuses: the document is signed off, executed,
- * or deprecated and will not progress further. Note `APPROVED` is terminal —
- * post-PRD-495 it absorbs the former `DONE` document status.
+ * Terminality per Document status, stated for every member so a status added to
+ * {@link DocumentStatus} fails `tsc` here until someone decides whether it is
+ * terminal. The set below is DERIVED from this map rather than listed beside
+ * it: a hand-listed set is widened to `string` and silently answers "not
+ * terminal" for any member nobody remembered to add.
  */
-export const TERMINAL_DOCUMENT_STATUSES: ReadonlySet<string> = new Set<string>([
-  DocumentStatus.Approved,
-  DocumentStatus.Executed,
-  DocumentStatus.Obsolete,
-]);
+const DOCUMENT_STATUS_TERMINALITY: Record<DocumentStatus, boolean> = {
+  [DocumentStatus.Draft]: false,
+  [DocumentStatus.InReview]: false,
+  [DocumentStatus.ChangesRequested]: false,
+  [DocumentStatus.Approved]: true,
+  [DocumentStatus.Executed]: true,
+  [DocumentStatus.Obsolete]: true,
+};
+
+/**
+ * Terminal Document lifecycle statuses: the document is signed off, executed,
+ * or deprecated. Note `APPROVED` is terminal — post-PRD-495 it absorbs the
+ * former `DONE` document status.
+ *
+ * This is a CLASSIFICATION its consumers read — row grouping, quarantine
+ * ownership, blocker resolution — and never a write prohibition. ISS-9559
+ * recorded that status transitions are any-to-any: the write service enforces
+ * that the destination belongs to the subtype's vocabulary and nothing else, so
+ * a terminal status can be left again for any other member of that vocabulary.
+ *
+ * The element type stays `string` deliberately: {@link isTerminalStatusForSubtype}
+ * is asked about PERSISTED values, which ISS-9434 recorded can sit outside the
+ * vocabulary for their subtype. Membership is what the map above closes.
+ */
+export const TERMINAL_DOCUMENT_STATUSES: ReadonlySet<string> = new Set<string>(
+  DOCUMENT_STATUS_OPTIONS.filter(
+    (status) => DOCUMENT_STATUS_TERMINALITY[status]
+  )
+);
+
+/** Terminality per Issue status. Same exhaustiveness contract as Documents. */
+const ISSUE_STATUS_TERMINALITY: Record<IssueStatus, boolean> = {
+  [IssueStatus.Triage]: false,
+  [IssueStatus.Backlog]: false,
+  [IssueStatus.Todo]: false,
+  [IssueStatus.InProgress]: false,
+  [IssueStatus.InReview]: false,
+  [IssueStatus.Blocked]: false,
+  [IssueStatus.Done]: true,
+  [IssueStatus.Canceled]: true,
+};
 
 /** Terminal Feature lifecycle statuses: shipped or won't-do. */
-export const TERMINAL_ISSUE_STATUSES: ReadonlySet<string> = new Set<string>([
-  IssueStatus.Done,
-  IssueStatus.Canceled,
-]);
+export const TERMINAL_ISSUE_STATUSES: ReadonlySet<string> = new Set<string>(
+  ISSUE_STATUS_OPTIONS.filter((status) => ISSUE_STATUS_TERMINALITY[status])
+);
 
 /**
  * Whether a persisted `subtype` follows the Issue (delivery) lifecycle rather
@@ -173,7 +210,7 @@ export function isIssueLifecycleSubtype(
  */
 export function statusOptionsForSubtype(
   subtype: string | null | undefined
-): readonly string[] {
+): readonly (DocumentStatus | IssueStatus)[] {
   return isIssueLifecycleSubtype(subtype)
     ? ISSUE_STATUS_OPTIONS
     : DOCUMENT_STATUS_OPTIONS;
@@ -190,9 +227,16 @@ export function isTerminalStatusForSubtype(
 }
 
 /**
- * Safe fallback status when a persisted value is outside the vocabulary for an
- * artifact's subtype (the freeform column has no DB-level guarantee). Issues
- * fall back to `BACKLOG`, Documents to `DRAFT`.
+ * The CREATE-TIME default status for an artifact whose caller supplied none.
+ * Issues default to `BACKLOG`, Documents to `DRAFT`.
+ *
+ * ISS-9434 narrowed this note. It used to say "safe fallback when a persisted
+ * value is outside the vocabulary for an artifact's subtype", which described a
+ * read-side repair no caller performs: every call site hands this a REQUESTED
+ * subtype and no status (`document-service.ts` `?? fallbackStatusForSubtype(...)`,
+ * and the two create modals). Nothing folds a STORED value through it, so an
+ * off-vocabulary row — a FEATURE carrying the `DocumentStatus` member `OBSOLETE`
+ * was the live example — is still returned raw by the API.
  */
 export function fallbackStatusForSubtype(
   subtype: string | null | undefined
@@ -215,6 +259,8 @@ export const SnapshotSource = {
   LoopSelection: "loop_selection",
   ParentArtifact: "parent_artifact",
   Legacy: "legacy",
+  /** Resolved from a branch/PR the artifact actually produced (ISS-8164). */
+  BranchLink: "branch_link",
   None: "none",
 } as const;
 export type SnapshotSource =
@@ -228,7 +274,7 @@ export type RepositoryRole =
   (typeof RepositoryRole)[keyof typeof RepositoryRole];
 
 const repositoryRoleSchema = z.enum(RepositoryRole);
-const snapshotSourceSchema = z.enum(SnapshotSource);
+export const snapshotSourceSchema = z.enum(SnapshotSource);
 
 export const artifactRepositoryEntrySchema = z.object({
   fullName: z.string().min(1),
@@ -282,4 +328,71 @@ export type PullRequestInfo = {
   reviewDecision: ReviewDecision | null;
   externalLinkId: string | null;
   repoFullName: string | null;
+};
+
+/**
+ * Whether a snapshot's PRIMARY repository was *observed* for this artifact
+ * rather than guessed for it (ISS-8164).
+ *
+ * Deliberately a statement about the primary alone. `branch_link` reconciles a
+ * guessed primary to the repository a linked branch resolved, and carries the
+ * repositories it replaced forward as `additional` so the branch-write
+ * authorization allow-list never shrinks — those carried entries are the old
+ * guess, not observations. {@link getPrimaryRepoFromSnapshot} is what a
+ * repo-scoped consumer reads, and this predicate is what tells it whether that
+ * `fullName` is a measurement.
+ *
+ * `project_defaults` is a project-level guess made before any branch exists,
+ * `parent_artifact` is a copy of another artifact's snapshot (never an
+ * observation of this one), and `legacy` predates the provenance field.
+ *
+ * Rows written before reconciliation existed keep their original source and are
+ * disclosed through this predicate rather than rewritten, so a rollup or
+ * blast-radius query must filter on it instead of trusting a bare `fullName`.
+ */
+export function isPrimaryRepoObserved(source: SnapshotSource): boolean {
+  return SNAPSHOT_SOURCE_PRIMARY_OBSERVED[source];
+}
+
+/**
+ * Whether reconciliation may replace a snapshot's primary when a linked branch
+ * resolves a different repository (ISS-8164).
+ *
+ * Strictly narrower than `!isPrimaryRepoObserved`. `parent_artifact` reads
+ * unobserved but is NOT correctable: it may carry a human `loop_selection`
+ * inherited from the parent, including pinned branches, and the platform cannot
+ * tell an inherited choice from an inherited guess.
+ * `legacy` is excluded on the same basis and more directly: every such row was
+ * minted by the `add_repository_snapshot` backfill from the artifact's own
+ * `target_repo`/`target_branch`, which were caller-supplied document fields set
+ * from the repo picker — a human choice, not a guess, and the `branch` half is
+ * a pin. Promoting a different repository would demote that
+ * entry to `additional`, where {@link getPrimaryRepoFromSnapshot} cannot see it.
+ * Only a value this artifact never chose and never inherited is correctable.
+ */
+export function isSnapshotCorrectable(source: SnapshotSource): boolean {
+  return SNAPSHOT_SOURCE_CORRECTABLE[source];
+}
+
+/**
+ * Exhaustive by construction: a new {@link SnapshotSource} member fails `tsc`
+ * in both maps until its observedness and its correctability are each stated,
+ * instead of defaulting into a side inventory.
+ */
+const SNAPSHOT_SOURCE_PRIMARY_OBSERVED: Record<SnapshotSource, boolean> = {
+  [SnapshotSource.ProjectDefaults]: false,
+  [SnapshotSource.LoopSelection]: true,
+  [SnapshotSource.ParentArtifact]: false,
+  [SnapshotSource.Legacy]: false,
+  [SnapshotSource.BranchLink]: true,
+  [SnapshotSource.None]: false,
+};
+
+const SNAPSHOT_SOURCE_CORRECTABLE: Record<SnapshotSource, boolean> = {
+  [SnapshotSource.ProjectDefaults]: true,
+  [SnapshotSource.LoopSelection]: false,
+  [SnapshotSource.ParentArtifact]: false,
+  [SnapshotSource.Legacy]: false,
+  [SnapshotSource.BranchLink]: false,
+  [SnapshotSource.None]: false,
 };

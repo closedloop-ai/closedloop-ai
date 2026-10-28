@@ -1,8 +1,7 @@
 /**
  * The Session Timeline's bar shape, in its own module.
  *
- * Split out of `agent-session.ts` (ISS-5999) rather than added to: that file is
- * grandfathered under the 1,000-line ceiling and shrink-only, and the bucket is
+ * Split out of `agent-session.ts` (ISS-5999) rather than added to: the bucket is
  * a self-contained wire shape with its own producers and its own invariants —
  * the USD contract and the bin bounds below are about this record, not about the
  * session that carries it. `agent-session.ts` re-exports it, so every existing

@@ -18,7 +18,6 @@
  */
 
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import {
   AGENT_COMPONENT_INVOCATION_SYNC_MAX_GENERATION_ITEMS,
   AGENT_COMPONENT_INVOCATION_SYNC_MAX_ITEM_BYTES,
@@ -30,6 +29,9 @@ import {
   AgentComponentInvocationRelationship,
   type AgentComponentInvocationSyncItem,
 } from "@repo/api/src/types/agent-component-invocation";
+import { PG_TIMESTAMP_MIN_MS } from "@repo/api/src/types/pg-timestamp-floor";
+import { NUL_CHARACTER } from "@repo/api/src/types/postgres-text";
+import { describe, test } from "vitest";
 import { AgentComponentInvocationSyncLocalError } from "../src/main/agent-sync/agent-component-invocation-sync-constants.js";
 import { computeAgentComponentInvocationGenerationId } from "../src/main/agent-sync/agent-component-invocation-sync-payload.js";
 import { buildInvocationSyncParts } from "../src/main/database/invocation-sync-parts-builder.js";
@@ -39,6 +41,8 @@ const SESSION_ID = "session-parts-builder";
 const DUPLICATE_INVOCATION_ID = /duplicate invocation id/;
 /** The contract detail names the field path the shared boundary rejected. */
 const REJECTED_FIELD_PATH = /relationship/;
+const REJECTED_RAW_NAME_PATH = /rawName/;
+const REJECTED_SOURCE_MODIFIED_AT_PATH = /sourceModifiedAt/;
 
 function syncItem(index: number): AgentComponentInvocationSyncItem {
   return {
@@ -183,17 +187,88 @@ describe("ISS-5255 invocation sync parts builder", () => {
     assert.match(built.localErrorDetail ?? "", REJECTED_FIELD_PATH);
   });
 
-  test("a failure that is neither limit nor contract propagates instead of dead-lettering", () => {
-    // A duplicate invocation id is a plain Error, not one of the two classified
-    // local-sync errors, so the builder must rethrow rather than invent a
-    // dead-letter reason for it. Built by hand because a duplicate cannot
-    // survive `computeAgentComponentInvocationGenerationId`.
+  // ISS-9174: the shared boundary now rejects what Postgres would refuse at the
+  // write, so the generation dead-letters HERE with the field named, instead of
+  // being sent, failing inside the cloud transaction, and retrying forever.
+  for (const { label, overrides, detailPattern } of [
+    {
+      label: "a NUL in rawName",
+      overrides: { rawName: `Re${NUL_CHARACTER}ad` },
+      detailPattern: REJECTED_RAW_NAME_PATH,
+    },
+    {
+      label: "a below-floor sourceModifiedAt",
+      overrides: {
+        kind: AgentComponentInvocationKind.Skill,
+        status: AgentComponentInvocationAttributionStatus.Matched,
+        evidenceClass: AgentComponentInvocationEvidenceClass.TranscriptSnapshot,
+        definitionHash: "d".repeat(64),
+        normalizerContractVersion: 1,
+        sourceModifiedAt: new Date(PG_TIMESTAMP_MIN_MS - 1).toISOString(),
+      },
+      detailPattern: REJECTED_SOURCE_MODIFIED_AT_PATH,
+    },
+  ]) {
+    test(`${label} resolves the contract dead letter naming the field`, () => {
+      const built = buildInvocationSyncParts(
+        generationOf([{ ...syncItem(0), ...overrides }])
+      );
+
+      assert.deepEqual(built.parts, []);
+      assert.equal(
+        built.localError,
+        AgentComponentInvocationSyncLocalError.WirePayloadContractViolation
+      );
+      assert.match(built.localErrorDetail ?? "", detailPattern);
+    });
+  }
+
+  /**
+   * ISS-6889 (codex P1 review) REVERSED this expectation deliberately, and the
+   * behaviour change is in this diff: the predecessor asserted that a duplicate
+   * invocation id PROPAGATES, on the reading that it was an unclassified bug.
+   * Canonicalization made the condition reachable from ORDINARY DATA — two
+   * stored ids differing only by surrounding whitespace now trim to the same
+   * value — and propagating from here aborts the caller's import `$transaction`
+   * (`write-core.ts` / `rebuild-session-tx.ts`), which is sync data taking down
+   * the core ingest flow. It is a row-attributable contract failure and must be
+   * recorded like every other one.
+   */
+  test("a post-trim duplicate invocation id resolves the duplicate-id dead letter", () => {
+    const padded = {
+      ...syncItem(0),
+      externalInvocationId: `  ${syncItem(0).externalInvocationId}  `,
+    };
+
+    const built = buildInvocationSyncParts(
+      generationWithId([syncItem(0), padded], UNREACHED_GENERATION_ID)
+    );
+
+    assert.deepEqual(built.parts, []);
+    assert.equal(
+      built.localError,
+      AgentComponentInvocationSyncLocalError.DuplicateInvocationId
+    );
+    assert.match(built.localErrorDetail ?? "", DUPLICATE_INVOCATION_ID);
+  });
+
+  test("a failure that is neither limit, contract, nor duplicate propagates", () => {
+    // The rethrow branch still has to exist: an unrecognized failure must not be
+    // laundered into whichever dead-letter reason happens to be last in the
+    // classifier. `sequence` is read by `compareItems` before any guard runs.
+    const unsortable = {
+      ...syncItem(0),
+      get sequence(): number {
+        throw new TypeError("sequence is not readable");
+      },
+    } as unknown as AgentComponentInvocationSyncItem;
+
     assert.throws(
       () =>
         buildInvocationSyncParts(
-          generationWithId([syncItem(0), syncItem(0)], UNREACHED_GENERATION_ID)
+          generationWithId([syncItem(1), unsortable], UNREACHED_GENERATION_ID)
         ),
-      DUPLICATE_INVOCATION_ID
+      TypeError
     );
   });
 });

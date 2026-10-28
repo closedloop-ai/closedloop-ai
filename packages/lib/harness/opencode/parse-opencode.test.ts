@@ -227,6 +227,49 @@ describe("parseOpenCodeTranscript", () => {
     expect(tu?.diffDelta).toEqual({ add: 3, del: 1 });
   });
 
+  /**
+   * ISS-10736 (whitlockk review of #7816). The collector counts the FULL result
+   * before capping `output` at 4 KiB; the count then has to survive the
+   * materialized projection, because nothing downstream can recompute it from a
+   * capped prefix. Without the pass-through here every OpenCode `tool`/`mcp` row
+   * stays NULL after the DATA_REVISION 103 rebuild.
+   */
+  it("carries outputFootprintTokens across the materialized projection", async () => {
+    const session = await parseOpenCodeTranscript(
+      jsonl([
+        SESSION_HEADER,
+        buildOpencodeToolUseRecord({
+          name: "Write",
+          timestamp: "2026-01-01T00:00:02.000Z",
+          output: "capped prefix",
+          outputFootprintTokens: 4096,
+        }),
+      ]),
+      { sessionId: "opencode-footprint" }
+    );
+    const [tu] = session?.toolUses ?? [];
+
+    expect(tu?.outputFootprintTokens).toBe(4096);
+  });
+
+  it("omits outputFootprintTokens when the projection carried none", async () => {
+    const session = await parseOpenCodeTranscript(
+      jsonl([
+        SESSION_HEADER,
+        buildOpencodeToolUseRecord({
+          name: "Write",
+          timestamp: "2026-01-01T00:00:02.000Z",
+          output: "ok",
+        }),
+      ]),
+      { sessionId: "opencode-no-footprint" }
+    );
+    const [tu] = session?.toolUses ?? [];
+
+    expect(tu).toBeDefined();
+    expect(tu?.outputFootprintTokens).toBeUndefined();
+  });
+
   it("includes isThinking and isSynthetic flags on a Message when both are true", async () => {
     const lines = jsonl([
       SESSION_HEADER,

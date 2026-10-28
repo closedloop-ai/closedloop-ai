@@ -21,8 +21,9 @@ const appliedTags: TagSummary[] = [
  * the open-popover states render without any network access.
  */
 const meta: Meta<typeof TagPicker> = {
-  title: "App Core/Tags/Tag Picker",
+  title: "Composites v1.0/Tags/Tag Picker",
   component: TagPicker,
+  tags: ["deprecated", "autodocs"],
   parameters: { appCore: { queryData: [[tagKeys.list({}), orgTags]] } },
 };
 

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/database", async () => {
   const { createDatabaseMockModule } = await import(
@@ -87,6 +87,10 @@ import {
 import { mockWithDbCall, mockWithDbTx } from "../../__tests__/utils/db-helpers";
 import { branchReadService } from "./branch-read-service";
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe("branchReadService refresh eligibility", () => {
   let mockDb: ReturnType<typeof createMockDb>;
 
@@ -103,9 +107,34 @@ describe("branchReadService refresh eligibility", () => {
     );
   });
 
+  it("fails closed when Product eligibility is revoked after refresh context loads", async () => {
+    mockBranchCandidateIds(mockDb, [branchId]);
+    mockBranchCandidateIds(mockDb, [branchId]);
+    mockBranchCandidateIds(mockDb, []);
+    mockDb.artifact.findFirst.mockResolvedValue(
+      makeBranchRow({ currentPullRequestDetail: null })
+    );
+
+    const response = await branchReadService.refreshBranch(
+      organizationId,
+      branchId,
+      { userId: "user-1", authMethod: "session" }
+    );
+
+    expect(response).toMatchObject({
+      status: BranchRefreshStatus.NotApplicable,
+      reason: BranchRefreshReason.NoCurrentPullRequest,
+      branch: null,
+    });
+    expect(mockDb.oAuthRateLimit.findUnique).not.toHaveBeenCalled();
+    expect(getSinglePullRequestWithProviderResult).not.toHaveBeenCalled();
+    expect(mockDb.$queryRaw).toHaveBeenCalledTimes(3);
+  });
+
   it("returns provider rate-limit as retryable without exposing a newly ineligible DTO", async () => {
     mockBranchCandidateIds(mockDb, [branchId]);
-    mockDb.$queryRaw.mockResolvedValueOnce([]);
+    mockBranchCandidateIds(mockDb, [branchId]);
+    mockBranchCandidateIds(mockDb, []);
     mockDb.artifact.findFirst.mockResolvedValue(makeBranchRow());
     mockDb.oAuthRateLimit.findUnique.mockResolvedValue(null);
     mockDb.oAuthRateLimit.create.mockResolvedValue({});
@@ -130,13 +159,14 @@ describe("branchReadService refresh eligibility", () => {
     expect(mockDb.pullRequestDetail.updateMany).toHaveBeenCalledTimes(1);
     expect(mockDb.artifact.updateMany).not.toHaveBeenCalled();
     expect(mockDb.branchDetail.updateMany).not.toHaveBeenCalled();
-    expect(mockDb.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(mockDb.$queryRaw).toHaveBeenCalledTimes(3);
     expect(mockDb.branchStatusCheck.deleteMany).not.toHaveBeenCalled();
   });
 
   it("returns provider unavailable as retryable without exposing a newly ineligible DTO", async () => {
     mockBranchCandidateIds(mockDb, [branchId]);
-    mockDb.$queryRaw.mockResolvedValueOnce([]);
+    mockBranchCandidateIds(mockDb, [branchId]);
+    mockBranchCandidateIds(mockDb, []);
     mockDb.artifact.findFirst.mockResolvedValue(makeBranchRow());
     mockDb.oAuthRateLimit.findUnique.mockResolvedValue(null);
     mockDb.oAuthRateLimit.create.mockResolvedValue({});
@@ -159,7 +189,7 @@ describe("branchReadService refresh eligibility", () => {
     expect(mockDb.pullRequestDetail.updateMany).toHaveBeenCalledTimes(1);
     expect(mockDb.artifact.updateMany).not.toHaveBeenCalled();
     expect(mockDb.branchDetail.updateMany).not.toHaveBeenCalled();
-    expect(mockDb.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(mockDb.$queryRaw).toHaveBeenCalledTimes(3);
   });
 
   it("reports a credential fault on the installation lane as retryable provider unavailable, never a reconnect prompt", async () => {
@@ -168,7 +198,8 @@ describe("branchReadService refresh eligibility", () => {
     // fix by reconnecting their account. The user-token credential statuses
     // must stay folded into the generic provider-unavailable outcome here.
     mockBranchCandidateIds(mockDb, [branchId]);
-    mockDb.$queryRaw.mockResolvedValueOnce([]);
+    mockBranchCandidateIds(mockDb, [branchId]);
+    mockBranchCandidateIds(mockDb, []);
     mockDb.artifact.findFirst.mockResolvedValue(makeBranchRow());
     mockDb.oAuthRateLimit.findUnique.mockResolvedValue(null);
     mockDb.oAuthRateLimit.create.mockResolvedValue({});
@@ -193,12 +224,13 @@ describe("branchReadService refresh eligibility", () => {
     );
     expect(mockDb.artifact.updateMany).not.toHaveBeenCalled();
     expect(mockDb.branchDetail.updateMany).not.toHaveBeenCalled();
-    expect(mockDb.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(mockDb.$queryRaw).toHaveBeenCalledTimes(3);
   });
 
   it("returns null when refreshed authority makes the branch the repository default", async () => {
     mockBranchCandidateIds(mockDb, [branchId]);
-    mockDb.$queryRaw.mockResolvedValueOnce([]);
+    mockBranchCandidateIds(mockDb, [branchId]);
+    mockBranchCandidateIds(mockDb, []);
     mockDb.artifact.findFirst.mockResolvedValue(makeBranchRow());
     mockDb.oAuthRateLimit.findUnique.mockResolvedValue(null);
     mockDb.oAuthRateLimit.create.mockResolvedValue({});
@@ -211,7 +243,7 @@ describe("branchReadService refresh eligibility", () => {
         githubId: "pr-gh-1",
         number: 7,
         title: "Refresh me",
-        htmlUrl: "https://github.com/closedloop-ai/example-repo/pull/7",
+        htmlUrl: "https://github.com/closedloop-ai/closedloop-ai/pull/7",
         headBranch: "main",
         baseBranch: "main",
         state: GitHubPRState.Open,
@@ -236,7 +268,53 @@ describe("branchReadService refresh eligibility", () => {
       status: BranchRefreshStatus.Refreshed,
       branch: null,
     });
-    expect(mockDb.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(mockDb.$queryRaw).toHaveBeenCalledTimes(3);
+  });
+
+  it("fails closed when Product eligibility is revoked after refresh provider work", async () => {
+    mockBranchCandidateIds(mockDb, [branchId]);
+    mockBranchCandidateIds(mockDb, [branchId]);
+    mockBranchCandidateIds(mockDb, []);
+    mockDb.artifact.findFirst.mockResolvedValue(makeBranchRow());
+    mockDb.oAuthRateLimit.findUnique.mockResolvedValue(null);
+    mockDb.oAuthRateLimit.create.mockResolvedValue({});
+    mockDb.pullRequestDetail.updateMany
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 0 });
+    vi.mocked(getSinglePullRequestWithProviderResult).mockResolvedValue({
+      status: GitHubProviderResultStatus.Success,
+      value: {
+        githubId: "pr-gh-1",
+        number: 7,
+        title: "Refresh me",
+        htmlUrl: "https://github.com/closedloop-ai/closedloop-ai/pull/7",
+        headBranch: "feature",
+        baseBranch: "main",
+        state: GitHubPRState.Open,
+        createdAt: "2026-07-03T04:00:00.000Z",
+        mergedAt: null,
+        closedAt: null,
+        authorLogin: "octocat",
+        isDraft: false,
+        headSha: "def",
+        baseSha: "abc",
+        mergeCommitSha: null,
+      },
+    });
+
+    const response = await branchReadService.refreshBranch(
+      organizationId,
+      branchId,
+      { userId: "user-1", authMethod: "session" }
+    );
+
+    expect(response).toMatchObject({
+      status: BranchRefreshStatus.Failed,
+      reason: BranchRefreshReason.GuardedWriteFailed,
+      branch: null,
+    });
+    expect(getSinglePullRequestWithProviderResult).toHaveBeenCalledTimes(1);
+    expect(mockDb.$queryRaw).toHaveBeenCalledTimes(3);
   });
 
   it("does no provider work when the initial canonical eligibility gate fails", async () => {

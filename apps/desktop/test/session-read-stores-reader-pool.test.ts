@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { after, before, test } from "node:test";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import { Harness } from "@repo/lib/harness/types";
+import { afterAll, beforeAll, test } from "vitest";
 import { DESKTOP_AGENT_STATUS } from "../src/main/database/db-constants.js";
 import type { DesktopPrisma } from "../src/main/database/prisma-client.js";
 import {
@@ -319,7 +319,7 @@ const log: DispatchLog = {
 let closeFixture: (() => Promise<void>) | null = null;
 let stores: Stores | null = null;
 
-before(async () => {
+beforeAll(async () => {
   const { db, prisma, close } = await openTestPrisma();
   closeFixture = close;
   // An ACTIVE session with an agent, an event and a token row, plus a TERMINAL
@@ -370,7 +370,7 @@ before(async () => {
   };
 });
 
-after(async () => {
+afterAll(async () => {
   await closeFixture?.();
 });
 

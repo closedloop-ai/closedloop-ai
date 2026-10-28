@@ -11,6 +11,7 @@
  * db-constants, branch-pr-attribution) and the generated
  * Prisma client — never on write-core.ts or sqlite.ts, so there is no import cycle.
  */
+import { REPOSITORY_FULL_NAME_MAX_LENGTH } from "@repo/api/src/types/session-artifact-link";
 import { artifactLinkId } from "../collectors/parsing/artifact-ref-extractor.js";
 import {
   type ArtifactRefRecord,
@@ -23,7 +24,10 @@ import {
 } from "../enrichment/identity-key.js";
 import { propagateBranchPrLinks } from "./branch-pr-attribution.js";
 import { BRANCH_PUSH_METHOD_VALUES } from "./db-constants.js";
-import { normalizeRepoFullName } from "./db-helpers.js";
+import {
+  isRepoFullNamePastWireBound,
+  normalizeRepoFullName,
+} from "./db-helpers.js";
 import type { Prisma } from "./generated/client.js";
 import {
   buildValuesTuples,
@@ -40,16 +44,14 @@ const BRANCH_PUSH_METHODS: ReadonlySet<string> = new Set(
 // buildRepoResolver can index a repo by its bare trailing directory component.
 const GIT_DIR_SUFFIX_RE = /\/\.git\/?$/;
 // Worktree suffix heuristic: strip -<type>-<identifier> patterns (e.g.
-// "example-repo-fea-1234") back to the base repo dir name in buildRepoResolver.
+// "closedloop-ai-fea-1234") back to the base repo dir name in buildRepoResolver.
 const WORKTREE_SUFFIX_RE =
   /^(.+)[-_](?:fea|feat|fix|pr|pln|prd|wg-review|AI)[-_].+$/i;
 
 /**
  * FEA-1899: upsert the canonical artifact (by identity_key) then insert the
- * pure-join session↔artifact link. The artifact upsert NEVER touches the LOC
- * columns (lines_added, lines_removed, files_changed) so re-imports don't wipe
- * the cloud-projected sizing; it only COALESCE-fills identity fields and bumps
- * last_seen_at. The link is rebuilt on
+ * pure-join session↔artifact link. The artifact upsert only COALESCE-fills
+ * identity fields and bumps last_seen_at. The link is rebuilt on
  * every reparse (delete-then-reinsert upstream) and re-points to the surviving
  * artifact row.
  */
@@ -71,11 +73,15 @@ export async function persistArtifactLinks(
   // in, avoiding a full `SELECT … FROM repos` per session. Omitted on the live
   // import path, which builds it per-session from `tx` below.
   repoResolver?: RepoResolver
-): Promise<{ captured: number; droppedUnresolvedBareRepo: boolean }> {
-  // Resolve bare repo names (directory basenames like "example-repo") to
-  // canonical owner/repo ("closedloop-ai/example-repo") via the repos
+): Promise<{
+  captured: number;
+  droppedUnresolvedBareRepo: boolean;
+  droppedPastWireBound: number;
+}> {
+  // Resolve bare repo names (directory basenames like "closedloop-ai") to
+  // canonical owner/repo ("closedloop-ai/closedloop-ai") via the repos
   // registry. Without this, identity keys split by naming convention and
-  // git_dir stays NULL (blocking all git/gh enrichment).
+  // git_dir stays NULL (blocking all git/GitHub enrichment).
   const resolver = repoResolver ?? (await buildRepoResolver(tx));
 
   // FEA-2545: the per-ref writes below used to be a sequential N+1 — two serial
@@ -89,7 +95,29 @@ export async function persistArtifactLinks(
   // benefit — batching does. On any batch failure we fall back to the original
   // per-ref path, which warn-and-continues on row-level errors, so the ingest
   // stays best-effort.
-  const prepared = refs.map((ref) =>
+  // ISS-8882: a ref naming a repository past the wire bound is refused BEFORE
+  // it can be prepared. `normalizeRepoFullName` returns null for it, which
+  // `resolveRefRepo` cannot tell from an unresolved bare name, so persisting it
+  // would null-scope its identity key — collapsing every over-bound repository
+  // onto one `branch::<name>` / `pr::<number>` / `commit::<sha>` artifact — and
+  // set `droppedBareRepo`, holding the session unseen for a resolver sweep that
+  // can never recover a slug this long. Counted, not captured: the caller's
+  // completeness check subtracts it, because unlike a bare name this ref is
+  // permanently unpersistable and retrying it is what wedges the backfill.
+  const persistableRefs: ArtifactRefRecord[] = [];
+  let droppedPastWireBound = 0;
+  for (const ref of refs) {
+    if (isRepoFullNamePastWireBound(ref.repoFullName)) {
+      droppedPastWireBound += 1;
+      log(
+        `sqlite persistArtifactLinks: dropped ${ref.targetKind} ref for session ${sessionId} — repo_full_name is ${String(ref.repoFullName).trim().length} chars, past the ${REPOSITORY_FULL_NAME_MAX_LENGTH}-char wire bound`
+      );
+      continue;
+    }
+    persistableRefs.push(ref);
+  }
+
+  const prepared = persistableRefs.map((ref) =>
     prepareArtifactRefRow(ref, resolver, sessionId, now)
   );
 
@@ -121,7 +149,7 @@ export async function persistArtifactLinks(
   // PR artifact, auto-link the session to the PR. Pure DB lookup — no gh calls.
   await propagateBranchPrLinks(tx, sessionId, now);
 
-  return { captured, droppedUnresolvedBareRepo };
+  return { captured, droppedUnresolvedBareRepo, droppedPastWireBound };
 }
 
 // FEA-2545: shared column lists and ON CONFLICT clauses so the batched fast
@@ -315,6 +343,22 @@ async function applyPersistedRefSideEffects(
       sessionId,
       ref.prUrl,
       ref.branchName
+    );
+  }
+  // ISS-8175: the base ref gh named when this session opened the PR. FILL-ONLY,
+  // matching the head-branch write above: a stored value came from the PR's own
+  // create output and a re-derivation of the same session must not churn it.
+  if (
+    ref.targetKind === "pull_request" &&
+    ref.relation === "created" &&
+    ref.baseRef
+  ) {
+    await tx.$executeRawUnsafe(
+      `UPDATE artifacts
+          SET base_ref = $2
+        WHERE id = $1 AND base_ref IS NULL`,
+      artifactId,
+      ref.baseRef
     );
   }
 }
@@ -534,7 +578,7 @@ export async function buildRepoResolver(
       gitDir: row.git_dir,
     };
     byFull.set(row.repo_full_name, entry);
-    // git_dir is like "/home/user/Workspace/example-repo/.git"
+    // git_dir is like "/home/user/Workspace/closedloop-ai/.git"
     const dirName = row.git_dir
       .replace(GIT_DIR_SUFFIX_RE, "")
       .split("/")

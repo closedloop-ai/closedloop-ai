@@ -380,7 +380,6 @@ describe("classifyDatabaseTransport — runtime health posture", () => {
     expect(
       classifyDatabaseTransport({
         pgHost: "stage-db.abc123.us-east-1.rds.amazonaws.com",
-        pgDatabase: "app",
         pgUser: "app_user",
       })
     ).toMatchObject({
@@ -393,11 +392,30 @@ describe("classifyDatabaseTransport — runtime health posture", () => {
     });
   });
 
+  // ISS-8410. The IAM pool defaults `database: env.PGDATABASE || "app"`, so it
+  // CONNECTS on this configuration — and degrades TLS on it under
+  // ALLOW_INSECURE_SSL. Demanding PGDATABASE here reported that live connection
+  // as `unknown` posture, which /health/db then had no way to fail on.
+  it("classifies PGHOST/IAM without PGDATABASE, which the pool defaults", () => {
+    expect(
+      classifyDatabaseTransport({
+        pgHost: "stage-db.abc123.us-east-1.rds.amazonaws.com",
+        pgUser: "app_user",
+        allowInsecureSsl: true,
+      })
+    ).toMatchObject({
+      status: DbHealthCheckStatus.Error,
+      hostType: DbHealthHostType.Rds,
+      sslMode: DbHealthSslMode.Insecure,
+      source: DbHealthSource.PgHostIam,
+      verifiedRdsTls: false,
+    });
+  });
+
   it("classifies PGHOST/IAM ALLOW_INSECURE_SSL as insecure TLS", () => {
     expect(
       classifyDatabaseTransport({
         pgHost: "stage-db.abc123.us-east-1.rds.amazonaws.com",
-        pgDatabase: "app",
         pgUser: "app_user",
         allowInsecureSsl: true,
       })
@@ -414,7 +432,6 @@ describe("classifyDatabaseTransport — runtime health posture", () => {
     expect(
       classifyDatabaseTransport({
         pgHost: "localhost",
-        pgDatabase: "app",
         pgUser: "app_user",
         allowInsecureSsl: true,
       })
@@ -431,7 +448,6 @@ describe("classifyDatabaseTransport — runtime health posture", () => {
     expect(
       classifyDatabaseTransport({
         pgHost: "[::1]",
-        pgDatabase: "app",
         pgUser: "app_user",
       })
     ).toMatchObject({
@@ -447,7 +463,6 @@ describe("classifyDatabaseTransport — runtime health posture", () => {
     expect(
       classifyDatabaseTransport({
         pgHost: "db.example.com",
-        pgDatabase: "app",
         pgUser: "app_user",
       })
     ).toMatchObject({

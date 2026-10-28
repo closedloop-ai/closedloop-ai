@@ -1,9 +1,7 @@
 import {
-  DISPLAYED_SESSION_STATUS,
   SESSION_STATUS,
   STALE_SESSION_DISPLAY_THRESHOLD_HOURS,
 } from "@repo/api/src/types/session-status";
-import { SESSION_STALE_TOOLTIP } from "@repo/api/src/types/session-status-display";
 import { resolveSessionDetailDisplayStatus } from "@repo/app/agents/lib/session-detail-display-status";
 import {
   DURATION_NO_START_REASON,
@@ -83,7 +81,13 @@ function detailDurationLabelFor(record: DurationRecord): string | null {
 }
 
 describe("ISS-5575: the detail Duration window matches the list's", () => {
-  it("folds a silent active run to unmeasurable, exactly as the list does", () => {
+  it("ISS-10364: keeps timing a silent active run now that the staleness fold is retired", () => {
+    // Counterfactual for the operator's 2026-09-23 ruling ("don't distinguish
+    // between active and stale"): this used to fold to `unmeasurable` once
+    // `lastActivityAt` passed the 24h cutoff. There is no endedAt to bound the
+    // span, so it now measures start -> now like any other undistinguished
+    // `active` row — STARTED_AT is NOW - 3h, so the span is 3h. Kept so a
+    // future change restoring the cutoff has to edit this assertion.
     const record = {
       endedAt: null,
       lastActivityAt: SILENT_SINCE,
@@ -93,7 +97,7 @@ describe("ISS-5575: the detail Duration window matches the list's", () => {
 
     expect(resolveSessionDetailDurationWindow({ ...record, now: NOW })).toEqual(
       {
-        kind: "unmeasurable",
+        kind: "running",
       }
     );
     expect(detailDurationLabelFor(record)).toBe(listDurationLabelFor(record));
@@ -120,49 +124,52 @@ describe("ISS-5575: the detail Duration window matches the list's", () => {
   });
 
   /**
-   * The regression an adversarial review found before this shipped.
+   * Historical context: an adversarial review found that an earlier revision
+   * derived through `resolveSessionDetailDisplayStatus`, whose Waiting
+   * projection fail-opened `unknown` to `active` and produced a RUNNING window
+   * the list's own (narrower) resolver still blanked.
+   * `resolveDisplayedSessionStatusWithWaiting`'s recognition gate
+   * (`recognized === SESSION_STATUS.ACTIVE`) closed that split by requiring the
+   * RAW status to already fold to `active` before granting the projection.
    *
-   * An earlier revision derived through `resolveSessionDetailDisplayStatus`,
-   * whose Waiting projection normalizes with a resolver that FAIL-OPENS the
-   * display-only and unrecognized statuses to `active`. A version-skewed desktop
-   * payload spelling `unknown` while carrying `awaitingInputSince` therefore
-   * projected to `waiting` and produced a RUNNING window — turning the list's
-   * em-dash into a climbing number on the detail, a NEW split in exactly the
-   * direction this ticket exists to close. The tick gate reads the RAW lifecycle
-   * and would have said "no tick", so that number was also frozen at mount.
-   *
-   * The narrow projection added for the raw-`active` case below must not reopen
-   * it, which is why `awaitingInputSince` is SET here.
+   * ISS-10364 (operator ruling, 2026-09-23) retired the display-only words the
+   * gate used to SORT these three out by. The gate itself still rejects all
+   * three — it is a membership test now, not a fold (see `projectLiveWaiting`)
+   * — so none of them reaches the Waiting projection. What changed is what they
+   * fall THROUGH to: `resolveDisplayedSessionStatus` answers `active` for each,
+   * where it used to answer `unknown`/`stale`. So the window TIMES rather than
+   * staying unmeasurable — STARTED_AT is NOW - 3h, so the span is 3h — and the
+   * two surfaces still agree, which is the claim this case owns. Kept as the
+   * counterfactual so restoring either retired fold has to edit this assertion.
    */
-  it.each([
-    DISPLAYED_SESSION_STATUS.UNKNOWN,
-    DISPLAYED_SESSION_STATUS.STALE,
-    UNRECOGNIZED_STATUS,
-  ])("never times an awaiting-input %s run the list cannot measure", (status) => {
-    const record = {
-      endedAt: null,
-      lastActivityAt: SILENT_SINCE,
-      startedAt: STARTED_AT,
-      status,
-    };
+  it.each(["unknown", "stale", UNRECOGNIZED_STATUS])(
+    "ISS-10364: times an awaiting-input %s run, since the retired fold now answers active",
+    (status) => {
+      const record = {
+        endedAt: null,
+        lastActivityAt: SILENT_SINCE,
+        startedAt: STARTED_AT,
+        status,
+      };
 
-    const window = resolveSessionDetailDurationWindow({
-      ...record,
-      awaitingInputSince: NOW,
-      now: NOW,
-    });
+      const window = resolveSessionDetailDurationWindow({
+        ...record,
+        awaitingInputSince: NOW,
+        now: NOW,
+      });
 
-    expect(window).toEqual({ kind: "unmeasurable" });
-    expect(detailDurationLabelFor({ ...record, awaitingInputSince: NOW })).toBe(
-      listDurationLabelFor({ ...record, awaitingInputSince: NOW })
-    );
-  });
+      expect(window).toEqual({ kind: "running" });
+      expect(
+        detailDurationLabelFor({ ...record, awaitingInputSince: NOW })
+      ).toBe(listDurationLabelFor({ ...record, awaitingInputSince: NOW }));
+    }
+  );
 
   /**
-   * ISS-5575 (whitlockk, #4971): the desktop LOCAL detail shape. `mapDetail`
-   * inherits the RAW canonical status unless the independent
-   * `sessions-displayed-status-parity` Labs flag is on, so an awaiting-input
-   * local session arrives as `active` with `awaitingInputSince` beside it. Fold
+   * ISS-5575 (whitlockk, #4971): the un-projected detail shape. A version-skewed
+   * producer can still serve the RAW canonical status, so an awaiting-input
+   * session reaches this view as `active` with `awaitingInputSince` beside it.
+   * Fold
    * that to Stale after 24h and the Duration stops while the title chip on the
    * SAME screen — `resolveSessionDetailDisplayStatus`, which does read the
    * field — still reads "Waiting".
@@ -190,11 +197,13 @@ describe("ISS-5575: the detail Duration window matches the list's", () => {
     // The agreed answer is the MEASURED one. Two em-dashes would satisfy the
     // equality above while both surfaces took the wrong side of it.
     expect(label).not.toBeNull();
-    // The projected status is what the title chip already shows, so the two
-    // agree instead of contradicting each other one row apart.
+    // ISS-10364 (operator ruling, 2026-09-23/24) retired the title chip's
+    // Waiting projection too: `resolveSessionDetailDisplayStatus` no longer
+    // reads `awaitingInputSince` at all, so this row's chip now agrees with
+    // every other non-terminal row and reads Active, not Waiting.
     expect(
       resolveSessionDetailDisplayStatus({ ...record, status: record.status })
-    ).toBe(DISPLAYED_SESSION_STATUS.WAITING);
+    ).toBe(SESSION_STATUS.ACTIVE);
     expect(isSessionDetailDurationClockRelevant(record)).toBe(true);
     expect(emptyReasonFor(record)).toBeNull();
   });
@@ -214,7 +223,20 @@ describe("ISS-5575: the detail Duration window matches the list's", () => {
     });
   });
 
-  it("does not project an ENDED run that still carries the signal", () => {
+  /**
+   * ISS-4654: a VALID `endedAt` settles the awaiting-input evidence to `None`
+   * before the projection even runs, so this record is never projected
+   * Waiting — that part is UNCHANGED.
+   *
+   * ISS-10364 (operator ruling, 2026-09-23) changed what happens after that.
+   * The retired staleness fold used to be what bounded this row to its own
+   * `endedAt` once it read Stale; there is no fold left, and the cell derives
+   * no terminal status from `endedAt` itself. A served raw `active` status with
+   * a real end instant therefore measures to `now` like any other live row. A
+   * producer that stores `inactive`/`error` is still measured to its own end —
+   * see "does not project a TERMINAL straggler" above.
+   */
+  it("ISS-10364: measures a served raw-active row to now, even with a recorded end", () => {
     const endedAt = new Date(NOW.getTime() - HOUR_MS);
 
     expect(
@@ -226,23 +248,21 @@ describe("ISS-5575: the detail Duration window matches the list's", () => {
         startedAt: STARTED_AT,
         status: SESSION_STATUS.ACTIVE,
       })
-    ).toEqual({ end: endedAt, kind: "ended" });
+    ).toEqual({ kind: "running" });
   });
 
   /**
-   * ISS-6455: the detail passed `endedAt` through raw while the list parsed it,
-   * so a present-but-UNPARSEABLE value read as "this run has ended" on the
-   * detail (Stale, em-dash) and as "no end recorded" in the list — a second
-   * split, in the same field, opened by the fix for the first.
-   *
-   * whitlockk (#5099 review) settled which side both surfaces take: NEITHER. Reading
-   * corrupt evidence as an absent end instant is what let an awaiting-input
-   * projection start a duration against `now()` for a run we cannot show is
-   * still live. Unreadable evidence degrades to an unmeasurable state, so the
-   * agreed answer here is the em-dash — the control that this is not the fix
-   * blanking every Duration is the measured awaiting-input case above.
+   * ISS-10364 (operator ruling, 2026-09-23/24) retired the evidence-disclaim
+   * path this case used to pin: `resolveSessionDetailDisplayStatus` no longer
+   * reads `endedAt` at all when deciding the STATUS, and the window's lifecycle
+   * check (`resolveSessionDurationLifecycle("active")` → Running) short-circuits
+   * before the window logic ever looks at `endedAt` — so a raw `active` status
+   * measures to `now` regardless of whether its `endedAt` is corrupt, absent, or
+   * a real past instant (see "measures a served raw-active row to now" above,
+   * which pins the same answer for a VALID end instant). Kept as the
+   * counterfactual for the withdrawn disclaim.
    */
-  it("degrades to unmeasurable on an unparseable endedAt, on both surfaces", () => {
+  it("ISS-10364: keeps timing a raw-active run even with an unparseable endedAt, on both surfaces", () => {
     const record = {
       awaitingInputSince: new Date(NOW.getTime() - 30 * HOUR_MS),
       endedAt: new Date("not-a-date"),
@@ -253,32 +273,31 @@ describe("ISS-5575: the detail Duration window matches the list's", () => {
 
     const label = detailDurationLabelFor(record);
     expect(label).toBe(listDurationLabelFor(record));
-    expect(label).toBeNull();
+    expect(label).not.toBeNull();
     expect(resolveSessionDetailDurationWindow({ ...record, now: NOW })).toEqual(
       {
-        kind: "unmeasurable",
+        kind: "running",
       }
     );
-    // The title chip on the SAME screen disclaims too — it reads the shared
-    // evidence classifier, so it cannot badge "Waiting" over this em-dash.
     expect(resolveSessionDetailDisplayStatus({ ...record, now: NOW })).toBe(
-      DISPLAYED_SESSION_STATUS.UNKNOWN
+      SESSION_STATUS.ACTIVE
     );
-    // ...and the dash is NOT captioned "No activity for over 24 hours". Both
-    // facts are true of this row, but the reason the NUMBER is missing is the
-    // corruption, and the chip beside it already names that.
     expect(emptyReasonFor(record)).toBeNull();
   });
 
   /**
-   * ISS-6455 (whitlockk, #5099 review): the other half of the pair, and it lands
-   * differently. An `awaitingInputSince` this build cannot parse is not evidence
-   * that a run is blocked on a human — the truthiness test it replaces let the
-   * malformed string through and timed the run anyway — but it is not evidence
-   * against the rest of the row either, so the fold simply runs without the
-   * exemption. Silent past the cutoff, that is Stale and the em-dash.
+   * ISS-6455 (whitlockk, #5099 review) pinned that an unparseable
+   * `awaitingInputSince` withholds the staleness EXEMPTION without disclaiming
+   * the row — a corrupt exemption anchor should cost nothing but the exemption
+   * itself, which then used to land on Stale.
+   *
+   * ISS-10364 (operator ruling, 2026-09-23) retired the staleness fold this
+   * case fell back to, so there is no fold left to withhold from: every
+   * `active` row measures start -> now regardless of silence, corrupt
+   * `awaitingInputSince` included. Kept as the counterfactual for the
+   * withdrawn fold.
    */
-  it("withholds the staleness exemption on an unparseable awaitingInputSince, on both surfaces", () => {
+  it("ISS-10364: keeps a run measured on an unparseable awaitingInputSince, on both surfaces", () => {
     const record = {
       awaitingInputSince: new Date("not-a-date"),
       endedAt: null,
@@ -289,13 +308,11 @@ describe("ISS-5575: the detail Duration window matches the list's", () => {
 
     const label = detailDurationLabelFor(record);
     expect(label).toBe(listDurationLabelFor(record));
-    expect(label).toBeNull();
-    // Stale, NOT Unknown: the row is folded, not disclaimed, and the dash keeps
-    // the staleness sentence that actually explains it.
+    expect(label).not.toBeNull();
     expect(resolveSessionDetailDisplayStatus({ ...record, now: NOW })).toBe(
-      DISPLAYED_SESSION_STATUS.STALE
+      SESSION_STATUS.ACTIVE
     );
-    expect(emptyReasonFor(record)).toBe(SESSION_STALE_TOOLTIP);
+    expect(emptyReasonFor(record)).toBeNull();
   });
 
   it("keeps a LIVE run measured when only its awaitingInputSince is unparseable", () => {
@@ -314,23 +331,21 @@ describe("ISS-5575: the detail Duration window matches the list's", () => {
     expect(label).not.toBeNull();
   });
 
-  it("measures a waiting run against now, and keeps its clock running", () => {
+  it("ISS-10364: a legacy 'waiting' status folds to Active and keeps its clock running", () => {
     const record = {
       endedAt: null,
       lastActivityAt: SILENT_SINCE,
       startedAt: STARTED_AT,
-      status: DISPLAYED_SESSION_STATUS.WAITING,
+      // Plain literal: ISS-10364 retired `DISPLAYED_SESSION_STATUS.WAITING`.
+      status: "waiting",
     };
 
-    // A run blocked on a human is exempt from the staleness fold: it is still
-    // live, so its span still grows.
     expect(resolveSessionDetailDurationWindow({ ...record, now: NOW })).toEqual(
       {
         kind: "running",
       }
     );
     expect(detailDurationLabelFor(record)).toBe(listDurationLabelFor(record));
-    // The gate that froze this at mount before review caught it.
     expect(isSessionDetailDurationClockRelevant(record)).toBe(true);
   });
 
@@ -352,11 +367,11 @@ describe("ISS-5575: the detail Duration window matches the list's", () => {
     // failure mode, so `running` must always imply a live clock.
     for (const status of [
       SESSION_STATUS.ACTIVE,
-      DISPLAYED_SESSION_STATUS.WAITING,
+      "waiting",
       SESSION_STATUS.INACTIVE,
       SESSION_STATUS.ERROR,
-      DISPLAYED_SESSION_STATUS.UNKNOWN,
-      DISPLAYED_SESSION_STATUS.STALE,
+      "unknown",
+      "stale",
       UNRECOGNIZED_STATUS,
     ]) {
       const window = resolveSessionDetailDurationWindow({
@@ -374,7 +389,11 @@ describe("ISS-5575: the detail Duration window matches the list's", () => {
 });
 
 describe("ISS-5575: the empty Duration says why", () => {
-  it("explains a stale fold with the canonical staleness sentence", () => {
+  it("ISS-10364: gives no reason for a silent run that just keeps timing, since the staleness sentence is retired", () => {
+    // Counterfactual: this used to be the case that explained a Stale fold.
+    // There is no fold left to explain — the row measures start -> now like any
+    // other active row, so the Duration renders a real label and the reason is
+    // null.
     expect(
       emptyReasonFor({
         endedAt: null,
@@ -382,7 +401,7 @@ describe("ISS-5575: the empty Duration says why", () => {
         startedAt: STARTED_AT,
         status: SESSION_STATUS.ACTIVE,
       })
-    ).toBe(SESSION_STALE_TOOLTIP);
+    ).toBeNull();
   });
 
   it("keeps the no-start sentence for a record that genuinely has no start", () => {
@@ -438,31 +457,31 @@ describe("ISS-5575: the empty Duration says why", () => {
       endedAt: new Date(NOW.getTime() - HOUR_MS),
       status: SESSION_STATUS.INACTIVE,
     },
-  ])("keeps the no-start sentence on a measurable $case window with no start", ({
-    endedAt,
-    status,
-  }) => {
-    const record = {
-      endedAt,
-      lastActivityAt: new Date(NOW.getTime() - HOUR_MS),
-      now: NOW,
-      startedAt: null,
-      status,
-    };
+  ])(
+    "keeps the no-start sentence on a measurable $case window with no start",
+    ({ endedAt, status }) => {
+      const record = {
+        endedAt,
+        lastActivityAt: new Date(NOW.getTime() - HOUR_MS),
+        now: NOW,
+        startedAt: null,
+        status,
+      };
 
-    // The window itself is measurable — only the label is empty.
-    expect(resolveSessionDetailDurationWindow(record).kind).not.toBe(
-      "unmeasurable"
-    );
-    expect(
-      resolveSessionWallClockLabel(
-        record.startedAt,
-        resolveSessionDetailDurationWindow(record),
-        NOW.getTime()
-      )
-    ).toBeNull();
-    expect(emptyReasonFor(record)).toBe(DURATION_NO_START_REASON);
-  });
+      // The window itself is measurable — only the label is empty.
+      expect(resolveSessionDetailDurationWindow(record).kind).not.toBe(
+        "unmeasurable"
+      );
+      expect(
+        resolveSessionWallClockLabel(
+          record.startedAt,
+          resolveSessionDetailDurationWindow(record),
+          NOW.getTime()
+        )
+      ).toBeNull();
+      expect(emptyReasonFor(record)).toBe(DURATION_NO_START_REASON);
+    }
+  );
 });
 
 /**

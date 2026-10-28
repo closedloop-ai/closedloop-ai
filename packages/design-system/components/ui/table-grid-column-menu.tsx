@@ -1,5 +1,6 @@
 "use client";
 
+import type { ColumnMovePlacement } from "@closedloop-ai/design-system/lib/column-order";
 import { cn } from "@closedloop-ai/design-system/lib/utils";
 import {
   ArrowDownIcon,
@@ -46,10 +47,7 @@ import type { SortDirection } from "./sortable-column-header";
 export type TableGridHeaderActions = {
   onFilter?: (columnId: string) => void;
   onGroup?: (columnId: string) => void;
-  onMove?: (
-    columnId: string,
-    direction: "start" | "left" | "right" | "end"
-  ) => void;
+  onMove?: (columnId: string, direction: ColumnMovePlacement) => void;
 };
 
 /**

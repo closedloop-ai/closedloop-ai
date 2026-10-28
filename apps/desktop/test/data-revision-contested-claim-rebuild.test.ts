@@ -20,9 +20,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
-import { DATA_REVISION } from "../src/main/collectors/engine/data-revision.js";
+import { test } from "vitest";
 import { runDataRevisionRebuild } from "../src/main/collectors/engine/data-revision-rebuild.js";
+import { effectiveDataRevision } from "../src/main/collectors/engine/effective-data-revision.js";
 import { openTestDb } from "./agent-db-test-utils.js";
 import {
   fakeCollector,
@@ -121,7 +121,7 @@ test("a session sealed at revision 77 with the contested claim re-derives onto t
     >("SELECT data_revision FROM sessions WHERE id = $1", SID);
     assert.equal(
       Number(revisionRows[0]?.data_revision),
-      DATA_REVISION,
+      effectiveDataRevision(),
       "the rebuild sealed the session at the current revision"
     );
 
@@ -161,28 +161,27 @@ test("a transcript-less session is still selected by the bump and seals on the f
     });
     assert.equal(result.missingSource, 1, "the bridge, not a reparse, ran");
 
-    // What the bridge itself derives lands on the row the agents lane kept: it
-    // reads the stored spawn event, which for a contested delegation anchors on
-    // the fallback row, never on a claimant. It cannot rewrite the live path's
-    // `subagent:<rawSubagentId>` rows — the bridge keys its own on the AGENT id,
-    // a separate key space — so a transcript-less session keeps the stale row
-    // beside the corrected one. Only a reparse fully converges it (test above).
-    const contested = await delegationAnchoredInvocations(db);
-    assert.ok(
-      contested.some(
-        (row) =>
-          row.agent_id === FALLBACK_AGENT_ID &&
-          row.provider_tool_use_id === PROVIDER_ID
-      ),
-      "the bridge derived the contested delegation onto the fallback agents row"
-    );
+    // ISS-6571: what the bridge derives lands on the row the agents lane kept
+    // — it reads the stored spawn event, which for a contested delegation
+    // anchors on the fallback row, never on a claimant — and the contested
+    // child gives the delegation up. It used to KEEP it: the child's stored row
+    // still carried the stale claim and `restoreStableInvocationIdentities`
+    // copied it back, so two rows spoke for one delegation and the bridge
+    // sealed that duplicate at the new revision. Exactly one row now does.
+    assert.deepEqual(await delegationAnchoredInvocations(db), [
+      {
+        external_invocation_id: `subagent:${FALLBACK_AGENT_ID}`,
+        agent_id: FALLBACK_AGENT_ID,
+        provider_tool_use_id: PROVIDER_ID,
+      },
+    ]);
 
     const revisionRows = await db.prisma.client.$queryRawUnsafe<
       { data_revision: number | bigint }[]
     >("SELECT data_revision FROM sessions WHERE id = $1", SID);
     assert.equal(
       Number(revisionRows[0]?.data_revision),
-      DATA_REVISION,
+      effectiveDataRevision(),
       "sealing is honest: the attribution was corrected before the stamp"
     );
   } finally {

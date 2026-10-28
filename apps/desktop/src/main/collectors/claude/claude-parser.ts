@@ -40,13 +40,23 @@
  * `test/claude-unreadable-transcript.test.ts` pins each answer against its
  * paired control, at the parser and again at the collector.
  */
-import { createReadStream, statSync } from "node:fs";
+import { createReadStream, type Stats, statSync } from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
+import { isDeepStrictEqual } from "node:util";
 import {
   extractDedupedUsage,
-  isoTs,
   parseJsonValue,
+} from "@repo/lib/harness/claude/claude-usage";
+import type { ClaudeLineageReplay } from "@repo/lib/harness/claude/fork-replay";
+import {
+  buildSession,
+  type ClaudeParseQuality,
+  type ClaudeSessionUsage,
+  deriveSessionUsage,
+  ownDiffStats,
+  ownToolUses,
+  scanTranscriptLines,
 } from "@repo/lib/harness/claude/parse-claude";
 import {
   ClaudeRecordType,
@@ -54,14 +64,6 @@ import {
   type ParseSessionLogger,
   type SessionAccumulator,
 } from "@repo/lib/harness/claude/parse-claude-accumulator";
-import {
-  buildSession,
-  type ClaudeParseQuality,
-  type ClaudeSessionUsage,
-  deriveSessionUsage,
-  ownDiffStats,
-  scanTranscriptLines,
-} from "@repo/lib/harness/claude/parse-claude-core";
 import {
   type ClaudeDelegation,
   delegationFromToolUseResult,
@@ -71,12 +73,14 @@ import {
 import { reportUnknownRecords } from "@repo/lib/harness/claude/parse-claude-drift";
 import { createSidecarSubagent } from "@repo/lib/harness/claude/parse-claude-subagents";
 import { isReplayedTranscriptEntry } from "@repo/lib/harness/claude/replayed-entry";
+import type { NormalizedParseQuality } from "@repo/lib/harness/parse-quality";
 import {
   asRecord,
   classifyToolKind,
-  stringValue,
+  toIso,
 } from "@repo/lib/harness/parser-utils";
 import { InvalidTokenCountError } from "@repo/lib/harness/token-counts";
+import { selectToolResultFacts } from "@repo/lib/harness/tool-result-facts";
 import type {
   NormalizedSession,
   NormalizedSubagent,
@@ -87,13 +91,22 @@ import {
   mergeFoldedUsage,
   takeUnfoldedUsage,
 } from "@repo/lib/harness/usage-dedup";
+import { effectiveParsePolicy } from "../../parse-policy/effective-parse-policy.js";
+import type { ParsePolicy } from "../../parse-policy/parse-policy.js";
 import {
   createParseQualityScan,
   foldChildParseQuality,
   readJsonlLinesWithQuality,
 } from "../engine/parse-quality-scan.js";
 import { isImportableSourcePath } from "../engine/source-admission.js";
-import { stringifyBounded } from "../parsing/subagent-scanner.js";
+import { stampFileCreatedAt } from "../file-created-at.js";
+import {
+  accumulateSubagentToolUseEntry,
+  createSubagentToolUseAccumulator,
+  finalizeSubagentToolUses,
+  type SubagentToolUseRecord,
+} from "../parsing/subagent-scanner.js";
+import { resolveClaudeForkLineage } from "./claude-fork-lineage.js";
 import { walkSubagentTranscripts } from "./claude-home.js";
 import {
   enrichSidecarSubagents,
@@ -119,9 +132,18 @@ import {
  */
 export async function parseSessionFile(
   filePath: string,
-  logger?: ParseSessionLogger
+  logger?: ParseSessionLogger,
+  onUnreadableParse?: (quality: NormalizedParseQuality) => void,
+  parsePolicy: ParsePolicy = effectiveParsePolicy()
 ): Promise<NormalizedSession | null> {
   const sessionId = path.basename(filePath, ".jsonl");
+  // Resolved before the stream below is opened: awaiting it afterwards would
+  // let the stream flow with nothing reading it. ISS-12552 (PRD-800
+  // "Rollout"): read only under the attribution policy; off, a headless fork
+  // keeps its copied history as it did before PRD-800.
+  const lineageReplay = parsePolicy.attributionEvidence
+    ? await forkLineageOf(filePath, logger)
+    : undefined;
 
   // Held so the `finally` can destroy it. Belt-and-braces rather than load
   // bearing: `readline.Interface.close()` releases the interface and not its
@@ -141,6 +163,8 @@ export async function parseSessionFile(
   // cloud renderer deliberately passes nothing.
   const accumulator = createSessionAccumulator({
     collectDiagnostics: logger !== undefined,
+    ...(lineageReplay ? { lineageReplay } : {}),
+    attributionEvidence: parsePolicy.attributionEvidence,
   });
   let parseQuality: ClaudeParseQuality;
   try {
@@ -158,6 +182,13 @@ export async function parseSessionFile(
   // timeline, so it is not importable as a session. Distinct from an unreadable
   // file, which throws: this one was read fine and simply carries nothing.
   if (!accumulator.startedAt) {
+    // ISS-7625: `scanTranscriptLines` has already filled `parseQuality` by here,
+    // and this `null` used to be where those counts died. Hand them over so an
+    // all-malformed transcript can be counted as an ingest failure rather than
+    // reading as a source that was simply empty. No subagent fold has run yet,
+    // which is correct — a transcript with no timestamp has no session to fold
+    // sidecars onto.
+    onUnreadableParse?.(parseQuality);
     return null;
   }
 
@@ -171,13 +202,15 @@ export async function parseSessionFile(
     pendingAgents,
   });
 
+  const fileStats = readFileStats(filePath);
   const session = buildSession(accumulator, {
     sessionId,
     parseQuality,
     usage,
     diffStats,
-    fileModifiedAt: readFileModifiedAt(filePath),
+    fileModifiedAt: fileStats?.mtimeMs ?? null,
   });
+  stampFileCreatedAt(session, fileStats);
 
   // Reconciled last, once every agent's tool calls are in place: the join walks
   // the meta file's link, then the spawning call's input, then the answering
@@ -226,14 +259,24 @@ async function processAgentFiles(
   // both carry is counted once rather than once per file. The two guards must
   // agree on what one turn is, or a session counts its lines once and its cost
   // twice.
-  const countedDiffToolUseIds = parentCountedDiffToolUseIds(
-    accumulator.toolUses
-  );
+  // ISS-8659: the OWN list, not `accumulator.toolUses`. A replayed call stays in
+  // the raw array so its own replayed result still resolves to it, but nothing
+  // booked its lines — `applyDiffStatsToolUseState` runs a replayed handler
+  // against throwaway totals, so its paths never reach `accumulator.diffFiles`.
+  // Passing the raw array here claimed replayed ids as already-counted when
+  // nothing counted them, and inflated `ownFilePaths` past the parent's real
+  // set, which is exactly the case the clamp below this comment warns silently
+  // undercounts `filesChanged`.
+  const ownParentToolUses = ownToolUses(accumulator);
+  const countedDiffToolUseIds = parentCountedDiffToolUseIds(ownParentToolUses);
+  // Parent diff totals are already booked. Preserve their path population even
+  // if later semantic reconciliation quarantines a conflicting tool projection.
+  const parentDiffFilePaths = ownDiffFilePaths(ownParentToolUses);
   const contributions: SidecarDiffStatsContribution[] = [];
 
   for (const { agentFile, agentId } of agentFiles) {
     try {
-      await processAgentFile(agentFile, agentId, accumulator, {
+      await processAgentFile(agentFile, agentId, sessionId, accumulator, {
         ...session,
         countedDiffToolUseIds,
         contributions,
@@ -249,7 +292,7 @@ async function processAgentFiles(
 
   return foldSidecarDiffStats(
     ownDiffStats(accumulator),
-    ownDiffFilePaths(accumulator.toolUses),
+    parentDiffFilePaths,
     contributions
   );
 }
@@ -268,6 +311,7 @@ type AgentFileMergeTarget = {
 async function processAgentFile(
   agentFile: string,
   agentId: string,
+  sessionId: string,
   accumulator: SessionAccumulator,
   target: AgentFileMergeTarget & {
     countedDiffToolUseIds: Set<string>;
@@ -277,7 +321,9 @@ async function processAgentFile(
   const read = await readAgentFile(
     agentFile,
     agentId,
-    target.countedDiffToolUseIds
+    sessionId,
+    target.countedDiffToolUseIds,
+    accumulator.attributionEvidence
   );
   accumulator.delegations.push(...read.delegations);
 
@@ -311,7 +357,23 @@ async function processAgentFile(
   const existing = accumulator.subagents.get(agentId);
   const agent =
     existing ?? createSidecarSubagent(agentId, accumulator.startedAt);
-  agent.toolUses = mergeAgentToolUses(agent, read.toolUses);
+  const toolUseMerge = mergeAgentToolUses(agent, read.toolUses);
+  const conflictedIds = new Set([
+    ...read.conflictedToolUseIds,
+    ...toolUseMerge.conflictedIds,
+  ]);
+  agent.toolUses = toolUseMerge.toolUses.filter(
+    (toolUse) => !(toolUse.id && conflictedIds.has(toolUse.id))
+  );
+  if (conflictedIds.size > 0) {
+    for (let index = accumulator.toolUses.length - 1; index >= 0; index--) {
+      const toolUseId = accumulator.toolUses[index]?.id;
+      if (toolUseId && conflictedIds.has(toolUseId)) {
+        accumulator.toolUses.splice(index, 1);
+      }
+    }
+    reindexToolUses(accumulator.toolUseIdIndex, accumulator.toolUses);
+  }
   agent.tokensByModel = ownUsage.tokensByModel;
   agent.tokenSeries = ownUsage.tokenSeries;
   if (!existing) {
@@ -333,7 +395,9 @@ async function processAgentFile(
 async function readAgentFile(
   agentFile: string,
   agentId: string,
-  countedDiffToolUseIds: Set<string>
+  sessionId: string,
+  countedDiffToolUseIds: Set<string>,
+  attributionEvidence: boolean
 ): Promise<{
   entries: Array<{ entry: Record<string, unknown>; iso: string | null }>;
   toolUses: NormalizedToolUse[];
@@ -342,12 +406,16 @@ async function readAgentFile(
   totalLines: number;
   malformedLines: number;
   truncatedFinalLine: boolean;
+  conflictedToolUseIds: string[];
 }> {
   const entries: Array<{
     entry: Record<string, unknown>;
     iso: string | null;
   }> = [];
-  const toolUses: NormalizedToolUse[] = [];
+  const toolUseAccumulator = createSubagentToolUseAccumulator(
+    sessionId,
+    agentId
+  );
   const delegations: ClaudeDelegation[] = [];
   // FEA-3453: an agent's transcript is replayed on resume exactly like its parent's, so
   // the same filter applies — and because this is now the ONLY read of the file,
@@ -355,9 +423,11 @@ async function readAgentFile(
   // `tool_use.id` cannot be deduped downstream at all, which is why the filter
   // has to sit at the line rather than at the merge.
   const seenEntryUuids = new Set<string>();
-  // Derived from the same untruncated raw input this pass already reads — the
-  // merged tool-use records bound each input at 1000 characters, which is
-  // unparseable as a patch.
+  // Derived from the raw input this pass already reads. ISS-6480 removed the
+  // 1000-character bound that was this pass's stated reason for existing, so
+  // whether it still needs the raw lines is open — ISS-7164. Do not delete it
+  // on the strength of the retired premise, and do not assume a redundancy
+  // that was never established.
   const diffPass = createSidecarDiffStatsPass(countedDiffToolUseIds);
   const scan = createParseQualityScan();
   for await (const { entry } of readJsonlLinesWithQuality(agentFile, scan)) {
@@ -368,13 +438,16 @@ async function readAgentFile(
       entry.type === ClaudeRecordType.Assistant &&
       asRecord(entry.message).usage
     ) {
-      entries.push({ entry, iso: isoTs(entry.timestamp) });
+      entries.push({ entry, iso: toIso(entry.timestamp) });
     }
-    toolUses.push(...agentToolUses(entry, agentId));
+    accumulateSubagentToolUseEntry(toolUseAccumulator, entry);
     accumulateSidecarDiffStatsEntry(diffPass, entry);
-    // A NESTED delegation's spawning call lives in its PARENT agent's file, and
-    // this raw pass is the only place those lines are read untruncated — the
-    // merged tool-use records cap each input well below a real prompt.
+    // A NESTED delegation's spawning call lives in its PARENT agent's file.
+    // This loop reads that file's lines directly, so the surviving reason to
+    // keep the raw read is NOT scoping — the merged records for this same file
+    // do carry the spawning tool_use. It is that `finalizeSubagentToolUses`
+    // merges, dedupes, and DROPS conflicted ids, which this pass does not.
+    // Whether that difference still justifies a second read is ISS-7164.
     delegations.push(...delegationsFromEntryToolUses(entry));
     const fromResult = delegationFromToolUseResult(
       toolResultIdFromEntry(entry),
@@ -387,14 +460,21 @@ async function readAgentFile(
   return {
     entries,
     delegations,
-    // One malformed line drops this file's tool uses WHOLE, on the rule that a
-    // truncated line can split a `tool_use` block and half a block is not a
-    // tool use. Adopted to match the landed behaviour rather than because this
-    // rewrite agrees with it: an unparseable line is dropped before any block is
-    // read, so no partial block reaches here, and the file's tokens, authored
-    // lines, and delegations are all still kept — only this one projection is
-    // discarded. Filed as ISS-6454 rather than settled here.
-    toolUses: scan.malformedLines > 0 ? [] : toolUses,
+    // ISS-6454: a malformed line is skipped and counted into `parseQuality`,
+    // the same posture every surrounding lane takes. It does NOT discard this
+    // file's tool uses, which is what the ISS-5542 rule did.
+    //
+    // That rule guarded a hazard this path cannot reach: it feared a truncated
+    // line splitting a `tool_use` block, but `readJsonlLinesWithQuality` drops
+    // an unparseable line before any block is inspected, so every block
+    // arriving here came from a line that parsed whole. The cost was real,
+    // though — a delegated agent whose transcript was still being written lost
+    // every tool call it made while its tokens, authored lines, and delegations
+    // all still counted. Cost retained, work discarded.
+    toolUses: finalizeSubagentToolUses(toolUseAccumulator).map((toolUse) =>
+      normalizedAgentToolUse(toolUse, attributionEvidence)
+    ),
+    conflictedToolUseIds: [...toolUseAccumulator.conflictedIds].sort(),
     diffStats: sidecarDiffStatsFromAccumulator(diffPass.acc),
     totalLines: scan.totalLines,
     malformedLines: scan.malformedLines,
@@ -411,135 +491,211 @@ async function readAgentFile(
 function mergeAgentToolUses(
   agent: NormalizedSubagent,
   toolUses: readonly NormalizedToolUse[]
-): NormalizedToolUse[] {
+): { toolUses: NormalizedToolUse[]; conflictedIds: ReadonlySet<string> } {
   const merged = [...(agent.toolUses ?? [])];
-  const seen = new Set(
-    merged
-      .map((toolUse) => toolUse.id)
-      .filter((id): id is string => typeof id === "string")
-  );
+  const indexById = new Map<string, number>();
+  const conflictedIds = new Set<string>();
+  for (const [index, toolUse] of merged.entries()) {
+    if (toolUse.id) {
+      indexById.set(toolUse.id, index);
+    }
+  }
   for (const toolUse of toolUses) {
     if (toolUse.id) {
-      if (seen.has(toolUse.id)) {
+      if (conflictedIds.has(toolUse.id)) {
         continue;
       }
-      seen.add(toolUse.id);
+      const existingIndex = indexById.get(toolUse.id);
+      if (existingIndex !== undefined) {
+        const reconciled = reconcileAgentToolUse(
+          merged[existingIndex],
+          toolUse
+        );
+        if (reconciled) {
+          merged[existingIndex] = reconciled;
+        } else {
+          merged.splice(existingIndex, 1);
+          conflictedIds.add(toolUse.id);
+          reindexToolUses(indexById, merged);
+        }
+        continue;
+      }
+      indexById.set(toolUse.id, merged.length);
     }
     merged.push(toolUse);
   }
-  return merged;
+  return { toolUses: merged, conflictedIds };
 }
 
-/**
- * The tool calls one agent-file record made.
- *
- * The input is round-tripped through `stringifyBounded` → `parseJsonValue`, which
- * is not a serialization step — it is the production behaviour, reproduced. The
- * scanner this read replaced bounded each input to 1000 JSON characters, and the
- * shell then re-parsed that string; for any input longer than the bound the slice
- * lands mid-token, `JSON.parse` throws, and the input is dropped ENTIRELY rather
- * than kept as a 1000-character preview. Across the golden corpus that is 84 of
- * 1,886 agent tool calls, every one of them over the bound and every one under it
- * intact — a clean split, so the bound explains all of it and nothing else does.
- *
- * Reproduced here rather than fixed, so this rewrite stays behaviour-identical to
- * what ships and the improvement is its own reviewable change: ISS-6480.
- */
-function agentToolUses(
-  record: Record<string, unknown>,
-  agentId: string
-): NormalizedToolUse[] {
-  const timestamp = isoTs(record.timestamp);
-  // FLAT SHAPE FIRST, exactly as `extractToolUses` does. An agent file can carry
-  // a tool at the TOP level (`{"type":"tool_use","name":…}`) rather than nested in
-  // `message.content`, and the reader this replaced accepted both. The live-hook
-  // lane still reaches those records through `extractToolUses`, so dropping the
-  // shape here would not lose the tool — it would make the two readers of the same
-  // file disagree, and a DATA_REVISION rebuild would silently strip tools from
-  // sessions that live ingestion had recorded correctly.
-  const flat = flatAgentToolUse(record, agentId, timestamp);
-  if (flat) {
-    return [flat];
-  }
-  const content = asRecord(record.message).content;
-  if (!Array.isArray(content)) {
-    return [];
-  }
-  const toolUses: NormalizedToolUse[] = [];
-  for (const raw of content) {
-    const block = asRecord(raw);
-    if (block.type !== "tool_use" || typeof block.name !== "string") {
-      continue;
-    }
-    const bounded = stringifyBounded(block.input);
-    const input = bounded ? parseJsonValue(bounded) : undefined;
-    // Read from the BOUNDED value, not the raw block: production resolves the
-    // Skill name from the same re-parsed copy, so an over-bound Skill input
-    // yields no name there and must yield none here. Reading the raw block would
-    // be a better answer and a NEW divergence — it belongs with ISS-6480.
-    const skill = block.name === "Skill" ? asRecord(input).skill : null;
-    toolUses.push({
-      ...(stringValue(block.id) ? { id: stringValue(block.id) as string } : {}),
-      name: block.name,
-      kind: classifyToolKind(block.name),
-      ...(typeof skill === "string" ? { skillName: skill } : {}),
-      timestamp,
-      input,
-      subagentId: agentId,
-    });
-  }
-  return toolUses;
-}
-
-/**
- * A tool written at the TOP level of an agent record rather than inside
- * `message.content`.
- *
- * `extractToolUses` — the live-hook lane's reader of these same files — accepts
- * `type: "tool_use"` and `type: "tool_result"` in this position, keyed on the
- * record's own `name`/`id`/`input`/`result`. Both lanes must accept it, and
- * populate the same fields from it, or the same file yields different tools
- * depending on which one read it.
- *
- * `result` is the field that makes this shape worth having: it is the ONLY
- * position an agent-file tool carries its output in, the sibling reader captures
- * it as `output`, and `importToolEventData` persists that as
- * `events.data.tool_response` — the Session Trace's per-call detail. Reading the
- * shape without it restores the tool row and drops what the tool returned.
- */
-function flatAgentToolUse(
-  record: Record<string, unknown>,
-  agentId: string,
-  timestamp: string | null
+function reconcileAgentToolUse(
+  inline: NormalizedToolUse,
+  sidecar: NormalizedToolUse
 ): NormalizedToolUse | null {
-  if (record.type !== "tool_use" && record.type !== "tool_result") {
+  if (!areToolUseIdentitiesCompatible(inline, sidecar)) {
     return null;
   }
-  const name = stringValue(record.name);
-  if (!name) {
+  const output = reconcileCompletionValue(inline.output, sidecar.output);
+  const resultTimestamp = reconcileCompletionValue(
+    inline.resultTimestamp ?? undefined,
+    sidecar.resultTimestamp ?? undefined
+  );
+  const isError = reconcileCompletionError(inline, sidecar);
+  if (output.conflict || resultTimestamp.conflict || isError.conflict) {
     return null;
   }
-  // The same bounded round-trip the nested path uses, so an over-bound input is
-  // dropped identically in both shapes rather than only in one (ISS-6480).
-  const bounded = stringifyBounded(record.input);
-  const input = bounded ? parseJsonValue(bounded) : undefined;
-  const boundedResult = stringifyBounded(record.result);
-  const skill = name === "Skill" ? asRecord(input).skill : null;
+  if (output.value !== undefined) {
+    inline.output = output.value;
+    // ISS-10736: the footprint describes THIS output, so it travels with it. An
+    // inline record that already carried its own count keeps it — both lanes
+    // count the same result text, and the sidecar has none when it saw none.
+    if (sidecar.outputFootprintTokens !== undefined) {
+      inline.outputFootprintTokens ??= sidecar.outputFootprintTokens;
+    }
+  }
+  if (resultTimestamp.value !== undefined) {
+    inline.resultTimestamp = resultTimestamp.value;
+  }
+  if (isError.value !== undefined) {
+    inline.isError = isError.value;
+  }
+  return inline;
+}
+
+function reconcileCompletionError(
+  inline: NormalizedToolUse,
+  sidecar: NormalizedToolUse
+): { conflict: boolean; value: boolean | undefined } {
+  const inlineCompleted = inline.output !== undefined;
+  const sidecarCompleted = sidecar.output !== undefined;
+  if (inlineCompleted && sidecarCompleted) {
+    const inlineError = inline.isError === true;
+    const sidecarError = sidecar.isError === true;
+    if (inlineError !== sidecarError) {
+      return { conflict: true, value: undefined };
+    }
+    return {
+      conflict: false,
+      value: inline.isError ?? sidecar.isError,
+    };
+  }
+  if (inlineCompleted) {
+    return { conflict: false, value: inline.isError };
+  }
+  if (sidecarCompleted) {
+    return { conflict: false, value: sidecar.isError };
+  }
+  return reconcileCompletionValue(inline.isError, sidecar.isError);
+}
+
+function areToolUseIdentitiesCompatible(
+  inline: NormalizedToolUse,
+  sidecar: NormalizedToolUse
+): boolean {
+  const identityPairs: ReadonlyArray<readonly [unknown, unknown]> = [
+    [inline.id, sidecar.id],
+    [inline.name, sidecar.name],
+    [inline.rawName, sidecar.rawName],
+    [inline.normalizedName, sidecar.normalizedName],
+    [inline.kind, sidecar.kind],
+    [inline.timestamp, sidecar.timestamp],
+    [inline.input, sidecar.input],
+    [inline.mcpServer, sidecar.mcpServer],
+    [inline.mcpMethod, sidecar.mcpMethod],
+    [inline.skillName, sidecar.skillName],
+    [inline.diffDelta, sidecar.diffDelta],
+    [inline.definitionSnapshot, sidecar.definitionSnapshot],
+    [inline.gitBranch, sidecar.gitBranch],
+    [inline.subagentId, sidecar.subagentId],
+  ];
+  return identityPairs.every(([left, right]) => {
+    if (left === null || left === undefined) {
+      return true;
+    }
+    if (right === null || right === undefined) {
+      return true;
+    }
+    return isDeepStrictEqual(left, right);
+  });
+}
+
+function reconcileCompletionValue<T>(
+  left: T | undefined,
+  right: T | undefined
+): { conflict: boolean; value: T | undefined } {
+  if (left === undefined) {
+    return { conflict: false, value: right };
+  }
+  if (right === undefined) {
+    return { conflict: false, value: left };
+  }
+  return isDeepStrictEqual(left, right)
+    ? { conflict: false, value: left }
+    : { conflict: true, value: undefined };
+}
+
+function reindexToolUses(
+  indexById: Map<string, number>,
+  toolUses: readonly NormalizedToolUse[]
+): void {
+  indexById.clear();
+  for (const [index, toolUse] of toolUses.entries()) {
+    if (toolUse.id) {
+      indexById.set(toolUse.id, index);
+    }
+  }
+}
+
+/** Convert one native-id-joined sidecar record into the shared parser shape. */
+function normalizedAgentToolUse(
+  toolUse: SubagentToolUseRecord,
+  attributionEvidence: boolean
+): NormalizedToolUse {
+  const input = scannedToolInput(toolUse);
+  const skill = toolUse.toolName === "Skill" ? asRecord(input).skill : null;
   return {
-    ...(stringValue(record.id) ? { id: stringValue(record.id) as string } : {}),
-    name,
-    kind: classifyToolKind(name),
+    ...(toolUse.toolUseId ? { id: toolUse.toolUseId } : {}),
+    ...(attributionEvidence && toolUse.requestKey
+      ? { requestKey: toolUse.requestKey }
+      : {}),
+    name: toolUse.toolName,
+    kind: classifyToolKind(toolUse.toolName),
     ...(typeof skill === "string" ? { skillName: skill } : {}),
-    timestamp,
+    timestamp: toIso(toolUse.timestamp),
     input,
-    ...(boundedResult ? { output: parseJsonValue(boundedResult) } : {}),
-    subagentId: agentId,
+    ...(toolUse.output === null
+      ? {}
+      : { output: parseJsonValue(toolUse.output) }),
+    // ISS-10736 (tamsinb review): the scanner counted the UNTRUNCATED result;
+    // `output` above is its bounded form and cannot be recounted downstream.
+    ...(toolUse.outputFootprintTokens === null
+      ? {}
+      : { outputFootprintTokens: toolUse.outputFootprintTokens }),
+    ...(toolUse.resultTimestamp === null
+      ? {}
+      : { resultTimestamp: toIso(toolUse.resultTimestamp) }),
+    ...(toolUse.isError === null ? {} : { isError: toolUse.isError }),
+    ...(attributionEvidence && toolUse.resultFacts !== null
+      ? selectToolResultFacts({ name: toolUse.toolName }, toolUse.resultFacts)
+      : {}),
+    subagentId: toolUse.agentId,
   };
 }
 
 /**
- * The source file's mtime, which the catchup cache keys on to notice a changed
- * transcript.
+ * ISS-6480: the scanner carries the raw input, so this reads it straight
+ * through. It used to re-parse a bounded string, which dropped every input over
+ * the bound. `null` is the scanner's absent sentinel; a falsy-but-real `0`,
+ * `""`, or `false` passes through intact. Known limitation, tracked as
+ * ISS-7161: a tool input that genuinely was `null` reads as absent here,
+ * because the producer stores `null` for both meanings.
+ */
+function scannedToolInput(toolUse: SubagentToolUseRecord): unknown {
+  return toolUse.input === null ? undefined : toolUse.input;
+}
+
+/**
+ * The source file's stat: its mtime is what the catchup cache keys on to notice
+ * a changed transcript, and its birth time is the session's `fileCreatedAt`.
  *
  * Deliberately NOT fatal, unlike a read failure: the transcript has already been
  * read in full by this point, so a stat that fails here means the file vanished
@@ -547,10 +703,28 @@ function flatAgentToolUse(
  * than it protects. See the interface note — whether this should also throw is
  * an open question.
  */
-function readFileModifiedAt(filePath: string): number | null {
+function readFileStats(filePath: string): Stats | undefined {
   try {
-    return statSync(filePath).mtimeMs;
+    return statSync(filePath);
   } catch {
-    return null;
+    return;
+  }
+}
+
+/**
+ * ISS-12552: a headless fork's copied history. Best-effort: a sibling that
+ * cannot be read leaves the parse exactly as it was before lineage existed.
+ */
+async function forkLineageOf(
+  filePath: string,
+  logger: ParseSessionLogger | undefined
+): Promise<ClaudeLineageReplay | undefined> {
+  try {
+    return await resolveClaudeForkLineage(filePath);
+  } catch (error) {
+    logger?.(
+      `fork lineage unavailable for ${path.basename(filePath)}: ${error instanceof Error ? error.message : String(error)}`
+    );
+    return undefined;
   }
 }

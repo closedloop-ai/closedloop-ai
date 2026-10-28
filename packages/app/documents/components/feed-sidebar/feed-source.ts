@@ -103,12 +103,49 @@ export type FeedSource<TItem extends FeedItem = FeedItem, TFilter = unknown> = {
   };
 };
 
+/** Reads one source's stored filter state (`FeedFilterContextValue.getSourceState`). */
+export type FeedSourceStateReader = <T>(sourceId: string) => T | undefined;
+
+/** Stores one source's filter state (`FeedFilterContextValue.setSourceState`). */
+export type FeedSourceStateWriter = <T>(sourceId: string, next: T) => void;
+
+/** One item that passed its source's filter, with that source's renderer. */
+export type FeedSourceEntry = {
+  item: FeedItem;
+  render: () => ReactNode;
+};
+
+/** What one mounted source publishes into the items registry. */
+export type FeedSourceItems = {
+  result: FeedSourceUseItemsResult<FeedItem>;
+  select: (readState: FeedSourceStateReader) => readonly FeedSourceEntry[];
+};
+
 /**
- * Type-erased source alias used by the runtime + filter context where
- * the concrete item / filter shapes don't matter. Each source's own
- * `applyFilter` and `renderItem` are only called via that source's own
- * reference, so the `any` here doesn't leak unsafe access outside the
- * registry boundary.
+ * A `FeedSource` with its item and filter types hidden, as the runtime,
+ * filter bar, stream and filter context hold a heterogeneous list of them.
+ * Built by `eraseFeedSource`. `FeedSource` is invariant in both type
+ * parameters, so no single instantiation covers every source; instead each
+ * operation that consumes a `TItem` or `TFilter` is a closure over the typed
+ * source, and an item only ever reaches the `applyFilter` / `renderItem` of
+ * the source whose `useItems` produced it.
  */
-// biome-ignore lint/suspicious/noExplicitAny: type-erased source alias for the runtime registry; concrete sources retain their TItem/TFilter generics
-export type AnyFeedSource = FeedSource<any, any>;
+export type AnyFeedSource = Pick<
+  FeedSource,
+  | "id"
+  | "kind"
+  | "label"
+  | "Icon"
+  | "Composer"
+  | "StatusBanner"
+  | "Footer"
+  | "stateCopy"
+> & {
+  defaultFilterState: unknown;
+  useItems: () => FeedSourceItems;
+  isFiltered: (readState: FeedSourceStateReader) => boolean;
+  renderFilterControl: (
+    readState: FeedSourceStateReader,
+    writeState: FeedSourceStateWriter
+  ) => ReactNode;
+};

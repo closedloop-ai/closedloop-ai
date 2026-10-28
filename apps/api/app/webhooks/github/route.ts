@@ -8,7 +8,7 @@ import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import type { GitHubWebhookObservationContext } from "@/lib/github/github-webhook-observation";
-import { scheduleLogFlush } from "@/lib/route-utils";
+import { withRequestCompleted } from "@/lib/observability/with-request-completed";
 import { handleCheckRun } from "./handlers/check-run-handler";
 import { handleDeploymentStatus } from "./handlers/deployment-status-handler";
 import { handleInstallation } from "./handlers/installation-handler";
@@ -32,18 +32,20 @@ import { handlePush } from "./handlers/push-handler";
 import { maybeDropPreviewSchemaOnClose } from "./preview-schema-drop";
 import { isGitHubConfigured, validateRequest } from "./webhook-service";
 
-export async function POST(request: Request): Promise<Response> {
+export const POST = withRequestCompleted(handleGitHubWebhook);
+
+async function handleGitHubWebhook(request: Request): Promise<Response> {
   if (!isGitHubConfigured()) {
     log.warn("[webhook/github] GitHub not configured, rejecting request");
-    scheduleLogFlush();
     return NextResponse.json({ message: "GitHub not configured", ok: false });
   }
 
-  // finally block below ensures every success branch (all switch cases) and
-  // the error branch flush logs; prevents drops on short-lived invocations.
   try {
-    const { body, deliveryId, eventType, observedAt, signature } =
-      await validateRequest(request);
+    const validated = await validateRequest(request);
+    if (validated.oversized) {
+      return validated.oversized;
+    }
+    const { body, deliveryId, eventType, observedAt, signature } = validated;
 
     if (!signature) {
       log.warn("[webhook/github] Missing signature header, rejecting");
@@ -172,8 +174,6 @@ export async function POST(request: Request): Promise<Response> {
       { message: "Something went wrong", ok: false },
       { status: 500 }
     );
-  } finally {
-    scheduleLogFlush();
   }
 }
 
@@ -194,44 +194,58 @@ async function handleGitHubRouteEvent(
 ): Promise<Response> {
   const response = await handler();
   const outcome = await readGitHubRouteOutcome(response);
-  log.info("[webhook/github] Completed webhook handling", {
+  const fields = {
     action: parsedBody.action,
     eventType,
     outcome,
     provider: "github",
-  });
+  };
+  // ISS-8450 AC2: a processed delivery is routine success and logs at debug;
+  // ignored and failed deliveries keep info. `api.webhooks.github` still counts
+  // both, because its filter does not pin a status.
+  if (outcome === "processed" && !LIFECYCLE_ROUTE_EVENTS.has(eventType)) {
+    log.debug("[webhook/github] Completed webhook handling", fields);
+  } else {
+    log.info("[webhook/github] Completed webhook handling", fields);
+  }
   return response;
 }
 
+// Every handler routed through `handleGitHubRouteEvent` answers with
+// `NextResponse.json(...)`, so the body parse below cannot throw. The type
+// system cannot carry that invariant: `NextResponse`'s body parameter is
+// inferred from the expected type, so a bodyless `new NextResponse(null)`
+// satisfies any annotation a handler declares. `handler-response-json-contract`
+// enforces it instead, and a violation fails there rather than as a 500 here.
 async function readGitHubRouteOutcome(response: Response): Promise<string> {
   if (!response.ok) {
     return "failed_response";
   }
-  const body = await readJsonBody(response);
-  if (body?.ok === false) {
+  const body = (await response.clone().json()) as {
+    message?: unknown;
+    ok?: unknown;
+  };
+  if (body.ok === false) {
     return "failed_response";
   }
-  const message = typeof body?.message === "string" ? body.message : "";
-  if (
-    message.startsWith("Ignoring ") ||
-    message.includes(" ignored") ||
-    message.includes("not tracked") ||
-    message.includes("No matching")
-  ) {
-    return "ignored";
-  }
-  return "processed";
+  const message = typeof body.message === "string" ? body.message : "";
+  return IGNORED_ROUTE_MESSAGE.test(message) ? "ignored" : "processed";
 }
 
-async function readJsonBody(
-  response: Response
-): Promise<{ message?: unknown; ok?: unknown } | null> {
-  try {
-    return (await response.clone().json()) as {
-      message?: unknown;
-      ok?: unknown;
-    };
-  } catch {
-    return null;
-  }
-}
+// Every `ok: true` skip a routed handler answers with. A skip this misses is
+// labelled processed and logged at debug, which hides it (ISS-8450), so a new
+// skip wording belongs here.
+const IGNORED_ROUTE_MESSAGE =
+  /\bignor(?:ed|ing)\b|not tracked|no matching|no resolvable|\bskipped\b|\brejected\b|\backnowledged\b/i;
+
+// App install, uninstall, suspend and repository-scope changes are lifecycle
+// transitions, which `apps/api/AGENTS.md` reserves info for. Their handlers
+// answer "... successfully", so they land in the processed arm above and would
+// otherwise drop to debug — leaving no info-level record anywhere that a
+// customer removed the App, because `requireNoRoutineGitHubHandlerInfoLogs`
+// forbids the handlers from carrying one. They are a handful of deliveries a
+// month, so they are not part of the volume ISS-8450 targets.
+const LIFECYCLE_ROUTE_EVENTS: ReadonlySet<string> = new Set([
+  "installation",
+  "installation_repositories",
+]);

@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Claude Code OTel capture (lines of code; the web ClaudeCodeLinesOfCodeTelemetry rows are what a screen reads) read only by the telemetry rollup that syncs to the cloud; no Desktop view reads it."
+}

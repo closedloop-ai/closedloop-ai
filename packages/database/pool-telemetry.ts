@@ -1,4 +1,7 @@
 import type { Pool, PoolClient } from "pg";
+import { willQueueForPermit } from "./acquisition-budget";
+import { DB_POOL_ACQUIRE_TIMEOUT_MESSAGE } from "./pool-config";
+import { createServerGlobalSlot } from "./server-global-slot";
 
 /**
  * Connection-pool telemetry for the runtime pg pool (FEA-3300).
@@ -27,11 +30,20 @@ import type { Pool, PoolClient } from "pg";
  *
  * ## Why every warning line carries both `status` and `level`
  *
- * These lines reach Datadog as JSON on stderr. `status` is Datadog's reserved
+ * By default these lines are JSON on stderr. `status` is Datadog's reserved
  * severity attribute and `level` is not, so a line carrying only `level` is
  * indexed at whatever severity per-service level remapping happens to assign.
  * Both are stamped at the source instead (ISS-6341) — the same fix the shared
  * logger applies, which this package still cannot import, per the above.
+ *
+ * ## Why the warning writer is injectable too (ISS-5853)
+ *
+ * stderr reaches Datadog only where the platform ships it. On Vercel that is
+ * the log drain; on ECS it is CloudWatch alone, so `apps/mcp`'s warnings never
+ * arrived: over 15d to 2026-09-22 its `db_pool_telemetry.sink_missing` line
+ * appeared 25 times in CloudWatch and 0 times in Datadog. A consumer whose
+ * logger ships to Datadog registers it with `setPoolWarningWriter()`; one that
+ * registers nothing keeps the stderr line, which is `apps/api`'s path.
  */
 
 /** Emitted metric names. `snake_case`, no dots, per the observability naming convention. */
@@ -44,12 +56,8 @@ export type PoolTelemetryMetric =
   | "db_pool_idle"
   | "db_pool_total";
 
-export type PoolTelemetrySample = {
-  metric: PoolTelemetryMetric;
-  /** Gauge or measurement (ms for durations). Mutually exclusive with `count`. */
-  value?: number;
-  /** Additive counter; always 1. Mutually exclusive with `value`. */
-  count?: number;
+/** A point-in-time reading of the pool's counters, carried on every sample. */
+type PoolCounters = {
   /**
    * Effective pool ceiling, read from `pool.options.max` rather than assumed:
    * the DATABASE_URL branch sets 10, the IAM branch sets 20 (both explicit
@@ -65,13 +73,74 @@ export type PoolTelemetrySample = {
   total: number;
 };
 
+/**
+ * One acquisition's wait — the only metric that describes an acquisition, so
+ * the only one that carries `saturated` and `permitQueued`, and it always
+ * carries both. They are required rather than optional because an omitted
+ * attribute and a measured `false` are different query results: an adapter
+ * that could drop them would silently recreate the ambiguity they remove.
+ *
+ * WHY THEY ARE EMITTED RATHER THAN DERIVED AT QUERY TIME (ISS-10293). A wait is
+ * several findings wearing one number, and a dashboard reading p95
+ * `db_pool_acquire_wait` reads all of it as contention. `saturated` is a
+ * comparison between two attributes, which a Datadog log query cannot express,
+ * and `permitQueued` is decided by state no attribute carries at all.
+ *
+ * Both are booleans, so they are safe to promote to metric tags; every other
+ * field stays a log attribute. `packages/observability/README.md` carries the
+ * query contract and the sampling caveat: an unsaturated wait below 1s is
+ * throttled and a saturated one never is, so neither counts nor percentiles
+ * compare across the two.
+ */
+type PoolAcquireWaitSample = PoolCounters & {
+  metric: "db_pool_acquire_wait";
+  /** ms, from the caller's arrival — so it includes any permit wait. */
+  value: number;
+  count?: never;
+  /**
+   * The pool had nothing to give when this caller ARRIVED: no idle connection
+   * and no headroom to open one (`idle === 0 && total >= poolMax`).
+   *
+   * `false` is not "a connection was free" — `idle === 0` below `poolMax` is
+   * connection establishment, which `@idle` separates. Nor is it proof the
+   * caller did not queue: `idle` does not yet reflect siblings that arrived in
+   * the same tick, so at the ceiling a fan-out wider than `idle` queues
+   * anyway. And when `permitQueued` is true it describes the pool the caller
+   * arrived at, not the one it reached once the permit was granted, which is
+   * not observed.
+   */
+  saturated: boolean;
+  /**
+   * The caller's own unit of work had already spent its acquisition budget
+   * (`gateDbAcquisitions`), so it queued for a permit before it could reach
+   * the pool. That wait sits inside `value` and is neither pool contention nor
+   * the event loop: its fix is that unit of work's fan-out.
+   */
+  permitQueued: boolean;
+};
+
+/** Every other metric. None describes a wait, so none carries the labels. */
+type PoolStateSample = PoolCounters & {
+  metric: Exclude<PoolTelemetryMetric, "db_pool_acquire_wait">;
+  /** Gauge or measurement (ms for durations). Mutually exclusive with `count`. */
+  value?: number;
+  /** Additive counter; always 1. Mutually exclusive with `value`. */
+  count?: number;
+  saturated?: never;
+  permitQueued?: never;
+};
+
+export type PoolTelemetrySample = PoolAcquireWaitSample | PoolStateSample;
+
 export type PoolTelemetrySink = (sample: PoolTelemetrySample) => void;
 
-/** A point-in-time reading of the pool's counters. */
-type PoolCounters = Pick<
-  PoolTelemetrySample,
-  "poolMax" | "waitingCount" | "inUse" | "idle" | "total"
->;
+/** What a wait was, decided at the caller's arrival. */
+type WaitLabels = Pick<PoolAcquireWaitSample, "saturated" | "permitQueued">;
+
+/** A sample without the counters `emit` stamps on, per metric. */
+type SampleBody<T = PoolTelemetrySample> = T extends PoolTelemetrySample
+  ? Omit<T, keyof PoolCounters>
+  : never;
 
 /** A wait at or above this is contention worth reporting; below it is a warm-pool hit. */
 const ACQUIRE_WAIT_THRESHOLD_MS = 10;
@@ -86,14 +155,6 @@ const ACQUIRE_TIMEOUT_WARN_WINDOW_MS = 10_000;
 /** Cadence for the steady-state utilization gauges. */
 const SAMPLE_INTERVAL_MS = 10_000;
 
-/**
- * pg-pool's queue-wait timeout, raised once `connectionTimeoutMillis` elapses
- * while a caller is queued. Matched on the exact literal so it is not confused
- * with pg-pool's *handshake* timeout ("Connection terminated due to connection
- * timeout"), which is a different failure.
- */
-const ACQUIRE_TIMEOUT_MESSAGE = "timeout exceeded when trying to connect";
-
 const INSTRUMENTED = Symbol.for(
   "closedloop.database.poolTelemetryInstrumented"
 );
@@ -105,7 +166,27 @@ type ConnectCallback = (
 ) => void;
 type InstrumentablePool = Pool & { [INSTRUMENTED]?: true };
 
-let sink: PoolTelemetrySink | null = null;
+/**
+ * Where the registered sink lives: one process-wide slot, not a module-local
+ * binding (ISS-6942).
+ *
+ * `apps/api` registers from its instrumentation entry while every reader is
+ * reached from route code, and Turbopack emits this module into more than one
+ * chunk group. A module-local `let` is therefore written in one copy and read
+ * in another — the third instance of the defect ISS-5857 and ISS-6817 fixed in
+ * `@repo/observability`. The throttle and warn-once state below stays
+ * module-local on purpose: those bound cost per copy, they do not carry a
+ * registration across one.
+ */
+const sinkSlot = createServerGlobalSlot<PoolTelemetrySink>(
+  "closedloop.database.poolTelemetrySink"
+);
+
+/** Where the injected warning writer lives; process-wide for the same reason as the sink. */
+const warningWriterSlot = createServerGlobalSlot<PoolWarningWriter>(
+  "closedloop.database.poolWarningWriter"
+);
+
 let warnedSinkMissing = false;
 let warnedSinkThrew = false;
 let lastGaugeSampleAt = 0;
@@ -122,12 +203,21 @@ const checkoutStartedAt = new WeakMap<PoolClient, number>();
  * hook; last registration wins. Pass `null` to disable.
  */
 export function setPoolTelemetrySink(next: PoolTelemetrySink | null): void {
-  sink = next;
+  sinkSlot.set(next);
 }
 
-/** Test-only: clear sink and throttle state so cases cannot leak into each other. */
+/**
+ * Install the writer for this module's warning lines (sink missing, sink
+ * failed, acquire timeout). Last registration wins; `null` restores stderr.
+ */
+export function setPoolWarningWriter(next: PoolWarningWriter | null): void {
+  warningWriterSlot.set(next);
+}
+
+/** Test-only: clear sink, writer and throttle state so cases cannot leak into each other. */
 export function __resetPoolTelemetryForTests(): void {
-  sink = null;
+  sinkSlot.set(null);
+  warningWriterSlot.set(null);
   warnedSinkMissing = false;
   warnedSinkThrew = false;
   lastGaugeSampleAt = 0;
@@ -174,12 +264,20 @@ function wrapConnect(pool: Pool, target: InstrumentablePool): void {
     // otherwise report waitingCount: 0 — describing the moment the pressure
     // ended rather than the moment it existed.
     const entry = readCounters(pool);
+    // Labelled here for the same reason. In production `original` is the
+    // acquisition gate, called synchronously below, so this is the instant —
+    // and the predicate — on which it decides whether this caller queues for a
+    // permit.
+    const labels: WaitLabels = {
+      saturated: wasPoolSaturated(entry),
+      permitQueued: willQueueForPermit(pool),
+    };
     maybeSampleGauges(entry);
 
     if (typeof cb === "function") {
       // Forward all three args verbatim — dropping `done` would leak clients.
       return original((err, client, done) => {
-        recordAcquire(startedAt, entry, err);
+        recordAcquire(startedAt, entry, labels, err);
         cb(err, client, done);
       });
     }
@@ -189,11 +287,11 @@ function wrapConnect(pool: Pool, target: InstrumentablePool): void {
     const result = original() as Promise<PoolClient>;
     return result.then(
       (client) => {
-        recordAcquire(startedAt, entry, null);
+        recordAcquire(startedAt, entry, labels, null);
         return client;
       },
       (err: unknown) => {
-        recordAcquire(startedAt, entry, err);
+        recordAcquire(startedAt, entry, labels, err);
         throw err;
       }
     );
@@ -209,18 +307,22 @@ function wrapConnect(pool: Pool, target: InstrumentablePool): void {
 function recordAcquire(
   startedAt: number,
   entry: PoolCounters,
+  labels: WaitLabels,
   err: unknown
 ): void {
   try {
     const waitedMs = Date.now() - startedAt;
-
     if (isAcquireTimeout(err)) {
-      reportAcquireTimeout(entry, waitedMs);
+      reportAcquireTimeout(entry, labels, waitedMs);
       emit(entry, { metric: "db_pool_acquire_timeout", count: 1 });
       // Also record the wait itself: a timed-out caller waited the full
       // `connectionTimeoutMillis`. Dropping it would truncate the wait
       // distribution exactly at its worst end.
-      emit(entry, { metric: "db_pool_acquire_wait", value: waitedMs });
+      emit(entry, {
+        metric: "db_pool_acquire_wait",
+        value: waitedMs,
+        ...labels,
+      });
       return;
     }
 
@@ -228,17 +330,18 @@ function recordAcquire(
       return;
     }
 
-    // A wait can mean two very different things: the pool was saturated and this
-    // caller queued behind it (the failure mode this exists to catch), or the
-    // pool simply had room and paid a one-off TCP/TLS/IAM handshake. Both are
-    // real waits, but only the first is contention — so saturated waits are
-    // never throttled. Without this, a cold-connect handshake burns the throttle
-    // budget and silently suppresses the genuine contention that follows it.
-    // The predicate only ever *promotes* a sample; a misread degrades it to
-    // throttled, never to dropped.
-    const wasSaturated = entry.idle === 0 && entry.total >= entry.poolMax;
-
-    if (!(wasSaturated || waitedMs >= SLOW_ACQUIRE_MS)) {
+    // A wait can mean the pool was saturated and this caller queued behind it
+    // (the failure mode this exists to catch), or several things that are not
+    // pool contention — see the labels on `PoolAcquireWaitSample`.
+    //
+    // `saturated` decides two things, and they are deliberately the same
+    // predicate: saturated waits are never throttled (without this, a
+    // cold-connect handshake burns the throttle budget and silently suppresses
+    // the genuine contention that follows it), and it rides on the sample so a
+    // reader can tell them apart. Here it only ever *promotes* a sample; a
+    // misread degrades it to throttled, never to dropped. A permit wait is
+    // throttled like any other unsaturated one — see `gateDbAcquisitions`.
+    if (!(labels.saturated || waitedMs >= SLOW_ACQUIRE_MS)) {
       const now = Date.now();
       if (now - lastAcquireWaitAt < ACQUIRE_WAIT_THROTTLE_MS) {
         return;
@@ -246,7 +349,7 @@ function recordAcquire(
       lastAcquireWaitAt = now;
     }
 
-    emit(entry, { metric: "db_pool_acquire_wait", value: waitedMs });
+    emit(entry, { metric: "db_pool_acquire_wait", value: waitedMs, ...labels });
   } catch {
     warnSinkThrewOnce();
   }
@@ -312,7 +415,9 @@ function maybeSampleGauges(counters: PoolCounters): void {
 }
 
 function isAcquireTimeout(err: unknown): boolean {
-  return err instanceof Error && err.message === ACQUIRE_TIMEOUT_MESSAGE;
+  return (
+    err instanceof Error && err.message === DB_POOL_ACQUIRE_TIMEOUT_MESSAGE
+  );
 }
 
 function readCounters(pool: Pool): PoolCounters {
@@ -327,10 +432,8 @@ function readCounters(pool: Pool): PoolCounters {
   };
 }
 
-function emit(
-  counters: PoolCounters,
-  sample: Pick<PoolTelemetrySample, "metric" | "value" | "count">
-): void {
+function emit(counters: PoolCounters, sample: SampleBody): void {
+  const sink = sinkSlot.read();
   if (!sink) {
     warnSinkMissingOnce();
     return;
@@ -347,22 +450,19 @@ function emit(
  * silent — an unwired emitter is indistinguishable from a healthy pool.
  * Warn once rather than throwing: taking a service down because telemetry is
  * unwired would invert the risk this instrumentation exists to reduce.
- * console.warn (not a logger) keeps this package dependency-free.
  */
 function warnSinkMissingOnce(): void {
   if (warnedSinkMissing) {
     return;
   }
   warnedSinkMissing = true;
-  console.warn(
-    JSON.stringify({
-      level: "warn",
-      status: "warn",
-      event: "db_pool_telemetry.sink_missing",
-      message:
-        "database: pool telemetry is not wired up; samples are being dropped. Call setPoolTelemetrySink() during startup to emit them.",
-    })
-  );
+  writeWarning({
+    level: "warn",
+    status: "warn",
+    event: "db_pool_telemetry.sink_missing",
+    message:
+      "database: pool telemetry is not wired up; samples are being dropped. Call setPoolTelemetrySink() during startup to emit them.",
+  });
 }
 
 function warnSinkThrewOnce(): void {
@@ -370,20 +470,18 @@ function warnSinkThrewOnce(): void {
     return;
   }
   warnedSinkThrew = true;
-  console.warn(
-    JSON.stringify({
-      level: "warn",
-      status: "warn",
-      event: "db_pool_telemetry.sink_failed",
-      message:
-        "database: the pool telemetry sink threw; samples are being dropped. Queries are unaffected.",
-    })
-  );
+  writeWarning({
+    level: "warn",
+    status: "warn",
+    event: "db_pool_telemetry.sink_failed",
+    message:
+      "database: the pool telemetry sink threw; samples are being dropped. Queries are unaffected.",
+  });
 }
 
 /**
- * Report a pool-acquire timeout on stderr, aggregated, in addition to the
- * metric sample (FEA-3315).
+ * Report a pool-acquire timeout as a warning line, aggregated, in addition to
+ * the metric sample (FEA-3315).
  *
  * A timeout is not a sample that can be dropped for lack of a sink. It means a
  * caller waited the full `DB_POOL_ACQUIRE_TIMEOUT_MS` and then failed because
@@ -391,13 +489,21 @@ function warnSinkThrewOnce(): void {
  * needs to see it is exactly the one with no sink: `apps/mcp` registers none
  * (its narrow Docker context is why this module has no `@repo/*` imports), so
  * without this the whole event would reduce to one generic "sink missing" line
- * per process.
+ * per process. It registers a warning writer instead, so this line ships.
  *
  * The message embeds pg's verbatim `timeout exceeded when trying to connect`
  * because that literal — not the metric, which no rule reads — is what the
- * `cl-api — pg pool-acquire timeouts` Datadog monitor alerts on. Emitting it
- * from every service that runs this pool is what makes the same monitored
- * signal reachable beyond cl-api.
+ * `cl-api / cl-mcp — pg pool-acquire timeouts` Datadog monitor alerts on. The
+ * monitor reads the agentless `source:nodejs` path only, so this line reaches it
+ * only through a registered writer (`apps/mcp` registers its logger, ISS-5853).
+ * On stderr, `apps/api`'s copy lands on the Vercel drain, which that monitor
+ * excludes; cl-api pages on its request error logs instead.
+ *
+ * The literal is on every line; the cause after it is not (ISS-10293). The
+ * acquisition gate fails a permit wait with the same literal, so a timeout is
+ * not proof of a starved pool, and a line claiming one would send an operator
+ * to the pool for a unit of work's own fan-out. The labels describe the
+ * reported caller only — `suppressedSinceLastReport` is not split by them.
  *
  * ## Why this is rate limited, and the metric is not
  *
@@ -415,10 +521,14 @@ function warnSinkThrewOnce(): void {
  * reported on the next timeout, not at process exit — the metric, not this
  * line, is the counter of record.
  *
- * `console.warn` rather than a logger keeps this package dependency-free, the
- * same constraint documented at the top of this file.
+ * The writer is injected rather than imported, the same constraint documented
+ * at the top of this file.
  */
-function reportAcquireTimeout(counters: PoolCounters, waitedMs: number): void {
+function reportAcquireTimeout(
+  counters: PoolCounters,
+  labels: WaitLabels,
+  waitedMs: number
+): void {
   const now = Date.now();
   if (now - lastAcquireTimeoutWarnAt < ACQUIRE_TIMEOUT_WARN_WINDOW_MS) {
     suppressedAcquireTimeouts += 1;
@@ -428,16 +538,68 @@ function reportAcquireTimeout(counters: PoolCounters, waitedMs: number): void {
   const suppressedSinceLastReport = suppressedAcquireTimeouts;
   suppressedAcquireTimeouts = 0;
 
-  console.warn(
-    JSON.stringify({
-      level: "warn",
-      status: "warn",
-      event: "db_pool.acquire_timeout",
-      message:
-        "database: timeout exceeded when trying to connect — the pg pool is saturated and this caller failed to acquire a connection.",
-      waitedMs,
-      suppressedSinceLastReport,
-      ...counters,
-    })
-  );
+  writeWarning({
+    level: "warn",
+    status: "warn",
+    event: "db_pool.acquire_timeout",
+    message: `database: ${DB_POOL_ACQUIRE_TIMEOUT_MESSAGE} — ${describeTimeoutCause(labels)}`,
+    waitedMs,
+    suppressedSinceLastReport,
+    ...counters,
+    ...labels,
+  });
+}
+
+function describeTimeoutCause({ saturated, permitQueued }: WaitLabels): string {
+  if (permitQueued) {
+    return "this caller's unit of work had already spent its acquisition budget, so it queued for a permit before reaching the pool, and the queue that expired may be that one rather than the pool's.";
+  }
+  if (saturated) {
+    return "the pg pool is saturated and this caller failed to acquire a connection.";
+  }
+  return "the pg pool was not saturated when this caller arrived, and what it then waited behind (callers that reached the pool first, or a slow new connection) is not recorded here.";
+}
+
+/**
+ * Whether the pool had nothing to give when an acquisition started: no idle
+ * connection AND no headroom to open one.
+ *
+ * `idle === 0` alone is not the same predicate and is the one an operator
+ * reaches for when re-deriving this from the emitted attributes — a pool below
+ * its ceiling can open a new connection, so a wait there is handshake or
+ * event-loop time, not queueing.
+ */
+function wasPoolSaturated(counters: PoolCounters): boolean {
+  return counters.idle === 0 && counters.total >= counters.poolMax;
+}
+
+/**
+ * One warning line: an `event` name, the message, and the fields beside it.
+ * `level` and `status` travel with it so the stderr default stays byte-for-byte
+ * what it was before the writer existed.
+ */
+export type PoolWarning = {
+  level: "warn";
+  status: "warn";
+  event: string;
+  message: string;
+} & Record<string, unknown>;
+
+export type PoolWarningWriter = (warning: PoolWarning) => void;
+
+/**
+ * Hand a warning to the registered writer, else to stderr. A writer that
+ * throws falls back to stderr, which keeps the stderr copy of the line.
+ */
+function writeWarning(warning: PoolWarning): void {
+  const writer = warningWriterSlot.read();
+  if (writer) {
+    try {
+      writer(warning);
+      return;
+    } catch {
+      // fall through to stderr
+    }
+  }
+  console.warn(JSON.stringify(warning));
 }

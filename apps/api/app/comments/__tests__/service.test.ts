@@ -7,6 +7,11 @@
  *   - findThreadsByDocument excludes soft-deleted comments via query argument
  *   - findThreadsByDocument returns empty array for a different organization
  */
+import {
+  GitHubCommentThreadKind as DbGitHubCommentThreadKind,
+  PullRequestCommentLane,
+  PullRequestCommentLaneStatus,
+} from "@repo/database/generated/enums";
 import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 
 const {
@@ -22,6 +27,10 @@ const {
 vi.mock("@repo/database", () => {
   const withDbFn = vi.fn();
   return {
+    GitHubCommentThreadKind: DbGitHubCommentThreadKind,
+    PullRequestCommentLane,
+    PullRequestCommentLaneStatus,
+
     Prisma: { JsonNull: null },
     withDb: Object.assign(withDbFn, { tx: vi.fn() }),
   };
@@ -658,6 +667,91 @@ describe("commentsService.createArtifactLevelDocumentThread", () => {
 
     expect(db.commentThread.upsert).not.toHaveBeenCalled();
     expect(tx.commentThread.upsert).toHaveBeenCalled();
+    expect(mockDeleteArtifactThread).toHaveBeenCalledWith({
+      roomId: "org-1:artifact:PRD-7",
+      threadId: "lb-thread-1",
+    });
+  });
+
+  it("rejects and deletes the Liveblocks thread when the thread projection stores nothing", async () => {
+    const liveblocksThread = makeArtifactLevelLiveblocksThread();
+    const db = {
+      artifact: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: "artifact-uuid",
+          document: { latestVersion: 7 },
+        }),
+      },
+    };
+    // The artifact is gone by the time the projection resolves the room.
+    const tx = {
+      artifact: { findUnique: vi.fn().mockResolvedValue(null) },
+      commentThread: {
+        findUnique: vi.fn(),
+        upsert: vi.fn(),
+      },
+      comment: { upsert: vi.fn() },
+    };
+
+    mockProjectionDatabase(db, tx);
+    mockCreateArtifactLevelThread.mockResolvedValue(liveblocksThread);
+
+    await expect(
+      commentsService.createArtifactLevelDocumentThread(
+        "org-1",
+        "PRD-7",
+        "user-1",
+        "Hello from MCP"
+      )
+    ).rejects.toThrow("Thread created but its projection stored nothing");
+
+    expect(tx.commentThread.upsert).not.toHaveBeenCalled();
+    expect(tx.comment.upsert).not.toHaveBeenCalled();
+    expect(mockDeleteArtifactThread).toHaveBeenCalledWith({
+      roomId: "org-1:artifact:PRD-7",
+      threadId: "lb-thread-1",
+    });
+  });
+
+  it("rejects and deletes the Liveblocks thread when the comment projection stores nothing", async () => {
+    const liveblocksThread = makeArtifactLevelLiveblocksThread();
+    const db = {
+      artifact: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: "artifact-uuid",
+          document: { latestVersion: 7 },
+        }),
+      },
+    };
+    // The thread row is gone by the time the comment projection looks it up.
+    const tx = {
+      artifact: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: "artifact-uuid",
+          document: { latestVersion: 7 },
+        }),
+      },
+      commentThread: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        upsert: vi.fn().mockResolvedValue({ id: "local-thread" }),
+      },
+      comment: { upsert: vi.fn() },
+    };
+
+    mockProjectionDatabase(db, tx);
+    mockCreateArtifactLevelThread.mockResolvedValue(liveblocksThread);
+
+    await expect(
+      commentsService.createArtifactLevelDocumentThread(
+        "org-1",
+        "PRD-7",
+        "user-1",
+        "Hello from MCP"
+      )
+    ).rejects.toThrow("Comment created but its projection stored nothing");
+
+    expect(tx.commentThread.upsert).toHaveBeenCalled();
+    expect(tx.comment.upsert).not.toHaveBeenCalled();
     expect(mockDeleteArtifactThread).toHaveBeenCalledWith({
       roomId: "org-1:artifact:PRD-7",
       threadId: "lb-thread-1",

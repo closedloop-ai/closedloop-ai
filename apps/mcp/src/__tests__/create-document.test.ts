@@ -20,8 +20,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { type ZodType, z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import { McpApiError } from "../api-error.js";
-import { registerCreateDocument } from "../tools/create-document.js";
+import {
+  CREATE_DOCUMENT_TYPE_INPUTS,
+  registerCreateDocument,
+} from "../tools/create-document.js";
 import { createToolHarnessWithMock } from "./fixtures/tool-harness.js";
+import {
+  expectIssue,
+  ISO_DATE_UNION_REJECTION,
+  NON_EMPTY_STRING_REJECTION,
+  UUID_REJECTION,
+  ZodIssueCode,
+} from "./fixtures/zod-issues.js";
 
 type ToolHandler = (input: Record<string, unknown>) => Promise<{
   content: { type: "text"; text: string }[];
@@ -52,6 +62,7 @@ function createToolHarness(apiClient: ApiClient): {
 const BASE_INPUT = {
   title: "My Feature",
   type: DocumentType.Feature,
+  projectId: "PRO-7",
   content: "Initial content",
 };
 const ATTACHMENT_ID = "attachment-1";
@@ -105,18 +116,27 @@ describe("create-document MCP tool", () => {
         }))
       ).success
     ).toBe(true);
-    expect(
+    expectIssue(
       inlineImagesSchema.safeParse(
         Array.from({ length: MAX_CREATE_DOCUMENT_INLINE_IMAGES + 1 }, () => ({
           ...VALID_INLINE_IMAGE,
         }))
-      ).success
-    ).toBe(false);
-    expect(
-      inlineImagesSchema.safeParse([{ ...VALID_INLINE_IMAGE, placeholder: "" }])
-        .success
-    ).toBe(false);
-    expect(
+      ),
+      [],
+      {
+        code: ZodIssueCode.TooBig,
+        origin: "array",
+        maximum: MAX_CREATE_DOCUMENT_INLINE_IMAGES,
+      }
+    );
+    expectIssue(
+      inlineImagesSchema.safeParse([
+        { ...VALID_INLINE_IMAGE, placeholder: "" },
+      ]),
+      [0, "placeholder"],
+      NON_EMPTY_STRING_REJECTION
+    );
+    expectIssue(
       inlineImagesSchema.safeParse([
         {
           ...VALID_INLINE_IMAGE,
@@ -124,13 +144,20 @@ describe("create-document MCP tool", () => {
             MAX_CREATE_DOCUMENT_INLINE_IMAGE_PLACEHOLDER_CHARS + 1
           ),
         },
-      ]).success
-    ).toBe(false);
-    expect(
-      inlineImagesSchema.safeParse([{ ...VALID_INLINE_IMAGE, filename: "" }])
-        .success
-    ).toBe(false);
-    expect(
+      ]),
+      [0, "placeholder"],
+      {
+        code: ZodIssueCode.TooBig,
+        origin: "string",
+        maximum: MAX_CREATE_DOCUMENT_INLINE_IMAGE_PLACEHOLDER_CHARS,
+      }
+    );
+    expectIssue(
+      inlineImagesSchema.safeParse([{ ...VALID_INLINE_IMAGE, filename: "" }]),
+      [0, "filename"],
+      NON_EMPTY_STRING_REJECTION
+    );
+    expectIssue(
       inlineImagesSchema.safeParse([
         {
           ...VALID_INLINE_IMAGE,
@@ -138,21 +165,34 @@ describe("create-document MCP tool", () => {
             MAX_CREATE_DOCUMENT_INLINE_IMAGE_FILENAME_CHARS + 1
           ),
         },
-      ]).success
-    ).toBe(false);
-    expect(
-      inlineImagesSchema.safeParse([{ ...VALID_INLINE_IMAGE, dataBase64: "" }])
-        .success
-    ).toBe(false);
-    expect(
+      ]),
+      [0, "filename"],
+      {
+        code: ZodIssueCode.TooBig,
+        origin: "string",
+        maximum: MAX_CREATE_DOCUMENT_INLINE_IMAGE_FILENAME_CHARS,
+      }
+    );
+    expectIssue(
+      inlineImagesSchema.safeParse([{ ...VALID_INLINE_IMAGE, dataBase64: "" }]),
+      [0, "dataBase64"],
+      NON_EMPTY_STRING_REJECTION
+    );
+    expectIssue(
       inlineImagesSchema.safeParse([
         {
           ...VALID_INLINE_IMAGE,
           dataBase64: "x".repeat(MAX_INLINE_IMAGE_ATTACHMENT_BASE64_CHARS + 1),
         },
-      ]).success
-    ).toBe(false);
-    expect(
+      ]),
+      [0, "dataBase64"],
+      {
+        code: ZodIssueCode.TooBig,
+        origin: "string",
+        maximum: MAX_INLINE_IMAGE_ATTACHMENT_BASE64_CHARS,
+      }
+    );
+    expectIssue(
       inlineImagesSchema.safeParse([
         {
           ...VALID_INLINE_IMAGE,
@@ -160,13 +200,21 @@ describe("create-document MCP tool", () => {
             MAX_CREATE_DOCUMENT_INLINE_IMAGE_ALT_TEXT_CHARS + 1
           ),
         },
-      ]).success
-    ).toBe(false);
-    expect(
+      ]),
+      [0, "altText"],
+      {
+        code: ZodIssueCode.TooBig,
+        origin: "string",
+        maximum: MAX_CREATE_DOCUMENT_INLINE_IMAGE_ALT_TEXT_CHARS,
+      }
+    );
+    expectIssue(
       inlineImagesSchema.safeParse([
         { ...VALID_INLINE_IMAGE, mimeType: "image/bmp" },
-      ]).success
-    ).toBe(false);
+      ]),
+      [0, "mimeType"],
+      { code: ZodIssueCode.InvalidValue, values: IMAGE_MIME_TYPES }
+    );
   });
 
   it("forwards assigneeId to the POST body", async () => {
@@ -335,53 +383,113 @@ describe("create-document MCP tool", () => {
     expect(calledBody).not.toHaveProperty("status");
   });
 
-  it("marks projectId as required in the inputSchema", () => {
+  it("lets DOC omit projectId in the schema but still rejects a blank one", () => {
     const { registeredSchema } = createToolHarness(apiClient);
-    // The MCP create-document tool is intentionally scoped to project-bound
-    // artifacts, so its schema requires projectId and does not tell the LLM the
-    // field is optional (FEA-2886). The API's createDocumentValidator now only
-    // requires projectId for the project-bound subtypes (PRD/PLAN/FEATURE) and
-    // allows org-level Documents/Templates without one (FEA-4345); the MCP tool
-    // keeps projectId required regardless. (notFoundResponse("Project") only
-    // applies to the separate case where a projectId is supplied but doesn't
-    // resolve.)
-    expect(registeredSchema.projectId.safeParse(undefined).success).toBe(false);
+    expect(registeredSchema.projectId.safeParse(undefined).success).toBe(true);
     expect(registeredSchema.projectId.safeParse("PRO-7").success).toBe(true);
+    expectIssue(
+      registeredSchema.projectId.safeParse(" "),
+      [],
+      NON_EMPTY_STRING_REJECTION
+    );
   });
 
-  it("scopes the type schema to project-bound subtypes and rejects org-level DOC/TEMPLATE (FEA-4345)", () => {
+  it("rejects a project-bound create without projectId before calling the API (ISS-10984)", async () => {
+    const { handler } = createToolHarness(apiClient);
+
+    const result = await handler({
+      title: "Spec",
+      type: DocumentType.Prd,
+      content: "body",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain(
+      "A Project UUID or user-facing slug is required (e.g. PRO-7)."
+    );
+    expect(apiClient.post).not.toHaveBeenCalled();
+  });
+
+  it("creates an org-level DOC with no projectId in the POST body (ISS-10984)", async () => {
+    (apiClient.post as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "doc-39",
+      slug: "DOC-39",
+      type: DocumentType.Doc,
+      projectId: null,
+    });
+    const { handler, registeredSchema } = createToolHarness(apiClient);
+    const input = z.object(registeredSchema).parse({
+      title: "North Star",
+      type: DocumentType.Doc,
+      content: "body",
+    });
+
+    const result = await handler(input);
+
+    expect(result.isError).toBeUndefined();
+    expect(apiClient.post).toHaveBeenCalledWith("/documents", {
+      title: "North Star",
+      type: DocumentType.Doc,
+      content: "body",
+    });
+  });
+
+  it("sends the pre-DOC project-bound body unchanged (old-client shape)", async () => {
+    (apiClient.post as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "doc-1",
+      slug: "PRD-1",
+      type: DocumentType.Prd,
+    });
+    const { handler, registeredSchema } = createToolHarness(apiClient);
+    const input = z.object(registeredSchema).parse({
+      title: "Spec",
+      type: DocumentType.Prd,
+      projectId: "PRO-7",
+      content: "body",
+    });
+
+    await handler(input);
+
+    expect(apiClient.post).toHaveBeenCalledWith("/documents", {
+      title: "Spec",
+      type: DocumentType.Prd,
+      projectId: "PRO-7",
+      content: "body",
+    });
+  });
+
+  it("accepts DOC and the project-bound subtypes but still rejects TEMPLATE", () => {
     const { registeredSchema } = createToolHarness(apiClient);
-    // The tool requires a projectId, so it only creates project-bound
-    // artifacts. Org-level DOC/TEMPLATE (created via the web New-Document flow)
-    // are rejected here rather than reaching the API with a spurious project
-    // (TEMPLATE + project 500s; DOC would be stored under a project).
-    expect(registeredSchema.type.safeParse(DocumentType.Prd).success).toBe(
-      true
-    );
-    expect(
-      registeredSchema.type.safeParse(DocumentType.ImplementationPlan).success
-    ).toBe(true);
-    expect(registeredSchema.type.safeParse(DocumentType.Feature).success).toBe(
-      true
-    );
-    expect(registeredSchema.type.safeParse(DocumentType.Doc).success).toBe(
-      false
-    );
-    expect(registeredSchema.type.safeParse(DocumentType.Template).success).toBe(
-      false
-    );
+    for (const type of [
+      DocumentType.Prd,
+      DocumentType.ImplementationPlan,
+      DocumentType.Feature,
+      DocumentType.Doc,
+    ]) {
+      expect(registeredSchema.type.safeParse(type).success).toBe(true);
+    }
+    expectIssue(registeredSchema.type.safeParse(DocumentType.Template), [], {
+      code: ZodIssueCode.InvalidValue,
+      values: CREATE_DOCUMENT_TYPE_INPUTS,
+    });
   });
 
   it("rejects a non-UUID string for assigneeId via schema validation", () => {
     const { registeredSchema } = createToolHarness(apiClient);
-    const result = registeredSchema.assigneeId.safeParse("not-a-uuid");
-    expect(result.success).toBe(false);
+    expectIssue(
+      registeredSchema.assigneeId.safeParse("not-a-uuid"),
+      [],
+      UUID_REJECTION
+    );
   });
 
   it("rejects a non-UUID string for approverId via schema validation", () => {
     const { registeredSchema } = createToolHarness(apiClient);
-    const result = registeredSchema.approverId.safeParse("not-a-uuid");
-    expect(result.success).toBe(false);
+    expectIssue(
+      registeredSchema.approverId.safeParse("not-a-uuid"),
+      [],
+      UUID_REJECTION
+    );
   });
 
   it("accepts ISO date and timezone-qualified datetime dueDate values", () => {
@@ -394,8 +502,11 @@ describe("create-document MCP tool", () => {
 
   it("rejects invalid dueDate strings via schema validation", () => {
     const { registeredSchema } = createToolHarness(apiClient);
-    const result = registeredSchema.dueDate.safeParse("not-a-date");
-    expect(result.success).toBe(false);
+    expectIssue(
+      registeredSchema.dueDate.safeParse("not-a-date"),
+      [],
+      ISO_DATE_UNION_REJECTION
+    );
   });
 
   it("accepts a valid repositorySelection shape with fullName and optional branch", () => {
@@ -410,8 +521,14 @@ describe("create-document MCP tool", () => {
   it("rejects a repositorySelection missing primary.fullName", () => {
     const { registeredSchema } = createToolHarness(apiClient);
     const repoSchema = registeredSchema.repositorySelection;
-    const result = repoSchema.safeParse({ primary: {} });
-    expect(result.success).toBe(false);
+    expectIssue(
+      repoSchema.safeParse({ primary: {} }),
+      ["primary", "fullName"],
+      {
+        code: ZodIssueCode.InvalidType,
+        expected: "string",
+      }
+    );
   });
 
   it("preserves envelope-shaped no-image API responses in structuredContent", async () => {
@@ -438,7 +555,7 @@ describe("create-document MCP tool", () => {
           repositories: [
             {
               branch: "main",
-              fullName: "closedloop-ai/example-repo",
+              fullName: "closedloop-ai/closedloop-ai",
               position: 0,
               role: RepositoryRole.Primary,
             },
@@ -480,7 +597,7 @@ describe("create-document MCP tool", () => {
         repositories: [
           {
             branch: "main",
-            fullName: "closedloop-ai/example-repo",
+            fullName: "closedloop-ai/closedloop-ai",
             position: 0,
             role: RepositoryRole.Primary,
           },
@@ -517,7 +634,7 @@ describe("create-document MCP tool", () => {
       repositorySnapshot: {
         repositories: [
           {
-            fullName: "closedloop-ai/example-repo",
+            fullName: "closedloop-ai/closedloop-ai",
             key: "attachments/org/doc/repository-entry-key",
             role: RepositoryRole.Primary,
           },
@@ -573,7 +690,7 @@ describe("create-document MCP tool", () => {
       repositorySnapshot: {
         repositories: [
           {
-            fullName: "closedloop-ai/example-repo",
+            fullName: "closedloop-ai/closedloop-ai",
             role: RepositoryRole.Primary,
           },
         ],

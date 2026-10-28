@@ -7,6 +7,10 @@ import {
   type BranchUsageSummary,
 } from "@repo/api/src/types/branch-usage";
 import {
+  compareOwner,
+  compareStrings,
+} from "@repo/lib/branches/branch-actor-sort";
+import {
   type BillingMode,
   isMeteredApi,
   isSubscription,
@@ -54,8 +58,8 @@ export type BranchUsageRow = {
    * Captured per-row cost (`token_usage.cost_usd_estimated`), or `null` when the
    * row was never priced. The branch cost surface SUMS this (via
    * `sumStoredBranchCost`) instead of re-deriving list price, so it reconciles
-   * with the agent dashboard. Absent (`undefined`) on event-sourced rows, which
-   * keep re-deriving for the hourly chart.
+   * with the agent dashboard. Event-sourced rows carry the same field when the
+   * source captured a per-event cost.
    */
   storedCostUsd?: number | null;
 };
@@ -164,25 +168,9 @@ export function sumStoredBranchCost(rows: BranchUsageRow[]): number | null {
   return anyPriced ? total : null;
 }
 
-/** Nulls (unattributed) sort last, then alphabetical. */
-function compareOwner(a: string | null, b: string | null): number {
-  if (a === b) {
-    return 0;
-  }
-  if (a == null) {
-    return 1;
-  }
-  if (b == null) {
-    return -1;
-  }
-  return a < b ? -1 : 1;
-}
-
 /**
  * Per-actor token + cost rollup; `null` owner is its own bucket. `costOf`
- * defaults to the CAPTURED-cost sum (dashboard basis) for the aggregate byActor
- * totals; the event-sourced hour buckets pass `priceBranchRows` since
- * token_events carry no captured cost.
+ * defaults to the CAPTURED-cost sum (dashboard basis).
  */
 function rollupActors(
   rows: BranchUsageRow[],
@@ -209,13 +197,6 @@ function rollupActors(
     });
 }
 
-function compareStrings(a: string, b: string): number {
-  if (a === b) {
-    return 0;
-  }
-  return a < b ? -1 : 1;
-}
-
 /** Truncate an instant to the start of its UTC hour, as an ISO string. */
 function truncateToUtcHour(timestamp: Date): string {
   const hour = new Date(timestamp.getTime());
@@ -238,8 +219,7 @@ function perHourBuckets(rows: BranchUsageRow[]): BranchUsageHourBucket[] {
     .sort(([a], [b]) => compareStrings(a, b))
     .map(([hourStart, hourRows]) => ({
       hourStart,
-      // Event rows carry no captured cost, so the hourly chart re-derives.
-      byActor: rollupActors(hourRows, priceBranchRows),
+      byActor: rollupActors(hourRows),
     }));
 }
 
@@ -248,8 +228,8 @@ function perHourBuckets(rows: BranchUsageRow[]): BranchUsageHourBucket[] {
  * Token totals are plain sums; the headline/total + billing-split USD figures sum
  * the CAPTURED per-row cost (`sumStoredBranchCost`) so they reconcile with the
  * agent dashboard — un-priced rows count as $0, never re-derived to list price.
- * Only the event-sourced hourly chart re-derives (its rows carry no captured
- * cost). `phaseStacks` is empty (no phase producer in v1).
+ * Hour buckets use the same captured-cost basis. `phaseStacks` is empty (no
+ * phase producer in v1).
  *
  * The subscription/api cost split follows the canonical billing ledger
  * (FEA-1434, `shared/billing-mode`): metered per-token modes (`api`,

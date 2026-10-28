@@ -5,6 +5,13 @@ import {
   branchCostEvidenceRowBudget,
   branchCostSubtotalsReconcile,
 } from "@repo/api/src/types/branch-usage";
+import { Prisma } from "@repo/database";
+import { setAppSpanAttributes } from "@repo/observability/tracing/spans";
+import { readMaterializedBranchEventAggregates } from "./branch-analytics-rollup";
+import {
+  type BranchAnalyticsRollupReadResult,
+  BranchAnalyticsRollupReadStatus,
+} from "./branch-analytics-rollup-contract";
 import {
   accumulateCloudEventTokenTotals,
   applyCloudLifetimeCoverage,
@@ -13,15 +20,12 @@ import {
   setCloudEventTokenTotal,
   toBranchCostContribution,
 } from "./branch-cost-evidence";
-import {
-  cloudSessionEventWhere,
-  readBoundedCloudCostEvidence,
-} from "./branch-cost-evidence-reader";
+import { readBoundedCloudCostEvidence } from "./branch-cost-evidence-reader";
+import type { LinkedSession } from "./branch-read-service/session-usage-link-read";
 import type {
-  LinkedSession,
+  ResolvedSessionSpend,
   SessionUsageClient,
   SessionUsageDateWindow,
-  WindowedSessionSpend,
 } from "./branch-read-service/session-usage-window";
 
 /** Resolve one coherent, bounded cloud evidence population for Branch usage. */
@@ -29,9 +33,11 @@ export async function resolveSessionEventEvidence(
   db: SessionUsageClient,
   organizationId: string,
   sessions: readonly LinkedSession[],
-  dateWindow: SessionUsageDateWindow | undefined
+  dateWindow: SessionUsageDateWindow | undefined,
+  options: ResolveSessionEventEvidenceOptions = {}
 ): Promise<SessionEventEvidence> {
   const windowed = Boolean(dateWindow?.startDate || dateWindow?.endDate);
+  const includeCostEvidence = options.includeCostEvidence ?? true;
   if (sessions.length === 0) {
     return { contributions: [] };
   }
@@ -46,8 +52,15 @@ export async function resolveSessionEventEvidence(
     organizationId,
     sessions,
     dateWindow,
-    windowed
+    windowed,
+    includeCostEvidence
   );
+  if (!includeCostEvidence) {
+    return {
+      contributions: [],
+      ...(windowedSpend ? { windowedSpend } : {}),
+    };
+  }
   const evidencePopulation = compareEvidenceWithAggregate(
     evidenceRows,
     aggregateSnapshots
@@ -100,28 +113,32 @@ export async function resolveSessionEventEvidence(
   };
 }
 
+type ResolveSessionEventEvidenceOptions = {
+  includeCostEvidence?: boolean;
+};
+
 async function collectSessionEventEvidence(
   db: SessionUsageClient,
   organizationId: string,
   sessions: readonly LinkedSession[],
   dateWindow: SessionUsageDateWindow | undefined,
-  windowed: boolean
+  windowed: boolean,
+  includeCostEvidence: boolean
 ): Promise<CollectedSessionEventEvidence> {
   const evidenceRows: CloudCostEvidenceEvent[] = [];
   const eventTokenTotals: CloudEventTokenTotals = new Map();
   const aggregateSnapshots = new Map<string, EventAggregateSnapshot>();
   const windowedSpend = windowed
-    ? new Map<string, WindowedSessionSpend>()
+    ? new Map<string, ResolvedSessionSpend>()
     : undefined;
   let evidenceBudgetExceeded = false;
   let retainedEvidenceBytes = 0;
-  for (
-    let start = 0;
-    start < sessions.length;
-    start += sessionUsageEventSessionChunkSize
-  ) {
+  const chunkSize = includeCostEvidence
+    ? SESSION_USAGE_COST_EVIDENCE_SESSION_CHUNK_SIZE
+    : SESSION_USAGE_AGGREGATE_ONLY_SESSION_CHUNK_SIZE;
+  for (let start = 0; start < sessions.length; start += chunkSize) {
     const ids = sessions
-      .slice(start, start + sessionUsageEventSessionChunkSize)
+      .slice(start, start + chunkSize)
       .map((session) => session.artifactId);
     const aggregateRows = await readEventAggregates(
       db,
@@ -137,7 +154,7 @@ async function collectSessionEventEvidence(
         windowedSpend
       );
     }
-    if (!evidenceBudgetExceeded) {
+    if (includeCostEvidence && !evidenceBudgetExceeded) {
       const sample = await readBoundedCloudCostEvidence(
         db,
         organizationId,
@@ -164,7 +181,7 @@ function mergeAggregatedEventSpend(
   row: EventAggregateRow,
   eventTokenTotals: CloudEventTokenTotals,
   aggregateSnapshots: Map<string, EventAggregateSnapshot>,
-  windowedSpend: Map<string, WindowedSessionSpend> | undefined
+  windowedSpend: Map<string, ResolvedSessionSpend> | undefined
 ): void {
   const tokens = {
     inputTokens: row._sum.inputTokens ?? 0n,
@@ -175,12 +192,14 @@ function mergeAggregatedEventSpend(
   setCloudEventTokenTotal(eventTokenTotals, row.agentSessionId, tokens);
   aggregateSnapshots.set(row.agentSessionId, eventAggregateSnapshot(row));
   if (windowedSpend) {
+    const estimatedCostUsd = numberFromDecimal(row._sum.estimatedCost);
     windowedSpend.set(row.agentSessionId, {
       inputTokens: Number(tokens.inputTokens),
       outputTokens: Number(tokens.outputTokens),
       cacheReadTokens: Number(tokens.cacheReadTokens),
       cacheWriteTokens: Number(tokens.cacheWriteTokens),
-      estimatedCostUsd: numberFromDecimal(row._sum.estimatedCost),
+      estimatedCostUsd,
+      hasPricedCost: aggregateHasValidPricedCost(row, estimatedCostUsd),
     });
   }
 }
@@ -191,26 +210,71 @@ async function readEventAggregates(
   sessionIds: readonly string[],
   dateWindow: SessionUsageDateWindow | undefined
 ): Promise<EventAggregateRow[]> {
-  const rows = await db.agentSessionTokenEvent.groupBy({
-    by: ["agentSessionId"],
-    where: cloudSessionEventWhere(organizationId, [...sessionIds], dateWindow),
-    _sum: {
-      inputTokens: true,
-      outputTokens: true,
-      cacheReadTokens: true,
-      cacheWriteTokens: true,
-      estimatedCost: true,
-    },
-    _min: {
-      inputTokens: true,
-      outputTokens: true,
-      cacheReadTokens: true,
-      cacheWriteTokens: true,
-      estimatedCost: true,
-    },
-    _count: { _all: true, estimatedCost: true },
-  });
-  return rows;
+  if (sessionIds.length === 0) {
+    return [];
+  }
+  const materialized = await readMaterializedEventAggregatesBestEffort(
+    db,
+    organizationId,
+    sessionIds,
+    dateWindow
+  );
+  if (materialized?.status === BranchAnalyticsRollupReadStatus.Available) {
+    return materialized.rows.map(eventAggregateRowFromRaw);
+  }
+  const rows = await db.$queryRaw<EventAggregateRawRow[]>(Prisma.sql`
+    WITH requested_sessions AS MATERIALIZED (
+      SELECT DISTINCT unnest(
+        ARRAY[${Prisma.join(sessionIds)}]::uuid[]
+      ) AS id
+    )
+    SELECT
+      event.agent_session_id AS "agentSessionId",
+      SUM(event.input_tokens) AS "sumInputTokens",
+      SUM(event.output_tokens) AS "sumOutputTokens",
+      SUM(event.cache_read_tokens) AS "sumCacheReadTokens",
+      SUM(event.cache_write_tokens) AS "sumCacheWriteTokens",
+      SUM(event.estimated_cost) AS "sumEstimatedCost",
+      MIN(event.input_tokens) AS "minInputTokens",
+      MIN(event.output_tokens) AS "minOutputTokens",
+      MIN(event.cache_read_tokens) AS "minCacheReadTokens",
+      MIN(event.cache_write_tokens) AS "minCacheWriteTokens",
+      MIN(event.estimated_cost) AS "minEstimatedCost",
+      COUNT(event.estimated_cost) AS "estimatedCostCount",
+      COUNT(*) AS "eventCount"
+    FROM requested_sessions requested
+    JOIN agent_session_token_events event
+      ON event.agent_session_id = requested.id
+    JOIN session_detail session
+      ON session.artifact_id = requested.id
+    JOIN artifacts artifact
+      ON artifact.id = session.artifact_id
+    WHERE artifact.organization_id = ${organizationId}::uuid
+      ${dateWindow?.startDate ? Prisma.sql`AND event.event_created_at >= ${dateWindow.startDate}` : Prisma.empty}
+      ${dateWindow?.endDate ? Prisma.sql`AND event.event_created_at <= ${dateWindow.endDate}` : Prisma.empty}
+    GROUP BY event.agent_session_id
+  `);
+  return rows.map(eventAggregateRowFromRaw);
+}
+
+async function readMaterializedEventAggregatesBestEffort(
+  db: SessionUsageClient,
+  organizationId: string,
+  sessionIds: readonly string[],
+  dateWindow: SessionUsageDateWindow | undefined
+): Promise<BranchAnalyticsRollupReadResult | undefined> {
+  try {
+    return await readMaterializedBranchEventAggregates(
+      db,
+      organizationId,
+      sessionIds,
+      dateWindow
+    );
+  } catch {
+    setAppSpanAttributes({
+      "branches.analytics.rollup.read.failure_fell_back": true,
+    });
+  }
 }
 
 function eventAggregateSnapshot(
@@ -330,7 +394,8 @@ function hasMalformedEvidenceTokens(
   return (
     [...evidenceTokens.values()].some((value) => value === undefined) ||
     [...aggregateSnapshots.values()].some(
-      (snapshot) => snapshot.tokenTotal === undefined
+      (snapshot) =>
+        snapshot.tokenTotal === undefined || snapshot.count === undefined
     )
   );
 }
@@ -373,11 +438,34 @@ function aggregateEventSubtotal(
   return observed ? subtotalUsd : undefined;
 }
 
-function lifetimeSessionSubtotal(sessions: readonly LinkedSession[]): number {
-  return sessions.reduce(
-    (total, session) => total + numberFromDecimal(session.estimatedCost),
-    0
-  );
+/**
+ * ISS-7813: `undefined` when NOTHING in the set carries a cost, mirroring
+ * `aggregateEventSubtotal` above rather than reducing to a bare `0`.
+ *
+ * `numberFromDecimal` folds a null cost to 0, so a set of exclusively
+ * never-priced sessions used to reduce to `0` — and `coverageIncompleteContribution`
+ * accepts a finite non-negative subtotal, so that `0` was emitted as a
+ * `fallbackSubtotalUsd` and read downstream as a MEASURED $0.00 for a branch
+ * nothing priced. Returning `undefined` routes it to the same arm an absent
+ * event subtotal already takes, which emits no fallback at all.
+ *
+ * A set with at least one priced session still sums, and an unpriced sibling
+ * still contributes 0 to that sum — unchanged, and out of scope here: whether a
+ * partially-priced branch may report a total is the pre-existing `hasPricedCost`
+ * question, not this one.
+ */
+function lifetimeSessionSubtotal(
+  sessions: readonly LinkedSession[]
+): number | undefined {
+  let observed = false;
+  let subtotalUsd = 0;
+  for (const session of sessions) {
+    if (session.estimatedCost !== null) {
+      observed = true;
+    }
+    subtotalUsd += numberFromDecimal(session.estimatedCost);
+  }
+  return observed ? subtotalUsd : undefined;
 }
 
 function hasMalformedLifetimeSessionCost(
@@ -404,6 +492,18 @@ function isMalformedCost(
   return !Number.isFinite(cost) || cost < 0;
 }
 
+function aggregateHasValidPricedCost(
+  row: EventAggregateRow,
+  subtotalUsd: number
+): boolean {
+  return (
+    (row._count.estimatedCost ?? 0) > 0 &&
+    Number.isFinite(subtotalUsd) &&
+    subtotalUsd >= 0 &&
+    !isMalformedCost(row._min?.estimatedCost ?? null)
+  );
+}
+
 function nullableNumberFromDecimal(
   value: { toString(): string } | number | null
 ): number | null {
@@ -419,21 +519,81 @@ function numberFromDecimal(
   return typeof value === "number" ? value : Number(value.toString());
 }
 
+function eventAggregateRowFromRaw(
+  row: EventAggregateRawRow
+): EventAggregateRow {
+  if (isPrismaEventAggregateRow(row)) {
+    return row;
+  }
+  return {
+    agentSessionId: row.agentSessionId,
+    _sum: {
+      inputTokens: bigintFromAggregate(row.sumInputTokens),
+      outputTokens: bigintFromAggregate(row.sumOutputTokens),
+      cacheReadTokens: bigintFromAggregate(row.sumCacheReadTokens),
+      cacheWriteTokens: bigintFromAggregate(row.sumCacheWriteTokens),
+      estimatedCost: row.sumEstimatedCost,
+    },
+    _min: {
+      inputTokens: bigintFromAggregate(row.minInputTokens),
+      outputTokens: bigintFromAggregate(row.minOutputTokens),
+      cacheReadTokens: bigintFromAggregate(row.minCacheReadTokens),
+      cacheWriteTokens: bigintFromAggregate(row.minCacheWriteTokens),
+      estimatedCost: row.minEstimatedCost,
+    },
+    _count: {
+      _all: countFromAggregate(row.eventCount),
+      estimatedCost: countFromAggregate(row.estimatedCostCount),
+    },
+  };
+}
+
+function isPrismaEventAggregateRow(
+  row: EventAggregateRawRow
+): row is EventAggregateRow {
+  return "_sum" in row && "_count" in row;
+}
+
+function bigintFromAggregate(value: EventAggregateInteger): bigint | null {
+  if (value === null) {
+    return null;
+  }
+  if (typeof value === "bigint") {
+    return value;
+  }
+  if (typeof value === "number") {
+    return Number.isInteger(value) ? BigInt(value) : null;
+  }
+  try {
+    return BigInt(value.toString());
+  } catch {
+    return null;
+  }
+}
+
+function countFromAggregate(value: EventAggregateInteger): number | undefined {
+  const count = bigintFromAggregate(value);
+  if (count === null || count < 0n || count > BigInt(Number.MAX_SAFE_INTEGER)) {
+    return;
+  }
+  return Number(count);
+}
+
 type SessionEventEvidence = {
   contributions: BranchCostEvidenceContribution[];
-  windowedSpend?: Map<string, WindowedSessionSpend>;
+  windowedSpend?: Map<string, ResolvedSessionSpend>;
 };
 
 type CollectedSessionEventEvidence = {
   evidenceRows: CloudCostEvidenceEvent[];
   eventTokenTotals: CloudEventTokenTotals;
   aggregateSnapshots: Map<string, EventAggregateSnapshot>;
-  windowedSpend: Map<string, WindowedSessionSpend> | undefined;
+  windowedSpend: Map<string, ResolvedSessionSpend> | undefined;
   evidenceBudgetExceeded: boolean;
 };
 
 type EventAggregateSnapshot = {
-  count: number;
+  count: number | undefined;
   tokenTotal: bigint | undefined;
   costSubtotalUsd: number | null;
   tokenMalformed: boolean;
@@ -461,7 +621,31 @@ type EventAggregateRow = {
     cacheWriteTokens?: bigint | null;
     estimatedCost: { toString(): string } | number | null;
   };
-  _count: { _all: number; estimatedCost?: number };
+  _count: { _all: number | undefined; estimatedCost?: number };
 };
 
-const sessionUsageEventSessionChunkSize = 1000;
+type EventAggregateRawRow = EventAggregateSqlRow | EventAggregateRow;
+
+type EventAggregateSqlRow = {
+  agentSessionId: string;
+  sumInputTokens: EventAggregateInteger;
+  sumOutputTokens: EventAggregateInteger;
+  sumCacheReadTokens: EventAggregateInteger;
+  sumCacheWriteTokens: EventAggregateInteger;
+  sumEstimatedCost: { toString(): string } | null;
+  minInputTokens: EventAggregateInteger;
+  minOutputTokens: EventAggregateInteger;
+  minCacheReadTokens: EventAggregateInteger;
+  minCacheWriteTokens: EventAggregateInteger;
+  minEstimatedCost: { toString(): string } | number | null;
+  estimatedCostCount: EventAggregateInteger;
+  eventCount: EventAggregateInteger;
+};
+
+type EventAggregateInteger = bigint | number | { toString(): string } | null;
+
+/** Preserve small chunks for the bounded provenance sample query. */
+export const SESSION_USAGE_COST_EVIDENCE_SESSION_CHUNK_SIZE = 1000;
+
+/** Numeric-only aggregate chunks avoid extra round trips on metrics-card reads. */
+export const SESSION_USAGE_AGGREGATE_ONLY_SESSION_CHUNK_SIZE = 5000;

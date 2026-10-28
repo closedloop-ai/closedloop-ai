@@ -308,36 +308,29 @@ export function evaluateSeedGuards({
   const urlForLocalhostCheck = new URL(url.toString());
   urlForLocalhostCheck.hostname = canonicalTargetHost;
   const isLocalhost = isLocalhostUrl(urlForLocalhostCheck);
-  if (!isLocalhost && seedAllowRemote !== "1") {
-    return {
-      ok: false,
-      reason: SeedGuardFailureReason.RemoteHostRequiresOptIn,
-      message:
-        "Refusing to seed a non-localhost database without SEED_ALLOW_REMOTE=1.",
-    };
+  const remoteTargetFailure = evaluateRemoteTargetPolicy({
+    isLocalhost,
+    seedAllowRemote,
+    resetRequested,
+    seedResetAllowRemote,
+  });
+  if (remoteTargetFailure) {
+    return remoteTargetFailure;
   }
 
-  // Destructive --reset on a non-localhost target needs its own explicit opt-in
-  // beyond SEED_ALLOW_REMOTE; the docs promise non-interactive reset still fails
-  // on remote/shared-stage targets, and --reset --force skips the only human
-  // confirmation. Operators that genuinely want to wipe a remote dev/preview env
-  // must additionally set SEED_RESET_ALLOW_REMOTE=1.
-  if (resetRequested && !isLocalhost && seedResetAllowRemote !== "1") {
-    return {
-      ok: false,
-      reason: SeedGuardFailureReason.RemoteResetRequiresExplicitOptIn,
-      message:
-        "Refusing to --reset a non-localhost database without SEED_RESET_ALLOW_REMOTE=1.",
-    };
-  }
-
-  if (profile === SeedProfileName.Perf) {
+  // A localhost target CANNOT be the shared stage, so the stage-host tripwire
+  // below would only force every local perf operator to know a deployed
+  // database's hostname — a production-secret dependency with zero protective
+  // value for a local run (ISS-5288 ruling). The comparison still guards every
+  // non-localhost perf target.
+  if (profile === SeedProfileName.Perf && !isLocalhost) {
     const configuredStageHost = canonicalizeSeedHost(stagePgHost ?? "");
     if (!configuredStageHost) {
       return {
         ok: false,
         reason: SeedGuardFailureReason.StageHostUnconfigured,
-        message: "STAGE_PGHOST must be configured for perf profile runs.",
+        message:
+          "STAGE_PGHOST must be configured for perf profile runs against a non-localhost target.",
       };
     }
     if (canonicalTargetHost === configuredStageHost && !allowSharedStage) {
@@ -415,6 +408,48 @@ function invalidMultiplier(message: string): {
     reason: SeedGuardFailureReason.InvalidMultiplier,
     message,
   };
+}
+
+/**
+ * The refusals that turn on "is the target this machine?", in the order they
+ * apply. Split out of {@link evaluateSeedGuards} to keep it under the
+ * cognitive-complexity ceiling; a localhost target clears both.
+ *
+ * Each opt-in is separate on purpose: `SEED_ALLOW_REMOTE` admits a remote target
+ * for ordinary seeding only, and `--reset` needs `SEED_RESET_ALLOW_REMOTE` on top
+ * because `--reset --force` skips the only human confirmation.
+ */
+function evaluateRemoteTargetPolicy({
+  isLocalhost,
+  seedAllowRemote,
+  resetRequested,
+  seedResetAllowRemote,
+}: {
+  isLocalhost: boolean;
+  seedAllowRemote: string | undefined;
+  resetRequested: boolean;
+  seedResetAllowRemote: string | undefined;
+}): { ok: false; reason: SeedGuardFailureReason; message: string } | null {
+  if (isLocalhost) {
+    return null;
+  }
+  if (seedAllowRemote !== "1") {
+    return {
+      ok: false,
+      reason: SeedGuardFailureReason.RemoteHostRequiresOptIn,
+      message:
+        "Refusing to seed a non-localhost database without SEED_ALLOW_REMOTE=1.",
+    };
+  }
+  if (resetRequested && seedResetAllowRemote !== "1") {
+    return {
+      ok: false,
+      reason: SeedGuardFailureReason.RemoteResetRequiresExplicitOptIn,
+      message:
+        "Refusing to --reset a non-localhost database without SEED_RESET_ALLOW_REMOTE=1.",
+    };
+  }
+  return null;
 }
 
 function parseTargetOptions({

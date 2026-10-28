@@ -26,21 +26,46 @@
  * process resumes; when the store CHANGED while the app was closed it replays in
  * full, because this pass's snapshot was captured after the relaunch and so
  * `markSourceImported` has nothing left to refuse.
+ *
+ * ISS-9839 (whitlockk review) adds the leg those cases cannot see, because they hold
+ * the store directly: on a real quit the flush travels through `DbHostClient`,
+ * and the app opens that client's ISS-4713 intentional-shutdown window BEFORE it
+ * tears down the collectors. The last case drives the flush over a real client
+ * with that window open, so "the cursor survived the quit" is asserted against
+ * the gate a production quit actually puts in front of it.
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { CollectorManager } from "../src/main/collectors/engine/collector-manager.js";
-import { ingestBatchResumeCursorPath } from "../src/main/collectors/engine/ingest-paths.js";
+import type { BatchResumeCursorStore } from "../src/main/collectors/engine/collector-manager-batch-resume.js";
 import type { HarnessCollector } from "../src/main/collectors/types.js";
+import { DbHostClient } from "../src/main/database/db-host/db-host-client.js";
+import {
+  type DbHostRequest,
+  DbHostRequestKind,
+  DbHostResponseKind,
+} from "../src/main/database/db-host/db-host-protocol.js";
+import { DB_HOST_STORE_OP_PREFIX } from "../src/main/database/db-host/db-host-store-op-registry.js";
+import { createIngestBatchResumeCursorStore } from "../src/main/database/ingest-batch-resume-cursor-store.js";
+import type { DesktopPrisma } from "../src/main/database/prisma-client.js";
+import type {
+  DbHostChildListenerArgs,
+  DbHostChildMessageListener,
+} from "./db-host-fake-child-support.js";
 import { deferred } from "./deferred.js";
+import {
+  runIngestBatchResumeCursorStoreOp,
+  sqliteBatchResumeCursorStore,
+} from "./helpers/batch-resume-cursor-fixtures.js";
 import {
   fakeFsWatcher,
   noopCooperativeDelay,
 } from "./helpers/collector-manager-fixtures.js";
 import { fakeCollector, makeSession } from "./normalized-session-test-utils.js";
+import { openTestPrisma } from "./prisma-test-utils.js";
 
 /** Sessions in the simulated OpenCode store. */
 const BATCH_SESSION_COUNT = 40;
@@ -62,6 +87,43 @@ const OPENCODE = "opencode";
 const FINGERPRINT_BEFORE_QUIT = "opencode.db:1000:512";
 const FINGERPRINT_AFTER_EDIT = "opencode.db:2000:640";
 
+/**
+ * The durable medium the two "processes" share. ISS-9839 moved the cursor from a
+ * JSON file in the state dir into the `ingest_batch_resume_cursor` SQLite table,
+ * so the restart proof runs over ONE real libSQL database that outlives both
+ * managers — the same relationship the state dir had to them before. Reading the
+ * row directly, rather than through the cursor that wrote it, is a repair of
+ * test MECHANICS: the expectations below are unchanged.
+ */
+type CursorMedium = {
+  store: BatchResumeCursorStore;
+  /**
+   * Source keys in the persisted cursor. Throws when NO cursor was persisted at
+   * all, the way reading an absent file did — "the source completed and left an
+   * empty cursor" and "nothing was ever written" are different facts.
+   */
+  keys: () => Promise<string[]>;
+  close: () => Promise<void>;
+};
+
+async function openCursorMedium(): Promise<CursorMedium> {
+  const { db, prisma, close } = await openTestPrisma();
+  return {
+    store: sqliteBatchResumeCursorStore(prisma),
+    keys: async () => {
+      const rows = await db.query<{ cursors: string }>(
+        'SELECT "cursors" FROM "ingest_batch_resume_cursor"'
+      );
+      const cursors = rows.rows.at(0)?.cursors;
+      if (cursors === undefined) {
+        throw new Error("no batch resume cursor row was ever persisted");
+      }
+      return Object.keys(JSON.parse(cursors) as Record<string, unknown>);
+    },
+    close,
+  };
+}
+
 type TwoProcessRun = {
   /** Every session id written, across BOTH processes, in order. */
   importedIds: string[];
@@ -80,7 +142,8 @@ type TwoProcessRun = {
  */
 async function runQuitAndRelaunch(
   dir: string,
-  fingerprintAfterQuit: string
+  fingerprintAfterQuit: string,
+  medium: CursorMedium
 ): Promise<TwoProcessRun> {
   const store = join(dir, "opencode.db");
   writeFileSync(store, "{}\n");
@@ -113,6 +176,9 @@ async function runQuitAndRelaunch(
 
   const quit = deferred();
   let firstManager: CollectorManager | null = null;
+  // ISS-9839: the quit's flush is an async write-back now, so the "process" is
+  // not gone until it settles — exactly what the production quit path awaits.
+  let firstStopped: Promise<void> = Promise.resolve();
   firstManager = new CollectorManager({
     importer: {
       importSession: (session) => {
@@ -121,14 +187,14 @@ async function runQuitAndRelaunch(
           // The user quits the app mid-backfill. `stop()` persists the cursor;
           // the import loop then observes `stopped` and unwinds without writing
           // anything further.
-          firstManager?.stop();
+          firstStopped = firstManager?.stop() ?? Promise.resolve();
           quit.resolve();
         }
         return { skipped: false, reactivated: false };
       },
     },
-    detectBillingMode: () => "metered_api",
     stateDir: dir,
+    batchResumeCursorStore: medium.store,
     emit: () => {},
     getCollectionMode: () => "watcher",
     cooperativeDelay: noopCooperativeDelay,
@@ -139,6 +205,7 @@ async function runQuitAndRelaunch(
   });
   firstManager.start();
   await quit.promise;
+  await firstStopped;
 
   const importsAtQuit = importedIds.length;
   // The app was closed for a while. Whatever happened to the store in that
@@ -153,8 +220,8 @@ async function runQuitAndRelaunch(
         return { skipped: false, reactivated: false };
       },
     },
-    detectBillingMode: () => "metered_api",
     stateDir: dir,
+    batchResumeCursorStore: medium.store,
     emit: () => {},
     getCollectionMode: () => "watcher",
     cooperativeDelay: noopCooperativeDelay,
@@ -166,14 +233,11 @@ async function runQuitAndRelaunch(
   });
   secondManager.start();
   await bootComplete.promise;
-  secondManager.stop();
+  await secondManager.stop();
 
-  const persisted = JSON.parse(
-    readFileSync(ingestBatchResumeCursorPath(dir), "utf8")
-  ) as { cursors: Record<string, unknown> };
   return {
     importedIds: importedIds.filter((id) => id.startsWith("batch-")),
-    residualCursorKeys: Object.keys(persisted.cursors),
+    residualCursorKeys: await medium.keys(),
     importsAtQuit,
   };
 }
@@ -182,8 +246,9 @@ test("ISS-5161: a batch backfill interrupted by a quit resumes in the next proce
   timeout: TEST_CASE_TIMEOUT_MS,
 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "iss-5161-batch-resume-"));
+  const medium = await openCursorMedium();
   try {
-    const run = await runQuitAndRelaunch(dir, FINGERPRINT_BEFORE_QUIT);
+    const run = await runQuitAndRelaunch(dir, FINGERPRINT_BEFORE_QUIT, medium);
 
     assert.equal(
       new Set(run.importedIds).size,
@@ -211,6 +276,7 @@ test("ISS-5161: a batch backfill interrupted by a quit resumes in the next proce
       "a completed source must leave no cursor behind"
     );
   } finally {
+    await medium.close();
     rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -219,6 +285,7 @@ test("ISS-5161: a store edited while the app was closed is replayed in full, nev
   timeout: TEST_CASE_TIMEOUT_MS,
 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "iss-5161-batch-resume-moved-"));
+  const medium = await openCursorMedium();
   try {
     // The safety bound on the fix above. Within one pass, a session edited
     // underneath the cursor is caught by `markSourceImported` refusing to
@@ -226,7 +293,7 @@ test("ISS-5161: a store edited while the app was closed is replayed in full, nev
     // gone — this pass's snapshot is captured AFTER the relaunch, so the edit
     // is already baked into it — and a fast-forward would seal the store with
     // the edited session stale until its mtime/size moves again.
-    const run = await runQuitAndRelaunch(dir, FINGERPRINT_AFTER_EDIT);
+    const run = await runQuitAndRelaunch(dir, FINGERPRINT_AFTER_EDIT, medium);
 
     assert.equal(
       new Set(run.importedIds).size,
@@ -245,6 +312,7 @@ test("ISS-5161: a store edited while the app was closed is replayed in full, nev
       "the session a stale cursor would have skipped must be re-imported"
     );
   } finally {
+    await medium.close();
     rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -256,7 +324,10 @@ test("ISS-5161: a store edited while the app was closed is replayed in full, nev
  * could make the third process replay the prefix is the rejection having
  * destroyed the checkpoint.
  */
-async function runQuitParseFailureRelaunch(dir: string): Promise<{
+async function runQuitParseFailureRelaunch(
+  dir: string,
+  medium: CursorMedium
+): Promise<{
   importedIds: string[];
   cursorKeysAfterFailure: string[];
 }> {
@@ -294,8 +365,8 @@ async function runQuitParseFailureRelaunch(dir: string): Promise<{
   };
 
   const managerOptions = (collector: HarnessCollector) => ({
-    detectBillingMode: () => "metered_api" as const,
     stateDir: dir,
+    batchResumeCursorStore: medium.store,
     emit: () => {},
     getCollectionMode: () => "watcher" as const,
     cooperativeDelay: noopCooperativeDelay,
@@ -313,13 +384,14 @@ async function runQuitParseFailureRelaunch(dir: string): Promise<{
 
   const quit = deferred();
   let firstManager: CollectorManager | null = null;
+  let firstStopped: Promise<void> = Promise.resolve();
   firstManager = new CollectorManager({
     ...managerOptions(buildCollector(false)),
     importer: {
       importSession: (session) => {
         importedIds.push(session.sessionId);
         if (importedIds.length === IMPORTS_BEFORE_QUIT) {
-          firstManager?.stop();
+          firstStopped = firstManager?.stop() ?? Promise.resolve();
           quit.resolve();
         }
         return { skipped: false, reactivated: false };
@@ -328,6 +400,7 @@ async function runQuitParseFailureRelaunch(dir: string): Promise<{
   });
   firstManager.start();
   await quit.promise;
+  await firstStopped;
 
   const failedBoot = deferred();
   const failingManager = new CollectorManager({
@@ -337,11 +410,9 @@ async function runQuitParseFailureRelaunch(dir: string): Promise<{
   });
   failingManager.start();
   await failedBoot.promise;
-  failingManager.stop();
+  await failingManager.stop();
 
-  const afterFailure = JSON.parse(
-    readFileSync(ingestBatchResumeCursorPath(dir), "utf8")
-  ) as { cursors: Record<string, unknown> };
+  const cursorKeysAfterFailure = await medium.keys();
 
   const recoveredBoot = deferred();
   const recoveringManager = new CollectorManager({
@@ -351,11 +422,11 @@ async function runQuitParseFailureRelaunch(dir: string): Promise<{
   });
   recoveringManager.start();
   await recoveredBoot.promise;
-  recoveringManager.stop();
+  await recoveringManager.stop();
 
   return {
     importedIds: importedIds.filter((id) => id.startsWith("batch-")),
-    cursorKeysAfterFailure: Object.keys(afterFailure.cursors),
+    cursorKeysAfterFailure,
   };
 }
 
@@ -363,8 +434,9 @@ test("ISS-5161: a parse rejection leaves the persisted cursor intact and the nex
   timeout: TEST_CASE_TIMEOUT_MS,
 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "iss-5161-batch-resume-throw-"));
+  const medium = await openCursorMedium();
   try {
-    const run = await runQuitParseFailureRelaunch(dir);
+    const run = await runQuitParseFailureRelaunch(dir, medium);
 
     // A throw imported nothing, so the checkpoint still describes exactly what
     // the first process committed and must survive the retry. Dropping it here
@@ -389,6 +461,7 @@ test("ISS-5161: a parse rejection leaves the persisted cursor intact and the nex
       `the pass after a parse rejection may replay only the session in flight at the quit: ${run.importedIds.length} writes for ${BATCH_SESSION_COUNT} sessions`
     );
   } finally {
+    await medium.close();
     rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -410,6 +483,7 @@ test("ISS-5161: an incomplete session is not checkpointed, so the retry survives
   timeout: TEST_CASE_TIMEOUT_MS,
 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "iss-5161-incomplete-checkpoint-"));
+  const medium = await openCursorMedium();
   const store = join(dir, "opencode.db");
   writeFileSync(store, "{}\n");
   // Imported early enough that the quit below happens well after it, so the
@@ -441,12 +515,13 @@ test("ISS-5161: an incomplete session is not checkpointed, so the retry survives
     const firstProcessIds: string[] = [];
     const quit = deferred();
     let firstManager: CollectorManager | null = null;
+    let firstStopped: Promise<void> = Promise.resolve();
     firstManager = new CollectorManager({
       importer: {
         importSession: (session) => {
           firstProcessIds.push(session.sessionId);
           if (firstProcessIds.length === IMPORTS_BEFORE_QUIT) {
-            firstManager?.stop();
+            firstStopped = firstManager?.stop() ?? Promise.resolve();
             quit.resolve();
           }
           // One tolerated record group failed to commit: the row exists, but the
@@ -458,8 +533,8 @@ test("ISS-5161: an incomplete session is not checkpointed, so the retry survives
           };
         },
       },
-      detectBillingMode: () => "metered_api",
       stateDir: dir,
+      batchResumeCursorStore: medium.store,
       emit: () => {},
       getCollectionMode: () => "watcher",
       cooperativeDelay: noopCooperativeDelay,
@@ -470,6 +545,7 @@ test("ISS-5161: an incomplete session is not checkpointed, so the retry survives
     });
     firstManager.start();
     await quit.promise;
+    await firstStopped;
 
     assert.ok(
       firstProcessIds.includes(incompleteSessionId),
@@ -485,8 +561,8 @@ test("ISS-5161: an incomplete session is not checkpointed, so the retry survives
           return { skipped: false, reactivated: false };
         },
       },
-      detectBillingMode: () => "metered_api",
       stateDir: dir,
+      batchResumeCursorStore: medium.store,
       emit: () => {},
       getCollectionMode: () => "watcher",
       cooperativeDelay: noopCooperativeDelay,
@@ -498,7 +574,7 @@ test("ISS-5161: an incomplete session is not checkpointed, so the retry survives
     });
     secondManager.start();
     await bootComplete.promise;
-    secondManager.stop();
+    await secondManager.stop();
 
     assert.ok(
       secondProcessIds.includes(incompleteSessionId),
@@ -518,6 +594,7 @@ test("ISS-5161: an incomplete session is not checkpointed, so the retry survives
       "every session in the store must still end up imported"
     );
   } finally {
+    await medium.close();
     rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -537,7 +614,8 @@ test("ISS-5161: an incomplete session is not checkpointed, so the retry survives
  */
 async function runQuitAndRelaunchWithSink(
   dir: string,
-  sinkAfterQuit: (writtenBeforeQuit: readonly string[]) => Set<string>
+  sinkAfterQuit: (writtenBeforeQuit: readonly string[]) => Set<string>,
+  medium: CursorMedium
 ): Promise<{ firstProcessIds: string[]; secondProcessIds: string[] }> {
   const store = join(dir, "opencode.db");
   writeFileSync(store, "{}\n");
@@ -566,19 +644,20 @@ async function runQuitAndRelaunchWithSink(
   const firstProcessIds: string[] = [];
   const quit = deferred();
   let firstManager: CollectorManager | null = null;
+  let firstStopped: Promise<void> = Promise.resolve();
   firstManager = new CollectorManager({
     importer: {
       importSession: (session) => {
         firstProcessIds.push(session.sessionId);
         if (firstProcessIds.length === IMPORTS_BEFORE_QUIT) {
-          firstManager?.stop();
+          firstStopped = firstManager?.stop() ?? Promise.resolve();
           quit.resolve();
         }
         return { skipped: false, reactivated: false };
       },
     },
-    detectBillingMode: () => "metered_api",
     stateDir: dir,
+    batchResumeCursorStore: medium.store,
     emit: () => {},
     getCollectionMode: () => "watcher",
     cooperativeDelay: noopCooperativeDelay,
@@ -590,6 +669,7 @@ async function runQuitAndRelaunchWithSink(
   });
   firstManager.start();
   await quit.promise;
+  await firstStopped;
 
   // Whatever the sink looks like when the app comes back: intact, or rebuilt.
   const sink = sinkAfterQuit(firstProcessIds);
@@ -602,8 +682,8 @@ async function runQuitAndRelaunchWithSink(
         return { skipped: false, reactivated: false };
       },
     },
-    detectBillingMode: () => "metered_api",
     stateDir: dir,
+    batchResumeCursorStore: medium.store,
     emit: () => {},
     getCollectionMode: () => "watcher",
     cooperativeDelay: noopCooperativeDelay,
@@ -616,7 +696,7 @@ async function runQuitAndRelaunchWithSink(
   });
   secondManager.start();
   await bootComplete.promise;
-  secondManager.stop();
+  await secondManager.stop();
 
   return { firstProcessIds, secondProcessIds };
 }
@@ -626,12 +706,17 @@ test("ISS-5161: a rebuilt sink is replayed, an intact one is still fast-forwarde
 }, async () => {
   const intactDir = mkdtempSync(join(tmpdir(), "iss-5161-sink-intact-"));
   const rebuiltDir = mkdtempSync(join(tmpdir(), "iss-5161-sink-rebuilt-"));
+  // Two independent mediums, because these are two independent machines: a
+  // cursor written by the intact run must not be visible to the rebuilt one.
+  const intactMedium = await openCursorMedium();
+  const rebuiltMedium = await openCursorMedium();
   try {
     // Control: the sink still holds everything the first process wrote, so the
     // cursor must fast-forward exactly as before.
     const intact = await runQuitAndRelaunchWithSink(
       intactDir,
-      (written) => new Set(written)
+      (written) => new Set(written),
+      intactMedium
     );
     assert.equal(
       intact.secondProcessIds.includes("batch-0"),
@@ -644,11 +729,12 @@ test("ISS-5161: a rebuilt sink is replayed, an intact one is still fast-forwarde
       "every session must still end up imported when the sink is intact"
     );
 
-    // The bug: agent-dashboard.sqlite was rebuilt while the cursor file
-    // survived, so the ids the cursor wants to skip are not in the sink at all.
+    // The bug: agent-dashboard.sqlite was rebuilt while the cursor survived, so
+    // the ids the cursor wants to skip are not in the sink at all.
     const rebuilt = await runQuitAndRelaunchWithSink(
       rebuiltDir,
-      () => new Set<string>()
+      () => new Set<string>(),
+      rebuiltMedium
     );
     assert.equal(
       rebuilt.secondProcessIds.includes("batch-0"),
@@ -661,7 +747,225 @@ test("ISS-5161: a rebuilt sink is replayed, an intact one is still fast-forwarde
       "a rebuilt sink must be refilled with the WHOLE store, not just the tail"
     );
   } finally {
+    await intactMedium.close();
+    await rebuiltMedium.close();
     rmSync(intactDir, { recursive: true, force: true });
     rmSync(rebuiltDir, { recursive: true, force: true });
+  }
+});
+
+/** One source's persisted checkpoint, as the cursor payload stores it. */
+type PersistedCursorEntry = { fingerprint: string; sessionIds: string[] };
+
+/**
+ * A fake forked db-host child that EXECUTES the cursor's store op against a real
+ * database instead of recording it. Enough of the protocol for this suite: Init
+ * is answered Ready, Close is acknowledged, and an Invoke runs the production op
+ * body. Replies are deferred a microtask so the client has registered its
+ * correlation entry before one lands.
+ */
+function makeCursorDbHostChild(prisma: DesktopPrisma) {
+  let messageListener: DbHostChildMessageListener | undefined;
+  const reply = (message: unknown): void => {
+    queueMicrotask(() => messageListener?.(message));
+  };
+  const child = {
+    stderr: null,
+    on(...args: DbHostChildListenerArgs): unknown {
+      if (args[0] === "message") {
+        messageListener = args[1];
+      }
+      return child;
+    },
+    postMessage(message: DbHostRequest): void {
+      if (message.kind === DbHostRequestKind.Init) {
+        reply({ kind: DbHostResponseKind.Ready, id: message.id });
+        return;
+      }
+      if (message.kind === DbHostRequestKind.Close) {
+        reply({ kind: DbHostResponseKind.Result, id: message.id, ok: true });
+        return;
+      }
+      if (message.kind !== DbHostRequestKind.Invoke) {
+        return;
+      }
+      const { id, op, args } = message;
+      runIngestBatchResumeCursorStoreOp(
+        prisma,
+        op.slice(DB_HOST_STORE_OP_PREFIX.length),
+        args
+      ).then(
+        (value) =>
+          reply({ kind: DbHostResponseKind.Result, id, ok: true, value }),
+        (error: unknown) =>
+          reply({
+            kind: DbHostResponseKind.Result,
+            id,
+            ok: false,
+            error: { message: String(error) },
+          })
+      );
+    },
+    kill(): void {
+      /* the client kills the child at the end of close(); nothing to release */
+    },
+  };
+  return child;
+}
+
+/**
+ * The cursor store reached the way PRODUCTION reaches it on the main thread:
+ * the lifecycle's `rawStoreOp` (a `store:`-prefixed invoke) onto a real
+ * `DbHostClient`, which holds the ISS-4713 intentional-shutdown gate AND
+ * decides what may still cross it (`db-host-shutdown-admission.ts`). The direct `sqliteBatchResumeCursorStore` above
+ * skips that hop, so it cannot see this window at all.
+ */
+async function openClosingDbHostCursorMedium(): Promise<{
+  store: BatchResumeCursorStore;
+  beginClosing: () => void;
+  cursors: () => Promise<Record<string, PersistedCursorEntry> | null>;
+  close: () => Promise<void>;
+}> {
+  const { db, prisma, close } = await openTestPrisma();
+  const client = new DbHostClient({
+    onEmit: () => {},
+    onLog: () => {},
+    fork: () => makeCursorDbHostChild(prisma),
+  });
+  await client.start({ dataDir: join(tmpdir(), "iss-9839-db-host") });
+  const rawStoreOp = (name: string, args: unknown[] = []): Promise<unknown> =>
+    client.invoke(`${DB_HOST_STORE_OP_PREFIX}${name}`, args);
+  return {
+    store: createIngestBatchResumeCursorStore({
+      prisma,
+      invokeStoreOp: rawStoreOp,
+    }),
+    beginClosing: () => client.beginClosing(),
+    cursors: async () => {
+      const rows = await db.query<{ cursors: string }>(
+        'SELECT "cursors" FROM "ingest_batch_resume_cursor"'
+      );
+      const cursors = rows.rows.at(0)?.cursors;
+      return cursors === undefined
+        ? null
+        : (JSON.parse(cursors) as Record<string, PersistedCursorEntry>);
+    },
+    close: async () => {
+      await client.close();
+      await close();
+    },
+  };
+}
+
+/**
+ * One process, quit the way the app quits: the db-host intentional-shutdown
+ * window is opened FIRST (ISS-4713 requires that ordering), and only then are
+ * the capture services torn down — which is what runs the cursor's terminal
+ * flush. Returns what the first process imported and what SQLite holds after it.
+ */
+async function runQuitInsideShutdownWindow(
+  dir: string,
+  medium: Awaited<ReturnType<typeof openClosingDbHostCursorMedium>>
+): Promise<{
+  importedIds: string[];
+  persisted: Record<string, PersistedCursorEntry> | null;
+  logs: string[];
+}> {
+  const store = join(dir, "opencode.db");
+  writeFileSync(store, "{}\n");
+  const importedIds: string[] = [];
+  const logs: string[] = [];
+  const base = fakeCollector(OPENCODE, {
+    batch: true,
+    sources: [store],
+    watchRoots: [dir],
+    parse: (source) =>
+      Promise.resolve(
+        source === store
+          ? Array.from({ length: BATCH_SESSION_COUNT }, (_unused, index) =>
+              makeSession({ sessionId: `batch-${index}` })
+            )
+          : []
+      ),
+  });
+  const quit = deferred();
+  let manager: CollectorManager | null = null;
+  let stopped: Promise<void> = Promise.resolve();
+  manager = new CollectorManager({
+    importer: {
+      importSession: (session) => {
+        importedIds.push(session.sessionId);
+        if (importedIds.length === IMPORTS_BEFORE_QUIT) {
+          // The user quits. `beginClosing()` before the teardown is the ISS-4713
+          // ordering the app is committed to, NOT an artifact of this test:
+          // desktop-application-shutdown.ts opens the window first so a db-host
+          // exit from here on is expected, then awaits stopAgentCapture().
+          medium.beginClosing();
+          stopped = manager?.stop() ?? Promise.resolve();
+          quit.resolve();
+        }
+        return { skipped: false, reactivated: false };
+      },
+    },
+    stateDir: dir,
+    batchResumeCursorStore: medium.store,
+    emit: () => {},
+    getCollectionMode: () => "watcher",
+    cooperativeDelay: noopCooperativeDelay,
+    catchupPollMs: null,
+    log: (message) => {
+      logs.push(message);
+    },
+    watchDirectory: () => fakeFsWatcher(),
+    collectors: [
+      {
+        ...base,
+        sourceFingerprint: () => FINGERPRINT_BEFORE_QUIT,
+        markSourceImported: () => true,
+      },
+    ],
+  });
+  manager.start();
+  await quit.promise;
+  await stopped;
+  return { importedIds, persisted: await medium.cursors(), logs };
+}
+
+test("ISS-9839: the terminal flush lands even though the quit opened the db-host shutdown window first", {
+  timeout: TEST_CASE_TIMEOUT_MS,
+}, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "iss-9839-shutdown-window-"));
+  const medium = await openClosingDbHostCursorMedium();
+  try {
+    const run = await runQuitInsideShutdownWindow(dir, medium);
+
+    // ISS-9914: both symptoms of a refused terminal flush in ONE assertion — the
+    // lost cursor tail, and the failure it reported on the monitored
+    // `collector …` channel on every quit-during-backfill.
+    const entries = Object.values(run.persisted ?? {});
+    assert.deepEqual(
+      {
+        persistedSources: entries.length,
+        flushFailures: run.logs.filter((line) => line.includes("flush failed")),
+      },
+      { persistedSources: 1, flushFailures: [] },
+      `the quit must persist the in-flight source's cursor and report no flush failure: ${JSON.stringify(run.persisted)}`
+    );
+    const recorded = entries[0]?.sessionIds ?? [];
+    // A prefix of what the first process committed, never a session it did
+    // not: the cursor may lag the database (that replays a session) and must
+    // never lead it (that would skip one).
+    assert.ok(
+      recorded.length > 0,
+      "the persisted cursor must name the sessions the quit was interrupting"
+    );
+    assert.deepEqual(
+      recorded.filter((id) => !run.importedIds.includes(id)),
+      [],
+      "the cursor must not name a session that was never imported"
+    );
+  } finally {
+    await medium.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 });

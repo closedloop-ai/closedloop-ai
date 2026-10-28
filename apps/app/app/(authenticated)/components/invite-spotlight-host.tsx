@@ -2,8 +2,6 @@
 
 import { ChecklistItemId } from "@repo/api/src/types/onboarding";
 import { InviteTeamDialog } from "@repo/app/organizations/components/invite-team-dialog";
-import { useFeatureFlagGate } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
-import { INVITE_SPOTLIGHT_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { useCurrentUser } from "@repo/app/users/hooks/use-users";
 import { useOrganization } from "@repo/auth/client";
 import { useCallback, useEffect, useState } from "react";
@@ -40,20 +38,18 @@ function suppressionKey(orgId: string, userId: string): string {
  * Owns everything the invite spotlight needs so the My Tasks page gains one
  * line rather than four pieces of state it does not otherwise care about.
  *
- * The spotlight fires only while there is something to nudge toward: the flag
- * is on, onboarding is finished, the checklist is actually on screen, and the
- * invite row is still incomplete. Inviting someone completes that row, so the
- * nudge retires itself without needing to record that it fired.
+ * The spotlight fires only while there is something to nudge toward:
+ * onboarding is finished, the checklist is actually on screen, and the invite
+ * row is still incomplete. Inviting someone completes that row, so the nudge
+ * retires itself without needing to record that it fired. No flag (ISS-7089
+ * F2 shipped it — the gate and its two flag-behavior tests are deliberately
+ * deleted with it): first-paint flash is prevented by the anchor guard — the
+ * spotlight renders nothing until the checklist row it points at measures.
  */
 export function InviteSpotlightHost() {
   const { data: currentUser } = useCurrentUser();
   const { organization } = useOrganization();
   const checklist = useOnboardingChecklist();
-  // Gated on resolution as well as value: an unresolved flag read bare would
-  // pop a spotlight over the page at someone the rollout has not reached, then
-  // yank it away a tick later.
-  const { enabled: spotlightEnabled, isReady: spotlightReady } =
-    useFeatureFlagGate(INVITE_SPOTLIGHT_FEATURE_FLAG_KEY);
 
   const [dialogOpen, setDialogOpen] = useState(false);
   // `null` means "not read yet" — localStorage is unavailable during SSR, and
@@ -113,11 +109,7 @@ export function InviteSpotlightHost() {
   );
 
   const active =
-    spotlightEnabled &&
-    spotlightReady &&
-    checklist.visible &&
-    inviteRowIncomplete &&
-    dismissed === false;
+    checklist.visible && inviteRowIncomplete && dismissed === false;
 
   return (
     <>

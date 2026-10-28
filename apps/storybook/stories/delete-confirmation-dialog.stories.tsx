@@ -2,9 +2,9 @@ import { DeleteConfirmationDialog } from "@repo/app/shared/components/delete-con
 import type { Meta, StoryObj } from "@storybook/react";
 
 const meta = {
-  title: "Design System/Primitives/Delete Confirmation Dialog",
+  title: "Primitives v1.0/Overlays/Delete Confirmation Dialog",
   component: DeleteConfirmationDialog,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   args: {
     open: true,
     onOpenChange: () => undefined,

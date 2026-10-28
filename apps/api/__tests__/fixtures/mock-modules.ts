@@ -1,3 +1,9 @@
+import {
+  ExternalCommentProvider,
+  GitHubCommentThreadKind,
+  PullRequestCommentLane,
+  PullRequestCommentLaneStatus,
+} from "@repo/database/generated/enums";
 import { vi } from "vitest";
 
 type MockModule = Record<string, unknown>;
@@ -13,11 +19,18 @@ export function createDatabaseMockModule(
       DEPLOYMENT: "DEPLOYMENT",
       SESSION: "SESSION",
     },
+    // Every member of the generated enum. `DOC` and `ISSUE` were absent, so a
+    // spec reading `ArtifactSubtype.ISSUE` through this mock got `undefined` —
+    // which silently satisfied an assertion that compared it against another
+    // `undefined`, and let a query that had stopped binding `ISSUE` stay green
+    // (ISS-10471).
     ArtifactSubtype: {
       PRD: "PRD",
       IMPLEMENTATION_PLAN: "IMPLEMENTATION_PLAN",
       TEMPLATE: "TEMPLATE",
       FEATURE: "FEATURE",
+      DOC: "DOC",
+      ISSUE: "ISSUE",
     },
     GitHubPRState: {
       OPEN: "OPEN",
@@ -27,14 +40,10 @@ export function createDatabaseMockModule(
     GitHubInstallationStatus: {
       ACTIVE: "ACTIVE",
     },
-    LoopStatus: {
-      PENDING: "PENDING",
-      RUNNING: "RUNNING",
-      COMPLETED: "COMPLETED",
-      FAILED: "FAILED",
-      CANCELLED: "CANCELLED",
-      TIMED_OUT: "TIMED_OUT",
-    },
+    ExternalCommentProvider,
+    GitHubCommentThreadKind,
+    PullRequestCommentLane,
+    PullRequestCommentLaneStatus,
     WorkstreamEventType: {
       GITHUB_PR_CREATED: "GITHUB_PR_CREATED",
     },
@@ -47,10 +56,15 @@ export function createDatabaseMockModule(
       JUDGE: "JUDGE",
     },
     Prisma: {
+      JsonNull: null,
+      TransactionIsolationLevel: {
+        RepeatableRead: "RepeatableRead",
+      },
       sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
         strings,
         values,
       }),
+      raw: (value: string) => ({ strings: [value], values: [] }),
       join: (values: unknown[], separator = ",") => ({
         separator,
         strings: [""],
@@ -68,51 +82,23 @@ export function createLogMockModule(): MockModule {
       info: vi.fn(),
       warn: vi.fn(),
       error: vi.fn(),
-      flush: vi.fn().mockResolvedValue(undefined),
+      flush: vi.fn(async () => undefined),
     },
   };
 }
 
-export function createLoopDocumentIngestionMockModule(): MockModule {
-  return {
-    upsertEvaluationWithJudgeScores: vi.fn().mockResolvedValue(undefined),
-  };
-}
-
-export function createPrLinkageMockModule(): MockModule {
-  return {
-    ensurePrLinkageRecords: vi
-      .fn()
-      .mockResolvedValue({ status: "linked", branchArtifactId: "branch-1" }),
-  };
-}
-
-export function createPromptsServiceMockModule(): MockModule {
-  return {
-    upsertFromSnapshot: vi.fn().mockResolvedValue(undefined),
-  };
-}
-
 /**
- * Build a mock module for `@repo/auth/loop-runner-jwt`.
- *
- * Pass the `importOriginal` callback provided by `vi.mock(..., async (importOriginal) => …)`
- * so the helper can spread the real module and read `DEFAULT_TTL_MS` for the
- * stubbed `expiresAt`. Override the token literal when a specific test needs
- * to assert on it.
+ * Build a mock module for the comment service's realtime thread signal with
+ * `emitThreadChangeSignal` stubbed: the signal has its own suite, and the row
+ * fakes of the suites that use this are not its subject.
  */
-export async function createLoopRunnerJwtMockModule(
-  importOriginal: <T = unknown>() => Promise<T>,
-  options: { token?: string; tokenId?: string } = {}
+export async function createCommentThreadSignalMockModule(
+  importOriginal: <T = unknown>() => Promise<T>
 ): Promise<MockModule> {
-  const actual =
-    await importOriginal<typeof import("@repo/auth/loop-runner-jwt")>();
   return {
-    ...actual,
-    issueLoopRunnerToken: vi.fn().mockResolvedValue({
-      token: options.token ?? "mock-runner-token",
-      tokenId: options.tokenId ?? "mock-token-id",
-      expiresAt: new Date(Date.now() + actual.DEFAULT_TTL_MS),
-    }),
+    ...(await importOriginal<
+      typeof import("@/app/comments/service/comment-thread-signal")
+    >()),
+    emitThreadChangeSignal: vi.fn(),
   };
 }

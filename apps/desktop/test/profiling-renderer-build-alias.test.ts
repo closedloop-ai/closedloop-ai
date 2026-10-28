@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
-import { describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { describe, test } from "vitest";
 import {
   isProfilingRendererBuildEnabled,
   PROFILING_RENDERER_BUILD_ENABLED_VALUE,

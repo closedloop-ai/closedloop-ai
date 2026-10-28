@@ -5,6 +5,11 @@
  * author on the thread, enforced server-side), and reopenDocumentThreadAsAuthor
  * (author-only reopen). All DB and Liveblocks calls are mocked.
  */
+import {
+  GitHubCommentThreadKind,
+  PullRequestCommentLane,
+  PullRequestCommentLaneStatus,
+} from "@repo/database/generated/enums";
 import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 
 const {
@@ -22,6 +27,10 @@ const {
 vi.mock("@repo/database", () => {
   const withDbFn = vi.fn();
   return {
+    GitHubCommentThreadKind,
+    PullRequestCommentLane,
+    PullRequestCommentLaneStatus,
+
     Prisma: { JsonNull: null },
     withDb: Object.assign(withDbFn, { tx: vi.fn() }),
   };
@@ -43,6 +52,7 @@ import { withDb } from "@repo/database";
 import { commentsService } from "../service";
 
 const mockWithDb = withDb as unknown as Mock;
+const mockWithDbTx = (withDb as unknown as { tx: Mock }).tx;
 const ORG = "org-1";
 const ARTIFACT = "artifact-uuid";
 const AUTHOR = "author-user";
@@ -95,6 +105,8 @@ describe("commentsService.replyToDocumentThread", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockWithDb.mockReset();
+    // ISS-12552: the reply's projection and receipt share one transaction.
+    mockWithDbTx.mockImplementation((fn: (tx: unknown) => unknown) => fn({}));
   });
 
   it("creates a flat reply in Liveblocks and projects it (anyone with view access)", async () => {
@@ -102,7 +114,7 @@ describe("commentsService.replyToDocumentThread", () => {
     mockReplyToArtifactThread.mockResolvedValue({ id: "cm_reply" });
     const upsertSpy = vi
       .spyOn(commentsService, "upsertCommentFromLiveblocks")
-      .mockResolvedValue(null as never);
+      .mockResolvedValue({ id: "local-reply" } as never);
 
     // A non-author caller may still reply — comment permission is view-based.
     const result = await commentsService.replyToDocumentThread(
@@ -125,6 +137,31 @@ describe("commentsService.replyToDocumentThread", () => {
     });
     expect(upsertSpy).toHaveBeenCalledWith(ORG, THREAD_EXTERNAL_ID, {
       id: "cm_reply",
+    });
+    upsertSpy.mockRestore();
+  });
+
+  it("hands the receipt recorder the reply's own comment row id, not the Liveblocks id", async () => {
+    stubThreadLookup(makeThreadRow());
+    mockReplyToArtifactThread.mockResolvedValue({ id: "cm_reply" });
+    const upsertSpy = vi
+      .spyOn(commentsService, "upsertCommentFromLiveblocks")
+      .mockResolvedValue({ id: "local-reply" } as never);
+    const recordCreated = vi.fn(async () => undefined);
+
+    await commentsService.replyToDocumentThread(
+      ORG,
+      ARTIFACT,
+      THREAD_EXTERNAL_ID,
+      OTHER,
+      "A reply body",
+      recordCreated
+    );
+
+    expect(recordCreated).toHaveBeenCalledWith(expect.anything(), {
+      threadId: THREAD_EXTERNAL_ID,
+      commentId: "cm_reply",
+      commentRowId: "local-reply",
     });
     upsertSpy.mockRestore();
   });
@@ -188,6 +225,32 @@ describe("commentsService.replyToDocumentThread", () => {
     upsertSpy.mockRestore();
   });
 
+  it("rejects and compensates the Liveblocks reply when the projection stores nothing", async () => {
+    stubThreadLookup(makeThreadRow());
+    mockReplyToArtifactThread.mockResolvedValue({ id: "cm_reply" });
+    mockDeleteArtifactComment.mockResolvedValue(undefined);
+    const upsertSpy = vi
+      .spyOn(commentsService, "upsertCommentFromLiveblocks")
+      .mockResolvedValue(null);
+
+    await expect(
+      commentsService.replyToDocumentThread(
+        ORG,
+        ARTIFACT,
+        THREAD_EXTERNAL_ID,
+        AUTHOR,
+        "A reply body"
+      )
+    ).rejects.toThrow("Reply created but its projection stored nothing");
+
+    expect(mockDeleteArtifactComment).toHaveBeenCalledWith({
+      roomId: "room-1",
+      threadId: THREAD_EXTERNAL_ID,
+      commentId: "cm_reply",
+    });
+    upsertSpy.mockRestore();
+  });
+
   it("syncs from the provider and retries when the DB projection has not landed yet (read-after-write)", async () => {
     // First lookup misses (webhook projection not landed), sync succeeds, second
     // lookup returns the freshly projected row so the reply proceeds.
@@ -207,7 +270,7 @@ describe("commentsService.replyToDocumentThread", () => {
     mockReplyToArtifactThread.mockResolvedValue({ id: "cm_reply" });
     const upsertSpy = vi
       .spyOn(commentsService, "upsertCommentFromLiveblocks")
-      .mockResolvedValue(null as never);
+      .mockResolvedValue({ id: "local-reply" } as never);
 
     const result = await commentsService.replyToDocumentThread(
       ORG,
@@ -297,7 +360,8 @@ describe("commentsService.resolveDocumentThread (participant-resolve)", () => {
       ORG,
       THREAD_EXTERNAL_ID,
       expect.any(Date),
-      { resolvedById: AUTHOR }
+      { resolvedById: AUTHOR },
+      undefined
     );
     resolveSpy.mockRestore();
   });
@@ -348,7 +412,8 @@ describe("commentsService.resolveDocumentThread (participant-resolve)", () => {
       ORG,
       THREAD_EXTERNAL_ID,
       expect.any(Date),
-      { resolvedById: REPLIER }
+      { resolvedById: REPLIER },
+      undefined
     );
     resolveSpy.mockRestore();
   });

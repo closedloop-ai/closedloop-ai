@@ -22,10 +22,13 @@ export const GET = withAnyAuth<
 >(
   async ({ user }, _request, params) => {
     try {
+      // Next's route matcher already `decodeURIComponent`s every captured
+      // segment, so `packId` arrives decoded. Decoding again corrupts an id
+      // containing a literal `%` (`pack%20one` -> `pack one`) or throws.
       const { packId } = await params;
       const analytics = await packAnalyticsService.getPackAnalytics(
         user.organizationId,
-        decodeURIComponent(packId)
+        packId
       );
       if (!analytics) {
         return notFoundResponse("Pack analytics");

@@ -21,33 +21,41 @@
  * injected `getCollectionMode` and never embeds its own hooks-installed
  * conditional.
  */
-import type { QuarantinedStageCounts } from "../../../shared/ingest-quarantine-contract.js";
-import type { Importer } from "../../dashboard/agent-dashboard-db-types.js";
+
+import {
+  HISTORICAL_IMPORT_SESSION_TIMEOUT_MS,
+  HISTORICAL_PARSE_TIMEOUT_MS,
+  IMPORT_NO_MOVEMENT_GIVE_UP_MS,
+} from "../../../shared/historical-import-bounds.js";
+import {
+  type Importer,
+  isDurableImportProgress,
+  isUnlandedImportOffer,
+} from "../../dashboard/agent-dashboard-db-types.js";
 import { captureInvocationDefinitionEvidence } from "../../packs/definition-content-collector.js";
+import { effectiveParsePolicy } from "../../parse-policy/effective-parse-policy.js";
 import { delay } from "../../util/main-loop-scheduling.js";
 import { type HarnessCollector, narrowHarness } from "../types.js";
 import { BootImportLifecycle } from "./boot-import-watchdog.js";
-import {
-  HISTORICAL_IMPORT_SESSION_TIMEOUT_MS,
-  importSessionBounded,
-} from "./bounded-import-session.js";
-import {
-  type BoundedParseInvoker,
-  HISTORICAL_PARSE_TIMEOUT_MS,
-} from "./bounded-parse.js";
+import { importSessionBounded } from "./bounded-import-session.js";
+import type { BoundedParseInvoker } from "./bounded-parse.js";
 import {
   type CatchupCache,
   createCatchupCache,
   createPassSeenWriter,
 } from "./catchup-cache.js";
 import {
+  abandonedPassEndsBootImport,
   CollectorImportScope,
   describeCollectorImportFailure,
+  importOutcomeForAbandonedPass,
 } from "./collector-import-failure-log.js";
 import { BatchResumeCursors } from "./collector-manager-batch-resume.js";
 import { ImportPauseGate } from "./collector-manager-import-pause.js";
 import {
-  type IngestProgressSnapshot,
+  composeIngestProgressReport,
+  type IngestHarnessProgressReport,
+  type IngestProgressReport,
   IngestProgressTracker,
 } from "./collector-manager-ingest-progress.js";
 import { applyLiveSessionSinks } from "./collector-manager-live-session-sinks.js";
@@ -62,6 +70,9 @@ import {
   parseHistoricalSource,
 } from "./collector-manager-pass-resources.js";
 import { scanImportPass } from "./collector-manager-pass-scan.js";
+import { createPassSessionLedger } from "./collector-manager-pass-session-ledger.js";
+import { settleImportPassStores } from "./collector-manager-pass-settle.js";
+import { teardownCollectorEpoch } from "./collector-manager-shutdown.js";
 import { parseSourceForPass } from "./collector-manager-source-parse.js";
 import {
   type DeferredImportTask,
@@ -72,26 +83,22 @@ import {
   LARGE_IMPORT_BACKLOG_THRESHOLD,
   sourcePathsForWatcherEventsWithOrigins,
   type WatcherEventSources,
-  willSourceBeRescanned,
 } from "./collector-pending-sources.js";
 import { defaultCollectors } from "./default-collectors.js";
 import {
-  ingestBatchResumeCursorPath,
-  ingestCachePath,
-} from "./ingest-paths.js";
-import {
   createParseQuarantine,
   type ParseQuarantine,
-  parseQuarantinePath,
   quarantinedCountsByStage,
   totalQuarantinedCount,
 } from "./parse-quarantine.js";
 import { isImportableCollectorSource } from "./source-admission.js";
-import type {
-  HarnessImportControls,
-  HarnessImportResult,
-  HarnessWatcher,
-  HarnessWatcherEvent,
+import {
+  type HarnessImportControls,
+  HarnessImportOutcome,
+  type HarnessImportResult,
+  type HarnessWatcher,
+  type HarnessWatcherEvent,
+  harnessImportOutcomeFor,
 } from "./watcher.js";
 
 export class CollectorManager {
@@ -126,8 +133,9 @@ export class CollectorManager {
   // ISS-5161: and survives the PROCESS, because it is persisted — a batch
   // harness has no per-file catchup cache to checkpoint against, so without this
   // an interrupted backfill came back with an empty cursor and an unadvanced
-  // store fingerprint and replayed the whole corpus. Assigned in the constructor
-  // rather than inline because it needs `options.stateDir`.
+  // store fingerprint and replayed the whole corpus. ISS-9839: persisted to
+  // SQLite through an injected port rather than to a JSON file, so it is assigned
+  // in the constructor rather than inline.
   private readonly batchResume: BatchResumeCursors;
   private readonly watchers: HarnessWatcher[] = [];
   private readonly deferredImportTasks = new Set<DeferredImportTask>();
@@ -135,18 +143,18 @@ export class CollectorManager {
   private stopped = false;
   private generation = 0;
   // FTUE first-pass ingest progress + its console-observability bookkeeping,
-  // extracted to a sibling so this grandfathered file stays shrink-only. Owns the
+  // extracted to a sibling so this file shrinks rather than grows. Owns the
   // per-harness progress map, the first-pass-done gate, and the preparing set.
   private readonly ingest: IngestProgressTracker;
   // Pause/resume for the long first-launch backfill, extracted to a sibling so
-  // this grandfathered file stays shrink-only. Also read by the first-pass stall
+  // this file shrinks rather than grows. Also read by the first-pass stall
   // watch, so a paused backfill is never reported as stalled (ISS-4917).
   private readonly pause = new ImportPauseGate();
-  // FEA-4156: boot-import completion/timeout lifecycle. Owns the terminal state
-  // (`complete` = all harnesses settled; `timedOut` = a wedged harness the
-  // bounded watchdog gave up on, degraded and NOT complete) plus the timer, so
-  // this grandfathered manager does not keep growing. Armed before awaiting the
-  // per-harness promises and cleared once they settle (or on stop()).
+  // FEA-4156 + ISS-6207: boot-import terminal lifecycle. Owns the three terminal
+  // claims (`complete` = every harness finished; `timedOut` = the watchdog gave
+  // up on a still-running import; `retriesExhausted` = it settled with sources
+  // left behind) plus the timer. Armed before awaiting the per-harness promises
+  // and cleared once they settle (or on stop()).
   private readonly bootImport: BootImportLifecycle;
 
   constructor(options: CollectorManagerOptions) {
@@ -154,7 +162,7 @@ export class CollectorManager {
     this.log = options.log ?? (() => {});
     this.ingest = new IngestProgressTracker(this.log);
     this.batchResume = new BatchResumeCursors({
-      persistPath: ingestBatchResumeCursorPath(options.stateDir),
+      store: options.batchResumeCursorStore,
       log: this.log,
     });
     this.importer = options.importer;
@@ -181,16 +189,23 @@ export class CollectorManager {
       isStopped: () => this.stopped,
       currentGeneration: () => this.generation,
       isPaused: () => this.pause.isPaused(),
+      isAdvancing: () =>
+        this.ingest.hasAdvancingPass(IMPORT_NO_MOVEMENT_GIVE_UP_MS),
       onComplete: () => this.options.onBootImportComplete?.(),
       onTimeout: () => this.options.onBootImportTimeout?.(),
+      onRetriesExhausted: () => this.options.onBootImportRetriesExhausted?.(),
       log: this.log,
     });
+    const ingestStores = options.ingestStores;
     for (const collector of this.collectors) {
       if (!collector.batch) {
         this.caches.set(
           collector.key,
           createCatchupCache({
-            persistPath: ingestCachePath(options.stateDir, collector.cacheName),
+            ...(ingestStores
+              ? { store: ingestStores.catchupCache(collector.cacheName) }
+              : {}),
+            zeroSessionParseKey: () => collector.zeroSessionParseKey?.() ?? "",
           })
         );
       }
@@ -205,10 +220,9 @@ export class CollectorManager {
       this.quarantines.set(
         collector.key,
         createParseQuarantine({
-          persistPath: parseQuarantinePath(
-            options.stateDir,
-            collector.cacheName
-          ),
+          ...(ingestStores
+            ? { store: ingestStores.parseQuarantine(collector.cacheName) }
+            : {}),
           ...(this.parseQuarantineMaxAttempts === undefined
             ? {}
             : { maxAttempts: this.parseQuarantineMaxAttempts }),
@@ -238,6 +252,7 @@ export class CollectorManager {
       historicalImportStaggerMs: this.options.historicalImportStaggerMs,
       catchupPollMs: this.options.catchupPollMs,
       watchDirectory: this.options.watchDirectory,
+      onWatchLost: this.options.onWatchLost,
       runFullImport: (collector, viaWatcher, controls) =>
         this.runImportFor(collector, gen, viaWatcher, controls),
       runWatcherEventImport: (collector, events) =>
@@ -250,7 +265,7 @@ export class CollectorManager {
       void task.promise.finally(() => this.deferredImportTasks.delete(task));
     }
     if (plan.firstImportPromises.length === 0) {
-      queueMicrotask(() => this.bootImport.complete(gen));
+      queueMicrotask(() => this.bootImport.settle(gen));
       return;
     }
     // FEA-4156: arm a bounded watchdog BEFORE awaiting the per-harness promises.
@@ -261,50 +276,47 @@ export class CollectorManager {
     // advancing the aggregate count. On timeout the watchdog surfaces the degraded
     // `timedOut` signal (NOT completion) so the splash resolves into its graceful
     // partial-import state while the still-running collectors keep filling the DB.
-    // The real completion always clears the watchdog first, so a genuine settle
-    // and the timeout can't both fire.
+    // A genuine settle always clears the watchdog first, so both can't fire.
     this.bootImport.arm(gen);
     void Promise.allSettled(plan.firstImportPromises).then(() => {
-      this.bootImport.complete(gen);
+      this.bootImport.settle(gen);
     });
   }
 
-  /** The harness collectors driven by this manager. */
   /**
    * Per-harness first-pass ingest progress for the FTUE dashboard. Harnesses
    * with no pending sources are omitted (only show a harness with ≥1 session).
    */
   getIngestProgress(): IngestProgressReport {
-    return {
-      // byHarness/total/processed/preparing come from the ingest tracker; the
-      // boot-import terminal state and quarantine count are separate lifecycles.
-      ...this.ingest.snapshot(),
-      // ISS-5115 (whitlockk review): the import loop has ACKNOWLEDGED a pause by
-      // actually parking on the gate. Distinct from `isImportPaused()`, which is
-      // true from the instant the user asks and stays true through a whole
-      // source-discovery scan the loop cannot interrupt. The startup panel says
-      // "Pausing" until this flips, rather than claiming work already stopped.
+    return composeIngestProgressReport({
+      snapshot: this.ingest.snapshot(),
       importParked: this.pause.isParked(),
-      // Every harness's boot import has finished. Distinct from aggregate
-      // `processed === total`, which is briefly true between staggered passes.
-      complete: this.bootImport.isComplete(),
-      // FEA-4156: the boot import gave up without settling (a wedged harness the
-      // watchdog timed out on). Degraded, NOT complete — the splash resolves into
-      // its graceful partial-import state and no post-boot maintenance is queued.
-      timedOut: this.bootImport.isTimedOut(),
-      // ISS-4444 / ISS-6115: how many transcripts have been QUARANTINED (their
-      // parse wedged or their import exceeded its bound repeatedly, so they are no
-      // longer retried). The boot import still COMPLETES
-      // with these skipped — this count lets the UI honestly surface "N sessions
-      // couldn't be imported" instead of silently under-counting.
+      bootComplete: this.bootImport.isComplete(),
+      bootTimedOut: this.bootImport.isTimedOut(),
+      bootRetriesExhausted: this.bootImport.isRetriesExhausted(),
       quarantinedCount: totalQuarantinedCount(this.quarantines.values()),
-      // ISS-6115 (whitlockk review): the same population split by the stage that
-      // quarantined it. `quarantinedCount` alone changed meaning when the import
-      // bound started charging the store, and every renderer went on saying the
-      // transcript "couldn't be read" — which is false for an import stall, since
-      // the file was read and it is the WRITE that did not finish.
       quarantinedByStage: quarantinedCountsByStage(this.quarantines.values()),
-    };
+    });
+  }
+
+  /**
+   * ISS-6116: the per-harness backfill view the import-health telemetry window
+   * reports. Separate from {@link getIngestProgress}, which is the renderer's
+   * FTUE projection — this one carries the not-advancing condition the renderer
+   * has no use for and omits the manager-owned lifecycles telemetry does not
+   * report.
+   */
+  reportHarnessProgress(): IngestHarnessProgressReport[] {
+    return this.ingest.reportHarnessProgress();
+  }
+
+  /**
+   * ISS-8346: bytes the named harnesses' first passes have still to parse, for
+   * the onboarding analysis estimate. Main-only and off the renderer wire —
+   * see {@link IngestProgressTracker.remainingPendingBytes}.
+   */
+  remainingPendingBytes(harnesses: readonly string[]): number | null {
+    return this.ingest.remainingPendingBytes(harnesses);
   }
 
   getCollectors(): readonly HarnessCollector[] {
@@ -325,50 +337,30 @@ export class CollectorManager {
     return this.pause.isPaused();
   }
 
-  /** Stop watchers, halt in-flight imports, flush caches. */
-  stop(): void {
+  /**
+   * Stop watchers, halt in-flight imports, flush caches. Awaitable since
+   * ISS-9839: the batch-resume cursor is now an async write-back, and this is
+   * the ordinary quit path it exists to survive (ISS-9837 C2). `stopped` is set
+   * on this turn, before the first yield, so an in-flight pass sees it at its
+   * next active check exactly as it did when this was synchronous.
+   */
+  stop(): Promise<void> {
     this.stopped = true;
-    // FEA-4156: cancel the boot-import watchdog so a stop()/start() restart never
-    // fires it against a superseded generation (the watchdog guards on generation,
-    // but leaving a timer armed just leaks a no-op callback).
-    this.bootImport.clear();
-    // Unblock a paused import so its loop can observe `stopped` and exit.
-    this.resumeImport();
-    // Drop the stranded first-pass progress entries + console bookkeeping, but
-    // PRESERVE the first-pass gate (see IngestProgressTracker.resetForStop): the
-    // gate is only set post-completion, and re-arming it on an in-process restart
-    // of an already-imported machine would surface a routine catch-up as a false
-    // "Importing your history" state.
-    this.ingest.resetForStop();
-    // ISS-5161: PERSIST the in-flight batch cursor before releasing it. `stop()`
-    // is the ordinary quit path — exactly the interruption the cursor exists to
-    // survive — so flushing here is what lets the next launch resume the batch
-    // backfill instead of replaying the corpus. `clear()` only releases memory;
-    // it deliberately does NOT discard what is on disk.
-    this.batchResume.flush();
-    this.batchResume.clear();
-    for (const task of this.deferredImportTasks) {
-      task.cancel();
-    }
-    this.deferredImportTasks.clear();
-    for (const watcher of this.watchers) {
-      try {
-        watcher.stop();
-      } catch {
-        /* ignore */
-      }
-    }
-    this.watchers.length = 0;
-    for (const cache of this.caches.values()) {
-      cache.flush();
-    }
-    // ISS-4444: persist any dead-letter / quarantine state recorded this session so
-    // a stop()/restart doesn't lose a poison transcript's accrued wedging attempts.
-    for (const quarantine of this.quarantines.values()) {
-      quarantine.flush();
-    }
-    this.options.historicalParseRunner?.stop();
     this.started = false;
+    return teardownCollectorEpoch({
+      // FEA-4156: cancel the boot-import watchdog so a stop()/start() restart never
+      // fires it against a superseded generation (the watchdog guards on generation,
+      // but leaving a timer armed just leaks a no-op callback).
+      clearBootImportWatchdog: () => this.bootImport.clear(),
+      resumeImport: () => this.resumeImport(),
+      ingest: this.ingest,
+      batchResume: this.batchResume,
+      deferredImportTasks: this.deferredImportTasks,
+      watchers: this.watchers,
+      caches: this.caches.values(),
+      quarantines: this.quarantines.values(),
+      historicalParseRunner: this.options.historicalParseRunner,
+    });
   }
 
   private async runImportFor(
@@ -377,8 +369,10 @@ export class CollectorManager {
     viaWatcher: boolean,
     controls?: HarnessImportControls
   ): Promise<HarnessImportResult> {
+    // A superseded epoch has nothing to re-drive; the generation guard blocks any
+    // terminal claim downstream from this value.
     if (!this.isImportActive(generation)) {
-      return { completed: true };
+      return { outcome: HarnessImportOutcome.Completed };
     }
     try {
       const result = await this.importHarness(
@@ -390,7 +384,7 @@ export class CollectorManager {
       if (result.imported > 0 && this.isImportActive(generation)) {
         this.options.emit();
       }
-      return { completed: result.completed };
+      return { outcome: harnessImportOutcomeFor(result.completed) };
     } catch (error) {
       // ISS-5262: this line AND the tracker's `abandoned at N/M …: <reason>`
       // below come from one classification (collector-import-failure-log.ts).
@@ -402,7 +396,14 @@ export class CollectorManager {
       // already ended. abandonPass does NOT set the first-pass gate, so the next
       // pass re-tracks rather than the failure reading as a completion.
       const budgeted = this.ingest.abandonPass(collector.key, report.reason);
-      return { completed: report.passCompleted || !budgeted };
+      // ISS-6207: a spent re-drive budget is its own terminal, not completion —
+      // and so is any unfinished pass on the deferred lane, which has no
+      // re-drive loop to consume an `Incomplete`.
+      const outcome = importOutcomeForAbandonedPass(report, budgeted);
+      if (abandonedPassEndsBootImport(outcome, viaWatcher)) {
+        this.bootImport.noteRetriesExhausted(generation);
+      }
+      return { outcome };
     }
   }
 
@@ -412,7 +413,7 @@ export class CollectorManager {
     events: HarnessWatcherEvent[]
   ): Promise<HarnessImportResult> {
     if (!this.isImportActive(generation)) {
-      return { completed: true };
+      return { outcome: HarnessImportOutcome.Completed };
     }
     try {
       const result = await this.importSources({
@@ -427,7 +428,7 @@ export class CollectorManager {
       if (result.imported > 0 && this.isImportActive(generation)) {
         this.options.emit();
       }
-      return { completed: true };
+      return { outcome: HarnessImportOutcome.Completed };
     } catch (error) {
       // ISS-5262: same helper; no abandonPass (the live batch tracks no pass).
       this.log(
@@ -437,7 +438,10 @@ export class CollectorManager {
           CollectorImportScope.Live
         ).line
       );
-      return { completed: true };
+      // Outstanding-but-eligible: the next filesystem change or catch-up sweep
+      // re-reads these events. The watcher consults the outcome only for a full
+      // sweep, so nothing re-queues here — but it must not claim completion.
+      return { outcome: HarnessImportOutcome.Incomplete };
     }
   }
 
@@ -464,7 +468,9 @@ export class CollectorManager {
       pruneCache: true,
       parseSource: parseHistoricalSource(
         collector,
-        this.options.historicalParseRunner
+        this.options.historicalParseRunner,
+        this.options.onIngestFailure,
+        () => this.isImportActive(generation)
       ),
       lowDutyImport: true,
       shouldYieldToLiveEvents: controls?.shouldYieldToLiveEvents,
@@ -479,10 +485,12 @@ export class CollectorManager {
     pruneCache,
     lowDutyImport,
     shouldYieldToLiveEvents,
-    parseSource = (source, onDispatch) => {
-      onDispatch();
-      return collector.parse(source);
-    },
+    parseSource = parseHistoricalSource(
+      collector,
+      undefined,
+      this.options.onIngestFailure,
+      () => this.isImportActive(generation)
+    ),
   }: {
     collector: HarnessCollector;
     generation: number;
@@ -532,6 +540,7 @@ export class CollectorManager {
       isImportActive: (gen) => this.isImportActive(gen),
       deleteSessionRow: this.options.deleteSessionRow,
       log: this.log,
+      e2eAbandonHistoricalPass: this.options.e2eAbandonHistoricalPass,
     });
     if (!scan.active) {
       return { imported: 0, completed: false };
@@ -540,6 +549,7 @@ export class CollectorManager {
       sources,
       changedPathsBySource,
       pendingSources,
+      pendingBytesBySource,
       existingSessionIds,
       trackProgress,
     } = scan;
@@ -579,7 +589,10 @@ export class CollectorManager {
     // LOW-DUTY-only. Declared here rather than at its use site because
     // `completeSource` below also has to know whether this pass owns a cursor.
     const useResumeCursor = lowDutyImport && batchCollector !== undefined;
-    const completeSource = (source: string, durable: boolean) => {
+    const completeSource = async (
+      source: string,
+      durable: boolean
+    ): Promise<void> => {
       liveYield.noteSourceCompleted();
       // ISS-5161: a source only reaches a TERMINAL outcome while the pass is
       // still active. When `stop()` (or a superseding generation) broke the
@@ -610,58 +623,34 @@ export class CollectorManager {
       // and the lock — made that a throw/wipe/replay loop. `forget` at a durable
       // outcome keeps the map bounded; retry is bounded by one entry per source.
       if (useResumeCursor && durable && this.isImportActive(generation)) {
-        this.batchResume.forget(collector.key, source);
+        await this.batchResume.forget(collector.key, source);
       }
       if (trackProgress) {
         this.ingest.advance(
           collector.key,
           parseMsTotal,
           importMsTotal,
-          durable
+          durable,
+          pendingBytesBySource.get(source) ?? 0
         );
       }
     };
-    // ISS-5028: session ids this pass actually wrote. `existingSessionIds` is a
-    // snapshot taken before the pass began, so without this a source imported a
-    // moment ago still looks orphaned to willSourceBeRescanned.
-    const importedThisPass = new Set<string>();
-    // ISS-5028 (whitlockk review): the mid-source resume cursor, BATCH-only. A batch
-    // source is the whole store, so a mid-source yield makes the next quantum
-    // replay thousands of already-imported sessions; a file source is one
-    // transcript, where the replay is cheap and the cursor would only add risk.
-    // See BatchResumeCursors.
-    const isSourceDurable = (source: string): boolean =>
-      !willSourceBeRescanned(
-        collector,
-        source,
-        existingSessionIds,
-        importedThisPass
-      );
-    // ISS-5161 (whitlockk review): the store fingerprint proves only that the SOURCE
-    // has not moved — it says nothing about the SINK. `agent-dashboard.sqlite`
-    // lives at a sibling path and can be rebuilt (a DB reset/migration) while
-    // the cursor file survives, the same divergence `loadExistingSessionIds`
-    // already self-heals for file collectors. Fast-forwarding then skips ids out
-    // of an EMPTY sink and `markSourceImported` seals the source over rows that
-    // were never written. So a cursor may only skip a session the sink still
-    // holds. `existingSessionIds` is this pass's snapshot, so a session written
-    // EARLIER IN THIS CALL is absent from it — `importedThisPass` covers that,
-    // and a later quantum re-reads the DB and sees it. An absent loader leaves
-    // the pre-ISS-5161 behavior (trust the cursor) rather than replaying
-    // everything.
-    const sinkStillHolds = (sessionId: string): boolean =>
-      existingSessionIds === undefined ||
-      existingSessionIds.has(sessionId) ||
-      importedThisPass.has(sessionId);
+    // ISS-5028 / ISS-5161: what this pass has written, and the durability and
+    // cursor-trust questions that answer from it. See the ledger's own contract.
+    const ledger = createPassSessionLedger(collector, existingSessionIds);
     // The pass returned early to service live-watcher events: not advancing BY
     // DESIGN, so the no-progress watch mutes this harness until it re-enters.
-    const yieldToLiveEvents = (): ImportSourcesResult => {
+    const yieldToLiveEvents = async (): Promise<ImportSourcesResult> => {
       this.ingest.noteSuspended(collector.key);
       // ISS-5161: checkpoint the batch cursor at every yield. A MID-SOURCE yield
       // leaves the source unmarked by design, so this write is the only record
       // that the sessions already committed this pass need not be replayed — and
       // a yielded pass is precisely when the app is most likely to be quit.
-      this.batchResume.flush();
+      //
+      // ISS-9839 (ISS-9837 C2): AWAITED. Fire-and-forget here would convert the
+      // bounded replay this checkpoint buys into an unbounded one — ISS-5161's
+      // original bug arriving by a new route.
+      await this.batchResume.flush();
       return { imported, completed: false };
     };
 
@@ -692,9 +681,12 @@ export class CollectorManager {
       const sourceStartedAt = Date.now();
       const { source, stat, extraMtime, snapshot } = pendingSource;
       let sourceImported = true;
+      // ISS-12552: one policy for this source's parse and its imports.
+      const parsePolicy = effectiveParsePolicy();
 
       const parsed = await parseSourceForPass({
-        parseSource,
+        parseSource: (path, onDispatch) =>
+          parseSource(path, onDispatch, parsePolicy),
         collector,
         source,
         stat,
@@ -706,6 +698,7 @@ export class CollectorManager {
         isImportActive: () => this.isImportActive(generation),
         abortInFlightParse: () =>
           this.options.historicalParseRunner?.abortInFlightParse?.(),
+        onIngestFailure: this.options.onIngestFailure,
         log: this.log,
       });
       parseMsTotal += parsed.parseMs;
@@ -727,8 +720,8 @@ export class CollectorManager {
         const durable =
           outcome.kind === "timedOut"
             ? outcome.quarantined
-            : outcome.markedSeen && isSourceDurable(source);
-        completeSource(source, durable);
+            : outcome.markedSeen && ledger.isSourceDurable(source);
+        await completeSource(source, durable);
         if (throttleImports) {
           await this.pauses.afterLargeBacklogSource(sourceStartedAt);
         }
@@ -738,7 +731,7 @@ export class CollectorManager {
         // one was serviced; an error-only backlog could satisfy both the source
         // floor and the time escape while watcher events sat queued.
         if (liveYield.shouldYield()) {
-          return yieldToLiveEvents();
+          return await yieldToLiveEvents();
         }
         continue;
       }
@@ -783,13 +776,13 @@ export class CollectorManager {
           // is replayed on every resume and a batch store never finishes.
           if (
             useResumeCursor &&
-            this.batchResume.isImported(
+            (await this.batchResume.isImported(
               collector.key,
               source,
               session.sessionId,
               snapshot?.fingerprint ?? null
-            ) &&
-            sinkStillHolds(session.sessionId)
+            )) &&
+            ledger.sinkStillHolds(session.sessionId)
           ) {
             continue;
           }
@@ -825,6 +818,13 @@ export class CollectorManager {
             log: this.log,
           });
           const importStartedAt = Date.now();
+          // ISS-12036: this session's deadline was spent behind ANOTHER
+          // session's write (ISS-7256), so the synthetic `failed` the bound
+          // resolves is a starved session rather than one that failed to land —
+          // charging the source's retry budget for it would quarantine a
+          // healthy transcript for a neighbour's wedge, which is the property
+          // ISS-7256 exists to hold. Per-session, declared inside the loop.
+          let starvedBehindAnotherWrite = false;
           // ISS-4410: bound the historical import write so a single wedged
           // session (a DB-host write accepted but never completing) cannot
           // permanently stall the whole boot-import sweep at the first source.
@@ -838,9 +838,17 @@ export class CollectorManager {
                   collector.key,
                   source,
                   this.historicalImportSessionTimeoutMs,
-                  budget.noteImportTimedOut
+                  budget.noteImportTimedOut,
+                  () => {
+                    starvedBehindAnotherWrite = true;
+                  },
+                  parsePolicy
                 )
-              : await this.importer.importSession(session, collector.key);
+              : await this.importer.importSession(
+                  session,
+                  collector.key,
+                  parsePolicy
+                );
           importMsTotal += Date.now() - importStartedAt;
           if (!this.isImportActive(generation)) {
             sourceImported = false;
@@ -876,11 +884,20 @@ export class CollectorManager {
           if (result.incomplete) {
             sourceImported = false;
           }
+          // ISS-12036: charge this source's retry budget for an offer that did
+          // not land. ISS-6115 charged only the import DEADLINE and cleared the
+          // tally here, which left the ISS-4476 isolate path's "retries" meaning
+          // forever — the measured loop. The predicate is canonical
+          // (`isUnlandedImportOffer`) rather than re-derived from the two
+          // branches above, because it also covers the no-row REFUSALS that keep
+          // `sourceImported` true and are re-listed by the orphan self-heal
+          // instead, and it deliberately excludes a byte-identical re-offer.
+          if (!starvedBehindAnotherWrite && isUnlandedImportOffer(result)) {
+            budget.noteImportDidNotLand();
+          }
           // A failed session imported nothing durable, so it does not count toward
           // the imported tally even though we fall through to the shared yield.
-          const wroteNothing =
-            result.failed || (result.skipped && !result.reactivated);
-          if (!wroteNothing) {
+          if (isDurableImportProgress(result)) {
             imported++;
             // ISS-5028: this session is committed, so it counts toward the
             // mid-source quantum AND is recorded as already done for the resume
@@ -888,7 +905,7 @@ export class CollectorManager {
             // (FEA-2027 unsafe token count) or a failed import wrote no row, so
             // neither may be skipped on the resumed pass nor claimed as progress.
             liveYield.noteSessionImported();
-            importedThisPass.add(session.sessionId);
+            ledger.noteImported(session.sessionId);
             // ISS-5161 (whitlockk review): an INCOMPLETE session committed only some of
             // its record groups and just left the source unmarked for retry.
             // Checkpointing it would make a later quantum — after a yield or a
@@ -898,7 +915,7 @@ export class CollectorManager {
             // fully-committed session may be checkpointed; an incomplete one is
             // re-read on the resume, which is exactly the retry it was left for.
             if (useResumeCursor && !result.incomplete) {
-              this.batchResume.noteImported(
+              await this.batchResume.noteImported(
                 collector.key,
                 source,
                 session.sessionId,
@@ -930,10 +947,10 @@ export class CollectorManager {
             // responsive, and the source-level yield after the loop still runs.
             const cursorCanRecordProgress = !(
               useResumeCursor &&
-              this.batchResume.isSaturated(collector.key, source)
+              (await this.batchResume.isSaturated(collector.key, source))
             );
             if (cursorCanRecordProgress && liveYield.shouldYieldMidSource()) {
-              return yieldToLiveEvents();
+              return await yieldToLiveEvents();
             }
           }
         }
@@ -941,12 +958,19 @@ export class CollectorManager {
         budget.settle();
       }
 
+      // ISS-12036: a source that parsed to NO session has no row under the id
+      // `sessionIdForSource` derives from its path, and never will — a Codex root
+      // rollout the burst classifier drops, or one with no usable timestamp. The
+      // mark is what stops the orphan self-heal re-listing it on every scan
+      // forever; it is scoped to these bytes, so a transcript that later yields
+      // something is re-parsed. See `CatchupCache.isUnchanged`.
+      const yieldedNoSession = sessions.length === 0;
       if (
         sourceImported &&
         this.isImportActive(generation) &&
         !collector.batch
       ) {
-        seenWriter?.markSeen(source, stat, extraMtime);
+        seenWriter?.markSeen(source, stat, extraMtime, { yieldedNoSession });
       }
       // whitlockk review (ISS-5028): `sourceImported` only says the parse/import loop
       // succeeded — it does NOT say the snapshot was committed. OpenCode refuses
@@ -961,15 +985,16 @@ export class CollectorManager {
       // ISS-6115: the attempt that crosses the budget is TERMINAL —
       // collectPendingSources filters a quarantined source out of every later scan
       // — so it is DURABLE for the same reason the parse-side timeout is.
-      completeSource(
+      await completeSource(
         source,
-        budget.settle() || (committed && isSourceDurable(source))
+        budget.settle() ||
+          (committed && ledger.isSourceDurable(source, yieldedNoSession))
       );
       if (throttleImports) {
         await this.pauses.afterLargeBacklogSource(sourceStartedAt);
       }
       if (liveYield.shouldYield()) {
-        return yieldToLiveEvents();
+        return await yieldToLiveEvents();
       }
     }
 
@@ -979,26 +1004,14 @@ export class CollectorManager {
       this.ingest.settlePass(collector.key);
     }
 
-    if (
-      this.isImportActive(generation) &&
-      pruneCache &&
-      !collector.batch &&
-      cache
-    ) {
-      cache.pruneTo(sources);
-    }
-    if (!collector.batch && cache) {
-      cache.flush();
-    }
-    // ISS-4444: prune quarantine entries for sources no longer present (a deleted
-    // transcript never returns), then persist the pass's recorded failures /
-    // quarantines so a poison transcript isn't re-parsed from scratch next launch.
-    if (quarantine) {
-      if (this.isImportActive(generation) && pruneCache) {
-        quarantine.pruneTo(sources);
-      }
-      quarantine.flush();
-    }
+    settleImportPassStores({
+      cache,
+      collector,
+      isActive: this.isImportActive(generation),
+      pruneCache,
+      quarantine,
+      sources,
+    });
     return { imported, completed: true };
   }
 
@@ -1010,19 +1023,4 @@ export class CollectorManager {
 type ImportSourcesResult = {
   imported: number;
   completed: boolean;
-};
-
-/**
- * What {@link CollectorManager.getIngestProgress} reports: the tracker's own
- * snapshot (per-harness counts, the scan flag, and ISS-5281's producer-owned
- * `drained`) plus the three lifecycles the manager owns beside it. Composed off
- * `IngestProgressSnapshot` rather than re-listing its fields, so a field added
- * there cannot silently go unreported here.
- */
-type IngestProgressReport = IngestProgressSnapshot & {
-  importParked: boolean;
-  complete: boolean;
-  timedOut: boolean;
-  quarantinedCount: number;
-  quarantinedByStage: QuarantinedStageCounts;
 };

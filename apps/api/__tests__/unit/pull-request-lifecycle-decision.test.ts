@@ -9,7 +9,7 @@ import {
 } from "@/app/webhooks/github/handlers/pull-request-lifecycle-decision";
 
 /**
- * Pure predicates extracted from the (grandfathered) pull_request handler.
+ * Pure predicates extracted from the pull_request handler.
  * These exercise the webhook at-least-once / stale-event protections directly,
  * without a transaction client.
  */

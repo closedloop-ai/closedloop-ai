@@ -10,6 +10,7 @@
 
 import type { PrismaClient } from "../../generated/client";
 import { deterministicUuid } from "./helpers";
+import { pullRequestCommentProofArtifactId } from "./pull-request-comment-proof-identity";
 
 const SCALED_SEED_PROJECT_SLUG_PATTERN = /^scaled-seed-project-(\d+)$/;
 const SEED_OWNED_SAMPLE_LIMIT = 500;
@@ -21,6 +22,14 @@ const SLUG_TOKEN_SEPARATOR_PATTERN = /-/g;
 const ORG_SLUG_PREFIX_LENGTH = 8;
 const SEED_COMMENT_TEXT_PATTERN =
   /^(Seed |Scaled seed comment |Initial feedback on this document\.|Follow-up: looks good after review\.|Liveblocks collaborative comment\.|Resolved the concern mentioned above\.|GitHub PR review comment )/;
+/**
+ * Names of the CustomField rows the seed owns, one per `CustomFieldType`.
+ *
+ * Hand-maintained and matched by NAME, so it cannot be derived from the enum:
+ * a field seeded under a name missing here is read as foreign data, the org is
+ * classified conflicted, and the seed then refuses to run at all. Adding a
+ * field to `customization.ts` means adding its name here in the same change.
+ */
 const SEED_CUSTOM_FIELD_NAMES = new Set([
   "Notes",
   "Story Points",
@@ -28,6 +37,8 @@ const SEED_CUSTOM_FIELD_NAMES = new Set([
   "Labels",
   "Target Date",
   "Reviewers",
+  "Parent Issue",
+  "Related Work",
 ]);
 
 export const SeedOrgPreflightStatus = {
@@ -66,11 +77,6 @@ type SeedOwnedTextRow = {
   plainText?: string | null;
 };
 
-type SeedOwnedLoopRow = {
-  id: string;
-  prompt?: string | null;
-};
-
 type SeedOwnedEvaluationRow = {
   id: string;
   reportId?: string | null;
@@ -101,7 +107,6 @@ export async function detectOrgConflicts(
     artifactCount,
     artifacts,
     loopCount,
-    loops,
     commentCount,
     comments,
     customFieldCount,
@@ -138,11 +143,6 @@ export async function detectOrgConflicts(
       take: SEED_OWNED_SAMPLE_LIMIT,
     }),
     prisma.loop.count({ where: { organizationId } }),
-    prisma.loop.findMany({
-      where: { organizationId },
-      select: { id: true, prompt: true },
-      take: SEED_OWNED_SAMPLE_LIMIT,
-    }),
     prisma.comment.count({
       where: { thread: { organizationId } },
     }),
@@ -218,7 +218,8 @@ export async function detectOrgConflicts(
   recordCountedRows({
     label: "Loop",
     count: loopCount,
-    isSeedOwned: areSeedOwnedLoops(loops, loopCount),
+    // The seed writes no loop since ISS-12435, so any loop row is foreign.
+    isSeedOwned: false,
     seedOwnedRows,
     conflicts,
   });
@@ -412,15 +413,26 @@ function expectedArtifactId(slug: string, organizationId: string): string {
 }
 
 /**
- * Ids for the three artifacts the seed mints exactly once per org (branch,
- * deployment, session). Their slugs embed the org-id prefix, so the slug is
- * already org-scoped; the id check still has to hold.
+ * Ids for the artifacts the seed mints exactly once per org (collaborator and
+ * PR-comment proof branch/session fixtures, feature branch, deployment, and
+ * session). Their slugs embed the org-id prefix, so the slug is already
+ * org-scoped; the id check still has to hold.
  */
 function expectedSingletonArtifactId(
   slug: string,
   organizationId: string
 ): string {
   const orgPrefix = organizationId.slice(0, ORG_SLUG_PREFIX_LENGTH);
+  if (slug === `seed-collaborator-branch-${orgPrefix}`) {
+    return deterministicUuid(
+      `artifact:branch:${organizationId}:collaborator-fixture`
+    );
+  }
+  if (slug === `seed-collaborator-session-${orgPrefix}`) {
+    return deterministicUuid(
+      `artifact:session:${organizationId}:collaborator-fixture`
+    );
+  }
   if (slug === `seed-branch-${orgPrefix}`) {
     return deterministicUuid(
       `artifact:branch:${organizationId}:seed-feature-branch`
@@ -434,36 +446,11 @@ function expectedSingletonArtifactId(
   if (slug === `seed-session-${orgPrefix}`) {
     return deterministicUuid(`artifact:session:${organizationId}:seed-session`);
   }
-  return "";
+  return pullRequestCommentProofArtifactId(slug, organizationId) ?? "";
 }
 
 function toKeyToken(slugToken: string | undefined): string {
   return (slugToken ?? "").replace(SLUG_TOKEN_SEPARATOR_PATTERN, "_");
-}
-
-function areSeedOwnedLoops(
-  rows: readonly SeedOwnedLoopRow[],
-  count: number
-): boolean {
-  return (
-    rows.length === count && rows.every((row) => isSeedLoopPrompt(row.prompt))
-  );
-}
-
-function isSeedLoopPrompt(prompt: string | null | undefined): boolean {
-  if (!prompt) {
-    return false;
-  }
-  return (
-    prompt.startsWith("Generate an implementation plan") ||
-    prompt.startsWith("Execute the approved implementation plan") ||
-    prompt.startsWith("Discuss architectural trade-offs") ||
-    prompt.startsWith("Evaluate the PRD") ||
-    prompt.startsWith("Generate implementation plan for event streaming") ||
-    prompt.startsWith("Execute the webhook delivery system") ||
-    prompt.startsWith("Discuss design options for the observability") ||
-    prompt.startsWith("Execute the billing integration")
-  );
 }
 
 function areSeedOwnedComments(

@@ -1,5 +1,4 @@
 /**
- * @file plugins-panel.member-install.test.tsx
  * @description Coverage for the ISS-5125 member install ACT half on the DESKTOP
  * adapter.
  *
@@ -20,8 +19,22 @@ import type { MemberTargetsInstall } from "@repo/app/packs/components/member-tar
 import { memberInstallCellKey } from "@repo/app/packs/components/member-targets-block";
 import { LOCAL_MACHINE_TARGET_ID } from "@repo/app/packs/lib/member-targets";
 import type { PackView } from "@repo/app/packs/lib/pack-view";
+import { createMemoryNavigation } from "@repo/navigation/memory-adapter";
+import { NavigationProvider } from "@repo/navigation/provider";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+// ISS-6925: `PluginsPanel` now reads pack selection off the route through the
+// navigation port, so every render needs the adapter the real renderer mounts
+// at its root. Test mechanics only — no expectation here changed.
+function renderWithNav(ui: ReactElement) {
+  const nav = createMemoryNavigation({ initialPath: "/packs" });
+  return render(
+    <NavigationProvider adapter={nav.adapter}>{ui}</NavigationProvider>
+  );
+}
+
 import type { CatalogEntry } from "../../../../shared/agent-db-contract";
 import { PluginsPanel } from "../plugins-panel";
 
@@ -32,6 +45,14 @@ const memberInstallFlag = { enabled: false };
 vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
   useFeatureFlagEnabled: () => memberInstallFlag.enabled,
   useFeatureFlagEnabledOptional: () => memberInstallFlag.enabled,
+  // ISS-6925: a SEPARATE key from `memberInstallFlag`, held off so the member
+  // install half is exercised against the component-state selection it was
+  // written for rather than being flipped by the unrelated flag above.
+  useFeatureFlagGateOptional: () => ({
+    enabled: false,
+    isReady: true,
+    isResolved: true,
+  }),
 }));
 
 // Captures the `memberTargetsInstall` handle the container passes down, so the
@@ -80,7 +101,6 @@ function makeCatalogEntry(over: Partial<CatalogEntry> = {}): CatalogEntry {
     installNotes: null,
     placeholderReason: null,
     verified: true,
-    readmeExcerpt: null,
     stars: null,
     forks: null,
     lastRelease: null,
@@ -132,7 +152,7 @@ describe("PluginsPanel member install affordance (ISS-5125, desktop)", () => {
     memberInstallFlag.enabled = false;
     installDesktopApi();
 
-    render(<PluginsPanel />);
+    renderWithNav(<PluginsPanel />);
     await waitFor(() =>
       expect(screen.getByTestId("packs-workspace")).toBeDefined()
     );
@@ -145,7 +165,7 @@ describe("PluginsPanel member install affordance (ISS-5125, desktop)", () => {
     memberInstallFlag.enabled = true;
     const catalogInstall = installDesktopApi();
 
-    render(<PluginsPanel />);
+    renderWithNav(<PluginsPanel />);
     await waitFor(() => expect(screen.getByText("select-rtk")).toBeDefined());
     fireEvent.click(screen.getByText("select-rtk"));
 
@@ -176,7 +196,7 @@ describe("PluginsPanel member install affordance (ISS-5125, desktop)", () => {
     });
     installDesktopApi(vi.fn().mockReturnValue(held));
 
-    render(<PluginsPanel />);
+    renderWithNav(<PluginsPanel />);
     await waitFor(() => expect(screen.getByText("select-rtk")).toBeDefined());
     fireEvent.click(screen.getByText("select-rtk"));
 
@@ -215,7 +235,7 @@ describe("PluginsPanel member install affordance (ISS-5125, desktop)", () => {
       })
     );
 
-    render(<PluginsPanel />);
+    renderWithNav(<PluginsPanel />);
     await waitFor(() => expect(screen.getByText("select-rtk")).toBeDefined());
     fireEvent.click(screen.getByText("select-rtk"));
 
@@ -246,7 +266,7 @@ describe("PluginsPanel member install affordance (ISS-5125, desktop)", () => {
     memberInstallFlag.enabled = true;
     installDesktopApi(vi.fn().mockResolvedValue({ started: true, runId: 7 }));
 
-    render(<PluginsPanel />);
+    renderWithNav(<PluginsPanel />);
     await waitFor(() => expect(screen.getByText("select-rtk")).toBeDefined());
     fireEvent.click(screen.getByText("select-rtk"));
 

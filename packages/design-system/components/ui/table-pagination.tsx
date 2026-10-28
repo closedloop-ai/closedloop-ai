@@ -14,26 +14,42 @@ import {
  * Button-driven pagination control built on the shadcn `Pagination` primitives.
  * Renders Previous / numbered pages (with ellipses) / Next and calls
  * `onPageChange` with the target zero-based page. Data-agnostic and shared
- * across surfaces. Renders nothing when there is a single page.
+ * across surfaces. Renders nothing when there is a single page, unless
+ * `showOnSinglePage` asks it to stay. Out-of-range `page` / `totalPages`
+ * inputs are clamped rather than rendered, so a stale page index from a
+ * narrowing filter cannot produce a page number the data cannot back.
  */
 export function TablePagination({
   page,
   totalPages,
   onPageChange,
   className,
+  showOnSinglePage = false,
+  disabled = false,
 }: {
   /** Zero-based current page index. */
   page: number;
   totalPages: number;
   onPageChange: (page: number) => void;
   className?: string;
+  disabled?: boolean;
+  /**
+   * Keeps the control mounted (with both boundaries disabled) when there is only
+   * one page, so a footer does not gain and lose a row as a filter narrows the
+   * result set. Opt-in: the surfaces that shipped the collapsing footer keep it.
+   */
+  showOnSinglePage?: boolean;
 }) {
-  if (totalPages <= 1) {
+  // `totalPages < 1` is unconditional: `showOnSinglePage` asks for a ONE-page
+  // control, and there is no honest page number to render for zero pages.
+  if (totalPages < 1 || (totalPages === 1 && !showOnSinglePage)) {
     return null;
   }
 
-  const canPrev = page > 0;
-  const canNext = page < totalPages - 1;
+  const safeTotalPages = Math.max(1, totalPages);
+  const safePage = Math.min(Math.max(0, page), safeTotalPages - 1);
+  const canPrev = !disabled && safePage > 0;
+  const canNext = !disabled && safePage < safeTotalPages - 1;
 
   return (
     <Pagination className={className}>
@@ -44,14 +60,16 @@ export function TablePagination({
             className={
               canPrev ? "cursor-pointer" : "pointer-events-none opacity-50"
             }
-            onClick={() => {
-              if (canPrev) {
-                onPageChange(page - 1);
+            onClick={(event) => {
+              if (!canPrev) {
+                event.preventDefault();
+                return;
               }
+              onPageChange(safePage - 1);
             }}
           />
         </PaginationItem>
-        {pageWindow(page, totalPages).map((token) =>
+        {pageWindow(safePage, safeTotalPages).map((token) =>
           token === "gap-left" || token === "gap-right" ? (
             <PaginationItem key={token}>
               <PaginationEllipsis />
@@ -59,9 +77,18 @@ export function TablePagination({
           ) : (
             <PaginationItem key={token}>
               <PaginationLink
-                className="cursor-pointer"
-                isActive={token === page}
-                onClick={() => onPageChange(token)}
+                aria-disabled={disabled || undefined}
+                className={
+                  disabled ? "pointer-events-none opacity-50" : "cursor-pointer"
+                }
+                isActive={token === safePage}
+                onClick={(event) => {
+                  if (disabled) {
+                    event.preventDefault();
+                    return;
+                  }
+                  onPageChange(token);
+                }}
               >
                 {token + 1}
               </PaginationLink>
@@ -74,10 +101,12 @@ export function TablePagination({
             className={
               canNext ? "cursor-pointer" : "pointer-events-none opacity-50"
             }
-            onClick={() => {
-              if (canNext) {
-                onPageChange(page + 1);
+            onClick={(event) => {
+              if (!canNext) {
+                event.preventDefault();
+                return;
               }
+              onPageChange(safePage + 1);
             }}
           />
         </PaginationItem>

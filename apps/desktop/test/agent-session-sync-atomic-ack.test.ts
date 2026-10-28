@@ -10,8 +10,8 @@
  *    ledger can never say `pending` while the in-memory lane says acked.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { SyncReason } from "@closedloop-ai/telemetry-contract/sync";
+import { test } from "vitest";
 import {
   ACK_OMITTED_BACKOFF_MS,
   DEAD_LETTER_RETRY_MAX_MS,
@@ -20,7 +20,8 @@ import {
 } from "../src/main/agent-sync/agent-session-sync-backoff-policy.js";
 import type { AgentSessionSyncTransportPayload } from "../src/main/agent-sync/agent-session-sync-contract.js";
 import { buildAgentSessionSyncSourceKey } from "../src/main/agent-sync/agent-session-sync-source.js";
-import type { DesktopSyncBatchEventInput } from "../src/main/telemetry/app-otel-runtime.js";
+import type { OutboxClearResult } from "../src/main/agent-sync/outbox-clear-result.js";
+import type { SessionSyncBatchEvent } from "../src/main/telemetry/app-otel-runtime.js";
 import { DesktopSyncBatchOutcome } from "../src/main/telemetry/app-otel-runtime.js";
 import {
   flushAgentSessionSync,
@@ -140,19 +141,22 @@ test("goal stage 2: a failed durable ack-clear aborts ack processing — the row
   class ClearFailingSyncSource extends FakeSyncSource {
     failClears = true;
     clearAttempts = 0;
-    override clearOutboxEntries(sourceKey: string, ids: string[]): void {
+    override clearOutboxEntries(
+      sourceKey: string,
+      ids: string[]
+    ): OutboxClearResult | undefined | Promise<OutboxClearResult | undefined> {
       this.clearAttempts += 1;
       if (this.failClears) {
         throw new Error("db-host exited");
       }
-      super.clearOutboxEntries(sourceKey, ids);
+      return super.clearOutboxEntries(sourceKey, ids);
     }
   }
   const source = new ClearFailingSyncSource([
     makeSyncedSession("s1", "2026-06-08T12:01:00.000Z"),
   ]);
   const sent: string[][] = [];
-  const telemetry: { sync: DesktopSyncBatchEventInput[] } = { sync: [] };
+  const telemetry: { sync: SessionSyncBatchEvent[] } = { sync: [] };
   const service = makeServiceWithIdentity(
     source,
     (batch) => {
@@ -230,16 +234,19 @@ test("goal stage 2: a stop() racing the durable clear leaves the committed delet
   const key = buildAgentSessionSyncSourceKey(TARGET);
   class StopDuringClearSource extends FakeSyncSource {
     stopOnClear: (() => void) | null = null;
-    override clearOutboxEntries(sourceKey: string, ids: string[]): void {
+    override clearOutboxEntries(
+      sourceKey: string,
+      ids: string[]
+    ): OutboxClearResult | undefined | Promise<OutboxClearResult | undefined> {
       // Fires INSIDE the awaited clear, i.e. exactly in the race window.
       this.stopOnClear?.();
-      super.clearOutboxEntries(sourceKey, ids);
+      return super.clearOutboxEntries(sourceKey, ids);
     }
   }
   const source = new StopDuringClearSource([
     makeSyncedSession("s1", "2026-06-08T12:01:00.000Z"),
   ]);
-  const telemetry: { sync: DesktopSyncBatchEventInput[] } = { sync: [] };
+  const telemetry: { sync: SessionSyncBatchEvent[] } = { sync: [] };
   const service = makeServiceWithIdentity(
     source,
     (batch) =>
@@ -278,7 +285,7 @@ test("goal stage 2: a row the echo keeps omitting burns a BOUNDED ack_omitted bu
     makeSyncedSession("s2", "2026-06-08T12:02:00.000Z"),
     makeSyncedSession("s1", "2026-06-08T12:01:00.000Z"),
   ]);
-  const telemetry: { sync: DesktopSyncBatchEventInput[] } = { sync: [] };
+  const telemetry: { sync: SessionSyncBatchEvent[] } = { sync: [] };
   const sentBatches: string[][] = [];
 
   await runWithMockedNow(async ({ advance }) => {
@@ -540,7 +547,7 @@ test("ISS-6202: an accepted ack that confirms ZERO rows emits no Success and adv
   const source = new FakeSyncSource([
     makeSyncedSession("s1", "2026-06-08T12:01:00.000Z"),
   ]);
-  const telemetry: { sync: DesktopSyncBatchEventInput[] } = { sync: [] };
+  const telemetry: { sync: SessionSyncBatchEvent[] } = { sync: [] };
   const service = makeServiceWithIdentity(
     source,
     () => Promise.resolve({ accepted: true as const, acceptedSessionIds: [] }),
@@ -608,7 +615,7 @@ test("ISS-6202 control: a fully-confirmed ack still reports Success", async () =
   const source = new FakeSyncSource([
     makeSyncedSession("s1", "2026-06-08T12:01:00.000Z"),
   ]);
-  const telemetry: { sync: DesktopSyncBatchEventInput[] } = { sync: [] };
+  const telemetry: { sync: SessionSyncBatchEvent[] } = { sync: [] };
   const service = makeServiceWithIdentity(
     source,
     (batch) =>
@@ -658,7 +665,7 @@ test("ISS-6202 (whitlockk review): a PARTIAL echo carries the POST's bytes and l
     makeSyncedSession("s2", "2026-06-08T12:02:00.000Z"),
     makeSyncedSession("s1", "2026-06-08T12:01:00.000Z"),
   ]);
-  const telemetry: { sync: DesktopSyncBatchEventInput[] } = { sync: [] };
+  const telemetry: { sync: SessionSyncBatchEvent[] } = { sync: [] };
   const service = makeServiceWithIdentity(
     source,
     (batch) =>
@@ -712,7 +719,7 @@ test("ISS-6202 (whitlockk review): a PARTIAL echo carries the POST's bytes and l
  * BOTH directions — 0 when the fix drops the cost, 2 when a second event
  * re-reports it.
  */
-function batchCostCarrierCounts(events: DesktopSyncBatchEventInput[]): {
+function batchCostCarrierCounts(events: SessionSyncBatchEvent[]): {
   bytes: number;
   latency: number;
 } {

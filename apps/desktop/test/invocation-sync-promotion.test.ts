@@ -12,7 +12,8 @@
  */
 import assert from "node:assert/strict";
 import { rm } from "node:fs/promises";
-import { describe, test } from "node:test";
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
+import { describe, test } from "vitest";
 import {
   AGENT_COMPONENT_INVOCATION_SYNC_SOURCE_KEY,
   AGENT_COMPONENT_INVOCATION_SYNC_STATE_SESSION_ID,
@@ -35,8 +36,61 @@ import {
 
 /** Retries charged to the jammed row before promotion re-sweeps it. */
 const JAMMED_ATTEMPTS = 3;
+const OLDER_TEMPLATE_PENDING_SINCE = "2026-01-01T00:00:00.000Z";
 
 describe("ISS-5789 invocation sync promotion", () => {
+  test("ISS-10379: template enqueue and target promotion stamp pending_since", async () => {
+    const dir = await makeInvocationSyncDir("aci-pending-since-");
+    const db = await openDb(dir);
+    try {
+      const sessionId = "session-pending-since";
+      await db.importer.importSession(
+        skillSession(sessionId, [SKILL_CONTENT_V1]),
+        "claude"
+      );
+
+      assert.deepEqual(
+        await readPendingSince(
+          db,
+          AGENT_COMPONENT_INVOCATION_SYNC_SOURCE_KEY,
+          sessionId
+        ),
+        [NOW],
+        "the template producer records when its delivery debt begins"
+      );
+      await db.run(
+        `UPDATE agent_component_invocation_sync_outbox
+            SET pending_since = ?
+          WHERE source_key = ? AND external_session_id = ?`,
+        OLDER_TEMPLATE_PENDING_SINCE,
+        AGENT_COMPONENT_INVOCATION_SYNC_SOURCE_KEY,
+        sessionId
+      );
+
+      const target = buildAgentComponentInvocationSyncSourceKey(
+        "target-pending-since"
+      );
+      const prepare = db.syncSource.prepareInvocationSyncTarget;
+      assert.ok(prepare);
+      await prepare(target, AGENT_COMPONENT_INVOCATION_SYNC_SOURCE_KEY, 10);
+
+      const promotedPendingSince = await readPendingSince(
+        db,
+        target,
+        sessionId
+      );
+      assert.equal(promotedPendingSince.length, 1);
+      assert.ok(
+        promotedPendingSince[0] &&
+          promotedPendingSince[0] > OLDER_TEMPLATE_PENDING_SINCE,
+        "promotion stamps fresh delivery debt instead of copying template age"
+      );
+    } finally {
+      await db.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   // Promotion used to bail out entirely whenever the delivery queue held ANY
   // pending row, so a single part the cloud rejects forever kept every other
   // session from ever being attempted — the reported install had 225 queued
@@ -75,9 +129,13 @@ describe("ISS-5789 invocation sync promotion", () => {
       await retry(
         target,
         jammed[0]?.part ?? assert.fail("missing jammed part"),
-        JAMMED_ATTEMPTS,
-        NOW,
-        "session_missing"
+        {
+          attemptCount: JAMMED_ATTEMPTS,
+          permanentAttemptCount: 0,
+          nextAttemptAt: NOW,
+          error: "session_missing",
+          laneStalledSince: null,
+        }
       );
 
       await prepare(target, AGENT_COMPONENT_INVOCATION_SYNC_SOURCE_KEY, 10);
@@ -341,6 +399,53 @@ describe("ISS-5789 invocation sync promotion", () => {
     }
   });
 
+  test("ISS-7980: an empty post-budget selection is a no-op instead of advancing an absent session", async () => {
+    const dir = await makeInvocationSyncDir("aci-empty-budget-");
+    const db = await openDb(dir);
+    try {
+      const target = buildAgentComponentInvocationSyncSourceKey(
+        "target-empty-budget"
+      );
+      const deferredSessionId = "zz-budget-deferred";
+      await seedTemplateRevision(db);
+      await seedPendingDeliveryRows(db, target, MAX_PENDING - 10);
+      await seedTemplateSession(db, deferredSessionId, "7980", 11);
+
+      const prepare = db.syncSource.prepareInvocationSyncTarget;
+      assert.ok(prepare);
+      await assert.doesNotReject(() =>
+        prepare(target, AGENT_COMPONENT_INVOCATION_SYNC_SOURCE_KEY, 10)
+      );
+
+      assert.equal(
+        await countPending(db, target),
+        MAX_PENDING - 10,
+        "a candidate that does not fit the remaining budget must add no rows"
+      );
+      assert.equal(
+        await countPendingForSession(db, target, deferredSessionId),
+        0,
+        "the deferred candidate must remain only in the template queue"
+      );
+      const targetCursors = await db.prisma.client.$queryRawUnsafe<
+        { external_session_id: string }[]
+      >(
+        `SELECT external_session_id
+           FROM agent_component_invocation_sync_cursors
+          WHERE source_key = $1`,
+        target
+      );
+      assert.deepEqual(
+        targetCursors,
+        [],
+        "an empty admission must not advance either the session or backfill cursor"
+      );
+    } finally {
+      await db.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   // The bounded oversized-generation path. A generation with more parts than the
   // whole ceiling must still be delivered eventually — admitting nothing would
   // stop that session syncing forever at any queue depth — so it is promoted
@@ -497,6 +602,16 @@ async function seedPendingDeliveryRows(
   count: number
 ): Promise<void> {
   const columns = 16;
+  // ISS-12165: depth fixtures represent live-parent delivery debt; zombies are
+  // intentionally purged before the depth guard now.
+  await db.prisma.write((client) =>
+    client.session.createMany({
+      data: Array.from({ length: count }, (_, index) => ({
+        id: `${SEEDED_SESSION_PREFIX}${index}`,
+        status: SESSION_STATUS.INACTIVE,
+      })),
+    })
+  );
   const tuples: string[] = [];
   const values: unknown[] = [];
   for (let index = 0; index < count; index++) {
@@ -561,6 +676,23 @@ async function countPendingForSession(
     externalSessionId
   );
   return Number(rows[0]?.total ?? 0);
+}
+
+function readPendingSince(
+  db: Db,
+  sourceKey: string,
+  externalSessionId: string
+): Promise<(string | null)[]> {
+  return db.prisma.client
+    .$queryRawUnsafe<{ pending_since: string | null }[]>(
+      `SELECT pending_since
+         FROM agent_component_invocation_sync_outbox
+        WHERE source_key = $1 AND external_session_id = $2
+        ORDER BY part_index ASC`,
+      sourceKey,
+      externalSessionId
+    )
+    .then((rows) => rows.map((row) => row.pending_since));
 }
 
 /** Sessions filling the first candidate page in the paging case, all blocked. */
@@ -639,6 +771,13 @@ async function seedDeliveryRows(
   generation: string,
   partCount: number
 ): Promise<void> {
+  await db.prisma.write((client) =>
+    client.session.upsert({
+      where: { id: externalSessionId },
+      create: { id: externalSessionId, status: SESSION_STATUS.INACTIVE },
+      update: {},
+    })
+  );
   const columns = 16;
   for (let offset = 0; offset < partCount; offset += 250) {
     const size = Math.min(250, partCount - offset);

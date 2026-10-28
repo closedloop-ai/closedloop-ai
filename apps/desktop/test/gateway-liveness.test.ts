@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import type http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, test } from "node:test";
+import { afterEach, test } from "vitest";
 import { DesktopGatewayServer } from "../src/server/server.js";
 import { EMPTY_CAPABILITIES } from "../src/shared/contracts.js";
 

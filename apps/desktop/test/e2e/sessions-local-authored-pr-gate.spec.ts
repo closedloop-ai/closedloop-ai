@@ -65,7 +65,7 @@ const LOCAL_SESSION_AUTHORED_PR_GATE_FLAG_KEY = "localSessionAuthoredPrGate";
 
 const SESSION_ID = "iss-4922-mixed-pr-session";
 const SESSION_NAME = "iss-4922 mixed pr session";
-const REPO = "closedloop-ai/example-repo";
+const REPO = "closedloop-ai/closedloop-ai";
 const REFERENCED_PR_NUMBER = 4275;
 /**
  * `SESSION_EMPTY_PULL_REQUESTS_LABEL` (`@repo/app`'s `detail-content`) — the

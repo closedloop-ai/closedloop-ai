@@ -23,6 +23,12 @@ const knownGitHubActorTypeValidator = z.enum({
   EnterpriseUserAccount: GitHubActorType.EnterpriseUserAccount,
 });
 
+const githubProviderUserIdValidator = z
+  .number()
+  .int()
+  .positive()
+  .max(Number.MAX_SAFE_INTEGER);
+
 /**
  * Normalizes authoritative GitHub actor evidence without inferring from login or
  * display names. Missing evidence stays omitted; present unsupported or malformed
@@ -37,4 +43,12 @@ export function normalizeGitHubActorType(
 
   const parsed = knownGitHubActorTypeValidator.safeParse(value);
   return parsed.success ? parsed.data : GitHubActorType.Unknown;
+}
+
+/** Preserve only measured, positive numeric IDs shared by REST and GraphQL. */
+export function normalizeGitHubProviderUserId(
+  value: unknown
+): string | undefined {
+  const parsed = githubProviderUserIdValidator.safeParse(value);
+  return parsed.success ? String(parsed.data) : undefined;
 }

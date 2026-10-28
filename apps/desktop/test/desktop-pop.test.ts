@@ -4,7 +4,7 @@ import {
   verify as cryptoVerify,
   generateKeyPairSync,
 } from "node:crypto";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import {
   buildDesktopPopCanonicalString,
   DESKTOP_POP_GATEWAY_ID_HEADER,
@@ -18,15 +18,14 @@ describe("desktop PoP signing utilities", () => {
   test("builds exact canonical string with uppercased method and pathname only", () => {
     const canonical = buildDesktopPopCanonicalString({
       method: "post",
-      pathname:
-        "https://api.test.com/compute-targets/local-auth/verify?x=1#frag",
+      pathname: "https://api.test.com/compute-targets/register?x=1#frag",
       timestampSeconds: 1_713_984_000,
       gatewayId: "gateway-123",
     });
 
     assert.equal(
       canonical,
-      "POST\n/compute-targets/local-auth/verify\n1713984000\ngateway-123"
+      "POST\n/compute-targets/register\n1713984000\ngateway-123"
     );
   });
 

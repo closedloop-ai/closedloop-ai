@@ -17,8 +17,8 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { AgentComponentKind } from "@repo/api/src/types/agent-component";
+import { test } from "vitest";
 import { honestSourceOf } from "../src/main/dashboard/agent-component-honest-source.js";
 import { listAgentComponentsLocal } from "../src/main/dashboard/shared-agent-components-api.js";
 import {

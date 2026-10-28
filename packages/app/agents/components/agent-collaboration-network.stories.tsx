@@ -10,9 +10,9 @@ const AgentCollaborationNetworkCanvas = () => (
 );
 
 const meta = {
-  title: "App Core/Agents/Agent Collaboration Network",
+  title: "Composites v1.0/Agents/General/Agent Collaboration Network",
   component: AgentCollaborationNetworkCanvas,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: {
     layout: "padded",
   },

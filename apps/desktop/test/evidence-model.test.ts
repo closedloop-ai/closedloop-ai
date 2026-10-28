@@ -10,15 +10,18 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, test } from "node:test";
-import { SessionTracePhaseSourceType } from "@repo/api/src/types/agent-session";
+import { describe, test } from "vitest";
+import { fallbackAdapter } from "../src/main/collectors/evidence/adapters/fallback-adapter.js";
 import {
   buildEvidenceTimeline,
-  buildSessionEvidence,
+  categoryMixForToolUses,
+  collectDeclared,
+  resolveAdapter,
 } from "../src/main/collectors/evidence/build-session-evidence.js";
 import {
   DeclaredKind,
   EVIDENCE_MODEL_VERSION,
+  EvidenceLayer,
   TOOL_CATEGORY_VALUES,
   ToolCategory,
 } from "../src/main/collectors/evidence/evidence-model.js";
@@ -108,6 +111,14 @@ describe("Claude adapter", () => {
       ToolCategory.GitLifecycle,
       "a git command is not reclassified as a test run by a keyword in its message"
     );
+    assert.equal(
+      categoryOf(
+        Harness.Claude,
+        tool("Bash", { input: { command: "gh pr create --fill" } })
+      ),
+      ToolCategory.GitLifecycle,
+      "the lifecycle vocabulary covers `gh pr create`, not only `git` itself"
+    );
   });
 
   test("a tool name inside QUOTED text is looked for, not run", () => {
@@ -171,19 +182,19 @@ describe("Claude adapter", () => {
   });
 
   test("a bare Skill tool with no skill identifier yields no declared evidence", () => {
-    const evidence = buildSessionEvidence(
+    const declaredSignals = collectDeclared(
       sessionWith({ toolUses: [tool("Skill")] }),
-      Harness.Claude
+      resolveAdapter(Harness.Claude)
     );
     assert.equal(
-      evidence.declared.length,
+      declaredSignals.length,
       0,
       'a Skill use with no skillName must not emit a misleading "Skill" record'
     );
   });
 
   test("Skill + slash command + mcp__ surface as declared evidence, split plan vs inert", () => {
-    const evidence = buildSessionEvidence(
+    const declaredSignals = collectDeclared(
       sessionWith({
         slashCommands: [{ name: "/plan", timestamp: TS }],
         toolUses: [
@@ -191,31 +202,34 @@ describe("Claude adapter", () => {
           tool("mcp__closedloop__get-document"),
         ],
       }),
-      Harness.Claude
+      resolveAdapter(Harness.Claude)
     );
-    const kinds = evidence.declared.map((d) => d.kind).sort();
+    const kinds = declaredSignals.map((d) => d.kind).sort();
     assert.deepEqual(kinds, ["mcp_call", "skill", "slash_command"]);
     // FEA-4184: `/plan` is a PLAN-specific declaration (DeclaredPlan); the plan
     // gate must see only that one. AA-03: the `code-review` skill and the
     // `get-document` MCP call are NOT positively recognized as work intent, so
     // they fall to the inert `DeclaredUtility` rather than minting a generic
     // `DeclaredIntent` that would stamp `declared` provenance and take the boost.
-    const byKind = new Map(evidence.declared.map((d) => [d.kind, d.category]));
+    const byKind = new Map(declaredSignals.map((d) => [d.kind, d.category]));
     assert.equal(byKind.get("slash_command"), ToolCategory.DeclaredPlan);
     assert.equal(byKind.get("skill"), ToolCategory.DeclaredUtility);
     assert.equal(byKind.get("mcp_call"), ToolCategory.DeclaredUtility);
     assert.equal(
-      evidence.structural.categoryMix[ToolCategory.DeclaredPlan],
+      declaredSignals.filter((d) => d.category === ToolCategory.DeclaredPlan)
+        .length,
       1,
       "the plan slash command folds into DeclaredPlan"
     );
     assert.equal(
-      evidence.structural.categoryMix[ToolCategory.DeclaredUtility],
+      declaredSignals.filter((d) => d.category === ToolCategory.DeclaredUtility)
+        .length,
       2,
       "the two unrecognized declarations fold into the inert DeclaredUtility"
     );
     assert.equal(
-      evidence.structural.categoryMix[ToolCategory.DeclaredIntent],
+      declaredSignals.filter((d) => d.category === ToolCategory.DeclaredIntent)
+        .length,
       0,
       "nothing fabricates generic declared intent"
     );
@@ -244,7 +258,7 @@ describe("Codex adapter", () => {
       categoryOf(Harness.Codex, tool("apply_patch")),
       ToolCategory.MutateCode
     );
-    const evidence = buildSessionEvidence(
+    const declaredSignals = collectDeclared(
       sessionWith({
         toolUses: [
           tool("closedloop__get-document", {
@@ -253,11 +267,11 @@ describe("Codex adapter", () => {
           }),
         ],
       }),
-      Harness.Codex
+      resolveAdapter(Harness.Codex)
     );
-    assert.equal(evidence.declared.length, 1);
-    assert.equal(evidence.declared[0].kind, "mcp_call");
-    assert.equal(evidence.declared[0].name, "closedloop__get-document");
+    assert.equal(declaredSignals.length, 1);
+    assert.equal(declaredSignals[0].kind, "mcp_call");
+    assert.equal(declaredSignals[0].name, "closedloop__get-document");
   });
 
   test("the MCP declaration name falls back cleanly when either half of the signal is absent (ISS-5302)", () => {
@@ -266,29 +280,29 @@ describe("Codex adapter", () => {
     // each fallback has to name the call in a form the declared layer can group
     // on — a trailing `__` or a dropped declaration would make the same MCP
     // server read as two different things, or as absent.
-    const serverOnly = buildSessionEvidence(
+    const serverOnly = collectDeclared(
       sessionWith({
         toolUses: [tool("closedloop", { mcpServer: "closedloop" })],
       }),
-      Harness.Codex
+      resolveAdapter(Harness.Codex)
     );
-    assert.equal(serverOnly.declared.length, 1);
-    assert.equal(serverOnly.declared[0].kind, DeclaredKind.McpCall);
+    assert.equal(serverOnly.length, 1);
+    assert.equal(serverOnly[0].kind, DeclaredKind.McpCall);
     assert.equal(
-      serverOnly.declared[0].name,
+      serverOnly[0].name,
       "closedloop",
       "no method → the server alone, never a dangling '__' separator"
     );
 
     // No structured server at all: the `mcp__server__method` display name is
     // the only signal, and it is what names the declaration.
-    const nameOnly = buildSessionEvidence(
+    const nameOnly = collectDeclared(
       sessionWith({ toolUses: [tool("mcp__closedloop__ping")] }),
-      Harness.Codex
+      resolveAdapter(Harness.Codex)
     );
-    assert.equal(nameOnly.declared.length, 1);
-    assert.equal(nameOnly.declared[0].kind, DeclaredKind.McpCall);
-    assert.equal(nameOnly.declared[0].name, "mcp__closedloop__ping");
+    assert.equal(nameOnly.length, 1);
+    assert.equal(nameOnly[0].kind, DeclaredKind.McpCall);
+    assert.equal(nameOnly[0].name, "mcp__closedloop__ping");
   });
 });
 
@@ -303,21 +317,22 @@ describe("Cursor adapter", () => {
 });
 
 describe("Copilot adapter (canonical low-signal degrade case)", () => {
-  test('"copilot_tool" → null; session still carries humanTurnDensity', () => {
+  test('"copilot_tool" → null; the human turn is still the session\'s evidence', () => {
     assert.equal(categoryOf(Harness.Copilot, tool("copilot_tool")), null);
-    const evidence = buildSessionEvidence(
+    // Nothing Copilot named is recognizable, so the human-turn layer is all the
+    // timeline has — and it still gets drawn rather than the session coming
+    // back empty.
+    const timeline = buildEvidenceTimeline(
       sessionWith({
-        userMessages: 4,
-        assistantMessages: 6,
+        messages: [{ role: "human", timestamp: TS, text: null }],
         toolUses: [tool("copilot_tool")],
       }),
       Harness.Copilot
     );
-    assert.deepEqual(evidence.structural.humanTurnDensity, {
-      humanTurns: 4,
-      totalTurns: 10,
-    });
-    assert.equal(evidence.structural.categoryMix[ToolCategory.HumanTurn], 4);
+    assert.deepEqual(
+      timeline.map((unit) => unit.category),
+      [ToolCategory.HumanTurn]
+    );
   });
 });
 
@@ -339,97 +354,44 @@ describe("OpenCode adapter", () => {
   });
 });
 
-test("structural git-lifecycle + mutation targets + branches aggregate", () => {
-  const evidence = buildSessionEvidence(
-    sessionWith({
-      toolUses: [
-        tool("Edit", { input: { file_path: "a.ts" }, gitBranch: "feat/x" }),
-        tool("Edit", { input: { file_path: "a.ts" } }), // dedup target
-        tool("Bash", { input: { command: "git commit -m y" } }),
-        tool("Bash", { input: { command: "gh pr create --fill" } }),
-      ],
-    }),
-    Harness.Claude
-  );
-  assert.deepEqual(evidence.structural.mutationTargets, ["a.ts"]);
-  assert.equal(evidence.structural.gitLifecycle.commits, 1);
-  assert.equal(evidence.structural.gitLifecycle.prsCreated, 1);
-  assert.deepEqual(evidence.structural.gitLifecycle.branchesTouched, [
-    "feat/x",
-  ]);
-});
-
-test("branchesTouched is capped to bound untrusted-input growth", () => {
-  const toolUses = Array.from({ length: 60 }, (_, i) =>
-    tool("Edit", { input: { file_path: `f${i}.ts` }, gitBranch: `b${i}` })
-  );
-  const evidence = buildSessionEvidence(
-    sessionWith({ toolUses }),
-    Harness.Claude
-  );
-  assert.equal(
-    evidence.structural.gitLifecycle.branchesTouched.length,
-    50,
-    "branchesTouched caps at MAX_BRANCHES_TOUCHED like mutationTargets"
-  );
-  assert.equal(evidence.structural.mutationTargets.length, 50);
-});
-
-test("trace-phase sources fold into declared evidence", () => {
-  const evidence = buildSessionEvidence(
-    sessionWith({ toolUses: [tool("Read")] }),
-    Harness.Claude,
-    {
-      tracePhaseSources: [
-        {
-          sourceType: "explicit",
-          phaseKey: "implement",
-          label: "Implement",
-          startedAt: TS,
-          endedAt: null,
-        },
-      ],
-    }
-  );
-  const tracePhase = evidence.declared.find((d) => d.kind === "trace_phase");
-  assert.ok(tracePhase, "the declared layer surfaces the trace phase");
-  assert.equal(tracePhase?.name, "Implement");
-});
-
 test("unknown harness degrades to structural-only and never throws", () => {
-  const build = () =>
-    buildSessionEvidence(
-      sessionWith({
-        userMessages: 2,
-        assistantMessages: 1,
-        toolUses: [
-          tool("Bash", { input: { command: "git commit -m z" } }),
-          tool("mcp__closedloop__ping"),
-        ],
-      }),
-      "future-harness" as Harness
-    );
+  const session = sessionWith({
+    messages: [{ role: "human", timestamp: TS, text: null }],
+    toolUses: [
+      tool("Bash", { input: { command: "git commit -m z" } }),
+      tool("mcp__closedloop__ping"),
+    ],
+  });
+  const unknown = "future-harness" as Harness;
+  // An unknown harness resolves to the generic fallback rather than `undefined`,
+  // which is what keeps every path below from throwing.
+  assert.equal(resolveAdapter(unknown), fallbackAdapter);
+  const build = () => buildEvidenceTimeline(session, unknown);
   assert.doesNotThrow(build);
-  const evidence = build();
-  assert.equal(evidence.harnessKnown, false);
-  // No adapter categorized the Bash tool → no structural tool categories.
-  assert.equal(evidence.structural.categoryMix[ToolCategory.RunCommand], 0);
-  assert.equal(evidence.structural.categoryMix[ToolCategory.GitLifecycle], 0);
-  // But harness-agnostic signals survive: humanTurnDensity + the mcp__ convention.
-  assert.equal(evidence.structural.humanTurnDensity.humanTurns, 2);
-  assert.equal(evidence.declared.length, 1);
-  assert.equal(evidence.declared[0].kind, "mcp_call");
+  // No adapter named `Bash`, so it contributes no structural category at all —
+  // not a mis-categorized one.
+  assert.deepEqual(
+    build()
+      .filter((unit) => unit.layer === EvidenceLayer.Structural)
+      .map((unit) => unit.category),
+    [ToolCategory.HumanTurn],
+    "the harness-agnostic human turn survives; the unrecognized tool adds nothing"
+  );
+  // And the harness-agnostic `mcp__` naming convention still declares.
+  const declaredSignals = collectDeclared(session, resolveAdapter(unknown));
+  assert.equal(declaredSignals.length, 1);
+  assert.equal(declaredSignals[0].kind, DeclaredKind.McpCall);
 });
 
 test("unknown tool in a known harness categorizes to null without error", () => {
-  const evidence = buildSessionEvidence(
-    sessionWith({ toolUses: [tool("TotallyMadeUpTool")] }),
+  const mix = categoryMixForToolUses(
+    [tool("TotallyMadeUpTool")],
     Harness.Claude
   );
   for (const category of TOOL_CATEGORY_VALUES) {
     if (category !== ToolCategory.HumanTurn) {
       assert.equal(
-        evidence.structural.categoryMix[category],
+        mix[category],
         0,
         `${category} stays zero for an unrecognized tool`
       );
@@ -438,17 +400,12 @@ test("unknown tool in a known harness categorizes to null without error", () => 
 });
 
 test("totality: an empty session yields well-formed, empty evidence", () => {
-  const evidence = buildSessionEvidence(sessionWith(), Harness.Claude);
-  assert.equal(evidence.declared.length, 0);
-  assert.deepEqual(evidence.linguistic, []);
-  assert.deepEqual(evidence.structural.mutationTargets, []);
-  assert.deepEqual(evidence.structural.gitLifecycle, {
-    commits: 0,
-    branchesTouched: [],
-    prsCreated: 0,
-  });
+  const empty = sessionWith();
+  assert.deepEqual(buildEvidenceTimeline(empty, Harness.Claude), []);
+  assert.deepEqual(collectDeclared(empty, resolveAdapter(Harness.Claude)), []);
+  const mix = categoryMixForToolUses(empty.toolUses, Harness.Claude);
   for (const category of TOOL_CATEGORY_VALUES) {
-    assert.equal(evidence.structural.categoryMix[category], 0);
+    assert.equal(mix[category], 0, `${category} is present and zero`);
   }
 });
 
@@ -511,7 +468,7 @@ describe("AA-03 declared-signal categories", () => {
   test("unrecognized commands/skills/MCP calls are INERT, not declared intent", () => {
     // The corpus offenders: an auth command, a model switch, plugin management,
     // and work-tracking bookkeeping. None declares anything about the work.
-    const evidence = buildSessionEvidence(
+    const declaredSignals = collectDeclared(
       sessionWith({
         slashCommands: [
           { name: "/login", timestamp: TS },
@@ -520,46 +477,26 @@ describe("AA-03 declared-signal categories", () => {
         ],
         toolUses: [tool("mcp__closedloop__update-document")],
       }),
-      Harness.Claude
+      resolveAdapter(Harness.Claude)
     );
     assert.ok(
-      evidence.declared.every(
-        (d) => d.category === ToolCategory.DeclaredUtility
-      ),
-      `every unrecognized declaration is inert, got ${JSON.stringify(evidence.declared.map((d) => d.category))}`
+      declaredSignals.every((d) => d.category === ToolCategory.DeclaredUtility),
+      `every unrecognized declaration is inert, got ${JSON.stringify(declaredSignals.map((d) => d.category))}`
     );
-    const mix = evidence.structural.categoryMix;
-    assert.equal(mix[ToolCategory.DeclaredIntent], 0);
-    assert.equal(mix[ToolCategory.DeclaredPlan], 0);
-    assert.equal(mix[ToolCategory.DeclaredUtility], 4);
-  });
-
-  test("a trace phase is exempt — it declares the work phase itself", () => {
-    // A trace phase is supplied by the caller from DB-derived boundaries, not
-    // guessed from a vendor string, so a non-plan phase keeps genuine provenance
-    // rather than falling to the name-derived inert default.
-    const evidence = buildSessionEvidence(sessionWith({}), Harness.Claude, {
-      tracePhaseSources: [
-        {
-          sourceType: SessionTracePhaseSourceType.Explicit,
-          phaseKey: "implement",
-          label: "Implement",
-          startedAt: TS,
-        },
-        {
-          sourceType: SessionTracePhaseSourceType.Explicit,
-          phaseKey: "plan",
-          label: "Plan",
-          startedAt: TS,
-        },
-      ],
-    });
-    const byName = new Map(evidence.declared.map((d) => [d.name, d.category]));
-    assert.equal(byName.get("Implement"), ToolCategory.DeclaredIntent);
     assert.equal(
-      byName.get("Plan"),
-      ToolCategory.DeclaredPlan,
-      "the shared plan cue still gates plan for trace phases"
+      declaredSignals.filter((d) => d.category === ToolCategory.DeclaredIntent)
+        .length,
+      0
+    );
+    assert.equal(
+      declaredSignals.filter((d) => d.category === ToolCategory.DeclaredPlan)
+        .length,
+      0
+    );
+    assert.equal(
+      declaredSignals.filter((d) => d.category === ToolCategory.DeclaredUtility)
+        .length,
+      4
     );
   });
 
@@ -599,7 +536,7 @@ describe("AA-03 declared-signal categories", () => {
     { harness: Harness.Claude, inert: 5 },
   ]) {
     test(`generality: a different org's stack classifies identically (${harness})`, () => {
-      const evidence = buildSessionEvidence(
+      const declaredSignals = collectDeclared(
         sessionWith({
           slashCommands: [
             { name: "/auth-refresh", timestamp: TS },
@@ -612,21 +549,25 @@ describe("AA-03 declared-signal categories", () => {
             tool("Skill", { skillName: "terraform-deploy-runbook" }),
           ],
         }),
-        harness
+        resolveAdapter(harness)
       );
-      const mix = evidence.structural.categoryMix;
       assert.equal(
-        mix[ToolCategory.DeclaredPlan],
+        declaredSignals.filter((d) => d.category === ToolCategory.DeclaredPlan)
+          .length,
         1,
         "the plan command is recognized in any vocabulary"
       );
       assert.equal(
-        mix[ToolCategory.DeclaredUtility],
+        declaredSignals.filter(
+          (d) => d.category === ToolCategory.DeclaredUtility
+        ).length,
         inert,
         "auth, region-switch and tracker signals are all inert"
       );
       assert.equal(
-        mix[ToolCategory.DeclaredIntent],
+        declaredSignals.filter(
+          (d) => d.category === ToolCategory.DeclaredIntent
+        ).length,
         0,
         "nothing fabricates generic declared intent for an unfamiliar stack"
       );

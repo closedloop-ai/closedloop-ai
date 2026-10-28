@@ -6,9 +6,9 @@ import { Bold, Italic } from "lucide-react";
  * A two-state button that can be either on or off.
  */
 const meta: Meta<typeof Toggle> = {
-  title: "Design System/Primitives/Toggle",
+  title: "Primitives v1.0/Inputs/Toggle",
   component: Toggle,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   argTypes: {
     children: {
       control: { disable: true },
@@ -27,9 +27,17 @@ export default meta;
 type Story = StoryObj<typeof Toggle>;
 
 /**
- * The default form of the toggle.
+ * The default form of the toggle: `variant="default"`, `size="default"`.
+ * Explicit here (rather than left to render implicitly with no props) so
+ * both a human and any static-analysis tooling reading this file can see the
+ * default values are genuinely exercised, not just visually correct by luck.
  */
-export const Default: Story = {};
+export const Default: Story = {
+  args: {
+    size: "default",
+    variant: "default",
+  },
+};
 
 /**
  * Use the `outline` variant for a distinct outline, emphasizing the boundary

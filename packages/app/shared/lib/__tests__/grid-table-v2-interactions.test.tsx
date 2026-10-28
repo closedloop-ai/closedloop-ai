@@ -401,6 +401,104 @@ describe("ISS-4779 — the v2 header presentation is opt-in", () => {
   });
 });
 
+/** Every modifier `shouldSkipGridNavigation` reads, named by its DOM property. */
+type ChordModifier = keyof Parameters<typeof shouldSkipGridNavigation>[2];
+
+/**
+ * whitlockk review: pinning Meta alone left Ctrl and Alt unprotected at BOTH levels,
+ * so each is now driven through the rendered grid. Typed as a full `Record`, so
+ * a fourth modifier added to the guard fails typecheck here until it is driven
+ * through the grid too.
+ */
+const CHORD_MODIFIERS: Record<ChordModifier, ChordModifier> = {
+  altKey: "altKey",
+  ctrlKey: "ctrlKey",
+  metaKey: "metaKey",
+};
+
+/**
+ * ISS-6718. The describe above this one exercises `shouldSkipGridNavigation` in
+ * ISOLATION — it calls the helper with a synthetic target and asserts its return
+ * value. That is the helper's contract, and it is also the exact shape the
+ * ticket calls out as unable to catch the defect that matters: the component
+ * FORGETTING to consult it.
+ *
+ * `handleCellKeyDown` calls the guard with `event.target` (what the user is
+ * actually typing into) while navigating from `event.currentTarget` (the cell).
+ * Dropping the guard, or passing it `currentTarget`, leaves every existing case
+ * green — the isolated ones never render, and "arrow keys move focus via
+ * preventDefault + focus()" asserts the branch that still works — while a user
+ * typing in a cell loses the caret to the next column and a browser/OS chord is
+ * swallowed. So these drive the keys through the RENDERED grid and assert where
+ * focus ends up, with the unguarded key as the control in the same case.
+ */
+describe("criterion 4 — the component defers keys their owner already claims", () => {
+  /** The owner cell renders a real text field, as an inline editor would. */
+  function renderGridWithCellInput() {
+    return renderGrid({
+      keyboardCellNavigation: true,
+      renderCell: (columnId: string, row: Row) =>
+        columnId === "owner" ? (
+          <input aria-label={`Edit ${row.name}`} defaultValue={row.owner} />
+        ) : (
+          "Active"
+        ),
+    });
+  }
+
+  test("an arrow key typed into a cell's text field stays with the caret", () => {
+    renderGridWithCellInput();
+    const field = screen.getByRole("textbox", { name: "Edit Bravo" });
+    field.focus();
+
+    const handled = fireEvent.keyDown(field, { key: "ArrowRight" });
+
+    // Not swallowed — `preventDefault` here would kill the caret move even if
+    // focus happened to stay put, so the key must reach the field intact.
+    expect(handled).toBe(true);
+    expect(document.activeElement).toBe(field);
+
+    // Control, same fixture: the identical key on the CELL does navigate, so the
+    // case above cannot be passing because this grid never navigates at all.
+    const statusCell = screen.getAllByText("Active")[1] as HTMLElement;
+    statusCell.focus();
+    fireEvent.keyDown(statusCell, { key: "ArrowDown" });
+    expect(document.activeElement).not.toBe(statusCell);
+  });
+
+  // One case per modifier, each through the RENDERED grid: the component has to
+  // forward all three to the guard, and a per-modifier case is what goes red
+  // when it stops forwarding exactly one of them.
+  test.each(Object.values(CHORD_MODIFIERS))(
+    "an arrow chord holding %s stays with the browser",
+    (modifier) => {
+      renderGrid({ keyboardCellNavigation: true });
+      const leadCell = screen
+        .getByText("Alpha")
+        .closest("[data-grid-cell]") as HTMLElement;
+      leadCell.focus();
+
+      // Cmd/Ctrl/Alt + arrow belongs to the browser or the OS (history, word
+      // jump, desktop switch), never to the grid's cell selection.
+      const chordHandled = fireEvent.keyDown(leadCell, {
+        key: "ArrowDown",
+        [modifier]: true,
+      });
+
+      expect(chordHandled).toBe(true);
+      expect(document.activeElement).toBe(leadCell);
+
+      // Control: the same key WITHOUT the modifier moves, so the assertion
+      // above is about the chord and not about a grid that ignores ArrowDown
+      // entirely.
+      fireEvent.keyDown(leadCell, { key: "ArrowDown" });
+      expect(document.activeElement).toBe(
+        screen.getByText("Bravo").closest("[data-grid-cell]")
+      );
+    }
+  );
+});
+
 describe("roving tabindex survives the focused row disappearing", () => {
   test("a data change that drops the focused row hands the tab stop back", () => {
     const { rerender } = render(
@@ -474,5 +572,81 @@ describe("roving tabindex survives the focused row disappearing", () => {
     expect(
       document.querySelectorAll('[data-grid-cell][tabindex="0"]')
     ).toHaveLength(1);
+  });
+});
+
+/**
+ * ISS-8038 wired the APG grid pattern into BOTH grids. `GridTableV2` has its own
+ * suite in `packages/design-system/__tests__/grid-table-apg-keys.test.tsx`; these
+ * drive the same two contracts through the RENDERED `GridTable`, which is the
+ * component this file has always owned.
+ *
+ * Without them the diff's two `GridTable` call sites are unpinned: dropping the
+ * entry-model call leaves Enter/F2/Escape doing nothing again, and dropping the
+ * `ctrlKey` forwarded to `resolveNextGridCell` silently downgrades Ctrl+Home to
+ * plain Home — half the pattern, and the exact caller-forgets failure the
+ * helper's own docstring warns about. Both stay green in the V2 suite, because
+ * nothing there renders this component.
+ */
+describe("criterion 4 — the APG keys reach GridTable too", () => {
+  function cellsOfRow(rowText: string): HTMLElement[] {
+    const row = screen.getByText(rowText).closest("[data-grid-row]");
+    if (!row) {
+      throw new Error(`no rendered row for ${rowText}`);
+    }
+    return Array.from(row.querySelectorAll<HTMLElement>("[data-grid-cell]"));
+  }
+
+  test("Ctrl+Home leaves the row for the grid's own first cell", () => {
+    renderGrid({ keyboardCellNavigation: true });
+    // Start on the MIDDLE row, so the grid's first cell and this row's first
+    // cell are different elements — the only shape that can tell a forwarded
+    // ctrlKey apart from a dropped one.
+    const middleRowCells = cellsOfRow("Bravo");
+    const origin = middleRowCells[1] as HTMLElement;
+    origin.focus();
+
+    fireEvent.keyDown(origin, { key: "Home", ctrlKey: true });
+
+    expect(document.activeElement).toBe(cellsOfRow("Alpha")[0]);
+    expect(document.activeElement).not.toBe(middleRowCells[0]);
+  });
+
+  test("Home without the chord stays inside the pressed row", () => {
+    renderGrid({ keyboardCellNavigation: true });
+    const middleRowCells = cellsOfRow("Bravo");
+    const origin = middleRowCells[1] as HTMLElement;
+    origin.focus();
+
+    fireEvent.keyDown(origin, { key: "Home" });
+
+    // The positive sibling to the case above: the same key, no chord, resolves
+    // to THIS row's first cell, so neither case can pass by both keys doing the
+    // same thing.
+    expect(document.activeElement).toBe(middleRowCells[0]);
+  });
+
+  test("Enter moves focus into a cell's control, Escape brings it back", () => {
+    renderGrid({
+      keyboardCellNavigation: true,
+      renderCell: (columnId: string, row: Row) =>
+        columnId === "owner" ? (
+          <button type="button">{`Edit ${row.name}`}</button>
+        ) : (
+          "Active"
+        ),
+    });
+    const ownerCell = screen
+      .getByRole("button", { name: "Edit Bravo" })
+      .closest("[data-grid-cell]") as HTMLElement;
+    ownerCell.focus();
+    expect(document.activeElement).toBe(ownerCell);
+
+    fireEvent.keyDown(ownerCell, { key: "Enter" });
+    const control = screen.getByRole("button", { name: "Edit Bravo" });
+    expect(document.activeElement).toBe(control);
+
+    fireEvent.keyDown(control, { key: "Escape" });
+    expect(document.activeElement).toBe(ownerCell);
   });
 });

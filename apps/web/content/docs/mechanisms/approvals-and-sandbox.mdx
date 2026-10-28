@@ -29,7 +29,7 @@ Certain paths are always blocked, even inside the sandbox:
 
 The approval policy uses three pieces of state:
 
-- `OPERATION_RISK_TIERS` — per-operation tier (`low`, `medium`, `high`). Deploy is high, health check is low.
+- `OPERATION_RISK_TIERS` — per-operation tier (`low`, `medium`, `high`). Health check is low.
 - `defaultApprovalTier` — the user's minimum risk tier that requires approval (default `high`).
 - `alwaysAllowRules[]` — scoped rules that auto-approve specific operations.
 
@@ -56,9 +56,9 @@ Pending approvals are persisted in `desktop-approvals`. The tray badges the pend
 
 ### Risk tiers
 
-- **high** – destructive or sensitive (`deploy`, writing files, anything that modifies the system beyond the sandbox in practice).
-- **medium** – normal loop and git operations (`symphony_loop`, `git_action`, `pr_reply`, `learnings_record`).
-- **low** – read-only health and status (`health_check`, `symphony_status`).
+- **high** – destructive or sensitive (writing files, anything that modifies the system beyond the sandbox in practice).
+- **medium** – normal git operations (`git_action`, `pr_reply`, `learnings_record`).
+- **low** – read-only status (`git_local_changes`).
 - **none** – effectively unclassified; always prompts unless auto-approved by your default tier.
 
 ### Default approval tier
@@ -72,19 +72,15 @@ Configurable under **Settings → Policies → Default Approval Tier**:
 
 ### Per-operation overrides
 
-**Settings → Policies → Risk Tier Overrides** lets you raise or lower the effective tier per operation id. For example, you can keep the global default at **high** but force `deploy` to always prompt.
+**Settings → Policies → Risk Tier Overrides** lets you raise or lower the effective tier per operation id.
 
 ### Tiering examples
 
 | Operation | Risk tier |
 | --- | --- |
-| `health_check` | low |
 | `git_action` (read) | low |
 | `filesystem` (read) | low |
-| `symphony_chat` | medium |
 | `git_pr` (create) | medium |
-| `symphony_loop` | medium |
-| `deploy` | high |
 | `binary_paths_settings` | high |
 
 (Tiers are read from `OPERATION_RISK_TIERS` at runtime; the list above reflects the defaults.)

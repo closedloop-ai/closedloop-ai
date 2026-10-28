@@ -12,6 +12,7 @@ import {
   AttachmentPurpose,
   INLINE_ATTACHMENT_REF_PREFIX,
 } from "@repo/api/src/types/attachment.js";
+import { Priority } from "@repo/api/src/types/common.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../api-client.js";
 import { registerCreateDocumentVersion } from "../tools/create-document-version.js";
@@ -68,6 +69,52 @@ describe("readNullableStringProp", () => {
 
     expect(output).not.toHaveProperty("projectId");
     expect(output).not.toHaveProperty("assigneeId");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// priority — ISS-9665: unset, set, and absent are three different answers
+// ---------------------------------------------------------------------------
+
+describe("priority (ISS-9665)", () => {
+  it("reports an UNSET priority as an explicit null, not an omitted key", async () => {
+    // `Document.priority` is a REQUIRED response field that widened to
+    // `Priority | null`. Dropping the key for the null would tell the caller
+    // "this server sent no priority" — the pre-ISS-9665 build — when what the
+    // artifact actually holds is "no priority". The two are different claims,
+    // and collapsing them is the exact fold this change removes.
+    mockPost.mockResolvedValueOnce({ priority: null });
+
+    const output = parseToolPayload(await handler(BASE_INPUT)) as Record<
+      string,
+      unknown
+    >;
+
+    expect(output).toHaveProperty("priority", null);
+  });
+
+  it("passes a real priority member through unchanged", async () => {
+    mockPost.mockResolvedValueOnce({ priority: Priority.Urgent });
+
+    const output = parseToolPayload(await handler(BASE_INPUT)) as Record<
+      string,
+      unknown
+    >;
+
+    expect(output).toHaveProperty("priority", Priority.Urgent);
+  });
+
+  it("omits priority entirely when the server sent none at all", async () => {
+    // The third state, and the one the null must stay distinguishable from: a
+    // response with no `priority` key (an older API, or an unrecognized shape).
+    mockPost.mockResolvedValueOnce({ id: "doc-1" });
+
+    const output = parseToolPayload(await handler(BASE_INPUT)) as Record<
+      string,
+      unknown
+    >;
+
+    expect(output).not.toHaveProperty("priority");
   });
 });
 

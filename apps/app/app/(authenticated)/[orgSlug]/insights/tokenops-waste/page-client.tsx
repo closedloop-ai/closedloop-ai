@@ -19,7 +19,7 @@ import { resolveWidgetState } from "./components/widget-state";
 
 /**
  * ISS-4988. The judgment half of the session-analytics pair: how much of the
- * error-outcome spend was actually recoverable, and whether the models are
+ * error-outcome cost was actually recoverable, and whether the models are
  * sized for the work.
  *
  * The reading order is the argument. The measured split comes first, the
@@ -55,7 +55,7 @@ export function TokenOpsWastePageClient() {
         onScopeChange={setScope}
         period={period}
         scope={scope}
-        subtitle="What the period's spend bought, and what it wasted"
+        subtitle="What the period's cost bought, and what it wasted"
         title="TokenOps waste"
       />
       {/* Plain <div>, not <main>: the app shell's SidebarInset owns the page's

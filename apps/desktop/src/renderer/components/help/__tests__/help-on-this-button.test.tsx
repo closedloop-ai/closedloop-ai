@@ -1,5 +1,4 @@
 /**
- * @file help-on-this-button.test.tsx
  * @description Component tests for the contextual "Help on this" header
  * affordance (FEA-3846 / PRD-555 M4). Renders {@link HelpOnThisButton} with a
  * mocked `docsHelp` flag and a stubbed navigation `Link`, and asserts:

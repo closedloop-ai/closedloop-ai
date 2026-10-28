@@ -1,13 +1,14 @@
 "use client";
 
 import {
+  TRANSCRIPT_ACCESS_FILE_KEY_PARAM,
   type TranscriptAccessResponse,
-  TranscriptAvailability,
+  type TranscriptAvailability,
   type TranscriptAvailabilitySummary,
   type TranscriptFileDescriptor,
 } from "@repo/api/src/types/desktop-transcripts";
 import type { NormalizedSession } from "@repo/lib/harness/types";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useApiClient } from "../../shared/api/use-api-client";
 import { useFeatureFlagEnabled } from "../../shared/feature-flags/use-feature-flag-enabled";
@@ -23,7 +24,14 @@ import {
   TranscriptParseError,
 } from "../lib/parse-transcript";
 import { MAIN_TRANSCRIPT_FILE_KEY } from "../lib/session-transcript-href";
-import { agentSessionKeys } from "./use-agent-sessions";
+import {
+  missingTranscriptRefetchIntervalMs,
+  TRANSCRIPT_PENDING_REFETCH_INTERVAL_MS,
+  TranscriptPollState,
+  transcriptAccessStaleTimeMs,
+  transcriptPollState,
+} from "../lib/transcript-access-freshness";
+import { agentSessionKeys } from "./agent-session-keys";
 
 /**
  * Auto-fetch cap (meeting decision, PLN-1290 Task 3): files at or below this size
@@ -60,11 +68,38 @@ const TRANSCRIPT_PARSED_STALE_MS = 60 * 60 * 1000;
 
 function fetchTranscriptAccess(
   api: ReturnType<typeof useApiClient>,
-  sessionId: string
+  sessionId: string,
+  fileKey: string
 ): Promise<TranscriptAccessResponse> {
+  // `fileKey` scopes the presigning to the file being read (ISS-12276); a
+  // server that predates the parameter ignores it and presigns every file.
+  const query = new URLSearchParams({
+    [TRANSCRIPT_ACCESS_FILE_KEY_PARAM]: fileKey,
+  });
   return api.get<TranscriptAccessResponse>(
-    `/agent-sessions/${sessionId}/transcript`
+    `/agent-sessions/${sessionId}/transcript?${query.toString()}`
   );
+}
+
+/**
+ * The descriptor query, shared by the observing hook and the parse step so both
+ * read one cache entry under one freshness rule (ISS-12276).
+ */
+function transcriptAccessQueryOptions(
+  api: ReturnType<typeof useApiClient>,
+  sessionId: string,
+  fileKey: string
+) {
+  return queryOptions({
+    queryKey: agentSessionKeys.transcriptAccess(sessionId, fileKey),
+    queryFn: () => fetchTranscriptAccess(api, sessionId, fileKey),
+    staleTime: (query) =>
+      transcriptAccessStaleTimeMs(
+        query.state.data,
+        fileKey,
+        query.state.dataUpdatedAt
+      ),
+  });
 }
 
 /**
@@ -133,47 +168,24 @@ function resolveReadDescriptor(input: {
 }
 
 /**
- * FEA-3481 (G5) — self-healing re-poll interval (ms) for the transcript-access
- * descriptor query while any file is still `uploadPending`. If the user stays on
- * an open detail page while a background upload completes, nothing invalidates
- * `transcripts()` (the live bridge only moves list/usage/detail), so the panel
- * would stay stuck on its `UploadPending` treatment until the user navigates
- * away and back. A short refetch heals that in-place, and clears itself the
- * moment no file is pending (the interval resolver returns `false`), so a
- * resolved/available transcript never keeps polling.
- */
-export const TRANSCRIPT_PENDING_REFETCH_INTERVAL_MS = 4000;
-
-/**
- * True when any descriptor is `uploadPending` OR `missing` — both are
- * transient syncing states that the source machine is expected to resolve.
- * `available`/`stale` are terminal-readable; `failed` is terminal-error.
- */
-function hasPendingTranscript(
-  data: TranscriptAccessResponse | undefined
-): boolean {
-  return Boolean(
-    data?.files?.some(
-      (file) =>
-        file.availability === TranscriptAvailability.UploadPending ||
-        file.availability === TranscriptAvailability.Missing
-    )
-  );
-}
-
-/**
  * Fetch the per-file transcript descriptors (availability + signed URLs) for a
- * session. Descriptors carry short-lived signed URLs, so this refetches on mount
- * (`staleTime: 0`); the durable 60-minute cache lives on the parsed result keyed
- * by `rawSha256` (see `useSessionTranscript`).
+ * session. The route presigns only `fileKey`'s URL (ISS-12276), and the query
+ * stays fresh until that URL nears expiry (`transcriptAccessStaleTimeMs`), so a
+ * mount, a focus and the parse that follows share one descriptor read. A file
+ * without a URL is stale at once, as before. The durable 60-minute cache lives
+ * on the parsed result keyed by `rawSha256` (see `useSessionTranscript`).
  *
  * On the desktop-local surface the cloud route is inert, so this resolves to an
  * empty descriptor set; the caller seeds a local descriptor from the detail's
  * availability summary (`localTranscripts`) instead.
  *
- * While a file is `uploadPending` (an upload is completing under an open detail
- * view) the query self-heals with a short `refetchInterval` (FEA-3481 G5), which
- * clears itself once nothing is pending.
+ * FEA-3481 G5: nothing invalidates `transcripts()` when a background upload
+ * completes under an open detail view (the live bridge only moves
+ * list/usage/detail), so the query re-polls itself. While any file is
+ * `uploadPending` it polls every `TRANSCRIPT_PENDING_REFETCH_INTERVAL_MS`. A
+ * `missing` file backs off and stops after `TRANSCRIPT_MISSING_REFETCH_CAP_MS`
+ * (ISS-12276, PRD-792), because a transcript that was never uploaded used to
+ * re-poll every 4 s for as long as the page stayed open.
  *
  * `refetchWhileHidden` gates `refetchIntervalInBackground` on the SURFACE, so the
  * self-heal poll does not silently break the codebase's no-poll-when-hidden
@@ -187,18 +199,34 @@ function hasPendingTranscript(
  */
 export function useTranscriptAccess(
   sessionId: string,
-  options?: { enabled?: boolean; refetchWhileHidden?: boolean }
+  options?: {
+    enabled?: boolean;
+    fileKey?: string;
+    refetchWhileHidden?: boolean;
+  }
 ) {
   const api = useApiClient();
+  const fileKey = options?.fileKey ?? MAIN_TRANSCRIPT_FILE_KEY;
+  // When the current run of `missing` polls began. Derived from
+  // `dataUpdatedAt`, so evaluating the interval more than once per fetch is
+  // harmless.
+  const missingSinceRef = useRef<number | null>(null);
   return useQuery({
-    queryKey: agentSessionKeys.transcriptAccess(sessionId),
-    queryFn: () => fetchTranscriptAccess(api, sessionId),
-    staleTime: 0,
+    ...transcriptAccessQueryOptions(api, sessionId, fileKey),
     enabled: Boolean(sessionId) && (options?.enabled ?? true),
-    refetchInterval: (query) =>
-      hasPendingTranscript(query.state.data)
-        ? TRANSCRIPT_PENDING_REFETCH_INTERVAL_MS
-        : false,
+    refetchInterval: (query) => {
+      const pollState = transcriptPollState(query.state.data);
+      if (pollState !== TranscriptPollState.Missing) {
+        missingSinceRef.current = null;
+        return pollState === TranscriptPollState.Pending
+          ? TRANSCRIPT_PENDING_REFETCH_INTERVAL_MS
+          : false;
+      }
+      missingSinceRef.current ??= query.state.dataUpdatedAt;
+      return missingTranscriptRefetchIntervalMs(
+        query.state.dataUpdatedAt - missingSinceRef.current
+      );
+    },
     refetchIntervalInBackground: options?.refetchWhileHidden ?? false,
   });
 }
@@ -256,13 +284,43 @@ function classifyTranscriptError(
 }
 
 /**
- * Re-mint the descriptor, resolve the byte-source URL per surface, and parse —
- * or surface a gated oversized LOCAL file. Extracted from the hook's `queryFn`
- * to keep the hook body within its complexity budget; `onSource` reports which
+ * Read the descriptor, resolve the byte-source URL per surface, and parse — or
+ * surface a gated oversized LOCAL file. Extracted from the hook's `queryFn` to
+ * keep the hook body within its complexity budget; `onSource` reports which
  * copy was served so the hook can flag "local copy".
  */
-async function resolveAndParseTranscript(input: {
-  api: ReturnType<typeof useApiClient>;
+async function resolveAndParseTranscript(
+  input: ResolveAndParseInput
+): Promise<ParsedTranscriptResult> {
+  // ISS-12276: reuse the cached descriptor while its signed URL keeps its reuse
+  // margin, and re-read it only when the URL nears expiry (it used to be re-read
+  // on every parse). PLN-1289's "a retry refetches descriptors first" holds
+  // because `retry` refetches the descriptor before the parse.
+  const cached = await readAccessOrLocalSeed(input, input.loadAccess);
+  try {
+    return await parseFromAccess(input, cached);
+  } catch (error) {
+    // The reuse window is judged against the browser clock while the URL's
+    // expiry is stamped by the server's, so a client running behind the server
+    // can reuse a URL S3 already refuses. Re-read the descriptor once on a 403
+    // before surfacing it, as every parse did before ISS-12276. Web only: the
+    // desktop transport mints its own URL in main on every prepare, and a 403
+    // from its `app://` handler is a policy refusal a re-read cannot fix.
+    if (
+      input.transport.supportsLocalFallback ||
+      !(error instanceof TranscriptFetchError && error.status === 403)
+    ) {
+      throw error;
+    }
+    const reread = await readAccessOrLocalSeed(input, input.reloadAccess);
+    return await parseFromAccess(input, reread);
+  }
+}
+
+type ResolveAndParseInput = {
+  loadAccess: () => Promise<TranscriptAccessResponse>;
+  /** Re-read the descriptor regardless of its freshness window. */
+  reloadAccess: () => Promise<TranscriptAccessResponse>;
   transport: ReturnType<typeof useTranscriptBytesTransport>;
   sessionId: string;
   externalSessionId: string | undefined;
@@ -273,22 +331,32 @@ async function resolveAndParseTranscript(input: {
   signal: AbortSignal | undefined;
   onSource: (source: TranscriptBytesSource) => void;
   onProgress: ((progress: TranscriptDownloadProgress) => void) | undefined;
-}): Promise<ParsedTranscriptResult> {
-  // Re-mint the signed URL: the descriptor query's URL may be minutes old.
-  // PLN-1289 — "a retry refetches descriptors first." On the desktop-local
-  // surface the route is inert (empty files); the local descriptor is seeded
-  // from the detail summary so the transport can still serve the on-disk copy.
-  const fresh = await fetchTranscriptAccess(input.api, input.sessionId).catch(
-    (error): TranscriptAccessResponse => {
-      // A failed access fetch is fatal for the CLOUD path, but the desktop-local
-      // path has no cloud route — swallow it so the local descriptor seed below
-      // still drives a local read. Re-thrown when there is no local fallback.
-      if (input.transport.supportsLocalFallback) {
-        return { sessionId: input.sessionId, files: [] };
-      }
-      throw error;
+};
+
+/**
+ * Read the descriptor through `read`. On the desktop-local surface the route
+ * is inert (empty files); the local descriptor is seeded from the detail
+ * summary so the transport can still serve the on-disk copy.
+ */
+async function readAccessOrLocalSeed(
+  input: ResolveAndParseInput,
+  read: () => Promise<TranscriptAccessResponse>
+): Promise<TranscriptAccessResponse> {
+  return await read().catch((error): TranscriptAccessResponse => {
+    // A failed access fetch is fatal for the CLOUD path, but the desktop-local
+    // path has no cloud route — swallow it so the local descriptor seed below
+    // still drives a local read. Re-thrown when there is no local fallback.
+    if (input.transport.supportsLocalFallback) {
+      return { sessionId: input.sessionId, files: [] };
     }
-  );
+    throw error;
+  });
+}
+
+async function parseFromAccess(
+  input: ResolveAndParseInput,
+  fresh: TranscriptAccessResponse
+): Promise<ParsedTranscriptResult> {
   const file = resolveReadDescriptor({
     cloudFiles: fresh.files,
     fileKey: input.fileKey,
@@ -356,9 +424,9 @@ async function resolveAndParseTranscript(input: {
  * its resolved URL is a signed S3 URL, whose 404 is a genuinely expired/missing
  * archive — and the re-resolve returns the SAME signed URL (there is no per-request
  * re-mint here), so the retry just re-fetches and harmlessly re-raises the same
- * 404. The descriptor re-mint only happens on a full `retry()` (a fresh
- * `resolveAndParseTranscript` refetches descriptors first), so a single retry here
- * is still safe and cheap.
+ * 404. The descriptor re-mint happens only on a 403 (`resolveAndParseTranscript`
+ * re-reads the descriptor once) or a full `retry()`, so a single retry here is
+ * still safe and cheap.
  *
  * On the successful (re-)fetch the served `source` is reported via `onSource` so
  * `transcriptSource` reflects the copy the rendered bytes actually came from, even
@@ -533,10 +601,10 @@ export type SessionTranscriptState = {
  * `useAgentSessionDetail`; this hook hydrates the conversation from the archived
  * JSONL.
  *
- * The parsed query re-mints a fresh signed URL inside its own `queryFn` (rather
- * than closing over the descriptor query's possibly-stale URL), so a ~5-minute
- * URL expiry can never race the parse and `retry()` is a plain refetch. The
- * query key folds in `rawSha256`, so a re-upload transparently invalidates.
+ * The parsed query reads the descriptor through the shared cache entry inside
+ * its own `queryFn`, which re-reads it only once its signed URL nears expiry
+ * (ISS-12276), so the ~5-minute URL expiry cannot race the parse. The query key
+ * folds in `rawSha256`, so a re-upload transparently invalidates.
  */
 export function useSessionTranscript(
   sessionId: string,
@@ -574,6 +642,7 @@ export function useSessionTranscript(
   // surface signal (true only under the desktop transport provider).
   const access = useTranscriptAccess(sessionId, {
     enabled,
+    fileKey,
     refetchWhileHidden: transport.supportsLocalFallback,
   });
   // Prefer a readable cloud descriptor; on the desktop-local surface (inert
@@ -624,7 +693,15 @@ export function useSessionTranscript(
     ),
     queryFn: ({ signal }): Promise<ParsedTranscriptResult> =>
       resolveAndParseTranscript({
-        api,
+        loadAccess: () =>
+          queryClient.fetchQuery(
+            transcriptAccessQueryOptions(api, sessionId, fileKey)
+          ),
+        reloadAccess: () =>
+          queryClient.fetchQuery({
+            ...transcriptAccessQueryOptions(api, sessionId, fileKey),
+            staleTime: 0,
+          }),
         transport,
         sessionId,
         externalSessionId: options.externalSessionId,
@@ -653,12 +730,22 @@ export function useSessionTranscript(
 
   const refetchAccess = access.refetch;
   const refetchParsed = parsed.refetch;
+  const parseWithoutAccess = transport.supportsLocalFallback;
   const retry = useCallback(() => {
-    // Both refetch — access re-mints a fresh signed URL, parsed re-fetches + re-
-    // parses. `refetch()` bypasses `staleTime`, so this recovers an expired URL.
-    refetchAccess().catch(() => undefined);
-    refetchParsed().catch(() => undefined);
-  }, [refetchAccess, refetchParsed]);
+    // Access first, then the parse: `refetch()` bypasses `staleTime`, so the
+    // descriptor re-mints a fresh signed URL, and the parse that follows reads
+    // that new descriptor from the cache instead of the one that failed.
+    // `refetch()` resolves even when the descriptor read fails; parsing then
+    // would only re-request it, unless this surface can read a local copy
+    // without one.
+    refetchAccess()
+      .then((result) => {
+        if (!result.isError || parseWithoutAccess) {
+          return refetchParsed();
+        }
+      })
+      .catch(() => undefined);
+  }, [parseWithoutAccess, refetchAccess, refetchParsed]);
 
   const loadFullTranscript = useCallback(() => {
     resetProgress();

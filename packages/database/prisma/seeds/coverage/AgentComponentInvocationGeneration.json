@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Staging ledger for invocation sync generations; read only inside the invocation ingest, activation and retention paths."
+}

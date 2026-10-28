@@ -25,6 +25,7 @@ export function handleElectronExit(
   io: {
     cleanup: () => Promise<void> | void;
     exit: (status: number) => void;
+    timeoutMs?: number;
   }
 ): Promise<void>;
 
@@ -40,3 +41,18 @@ export function handleBuildStepExit(
     resolve: () => void;
   }
 ): void;
+
+/** How long the launcher waits for its servers to close before exiting anyway (ISS-12135). */
+export const CLEANUP_TIMEOUT_MS: number;
+
+/**
+ * The launcher's signal handler: forward the signal to Electron, close the
+ * servers within `timeoutMs`, then exit 0 whether or not they closed. A repeat
+ * signal while it is closing exits at once.
+ */
+export function createSignalShutdown(io: {
+  forward: (signal: NodeJS.Signals) => void;
+  cleanup: () => Promise<void> | void;
+  exit: (status: number) => void;
+  timeoutMs?: number;
+}): (signal: NodeJS.Signals) => Promise<void>;

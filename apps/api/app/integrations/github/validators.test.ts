@@ -1,40 +1,33 @@
 import { describe, expect, it } from "vitest";
-import { connectGitHubValidator } from "./validators";
+import { claimGitHubInstallationValidator } from "./validators";
 
-describe("connectGitHubValidator", () => {
-  it("accepts code with installationId", () => {
-    const result = connectGitHubValidator.safeParse({
-      code: "abc123",
+describe("claimGitHubInstallationValidator", () => {
+  it("accepts an installationId", () => {
+    const result = claimGitHubInstallationValidator.safeParse({
       installationId: "12345",
     });
     expect(result.success).toBe(true);
   });
 
-  it("accepts code without installationId (standard OAuth flow)", () => {
-    const result = connectGitHubValidator.safeParse({
+  it("strips a stale deploy's OAuth code instead of rejecting it", () => {
+    // Cross-repo/deploy skew: an older apps/app callback still POSTs `code`.
+    const result = claimGitHubInstallationValidator.safeParse({
       code: "abc123",
+      installationId: "12345",
     });
     expect(result.success).toBe(true);
+    expect(result.data).toEqual({ installationId: "12345" });
   });
 
-  it("rejects empty code", () => {
-    const result = connectGitHubValidator.safeParse({
-      code: "",
-      installationId: "12345",
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it("rejects missing code", () => {
-    const result = connectGitHubValidator.safeParse({
-      installationId: "12345",
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it("rejects empty installationId when provided", () => {
-    const result = connectGitHubValidator.safeParse({
+  it("rejects a missing installationId", () => {
+    const result = claimGitHubInstallationValidator.safeParse({
       code: "abc123",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects an empty installationId", () => {
+    const result = claimGitHubInstallationValidator.safeParse({
       installationId: "",
     });
     expect(result.success).toBe(false);

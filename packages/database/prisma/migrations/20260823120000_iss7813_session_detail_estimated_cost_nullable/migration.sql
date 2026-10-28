@@ -1,0 +1,33 @@
+-- ISS-7813: let `session_detail.estimated_cost` say "unknown".
+--
+-- The column has been `NOT NULL DEFAULT 0` since it was added, so a session
+-- whose cost was never priced stored the same `0` as a subscription session
+-- that genuinely cost $0.00.
+--
+-- The desktop's authoritative rollup (`sessions.cost_usd_estimated`,
+-- `updateSessionCostRollup`) is nullable for exactly this reason: it stores
+-- NULL when nothing was priced and no web-search line item applied. This makes
+-- the cloud column able to receive that value unchanged.
+--
+-- THE DEFAULT DELIBERATELY STAYS, and that is the safety property of this
+-- migration. `resolveTokenRollupColumns`
+-- (`apps/api/app/agent-sessions/service/field-regression-guards.ts`) returns `{}`
+-- when a payload carries no per-model token rows, and its docstring names what
+-- that relies on: the create arm of `sessionDetail.upsert` OMITS the column and
+-- leans on "the schema `@default(0)` on create". Dropping the default would turn
+-- that documented omission into a NULL on every new session with no token rows
+-- — NULLs arriving from a path nobody changed, needing no new Desktop build, and
+-- making a code-only rollback unsafe, since the pre-ISS-7813 bundle throws on a
+-- null cost in the branch cost-evidence projection.
+--
+-- So this migration only WIDENS what the column may hold. Which rows are null
+-- does not change until a writer deliberately writes one. Dropping the default
+-- is a separate step and belongs with teaching the create arm to write NULL on
+-- purpose rather than by omission.
+--
+-- NOT backfilled on purpose. Existing rows hold `0`, which is genuinely
+-- ambiguous — a real $0.00 subscription session and a never-priced session are
+-- indistinguishable today, so there is no rule that could rewrite one without
+-- corrupting the other. Rows take their true value (including NULL) on their
+-- next sync.
+ALTER TABLE "session_detail" ALTER COLUMN "estimated_cost" DROP NOT NULL;

@@ -12,9 +12,12 @@ vi.mock("@/lib/route-utils", () => ({
   scheduleLogFlush: vi.fn(),
 }));
 
-vi.mock("@repo/observability/log", () => ({
-  log: { info: vi.fn(), error: vi.fn() },
-}));
+vi.mock("@repo/observability/log", async () => {
+  const { createLogMockModule } = await import(
+    "@/__tests__/fixtures/mock-modules"
+  );
+  return createLogMockModule();
+});
 
 vi.mock("@repo/observability/error", () => ({
   parseError: (e: unknown) => e,
@@ -32,11 +35,23 @@ function authorizedRequest(): Request {
 }
 
 const SUMMARY: BootstrapSummary = {
-  orgsSelected: 3,
+  orgsSelected: 9,
   orgsBootstrapped: 2,
-  orgsFailed: 1,
+  orgsPartial: 1,
+  orgsFailed: 6,
   reposMaterialized: 42,
+  reposFailed: 5,
   stoppedOnDeadline: false,
+  observedRepositoryVerification: {
+    orgsSelected: 2,
+    orgsFailed: 0,
+    orgsReconciled: 1,
+    repositoriesAttempted: 7,
+    repositoriesVerified: 3,
+    repositoriesDenied: 1,
+    repositoriesDeferred: 3,
+    stoppedOnDeadline: false,
+  },
 };
 
 beforeEach(() => {
@@ -68,10 +83,9 @@ describe("GET /cron/bootstrap-repo-sync-states", () => {
     expect(response.status).toBe(200);
     expect(mocks.run).toHaveBeenCalledOnce();
     const body = await response.text();
-    expect(body).toContain("selected 3");
-    expect(body).toContain("bootstrapped 2");
-    expect(body).toContain("failed 1");
-    expect(body).toContain("repos 42");
+    expect(body).toBe(
+      "OK: selected 9, bootstrapped 2, partial 1, failed 6, repos 42, repos failed 5, deadline false, verified 3, denied 1"
+    );
   });
 
   it("returns 500 when the service throws", async () => {

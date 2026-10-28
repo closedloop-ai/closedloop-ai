@@ -12,9 +12,9 @@ import {
 } from "./branch-story-metric-fixtures";
 
 const meta = {
-  title: "App Core/Branches/Branch Lead Time Waterfall",
+  title: "Composites v1.0/Branches/Branch Lead Time Waterfall",
   component: BranchLeadTimeWaterfall,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
 } satisfies Meta<typeof BranchLeadTimeWaterfall>;
 

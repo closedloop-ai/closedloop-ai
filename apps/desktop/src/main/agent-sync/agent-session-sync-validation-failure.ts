@@ -25,19 +25,24 @@
  * re-sent one id at a time.
  *
  * Ahead of all three, the server's `details.reason` is read as a discriminator:
- * a `schema_version_invalid` is a fact about the desktop build's envelope, not
- * about any row, so it is classified `SchemaSkew` and deferred lane-wide with
- * every budget intact. Inferring that case from the batch shape would charge a
- * version mismatch to whichever sessions happened to be in flight and eventually
- * dead-letter them. Every other reason value — and the omission an older API
- * sends — leaves the shape-derived classification untouched.
+ * a `schema_version_invalid` is a fact about the desktop build's envelope and a
+ * `compute_target_id_invalid` is a fact about the lane's own connection state,
+ * neither of them about any row, so both are classified `LaneWide` and deferred
+ * with every budget intact. Inferring either from the batch shape would charge
+ * it to whichever sessions happened to be in flight and eventually dead-letter
+ * them. Every other reason value — and the omission an older API sends — leaves
+ * the shape-derived classification untouched.
  *
  * Pure over injected collaborators, like `agent-session-sync-ack-fold.ts`: this
  * module owns no state, so the service keeps its counters and this stays
  * trivially testable (and the grandfathered service file keeps shrinking).
  */
 
-import type { AgentSessionSyncMode } from "@repo/api/src/types/agent-session";
+import {
+  type AgentSessionSyncMode,
+  SYNC_ACK_DETAIL_MAX_CHARS,
+} from "@repo/api/src/types/agent-session";
+import { DESKTOP_SYNC_ACK_REASON_COMPUTE_TARGET_ID_INVALID } from "@repo/api/src/types/desktop-sync-ack-detail";
 import type { BoundedFailureFoldConfig } from "./agent-session-sync-ack-fold.js";
 import {
   MAX_CHUNK_ENVELOPE_DEAD_LETTERS,
@@ -45,6 +50,7 @@ import {
   VALIDATION_FAILED_BACKOFF_MS,
 } from "./agent-session-sync-backoff-policy.js";
 import type { AgentSessionSyncBatch } from "./agent-session-sync-contract.js";
+import { sanitizeUntrustedServerText } from "./agent-session-sync-service-helpers.js";
 
 /**
  * The outbox `last_error` reasons this classifier records, kept together so an
@@ -73,12 +79,13 @@ export function isValidationFailureReason(reason: string | null): boolean {
 
 export const ValidationFailureClass = {
   /**
-   * The server rejected the batch ENVELOPE's schema version, not anything about
-   * the sessions inside it. Lane-wide and budget-neutral: no row is at fault, so
-   * nothing is charged and nothing may dead-letter. See
-   * {@link ValidationFailureDetail.SchemaVersionInvalid}.
+   * The server rejected a property of the LANE, not anything about the sessions
+   * inside the batch — the envelope's declared schema version, or the
+   * `computeTargetId` this lane reads off the relay hello ack. Budget-neutral:
+   * no row is at fault, so nothing is charged and nothing may dead-letter. See
+   * {@link ValidationFailureDetail}.
    */
-  SchemaSkew: "schema_skew",
+  LaneWide: "lane_wide",
   /**
    * The rejected envelope carried more than one session. The ack names none of
    * them, so no budget moves — the batch is flagged for singleton bisection.
@@ -142,14 +149,18 @@ export function capBatchForBisection(
  * omission an older API sends) falls through to the existing shape-derived
  * classification, so an unknown reason can only ever degrade to today's generic
  * behaviour.
+ *
+ * ISS-8734 added `compute_target_id_invalid` on the same footing: the id is
+ * lane state read off the relay hello ack rather than anything a row carries,
+ * so it is identical for every batch until the connection is re-established.
  */
 export function classifyValidationFailure(
   idCount: number,
   multiPartEnvelope: boolean,
   detail?: string
 ): ValidationFailureClass {
-  if (detail === ValidationFailureDetail.SchemaVersionInvalid) {
-    return ValidationFailureClass.SchemaSkew;
+  if (laneWideValidationDetail(detail) !== undefined) {
+    return ValidationFailureClass.LaneWide;
   }
   if (idCount > 1) {
     return ValidationFailureClass.Bisect;
@@ -164,20 +175,11 @@ export function classifyValidationFailure(
  * gateway log. The API's own vocabulary is a short closed set, but a peer is
  * version-skewed and a proxy-mangled body is reachable at this boundary, so the
  * value is truncated rather than trusted.
+ *
+ * ISS-8005: read from the shared contract rather than spelled here, because the
+ * API now sizes the field path it sends against this same budget.
  */
-const MAX_LOGGED_DETAIL_CHARS = 120;
-
-/**
- * C0 controls plus DEL. Truncation alone is not sanitization: a malformed
- * `details.reason` (a proxy error page, a version-skewed peer, a body an
- * attacker who can answer the sync POST controls) can carry newlines or ANSI
- * escapes, and this string is interpolated straight into the gateway console
- * sink — where a newline forges a second log line and an ESC drives the
- * terminal. Strip them BEFORE the length cap so the cap measures what is
- * actually printed.
- */
-// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping C0/DEL from an untrusted server string is the whole point of this pattern.
-const CONTROL_CHARS_PATTERN = /[\u0000-\u001F\u007F]/g;
+const MAX_LOGGED_DETAIL_CHARS = SYNC_ACK_DETAIL_MAX_CHARS;
 
 export type ValidationFailureInput = {
   syncMode: AgentSessionSyncMode;
@@ -234,16 +236,17 @@ export function applyValidationFailure(
   const bytes = deps.formatBytes(payloadBytes);
   const detailSuffix = formatServerDetailSuffix(detail);
 
-  if (failureClass === ValidationFailureClass.SchemaSkew) {
-    // ISS-5090: schema skew is lane-wide, so it is resolved BEFORE the
-    // envelope/row split — neither the id count nor the chunk marker says
-    // anything about a rejection the whole lane will keep receiving. Deferring
-    // with budgets intact is the only correct outcome: waiting for the upgrade
-    // is the fix, and burning budget would dead-letter healthy rows for a
-    // version mismatch. The bisection flag is deliberately NOT cleared — this
-    // ack proves nothing about which row is poison, so any prior suspicion
-    // survives untouched.
-    deferLaneWideSchemaSkew(input, deps, detailSuffix);
+  const laneWideDetail = laneWideValidationDetail(detail);
+  if (laneWideDetail !== undefined) {
+    // ISS-5090: a lane-wide rejection is resolved BEFORE the envelope/row split
+    // — neither the id count nor the chunk marker says anything about a
+    // rejection the whole lane will keep receiving. Deferring with budgets
+    // intact is the only correct outcome: the fix is an upgrade (schema skew)
+    // or a re-established connection (ISS-8734's computeTargetId), and burning
+    // budget would dead-letter healthy rows for neither. The bisection flag is
+    // deliberately NOT cleared — this ack proves nothing about which row is
+    // poison, so any prior suspicion survives untouched.
+    deferLaneWide(input, deps, detailSuffix, laneWideDetail);
     return;
   }
 
@@ -298,7 +301,7 @@ export function applyValidationFailure(
     reason: chunkFailureReason(isChunkEnvelope, recoverable),
     recoverable,
     backoffMs: VALIDATION_FAILED_BACKOFF_MS,
-    recordOutboxOnDefer: false,
+    recordOutboxOnDefer: true,
   });
 }
 
@@ -330,21 +333,29 @@ function chunkFailureReason(
  * imply a meaning-bearing value was withheld.
  */
 function formatServerDetailSuffix(detail: string | undefined): string {
-  const sanitized = detail
-    ?.replace(CONTROL_CHARS_PATTERN, "")
-    .slice(0, MAX_LOGGED_DETAIL_CHARS);
+  const sanitized =
+    detail === undefined
+      ? undefined
+      : sanitizeUntrustedServerText(detail, MAX_LOGGED_DETAIL_CHARS);
   return sanitized ? ` (server detail: ${sanitized})` : "";
 }
 
 /**
  * The `details.reason` values this lane DISCRIMINATES on, as opposed to the ones
- * it only echoes into a log. Produced by `summarizeParseIssues` in
- * `apps/api/lib/desktop-agent-sessions-parse-guards.ts`.
+ * it only echoes into a log. Two producers, deliberately: `summarizeParseIssues`
+ * (`apps/api/lib/desktop-agent-sessions-parse-guards.ts`) derives the first from
+ * a PAYLOAD parse, and `requireComputeTargetId`
+ * (`apps/api/app/desktop/route-helpers.ts`) sends the second before the body is
+ * read at all.
  *
  * Deliberately a near-empty set: the server's vocabulary is a diagnostic an
  * operator reads, and every value absent from here — including one a newer API
  * invents — keeps the shape-derived classification unchanged, so a version-
  * skewed peer can never steer this lane's retry behaviour.
+ *
+ * Every member is lane-wide; {@link isLaneWideValidationDetail} is derived from
+ * this object rather than listing them again, so a member added here cannot be
+ * left out of the classification by omission.
  */
 export const ValidationFailureDetail = {
   /**
@@ -354,34 +365,76 @@ export const ValidationFailureDetail = {
    * and cleared only by a desktop or server upgrade.
    */
   SchemaVersionInvalid: "schema_version_invalid",
+  /**
+   * ISS-8734: the `computeTargetId` this lane sends was absent, blank, or not a
+   * UUID. The desktop does not mint that id — it reads it off the relay hello
+   * ack (`parseDesktopHelloAck`, which accepts any non-empty string) — so a
+   * malformed one is identical for every batch until the connection is
+   * re-established, and no row can be at fault for it.
+   */
+  ComputeTargetIdInvalid: DESKTOP_SYNC_ACK_REASON_COMPUTE_TARGET_ID_INVALID,
 } as const;
 
 export type ValidationFailureDetail =
   (typeof ValidationFailureDetail)[keyof typeof ValidationFailureDetail];
 
+const LANE_WIDE_VALIDATION_DETAILS = Object.values(ValidationFailureDetail);
+
+/**
+ * The lane-wide member the server's reason names, or `undefined` for every
+ * other value — including the omission an older API sends.
+ *
+ * Derived from {@link ValidationFailureDetail} rather than spelled as its own
+ * list: a second inventory of the same members is the one that silently falls
+ * behind, and a member missing from it would compile, miss the lane-wide arm,
+ * and be charged to rows instead. Matching by value also returns the member at
+ * its own type, so the caller reaches the exhaustive label map below without a
+ * cast.
+ */
+export function laneWideValidationDetail(
+  detail?: string
+): ValidationFailureDetail | undefined {
+  return LANE_WIDE_VALIDATION_DETAILS.find((member) => member === detail);
+}
+
+/**
+ * Why the lane is deferring, per lane-wide reason. An exhaustive `Record` on
+ * purpose: a new {@link ValidationFailureDetail} member fails `tsc` here rather
+ * than silently logging a defer whose stated cause is the wrong one.
+ */
+const LANE_WIDE_DEFER_CLAUSE: Record<ValidationFailureDetail, string> = {
+  [ValidationFailureDetail.SchemaVersionInvalid]:
+    "the server rejected the batch SCHEMA VERSION, not any session in it, so this is lane-wide and every retry budget is left intact until one side is upgraded",
+  [ValidationFailureDetail.ComputeTargetIdInvalid]:
+    "the server rejected the lane's computeTargetId, not any session in it, so this is lane-wide and every retry budget is left intact until the connection is re-established",
+};
+
 /**
  * Park the whole batch behind the standard rejection backoff WITHOUT charging
  * any session's budget.
  *
- * Routed through the shared bounded fold with `countsToward: false` — the same
- * budget-neutral defer the lane already uses for `transport_unavailable`, whose
- * precondition is likewise external and unfixable by retrying. With that flag no
- * counter is written and no id can dead-letter, so `maxConsecutive` and
- * `recoverable` are inert here and exist only to satisfy the shared config. The
- * service's own `deferWithBudgetsIntact` (used by `unauthenticated` /
- * `target_not_owned`) has identical semantics but is private to the service and
- * is not among this classifier's injected deps; the fold reaches the same state
- * through the collaborator this module already owns, and logs the outcome.
+ * Routed through the shared bounded fold with `countsToward: false`: no counter
+ * is written and no id can dead-letter, so `maxConsecutive` and `recoverable`
+ * are inert here and exist only to satisfy the shared config.
+ *
+ * ISS-8610 moved the lane's three genuinely LANE-WIDE environmental classes
+ * (`unauthenticated`, `target_not_owned`, `transport_unavailable`) off this
+ * shape and onto `deferLaneEnvironmental`, precisely because a defer with no
+ * clock and no terminal is invariant 5's defect. This one stays where it is: a
+ * batch-wide validation defer is a fact about THIS payload, not about the world,
+ * so it has no lane run to open and belongs to the collaborator this module
+ * already owns — which also logs the outcome.
  *
  * Nothing durable is recorded: `recordOutboxOnDefer` is false and no id
  * dead-letters, so this class writes no outbox `last_error` and therefore has no
- * entry in {@link isValidationFailureReason} — a skew defer must not resume as a
- * consecutive validation rejection.
+ * entry in {@link isValidationFailureReason} — a lane-wide defer must not resume
+ * as a consecutive validation rejection.
  */
-function deferLaneWideSchemaSkew(
+function deferLaneWide(
   input: ValidationFailureInput,
   deps: ValidationFailureDeps,
-  detailSuffix: string
+  detailSuffix: string,
+  laneWideDetail: ValidationFailureDetail
 ): void {
   const { syncMode, ids, payloadBytes } = input;
   deps.applyBoundedFold({
@@ -390,13 +443,13 @@ function deferLaneWideSchemaSkew(
     payloadBytes,
     counter: deps.counter,
     maxConsecutive: MAX_CONSECUTIVE_VALIDATION_FAILED,
-    reason: ValidationFailureDetail.SchemaVersionInvalid,
+    reason: laneWideDetail,
     recoverable: true,
     backoffMs: VALIDATION_FAILED_BACKOFF_MS,
     recordOutboxOnDefer: false,
     countsToward: false,
     deferLabel:
-      `rejected as validation_failed${detailSuffix} — the server rejected the batch SCHEMA VERSION, ` +
-      "not any session in it, so this is lane-wide and every retry budget is left intact until one side is upgraded",
+      `rejected as validation_failed${detailSuffix} — ` +
+      LANE_WIDE_DEFER_CLAUSE[laneWideDetail],
   });
 }

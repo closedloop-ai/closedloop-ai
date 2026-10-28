@@ -10,7 +10,7 @@ import { DesktopAppCoreProvider } from "../../shared-agent-sessions/desktop-app-
 import { SessionDetailView } from "./SessionDetailView";
 
 const STORY_SESSION_ID = "desktop-session-detail-story";
-const STORY_REPO_FULL_NAME = "closedloop-ai/example-repo";
+const STORY_REPO_FULL_NAME = "closedloop-ai/closedloop-ai";
 const STORY_BRANCH_NAME = "fea-1707";
 /** The route id the desktop main process resolves for this branch (ISS-5567). */
 const STORY_BRANCH_ID = encodeBranchId({
@@ -20,7 +20,8 @@ const STORY_BRANCH_ID = encodeBranchId({
 type SessionDetailViewStoryArgs = Parameters<typeof SessionDetailView>[0];
 
 const meta = {
-  title: "Desktop/Sessions/Session Detail",
+  title: "Surfaces v1.0/Sessions/Session Detail (Desktop Shell)",
+  tags: ["deprecated"],
   component: SessionDetailView,
   parameters: {
     layout: "fullscreen",

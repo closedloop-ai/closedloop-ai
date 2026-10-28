@@ -3,15 +3,20 @@ import { AgentSessionCloudSyncState } from "@repo/api/src/types/agent-session-cl
 import {
   TranscriptAvailability,
   type TranscriptAvailabilitySummary,
-  TranscriptSkipReason,
   TranscriptUploadStatus,
 } from "@repo/api/src/types/desktop-transcripts";
 import { TranscriptDisposition } from "@repo/api/src/types/transcript-disposition-constants";
+import {
+  isRecoverableTranscriptSkipReason,
+  TranscriptSkipReason,
+} from "@repo/api/src/types/transcript-skip-reason-constants";
 import { describe, expect, it } from "vitest";
 import {
   deriveTranscriptAvailability,
   deriveTranscriptDisposition,
-  deriveTranscriptDispositionsBySession,
+  deriveTranscriptVerdict,
+  deriveTranscriptVerdictsBySession,
+  isPermanentlyUnrecoverableTranscript,
   isTranscriptReadable,
   MAIN_FILE_KEY,
   sessionTranscriptGroupKey,
@@ -249,6 +254,66 @@ describe("deriveTranscriptDisposition", () => {
     expect(disposition).not.toBe(TranscriptDisposition.FailedPermanent);
   });
 
+  it("permanentlyUnavailable main with environment_unavailable is failedTransient — neither a dead end nor a claim it is uploading (ISS-9884)", () => {
+    // Acceptance 1: an environmental give-up must not render as permanently
+    // failed. `failedTransient` is the whole point of the third verdict — both
+    // of the pre-existing answers are false here, so both are pinned:
+    // `failedPermanent` is the lie this ticket exists to remove, and `syncing`
+    // is the one D-1 rejected, because `isSessionRowUploading` keys on it and
+    // would give a lane that has STOPPED attempting a pulsing "Syncing" pill.
+    const disposition = deriveTranscriptDisposition([
+      {
+        ...mainSummary(TranscriptAvailability.PermanentlyUnavailable),
+        permanentFailureReason: TranscriptSkipReason.EnvironmentUnavailable,
+      },
+    ]);
+    expect(disposition).toBe(TranscriptDisposition.FailedTransient);
+    expect(disposition).not.toBe(TranscriptDisposition.FailedPermanent);
+    expect(disposition).not.toBe(TranscriptDisposition.Syncing);
+  });
+
+  it("maps EVERY skip reason in the enum to a real disposition (keys-covered, not just tsc)", () => {
+    // The `Record<TranscriptSkipReason, TranscriptDisposition>` behind this is
+    // the compile-time guard, and this is its runtime half: a reason added to
+    // the enum without an entry answers `undefined` here rather than quietly
+    // inheriting a verdict. Asserts membership of the disposition set, not a
+    // per-reason verdict — those are pinned one case each above.
+    const known = new Set<string>(Object.values(TranscriptDisposition));
+    for (const reason of Object.values(TranscriptSkipReason)) {
+      const disposition = deriveTranscriptDisposition([
+        {
+          ...mainSummary(TranscriptAvailability.PermanentlyUnavailable),
+          permanentFailureReason: reason,
+        },
+      ]);
+      expect(known.has(disposition)).toBe(true);
+    }
+  });
+
+  it("agrees with isRecoverableTranscriptSkipReason for EVERY reason (the Record cannot drift from the SSOT boolean)", () => {
+    // ISS-9884 review: the verdict Record and `isRecoverableTranscriptSkipReason`
+    // are two hand-maintained statements of one recoverable-vs-hard split, and
+    // the exhaustive `Record` catches a MISSING key, never a DISAGREEING one —
+    // a reason the boolean calls hard, mapped to a non-permanent verdict (or
+    // the reverse), compiles clean. `failedPermanent` is the disposition that
+    // MEANS hard, so the two must answer the same way for every enum member.
+    for (const reason of Object.values(TranscriptSkipReason)) {
+      const disposition = deriveTranscriptDisposition([
+        {
+          ...mainSummary(TranscriptAvailability.PermanentlyUnavailable),
+          permanentFailureReason: reason,
+        },
+      ]);
+      expect({
+        reason,
+        recoverable: disposition !== TranscriptDisposition.FailedPermanent,
+      }).toEqual({
+        reason,
+        recoverable: isRecoverableTranscriptSkipReason(reason),
+      });
+    }
+  });
+
   it("permanentlyUnavailable main with an unknown/null reason defaults to failedPermanent (conservative)", () => {
     // A legacy/older-API row whose reason `normalizeSkipReason` degraded to null
     // must default to the HARD terminal — never LIE as recoverable.
@@ -295,7 +360,7 @@ describe("deriveTranscriptDisposition", () => {
 });
 
 type TranscriptRow = Parameters<
-  typeof deriveTranscriptDispositionsBySession
+  typeof deriveTranscriptVerdictsBySession
 >[0][number];
 
 function transcriptRow(overrides: Partial<TranscriptRow> = {}): TranscriptRow {
@@ -311,9 +376,9 @@ function transcriptRow(overrides: Partial<TranscriptRow> = {}): TranscriptRow {
   };
 }
 
-describe("deriveTranscriptDispositionsBySession (PRD-536 G1 Phase 3)", () => {
+describe("deriveTranscriptVerdictsBySession (PRD-536 G1 Phase 3)", () => {
   it("folds each session's rows into one verdict keyed by (computeTargetId, externalSessionId)", () => {
-    const dispositions = deriveTranscriptDispositionsBySession([
+    const verdicts = deriveTranscriptVerdictsBySession([
       // Session A: synced main.
       transcriptRow({ externalSessionId: "ext-a" }),
       // Session B: stale main (uploaded, then a newer fingerprint observed).
@@ -324,27 +389,27 @@ describe("deriveTranscriptDispositionsBySession (PRD-536 G1 Phase 3)", () => {
     ]);
 
     expect(
-      dispositions.get(
+      verdicts.get(
         sessionTranscriptGroupKey({
           computeTargetId: "ct-1",
           externalSessionId: "ext-a",
         })
-      )
+      )?.disposition
     ).toBe(TranscriptDisposition.Synced);
     expect(
-      dispositions.get(
+      verdicts.get(
         sessionTranscriptGroupKey({
           computeTargetId: "ct-1",
           externalSessionId: "ext-b",
         })
-      )
+      )?.disposition
     ).toBe(TranscriptDisposition.Stale);
   });
 
   it("synthesizes a missing main (→ syncing) when a session has only subagent rows", () => {
     // Mirrors the detail enrichment: a session always expects a main file, so a
     // subagent-only batch must fold to `syncing`, not `neverExpected`.
-    const dispositions = deriveTranscriptDispositionsBySession([
+    const verdicts = deriveTranscriptVerdictsBySession([
       transcriptRow({
         fileKey: "subagent:a",
         uploadStatus: TranscriptUploadStatus.Uploaded,
@@ -352,17 +417,17 @@ describe("deriveTranscriptDispositionsBySession (PRD-536 G1 Phase 3)", () => {
     ]);
 
     expect(
-      dispositions.get(
+      verdicts.get(
         sessionTranscriptGroupKey({
           computeTargetId: "ct-1",
           externalSessionId: "ext-1",
         })
-      )
+      )?.disposition
     ).toBe(TranscriptDisposition.Syncing);
   });
 
   it("does not let a failing subagent downgrade a synced main within the same session", () => {
-    const dispositions = deriveTranscriptDispositionsBySession([
+    const verdicts = deriveTranscriptVerdictsBySession([
       transcriptRow({ fileKey: MAIN_FILE_KEY }),
       transcriptRow({
         fileKey: "subagent:a",
@@ -371,19 +436,19 @@ describe("deriveTranscriptDispositionsBySession (PRD-536 G1 Phase 3)", () => {
       }),
     ]);
 
-    expect(dispositions.size).toBe(1);
+    expect(verdicts.size).toBe(1);
     expect(
-      dispositions.get(
+      verdicts.get(
         sessionTranscriptGroupKey({
           computeTargetId: "ct-1",
           externalSessionId: "ext-1",
         })
-      )
+      )?.disposition
     ).toBe(TranscriptDisposition.Synced);
   });
 
   it("keeps same external id on different compute targets as distinct sessions", () => {
-    const dispositions = deriveTranscriptDispositionsBySession([
+    const verdicts = deriveTranscriptVerdictsBySession([
       transcriptRow({ computeTargetId: "ct-1", externalSessionId: "ext-x" }),
       transcriptRow({
         computeTargetId: "ct-2",
@@ -392,27 +457,27 @@ describe("deriveTranscriptDispositionsBySession (PRD-536 G1 Phase 3)", () => {
       }),
     ]);
 
-    expect(dispositions.size).toBe(2);
+    expect(verdicts.size).toBe(2);
     expect(
-      dispositions.get(
+      verdicts.get(
         sessionTranscriptGroupKey({
           computeTargetId: "ct-1",
           externalSessionId: "ext-x",
         })
-      )
+      )?.disposition
     ).toBe(TranscriptDisposition.Synced);
     expect(
-      dispositions.get(
+      verdicts.get(
         sessionTranscriptGroupKey({
           computeTargetId: "ct-2",
           externalSessionId: "ext-x",
         })
-      )
+      )?.disposition
     ).toBe(TranscriptDisposition.Stale);
   });
 
   it("returns an empty map for no rows", () => {
-    expect(deriveTranscriptDispositionsBySession([]).size).toBe(0);
+    expect(deriveTranscriptVerdictsBySession([]).size).toBe(0);
   });
 });
 
@@ -461,6 +526,30 @@ describe("reconcileCloudSyncState (ISS-4621)", () => {
     );
   });
 
+  it("flips an environmentally-abandoned transcript from `synced` to `pending`, where retries_exhausted still reads `synced` (ISS-9884 §8)", () => {
+    // The downstream fold §8 calls out, driven end to end from the REASON: the
+    // verdict change makes `cloudSyncState` stop claiming the row is settled.
+    // The `retries_exhausted` half is the control — it is the label every
+    // un-upgraded desktop keeps sending, and its answer must not move.
+    function stateForReason(reason: TranscriptSkipReason) {
+      return reconcileCloudSyncState(
+        deriveTranscriptDisposition([
+          {
+            ...mainSummary(TranscriptAvailability.PermanentlyUnavailable),
+            permanentFailureReason: reason,
+          },
+        ])
+      );
+    }
+
+    expect(stateForReason(TranscriptSkipReason.EnvironmentUnavailable)).toBe(
+      AgentSessionCloudSyncState.Pending
+    );
+    expect(stateForReason(TranscriptSkipReason.RetriesExhausted)).toBe(
+      AgentSessionCloudSyncState.Synced
+    );
+  });
+
   it("degrades an unknown/legacy disposition to `synced` (version-skew safe, no crash, no false pending)", () => {
     // A newer desktop/producer could emit a disposition string this build does
     // not know. It must degrade to `synced` — never crash, and never LIE as
@@ -469,5 +558,147 @@ describe("reconcileCloudSyncState (ISS-4621)", () => {
     expect(reconcileCloudSyncState(unknownDisposition)).toBe(
       AgentSessionCloudSyncState.Synced
     );
+  });
+});
+
+describe("deriveTranscriptVerdict (ISS-9884)", () => {
+  it("carries the terminal skip reason that PRODUCED the verdict", () => {
+    expect(
+      deriveTranscriptVerdict([
+        {
+          ...mainSummary(TranscriptAvailability.PermanentlyUnavailable),
+          permanentFailureReason: TranscriptSkipReason.EnvironmentUnavailable,
+        },
+      ])
+    ).toEqual({
+      disposition: TranscriptDisposition.FailedTransient,
+      reason: TranscriptSkipReason.EnvironmentUnavailable,
+    });
+  });
+
+  it("reports NO reason for a verdict a terminal skip did not produce", () => {
+    // A row that is merely `uploadFailed` can still carry a stale
+    // `permanentFailureReason` from an earlier terminal a re-queue superseded.
+    // Publishing it would let a consumer narrate a RETRYING row with a
+    // give-up's copy — the same lie in the other direction.
+    expect(
+      deriveTranscriptVerdict([
+        {
+          ...mainSummary(TranscriptAvailability.UploadFailed),
+          permanentFailureReason: TranscriptSkipReason.EnvironmentUnavailable,
+        },
+      ])
+    ).toEqual({
+      disposition: TranscriptDisposition.FailedTransient,
+      reason: null,
+    });
+  });
+
+  it("reports no reason when there is no main summary at all", () => {
+    expect(deriveTranscriptVerdict([])).toEqual({
+      disposition: TranscriptDisposition.NeverExpected,
+      reason: null,
+    });
+  });
+
+  it("the batch fold carries the reason per session, keyed by identity", () => {
+    const verdicts = deriveTranscriptVerdictsBySession([
+      transcriptRow({
+        externalSessionId: "ext-paused",
+        uploadStatus: TranscriptUploadStatus.Skipped,
+        uploadedAt: null,
+        permanentFailureReason: TranscriptSkipReason.EnvironmentUnavailable,
+      }),
+      transcriptRow({ externalSessionId: "ext-ok" }),
+    ]);
+
+    expect(
+      verdicts.get(
+        sessionTranscriptGroupKey({
+          computeTargetId: "ct-1",
+          externalSessionId: "ext-paused",
+        })
+      )
+    ).toEqual({
+      disposition: TranscriptDisposition.FailedTransient,
+      reason: TranscriptSkipReason.EnvironmentUnavailable,
+    });
+    expect(
+      verdicts.get(
+        sessionTranscriptGroupKey({
+          computeTargetId: "ct-1",
+          externalSessionId: "ext-ok",
+        })
+      )
+    ).toEqual({
+      disposition: TranscriptDisposition.Synced,
+      reason: null,
+    });
+  });
+});
+
+describe("isPermanentlyUnrecoverableTranscript (ISS-11089)", () => {
+  const unrecoverableInput = (
+    uploadStatus: string,
+    permanentFailureReason: string | null
+  ) => ({ uploadStatus, permanentFailureReason });
+
+  it("agrees with the availability + disposition pair it stands in for, for every status and reason", () => {
+    // The predicate deliberately does NOT call `deriveTranscriptAvailability`
+    // (that one reads two date columns a narrow persisted-row select may not
+    // carry, and would throw rather than degrade), so nothing but this test
+    // holds the two together. `true` must mean, exactly, `permanentlyUnavailable`
+    // AND `failedPermanent` — never a status or reason that is still coming.
+    const reasons: (string | null)[] = [
+      ...Object.values(TranscriptSkipReason),
+      null,
+      "a_reason_this_build_does_not_know",
+    ];
+    for (const uploadStatus of Object.values(TranscriptUploadStatus)) {
+      for (const reason of reasons) {
+        const input = unrecoverableInput(uploadStatus, reason);
+        const summary = toTranscriptAvailabilitySummary({
+          ...row({ uploadStatus }),
+          fileKey: MAIN_FILE_KEY,
+          permanentFailureReason: reason,
+        });
+        const expected =
+          summary.availability ===
+            TranscriptAvailability.PermanentlyUnavailable &&
+          deriveTranscriptDisposition([summary]) ===
+            TranscriptDisposition.FailedPermanent;
+        expect({ uploadStatus, reason, unrecoverable: expected }).toEqual({
+          uploadStatus,
+          reason,
+          unrecoverable: isPermanentlyUnrecoverableTranscript(input),
+        });
+      }
+    }
+  });
+
+  it("is true for a hard skip and false for a recoverable one", () => {
+    // The positive sibling of the agreement sweep above: a sweep that derived
+    // `false` everywhere would still pass it.
+    expect(
+      isPermanentlyUnrecoverableTranscript(
+        unrecoverableInput(
+          TranscriptUploadStatus.Skipped,
+          TranscriptSkipReason.TooLarge
+        )
+      )
+    ).toBe(true);
+    expect(
+      isPermanentlyUnrecoverableTranscript(
+        unrecoverableInput(
+          TranscriptUploadStatus.Skipped,
+          TranscriptSkipReason.EnvironmentUnavailable
+        )
+      )
+    ).toBe(false);
+    expect(
+      isPermanentlyUnrecoverableTranscript(
+        unrecoverableInput(TranscriptUploadStatus.Failed, null)
+      )
+    ).toBe(false);
   });
 });

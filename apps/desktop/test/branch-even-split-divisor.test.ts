@@ -1,106 +1,20 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-import { sumLocEnrichedSpend } from "../src/main/branch/branch-analytics-projection.js";
+import { test } from "vitest";
 import {
   getSharedBranches,
   getSharedBranchesPageData,
 } from "../src/main/branch/shared-branches-api.js";
-import {
-  link,
-  makeBranchRowFixture as makeRow,
-  makeSource,
-} from "./shared-branches-test-helpers.js";
+import { link, makeSource } from "./shared-branches-test-helpers.js";
 
 /**
- * ISS-4689 — the desktop half of the WINDOW-INDEPENDENT Value-per-$ divisor.
+ * ISS-4689 — the desktop half of the WINDOW-INDEPENDENT even-split divisor the
+ * list wire publishes as `sessionBranchCount`.
  *
- * The shared kernel apportions each session's cost evenly across the branches it
- * touched. Fed the WINDOWED item set, that divisor moved with the date window: a
- * session spanning branches of different ages lost the out-of-window branch from
- * the divisor at the same time its churn left the numerator, so the ratio shifted.
  * `readGlobalBranchCountsForItems` is desktop's equivalent of the cloud
  * `getSessionBranchCounts` — and, per review, it reads the count off the
  * PRE-DISPLAY active-write link set rather than counting the projected rows,
  * because the projection drops default branches that the cost split still counts.
  */
-
-test("Value-per-$ denominator is unchanged when a shared branch drops out of the window", () => {
-  // The reviewer's worked example (PR #4120): s1 cost $100 and touched TWO
-  // enriched branches — bA (active today, 1000 churn) and bB (60d ago, 1000
-  // churn). The corpus holds both regardless of the window.
-  const branchA = makeRow({
-    id: "bA",
-    additions: 600,
-    deletions: 400,
-    sessionIds: ["s1"],
-  });
-  const branchB = makeRow({
-    id: "bB",
-    additions: 600,
-    deletions: 400,
-    sessionIds: ["s1"],
-  });
-  const usageRows = [{ sessionId: "s1", costUsdEstimated: 100 }];
-  // s1 touched both corpus branches — the count the divisor read returns.
-  const globalCounts = new Map([["s1", 2]]);
-
-  // All-time: both branches windowed in → $100 × 2/2 over 2000 churn.
-  const allTime = sumLocEnrichedSpend(
-    [branchA, branchB],
-    usageRows,
-    globalCounts
-  );
-  // 7-day window: only bA survives → $100 × 1/2 over ITS 1000 churn.
-  const windowed = sumLocEnrichedSpend([branchA], usageRows, globalCounts);
-
-  assert.equal(allTime, 100);
-  assert.equal(windowed, 50);
-  // The rendered ratio is 20 on both — the fix's whole point.
-  assert.equal(2000 / (allTime ?? 1), 20);
-  assert.equal(1000 / (windowed ?? 1), 20);
-});
-
-test("without the global divisor the same narrowing still moves the ratio (pre-fix behavior)", () => {
-  const branchA = makeRow({
-    id: "bA",
-    additions: 600,
-    deletions: 400,
-    sessionIds: ["s1"],
-  });
-  const branchB = makeRow({
-    id: "bB",
-    additions: 600,
-    deletions: 400,
-    sessionIds: ["s1"],
-  });
-  const usageRows = [{ sessionId: "s1", costUsdEstimated: 100 }];
-
-  const allTime = sumLocEnrichedSpend([branchA, branchB], usageRows);
-  const windowed = sumLocEnrichedSpend([branchA], usageRows);
-
-  assert.equal(2000 / (allTime ?? 1), 20);
-  assert.equal(1000 / (windowed ?? 1), 10);
-});
-
-test("un-enriched branches stay out of the numerator even with a global divisor", () => {
-  // s1 touched 4 corpus branches; the supplied set holds one enriched and one
-  // un-enriched, so only $100 × 1/4 of its spend has LOC to offset it.
-  const enriched = makeRow({
-    id: "bA",
-    additions: 10,
-    deletions: 10,
-    sessionIds: ["s1"],
-  });
-  const unEnriched = makeRow({ id: "bB", sessionIds: ["s1"] });
-
-  const spend = sumLocEnrichedSpend(
-    [enriched, unEnriched],
-    [{ sessionId: "s1", costUsdEstimated: 100 }],
-    new Map([["s1", 4]])
-  );
-
-  assert.equal(spend, 25);
-});
 
 test("the standalone list and the combined page-data list publish the SAME divisor map", async () => {
   // ISS-4689 (code review): the divisor is emitted from the shared

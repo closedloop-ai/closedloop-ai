@@ -6,14 +6,13 @@ import { resolveCloudSyncBacklog } from "../../../shared/cloud-read-readiness-co
 import { ConnectionSecurityMode } from "../../../shared/connection-security";
 import {
   SYNC_LANE_IDS,
+  SyncLaneDeadLetteredBasis,
   SyncLaneDrainState,
   SyncLaneId,
 } from "../../../shared/sync-burndown-contract";
-import type {
-  CloudStatus,
-  CloudSyncProgress,
-} from "../../hooks/use-ingest-progress";
-import { CloudStatusKind } from "../../hooks/use-ingest-progress";
+import type { CloudStatus } from "../../hooks/use-cloud-status";
+import { CloudStatusKind } from "../../hooks/use-cloud-status";
+import type { CloudSyncProgress } from "../../hooks/use-cloud-sync-progress";
 import { ConnectionStatusSection } from "./connection-status-section";
 
 /**
@@ -40,7 +39,8 @@ import { ConnectionStatusSection } from "./connection-status-section";
  * checkable.
  */
 const meta = {
-  title: "Desktop/Settings/Connection Status Section",
+  title: "Composites v1.0/Desktop Shell/Connection Status Section",
+  tags: ["deprecated"],
   component: ConnectionStatusSection,
   parameters: {
     layout: "padded",
@@ -166,6 +166,7 @@ export const UnreportedPortAndSecurity = {
  *     down to the happy one.
  */
 export const HistorySyncStates = {
+  tags: ["!manifest"],
   render: () => (
     <div className="flex flex-col gap-6">
       <ConnectionStatusSection
@@ -216,9 +217,11 @@ function backlogWith(
     lanes: SYNC_LANE_IDS.map((lane) => ({
       lane,
       state: SyncLaneDrainState.Drained,
+      resumeBlocked: false,
       itemsRemaining: 0,
       itemsRemainingIsLowerBound: false,
       deadLetteredCount: 0,
+      deadLetteredBasis: SyncLaneDeadLetteredBasis.QueueStatusCount,
       unmeasuredRows: 0,
       ...(lane === overrides.lane ? overrides : {}),
     })),

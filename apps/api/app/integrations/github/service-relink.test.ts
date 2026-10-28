@@ -44,7 +44,6 @@ vi.mock("@repo/github", async (importOriginal) => {
   return {
     deleteInstallation: vi.fn(),
     getRepositoryBranches: vi.fn(),
-    getRepositoryContributors: vi.fn(),
     getRepositoryPullRequestsWithMetadata: vi.fn(),
     GitHubProviderResultStatus: actual.GitHubProviderResultStatus,
   };
@@ -71,10 +70,6 @@ vi.mock("@repo/observability/telemetry/metrics", () => ({
 
 vi.mock("@repo/observability/error", () => ({
   parseError: vi.fn((err: unknown) => String(err)),
-}));
-
-vi.mock("@/lib/integration-encryption", () => ({
-  encryptTokenPair: vi.fn(),
 }));
 
 vi.mock("@/app/integrations/github/public-repositories/service", () => ({
@@ -125,6 +120,40 @@ describe("githubService.relinkBranchViewRepositoryCredential", () => {
       reasons: [RepositoryArtifactRelinkReason.NoActiveRepositories],
     });
     expect(getMockWithDb().tx).not.toHaveBeenCalled();
+  });
+
+  // ISS-6666: the completed metric carries only `reasonCount`, so a telemetry
+  // assertion cannot tell NoActiveInstallation from any other single reason.
+  // This entry point returns `reasons` intact, which is where the reason is
+  // observable — a swap to a neighbouring reason fails here and nowhere else.
+  it("distinguishes an unreachable installation from an unavailable repository row", async () => {
+    mockWithDbCall({
+      gitHubInstallationRepository: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: "active-repo-1",
+          githubRepoId: "r-1",
+          fullName: "org/repo",
+          installationId: INSTALLATION_ID,
+        }),
+      },
+    });
+    mockWithDbTx({
+      // The installation is not ACTIVE in this org, so the ACTIVE-scoped
+      // lookup resolves to nothing.
+      gitHubInstallation: { findFirst: vi.fn().mockResolvedValue(null) },
+      gitHubInstallationRepository: { findMany: vi.fn() },
+    });
+
+    const result = await githubService.relinkBranchViewRepositoryCredential({
+      organizationId: ORG_ID,
+      activeRepositoryId: "active-repo-1",
+    });
+
+    expect(result).toMatchObject({
+      status: RepositoryArtifactRelinkStatus.Skipped,
+      reasons: [RepositoryArtifactRelinkReason.NoActiveInstallation],
+      activeRepositoryCount: 1,
+    });
   });
 
   it("returns completed counts for eligible stale branch and PR rows", async () => {

@@ -45,6 +45,7 @@
  * without a database. Sibling-lib pattern, see migration-lock.ts.
  */
 
+import { z } from "zod";
 import {
   createSqlClient,
   readMigrationSql as defaultReadMigrationSql,
@@ -62,7 +63,7 @@ import {
  * Prisma's canonical `_prisma_migrations` table (postgres), `IF NOT EXISTS` so
  * it composes with Prisma's own identical create at the start of migrate deploy.
  */
-function ensureMigrationsTableSql(qualifiedTable: string): string {
+export function ensureMigrationsTableSql(qualifiedTable: string): string {
   return `CREATE TABLE IF NOT EXISTS ${qualifiedTable} (
     "id" VARCHAR(36) NOT NULL,
     "checksum" VARCHAR(64) NOT NULL,
@@ -102,7 +103,7 @@ function ensureMigrationsTableSql(qualifiedTable: string): string {
  * `__tests__/integration/preview-prestamp.integration.test.ts` — a mocked client
  * asserts this statement's TEXT and can never assert its VALIDITY.
  */
-function stampAppliedRowSql(qualifiedTable: string): string {
+export function stampAppliedRowSql(qualifiedTable: string): string {
   return `INSERT INTO ${qualifiedTable}
       ("id", "checksum", "migration_name", "started_at", "finished_at", "applied_steps_count")
     SELECT gen_random_uuid()::text, $2::varchar, $1::varchar, now(), now(), 1
@@ -232,6 +233,20 @@ export async function prestampSkippableMigrationsViaSql(
   try {
     client = createClient(databaseUrl);
     await client.connect();
+    // ISS-6466: never stamp a schema Prisma would have refused to deploy into —
+    // see `hasTablesButNoMigrationHistory`. Declining here is the whole fix.
+    // A fresh schema is empty by construction (created or just reset in THIS
+    // run), so it is not probed at all: those paths keep today's exact statement
+    // sequence and gain no new failure surface.
+    if (
+      deps.freshSchema !== true &&
+      (await hasTablesButNoMigrationHistory(client, schema))
+    ) {
+      logger.warn(
+        `⚠️ ${schema} holds tables but no migration history — declining to pre-stamp so migrate deploy raises P3005 and its reset + re-clone recovery runs (ISS-6466)`
+      );
+      return;
+    }
     await client.query(ensureMigrationsTableSql(qualifiedTable));
     for (const migrationName of migrations) {
       const checksum = checksumForStamp(migrationName, {
@@ -273,4 +288,76 @@ export async function prestampSkippableMigrationsViaSql(
   } finally {
     await endQuietly(client);
   }
+}
+
+/**
+ * P3005's exact precondition — the one preview state this pre-stamp must leave
+ * alone.
+ *
+ * ISS-6466: `ensureMigrationsTableSql` runs BEFORE `migrate deploy`, and P3005
+ * ("database schema is not empty") fires only when the target schema holds a
+ * table and has NO migration history. Creating that history table first DELETES
+ * the precondition — Prisma sees an apparently-migrated schema, deploys cleanly,
+ * and the pipeline's `(isNew || didReset)` clone gate, both halves false, skips
+ * `cloneDataFromPublic`. The preview then serves a stale, un-cloned schema while
+ * every step reports success. Declining to stamp hands the state back to Prisma
+ * and re-arms the P3005 → reset → re-stamp(fresh) → re-clone recovery that
+ * `migrate-deploy-recovery.ts` already implements.
+ *
+ * Deferring the stamp until after `migrate deploy` — the other option ISS-6466
+ * floats — is not available: deploy skipping those CONCURRENTLY builds is the
+ * entire point of stamping, so a row written afterwards arrives once the P1002
+ * amplifier has already run.
+ *
+ * ORDINARY TABLES (`relkind = 'r'`), which is what Prisma counts. Measured
+ * against Prisma 7.8.0 on a real server, one schema per object kind: a sequence,
+ * an enum type, a view, a function, a materialized view, or a PARTITIONED parent
+ * each deploy straight through, while an ordinary `scratch` table raises P3005.
+ *
+ * `pg_tables` is the wrong source for that despite being the obvious one: it is
+ * `relkind IN ('r','p')`, so it counts a partitioned parent Prisma ignores. That
+ * is the dangerous direction — declining on a schema Prisma is happy with lets
+ * `migrate deploy` run the plain-build CONCURRENTLY statements UNSTAMPED, which
+ * is the P1002 amplifier this module exists to suppress, and it bypasses the
+ * fail-CLOSED refusal below without an error. Erring the other way merely leaves
+ * ISS-6466's own behavior in place for a schema shape that cannot occur here, so
+ * this counts `relkind = 'r'` and nothing else.
+ *
+ * Nothing legitimate reaches this state: a schema created in this run is empty,
+ * and one the recovery just reset is empty too — which is why `freshSchema`
+ * skips the probe entirely rather than paying a round trip to be told so.
+ */
+export const TABLES_WITHOUT_MIGRATION_HISTORY_SQL = `SELECT
+    count(*) FILTER (WHERE c.relname <> '_prisma_migrations') > 0
+      AND count(*) FILTER (WHERE c.relname = '_prisma_migrations') = 0
+      AS "unbaselined"
+  FROM pg_catalog.pg_class c
+  JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+  WHERE n.nspname = $1 AND c.relkind = 'r'`;
+
+const UnbaselinedProbeRowSchema = z.object({ unbaselined: z.boolean() });
+
+async function hasTablesButNoMigrationHistory(
+  client: SqlClient,
+  schema: string
+): Promise<boolean> {
+  const result = await client.query(TABLES_WITHOUT_MIGRATION_HISTORY_SQL, [
+    schema,
+  ]);
+  const rows = (result as { rows?: unknown } | null)?.rows;
+  // An aggregate returns exactly one row, so any other shape is a corrupt answer
+  // to "is it safe to stamp". Throwing routes it into this module's existing
+  // per-category fault model instead of guessing one. Named rather than left as
+  // a raw ZodError: the catch above interpolates this into the operator-facing
+  // refusal, and a bare `[{"code":"invalid_type",...}]` names neither the schema
+  // nor the probe. Same reasoning as `ownership-preflight.ts`, same catalog read.
+  const parsed = UnbaselinedProbeRowSchema.safeParse(
+    Array.isArray(rows) ? rows[0] : rows
+  );
+  if (!parsed.success) {
+    throw new Error(
+      `Migration-history probe for ${schema} returned an unusable row; cannot tell whether pre-stamping would mask a P3005 reset (ISS-6466)`
+    );
+  }
+  return parsed.data.unbaselined;
 }

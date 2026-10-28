@@ -8,7 +8,7 @@
  * unchanged — these are the same tests, relocated.
  */
 import assert from "node:assert/strict";
-import { afterEach, describe, test } from "node:test";
+import { afterEach, describe, test } from "vitest";
 import { parseSessionFile as parseClaudeFile } from "../src/main/collectors/claude/claude-parser.js";
 import {
   cleanupTempDirs,

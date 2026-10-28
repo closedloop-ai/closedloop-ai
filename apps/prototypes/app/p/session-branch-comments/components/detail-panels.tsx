@@ -393,7 +393,7 @@ export function BranchDeliveredPanel({ detail }: { detail: BranchDetail }) {
               className={cn(
                 "mt-2 whitespace-pre-wrap break-words text-foreground text-sm leading-relaxed",
                 !open &&
-                  "max-h-[5.75rem] overflow-hidden [mask-image:linear-gradient(to_bottom,#000_55%,transparent)]"
+                  "max-h-[5.75rem] overflow-hidden [mask-image:linear-gradient(to_bottom,var(--color-black)_55%,transparent)]"
               )}
             >
               {detail.prBody}

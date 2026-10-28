@@ -4,6 +4,7 @@ import {
   INSIGHTS_SECTION_OPTIONS,
   type InsightsSection,
 } from "@repo/api/src/types/insights";
+import { INSIGHTS_LOC_TERMINOLOGY_FLAG_KEY } from "@repo/api/src/types/insights-loc-terminology-flag";
 import { INSIGHTS_SPEND_OUTCOME_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -24,6 +25,7 @@ import {
 } from "@repo/design-system/components/ui/select";
 import { Switch } from "@repo/design-system/components/ui/switch";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import type { GitHubConnectTarget } from "../../github/lib/github-connect-target";
 import { useFeatureFlagEnabledOptional } from "../../shared/feature-flags/use-feature-flag-enabled";
 import type { DashboardTileSettings } from "../hooks/use-dashboard-pins";
 import { SECTION_META } from "../lib/section-meta";
@@ -32,9 +34,11 @@ import {
   getSectionTiles,
   getTile,
   isTileEnabled,
+  resolveTileVocabulary,
   type TileDescriptor,
   TileKind,
   type TileKind as TileKindType,
+  TOTAL_ESTIMATED_COST_METRIC_LABEL_OVERRIDES,
 } from "../lib/tile-catalog";
 import { InsightsTile } from "./insights-tile";
 import type { InsightsSectionData } from "./tile-content";
@@ -55,6 +59,34 @@ type MetricOption = {
   section: InsightsSection;
 };
 
+/**
+ * The tile the settings dialog is editing, in the vocabulary the grid behind it
+ * is rendering (ISS-8184).
+ *
+ * Prefers the already-resolved list, and falls back to the catalog for a tile
+ * whose SECTION this shell cannot populate — that fallback is the behaviour
+ * `metric-picker.test.tsx` pins, so the dialog still opens on a tile pinned from
+ * a surface with more sections. Module-level rather than inline because
+ * `MetricPicker` sits one point under the cognitive-complexity ceiling.
+ */
+function resolveEditingTile(
+  editingTileId: string | null | undefined,
+  tiles: readonly TileDescriptor[],
+  isFlagEnabled: (key: string) => boolean
+): TileDescriptor | undefined {
+  if (!editingTileId) {
+    return undefined;
+  }
+  const resolved = tiles.find((tile) => tile.id === editingTileId);
+  if (resolved) {
+    return resolved;
+  }
+  const fromCatalog = getTile(editingTileId);
+  return fromCatalog
+    ? resolveTileVocabulary(fromCatalog, isFlagEnabled)
+    : undefined;
+}
+
 const NO_GROUP_BY = "__none__";
 
 export function MetricPicker({
@@ -72,8 +104,7 @@ export function MetricPicker({
   comparisonSections,
   comparisonLabel,
   getTileAvailability,
-  githubConnectHref,
-  onConnectGitHub,
+  githubConnect,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -93,8 +124,7 @@ export function MetricPicker({
   comparisonSections?: InsightsSectionData;
   comparisonLabel?: string;
   getTileAvailability?: (tile: TileDescriptor) => InsightsTileAvailability;
-  githubConnectHref?: string;
-  onConnectGitHub?: () => void | Promise<void>;
+  githubConnect?: GitHubConnectTarget;
 }) {
   // ISS-4463: a flag-gated tile is not offered in the add list when its flag is
   // off, so the picker can never advertise a metric the grid would refuse to
@@ -102,12 +132,15 @@ export function MetricPicker({
   const spendOutcomeEnabled = useFeatureFlagEnabledOptional(
     INSIGHTS_SPEND_OUTCOME_FEATURE_FLAG_KEY
   );
+  const locTerminologyEnabled = useFeatureFlagEnabledOptional(
+    INSIGHTS_LOC_TERMINOLOGY_FLAG_KEY
+  );
   const isFlagEnabled = useCallback(
     (key: string) =>
-      key === INSIGHTS_SPEND_OUTCOME_FEATURE_FLAG_KEY
-        ? spendOutcomeEnabled
-        : false,
-    [spendOutcomeEnabled]
+      (key === INSIGHTS_SPEND_OUTCOME_FEATURE_FLAG_KEY &&
+        spendOutcomeEnabled) ||
+      (key === INSIGHTS_LOC_TERMINOLOGY_FLAG_KEY && locTerminologyEnabled),
+    [spendOutcomeEnabled, locTerminologyEnabled]
   );
   const tiles = useMemo(
     () =>
@@ -115,11 +148,16 @@ export function MetricPicker({
         availableSections.includes(section)
       )
         .flatMap((section) => getSectionTiles(section))
-        .filter((tile) => isTileEnabled(tile, isFlagEnabled)),
+        .filter((tile) => isTileEnabled(tile, isFlagEnabled))
+        .map((tile) => resolveTileVocabulary(tile, isFlagEnabled)),
     [availableSections, isFlagEnabled]
   );
-  const editingTile = editingTileId ? getTile(editingTileId) : undefined;
-  const metricOptions = useMemo(() => buildMetricOptions(tiles), [tiles]);
+  const editingTile = resolveEditingTile(editingTileId, tiles, isFlagEnabled);
+  const metricOptions = useMemo(
+    () =>
+      buildMetricOptions(tiles, TOTAL_ESTIMATED_COST_METRIC_LABEL_OVERRIDES),
+    [tiles]
+  );
 
   const [selectedMetricKey, setSelectedMetricKey] = useState(
     () => metricOptions[0]?.key ?? ""
@@ -367,8 +405,7 @@ export function MetricPicker({
                     comparisonSections={
                       selectedComparisonOverlay ? comparisonSections : undefined
                     }
-                    githubConnectHref={githubConnectHref}
-                    onConnectGitHub={onConnectGitHub}
+                    githubConnect={githubConnect}
                     pinned={isPinned(selectedTile.id)}
                     sections={sections}
                     tile={selectedTile}
@@ -411,13 +448,16 @@ export function MetricPicker({
   );
 }
 
-function buildMetricOptions(tiles: TileDescriptor[]): MetricOption[] {
+function buildMetricOptions(
+  tiles: TileDescriptor[],
+  labelOverrides: Readonly<Record<string, string>>
+): MetricOption[] {
   const options = new Map<string, MetricOption>();
   for (const tile of tiles) {
     if (!options.has(tile.metricKey)) {
       options.set(tile.metricKey, {
         key: tile.metricKey,
-        label: tile.metricLabel,
+        label: labelOverrides[tile.metricKey] ?? tile.metricLabel,
         section: tile.section,
       });
     }

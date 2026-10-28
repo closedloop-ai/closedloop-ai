@@ -32,9 +32,9 @@ function eventGroup(
 }
 
 const meta = {
-  title: "App Core/Agents/Trace Event Row",
+  title: "Composites v1.0/Agents/Detail/Trace Event Row",
   component: TraceEventRow,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   args: { group: eventGroup() },
 } satisfies Meta<typeof TraceEventRow>;

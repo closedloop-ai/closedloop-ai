@@ -3,7 +3,11 @@ import { log } from "@repo/observability/log";
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
 import { env } from "@/env";
-import { scheduleLogFlush } from "@/lib/route-utils";
+import { withRequestCompleted } from "@/lib/observability/with-request-completed";
+import {
+  readVerifiableWebhookBody,
+  SLACK_WEBHOOK_MAX_BYTES,
+} from "../webhook-body";
 import {
   handleCreateIdea,
   handleGetStatus,
@@ -11,12 +15,13 @@ import {
 } from "./handlers";
 import { slackVerifyWebhookSignature, WHITESPACE_REGEX } from "./webhook-utils";
 
-export async function POST(request: Request): Promise<Response> {
+export const POST = withRequestCompleted(handleSlackWebhook);
+
+async function handleSlackWebhook(request: Request): Promise<Response> {
   const signingSecret = env.SLACK_SIGNING_SECRET;
 
   if (!signingSecret) {
     log.warn("[webhook/slack] SLACK_SIGNING_SECRET not set, rejecting request");
-    scheduleLogFlush();
     return NextResponse.json(
       { message: "Slack integration not configured", ok: false },
       { status: 401 }
@@ -24,8 +29,15 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   try {
-    // Read raw body for signature verification
-    const body = await request.text();
+    // Read raw body for signature verification, bounded — the read precedes
+    // the HMAC check, so the caller is still anonymous here (ISS-7665).
+    const { body, response: oversized } = await readVerifiableWebhookBody(
+      request,
+      SLACK_WEBHOOK_MAX_BYTES
+    );
+    if (oversized) {
+      return oversized;
+    }
     const headerPayload = await headers();
     const timestamp = headerPayload.get("x-slack-request-timestamp") ?? "";
     const signature = headerPayload.get("x-slack-signature") ?? "";
@@ -40,7 +52,6 @@ export async function POST(request: Request): Promise<Response> {
 
     if (!isValid) {
       log.warn("[webhook/slack] Invalid signature, rejecting request");
-      scheduleLogFlush();
       return NextResponse.json(
         { message: "Invalid signature", ok: false },
         { status: 401 }
@@ -55,7 +66,6 @@ export async function POST(request: Request): Promise<Response> {
       };
       if (jsonBody.type === "url_verification") {
         logSlackTerminalEvent({ outcome: "url_verification" });
-        scheduleLogFlush();
         return NextResponse.json({ challenge: jsonBody.challenge });
       }
     } catch {
@@ -95,7 +105,6 @@ export async function POST(request: Request): Promise<Response> {
           subcommand,
           teamId,
         });
-        scheduleLogFlush();
         return NextResponse.json(response);
       }
 
@@ -112,7 +121,6 @@ export async function POST(request: Request): Promise<Response> {
           subcommand,
           teamId,
         });
-        scheduleLogFlush();
         return NextResponse.json(response);
       }
 
@@ -125,7 +133,6 @@ export async function POST(request: Request): Promise<Response> {
         subcommandKnown: false,
         teamId,
       });
-      scheduleLogFlush();
       return NextResponse.json({
         response_type: "ephemeral",
         text: "Unknown subcommand. Available commands: `create-idea`, `status`",
@@ -133,14 +140,12 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     logSlackTerminalEvent({ command, outcome: "unsupported_command", teamId });
-    scheduleLogFlush();
     return NextResponse.json({ message: "Command not handled", ok: true });
   } catch (error) {
     const message = parseError(error);
     log.error("[webhook/slack] Unhandled error processing webhook", {
       error: message,
     });
-    scheduleLogFlush();
     return NextResponse.json(
       { message: "Something went wrong", ok: false },
       { status: 500 }

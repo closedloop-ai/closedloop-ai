@@ -16,10 +16,11 @@
  *     (apps/desktop/src/main/session/shared-agent-sessions-api.ts) turns that
  *     omission into `[]`. There is no `activity_buckets` column — the buckets
  *     exist only if that read produces them.
- *   - the GATE. Web resolves the flag through PostHog; the packaged renderer has
- *     no PostHog wiring and resolves the byte-for-byte-equal key from the desktop
- *     Labs registry instead. A disclosure that worked on web could be silently
- *     unreachable here.
+ *   - the GATE. Web resolves the flag through PostHog in the page; this renderer
+ *     resolves the byte-for-byte-equal key from the signed-in account's PostHog
+ *     assignment, delivered over the IPC bridge (`DesktopFeatureFlagProvider`),
+ *     and fails closed in every build. A disclosure that worked on web could be
+ *     silently unreachable here.
  *
  * HOW THE SEEDED SESSION REACHES THE SYNTHESIZED BRANCH: `ended_at` is stamped
  * BEFORE `started_at`. `resolveTraceEndMs` takes a parseable `ended_at`
@@ -37,6 +38,11 @@
  * The bug was visual, so this asserts the corrected RENDERED state, and asserts
  * it against the SAME corpus with the gate off — otherwise "no dollar labels"
  * would be satisfied by a strip that never drew any.
+ *
+ * ISS-5632 adds a THIRD case on a narrower corpus (`estimatedCost` 0, so the
+ * whole strip is the placeholder floor), because the gate-off arm above proves
+ * the strip still prints money — and it was the hover card over exactly that
+ * floor-priced strip, gate off, that kept publishing what the rail withheld.
  *
  * Prerequisites:
  *   - Build first: `pnpm -C apps/desktop prebuild && pnpm -C apps/desktop build`
@@ -58,7 +64,7 @@ import {
 } from "./helpers/seed-branches-db";
 
 /**
- * The desktop Labs key gating the disclosure. Spelled as a LITERAL rather than
+ * The PostHog key gating the disclosure. Spelled as a LITERAL rather than
  * imported from `../../src/shared/feature-flags`: that module's extension-less
  * `@repo/api/src/types/...` specifiers do not resolve under Playwright's ESM
  * loader, and a spec-level import failure aborts the WHOLE desktop-e2e suite at
@@ -122,6 +128,25 @@ const BAR_LABEL_SELECTOR = ".sd3-bars2-lbls .sd3-bar2-lbl";
  * twin's jsdom regression made exactly this move (`firstStackedBar`).
  */
 const BAR_STACK_SELECTOR = ".sd3-bars2 .sd3-bar2 i";
+/**
+ * ISS-10598: the strip's colour key, and the two selectors that read it.
+ *
+ * Spelled as LITERALS rather than imported from `@repo/app`, for the reason
+ * the flag key above carries: that module's extension-less
+ * `@repo/api/src/types/...` specifiers do not resolve under Playwright's ESM
+ * loader, and a spec-level import failure aborts the whole desktop-e2e suite
+ * at load. Both are pinned against the constants the component renders from by
+ * the desktop-literal case in
+ * `packages/app/agents/components/detail/__tests__/session-timeline-legend.test.tsx`.
+ *
+ * THIS SPEC, not the ISS-5593 surface twin, because the bar key names what
+ * `renderBarStack` PAINTED: the two arms below already establish a painted
+ * stack and the absence of one on the SAME corpus, which is exactly the pair
+ * the key has to follow. The surface twin's seed establishes neither.
+ */
+const LEGEND_FLAG_KEY = "session-timeline-legend";
+const LEGEND_GROUP_SELECTOR = ".sd3-actbar dl";
+const LEGEND_BARS_LABEL = "Bars";
 /** The hatch that replaces that stack on a synthesized strip. */
 const SYNTHESIZED_BAR_SELECTOR = ".sd3-bars2 .sd3-bar2.synthesized";
 const SESSION_TITLE_SELECTOR = ".sd3-head h1";
@@ -150,6 +175,16 @@ test.describe("Session Timeline synthesized cost (ISS-5566 desktop adapter)", ()
         ).toHaveCount(0);
         await expect(page.locator(BAR_STACK_SELECTOR)).toHaveCount(0);
 
+        // ISS-10598: with no painted segment there is no colour for a bar key
+        // to name, so it is withdrawn too. Its gate is OPEN here (see
+        // `seedGate`), which is what makes this a withdrawal rather than an
+        // unseeded flag — the arm below opens the same gate and gets the key.
+        await expect(
+          page.locator(LEGEND_GROUP_SELECTOR).filter({
+            has: page.getByText(LEGEND_BARS_LABEL, { exact: true }),
+          })
+        ).toHaveCount(0);
+
         // `exact: true` deliberately: `getByText` matches by SUBSTRING by
         // default, which a truncated or differently-qualified caption would
         // also satisfy.
@@ -174,6 +209,16 @@ test.describe("Session Timeline synthesized cost (ISS-5566 desktop adapter)", ()
           page.locator(BAR_LABEL_SELECTOR).filter({ hasText: "$" }).first()
         ).toBeVisible({ timeout: MOUNT_TIMEOUT_MS });
         await expect(page.locator(BAR_STACK_SELECTOR).first()).toBeVisible();
+
+        // ISS-10598: the same corpus paints a stack here, so the key names it.
+        // Anchored to the assertion directly above rather than to a seed's
+        // presumed shape: a bar key can only exist where a segment was painted.
+        const barsKey = page.locator(LEGEND_GROUP_SELECTOR).filter({
+          has: page.getByText(LEGEND_BARS_LABEL, { exact: true }),
+        });
+        await expect(barsKey).toHaveCount(1, { timeout: MOUNT_TIMEOUT_MS });
+        // Named in words beside each swatch, never by hue alone (WCAG 1.4.1).
+        expect(await barsKey.locator("dd").count()).toBeGreaterThan(0);
         await expect(page.locator(SYNTHESIZED_BAR_SELECTOR)).toHaveCount(0);
         await expect(
           page.getByText(SYNTHESIZED_COST_LEGEND, { exact: true })
@@ -187,15 +232,19 @@ test.describe("Session Timeline synthesized cost (ISS-5566 desktop adapter)", ()
  * Launch the built app twice against ONE temp profile — once to create and
  * migrate the SQLite schema (closed before seeding, so the write has no
  * cross-process WAL contention), then again so the real local session-detail
- * read projects the seeded corpus at boot. The Labs flag is seeded on BOTH
- * launches because `seedE2eDesktopSettings` rewrites the settings file each
+ * read projects the seeded corpus at boot. The flag is seeded on BOTH
+ * launches because `seedE2eDesktopSettings` rewrites the assignment file each
  * time.
  *
  * CLAUDE_HOME / CODEX_HOME are empty temp dirs so the boot collectors ingest
  * nothing and the only session is the seeded one.
  */
 async function withSeededSession(
-  { flagOn, prefix }: { flagOn: boolean; prefix: string },
+  {
+    estimatedCost = 4.82,
+    flagOn,
+    prefix,
+  }: { estimatedCost?: number; flagOn: boolean; prefix: string },
   run: (page: Page) => Promise<void>
 ): Promise<void> {
   const claudeHome = fs.mkdtempSync(
@@ -204,9 +253,12 @@ async function withSeededSession(
   const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-codex-`));
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-udd-`));
   const seedGate = (dir: string) => {
-    if (flagOn) {
-      seedDesktopFeatureFlags(dir, { [SYNTHESIZED_COST_FLAG_KEY]: true });
-    }
+    // ISS-10598's key is seeded on BOTH arms: its own two assertions are the
+    // pair, so it must be open whether or not the synthesized-cost gate is.
+    seedDesktopFeatureFlags(dir, {
+      [LEGEND_FLAG_KEY]: true,
+      ...(flagOn ? { [SYNTHESIZED_COST_FLAG_KEY]: true } : {}),
+    });
   };
   const env = { CLAUDE_HOME: claudeHome, CODEX_HOME: codexHome };
 
@@ -228,7 +280,7 @@ async function withSeededSession(
         activityEventAt: new Date(ACTIVITY_EVENT_AT_MS).toISOString(),
         at: new Date(STARTED_AT_MS).toISOString(),
         endedAt: new Date(ENDED_AT_MS).toISOString(),
-        estimatedCost: 4.82,
+        estimatedCost,
         lastActivityAt: new Date(NOW_MS).toISOString(),
         name: SESSION_NAME,
         sessionId: SESSION_ID,

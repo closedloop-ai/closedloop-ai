@@ -24,7 +24,8 @@
  * ever pick up again.
  */
 import assert from "node:assert/strict";
-import test from "node:test";
+import { TranscriptSkipReason } from "@repo/api/src/types/transcript-skip-reason-constants";
+import { test } from "vitest";
 import {
   createTranscriptSyncStore,
   type TranscriptSyncStore,
@@ -110,8 +111,11 @@ const failureInput = {
   retryCount: 1,
   missingSourceCount: 0,
   dead: false,
+  terminalSkipReason: null,
+  terminalSkipComputeTargetId: null,
   nextAttemptAt: T1,
   lastError: "boom",
+  laneStalledSince: null,
   now: T1,
 };
 
@@ -125,13 +129,23 @@ const SETTLES: ReadonlyArray<{
   {
     name: "markUploading",
     line: 752,
-    run: (s) => s.markUploading(SESSION, FILE_KEY, T1),
+    run: async (s) => {
+      await s.markUploading(SESSION, FILE_KEY, T1, "ct-1");
+    },
     expectStatus: TranscriptSyncStatus.Uploading,
   },
   {
     name: "markDead",
     line: 765,
-    run: (s) => s.markDead(SESSION, FILE_KEY, "gave up", T1),
+    run: (s) =>
+      s.markDead({
+        externalSessionId: SESSION,
+        fileKey: FILE_KEY,
+        reason: "gave up",
+        terminalSkipReason: TranscriptSkipReason.TooLarge,
+        terminalSkipComputeTargetId: null,
+        now: T1,
+      }),
     expectStatus: TranscriptSyncStatus.Dead,
   },
   {

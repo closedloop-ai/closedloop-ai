@@ -7,9 +7,9 @@ const OrchestrationDagCanvas = () => (
 );
 
 const meta = {
-  title: "App Core/Agents/Agent Orchestration Graph",
+  title: "Composites v1.0/Agents/General/Orchestration Dag",
   component: OrchestrationDagCanvas,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: {
     layout: "fullscreen",
   },

@@ -1,7 +1,7 @@
 "use client";
 
 import type { SortDirection } from "@repo/design-system/components/ui/sortable-column-header";
-import { TablePagination } from "@repo/design-system/components/ui/table-pagination";
+import { TablePagination } from "@repo/design-system/components/ui/table-pagination-v2";
 import { useMemo, useState } from "react";
 import {
   type BranchRow,

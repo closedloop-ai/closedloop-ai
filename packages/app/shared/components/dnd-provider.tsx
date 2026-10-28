@@ -1,10 +1,15 @@
 "use client";
 
 import {
+  type Announcements,
   type CollisionDetection,
   closestCenter,
   DndContext,
+  type DragCancelEvent,
   type DragEndEvent,
+  type DragMoveEvent,
+  type DragOverEvent,
+  type DragStartEvent,
   KeyboardSensor,
   PointerSensor,
   pointerWithin,
@@ -28,13 +33,23 @@ const collisionDetection: CollisionDetection = (args) => {
 };
 
 type DndProviderProps = {
+  announcements?: Announcements;
   children: ReactNode;
+  onDragCancel?: (event: DragCancelEvent) => void;
   onDragEnd?: (event: DragEndEvent) => void;
+  onDragMove?: (event: DragMoveEvent) => void;
+  onDragOver?: (event: DragOverEvent) => void;
+  onDragStart?: (event: DragStartEvent) => void;
 };
 
 export function DndProvider({
+  announcements,
   children,
+  onDragCancel,
   onDragEnd,
+  onDragMove,
+  onDragOver,
+  onDragStart,
 }: Readonly<DndProviderProps>) {
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -47,8 +62,13 @@ export function DndProvider({
 
   return (
     <DndContext
+      accessibility={announcements ? { announcements } : undefined}
       collisionDetection={collisionDetection}
+      onDragCancel={onDragCancel}
       onDragEnd={onDragEnd}
+      onDragMove={onDragMove}
+      onDragOver={onDragOver}
+      onDragStart={onDragStart}
       sensors={sensors}
     >
       {children}

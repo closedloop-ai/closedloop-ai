@@ -9,8 +9,7 @@
  * the tree would notice.
  */
 import assert from "node:assert/strict";
-import { afterEach, describe, test } from "node:test";
-import { vi } from "vitest";
+import { afterEach, describe, test, vi } from "vitest";
 import {
   nodeTestTimers,
   nodeTestTimersToFake,

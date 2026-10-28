@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import { useIsomorphicLayoutEffect } from "@repo/design-system/hooks/use-isomorphic-layout-effect";
+import { useCallback, useRef } from "react";
 
 /**
  * The CSS custom property a summary strip publishes its measured label height
@@ -18,8 +19,7 @@ const LABEL_REGION_SELECTOR = '[data-slot="card-description"]';
 // runs a layout effect on the server, so fall back to `useEffect` there — the
 // measurement is a no-op without a DOM anyway, and this avoids React's
 // "useLayoutEffect does nothing on the server" warning during SSR.
-const useMeasureEffect =
-  globalThis.window === undefined ? useEffect : useLayoutEffect;
+const useMeasureEffect = useIsomorphicLayoutEffect;
 
 /**
  * Derive a summary strip's reserved label height from the TALLEST LABEL ACTUALLY

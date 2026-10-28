@@ -7,7 +7,7 @@
  * initial hydration / full-walk.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   type BackfillQueueFeedContext,
   feedIdsIntoBackfillQueue,

@@ -70,13 +70,14 @@ describe("getPullRequestLifecycle", () => {
       name: "unknown fallback state",
       pullRequest: null,
     },
-  ] as const)("derives $name as $expected", ({
-    expected,
-    fallbackState = null,
-    pullRequest,
-  }) => {
-    expect(getPullRequestLifecycle(pullRequest, fallbackState)).toBe(expected);
-  });
+  ] as const)(
+    "derives $name as $expected",
+    ({ expected, fallbackState = null, pullRequest }) => {
+      expect(getPullRequestLifecycle(pullRequest, fallbackState)).toBe(
+        expected
+      );
+    }
+  );
 
   it("keeps the Draft label canonical", () => {
     expect(PullRequestLifecycleLabels[PullRequestLifecycle.Draft]).toBe(

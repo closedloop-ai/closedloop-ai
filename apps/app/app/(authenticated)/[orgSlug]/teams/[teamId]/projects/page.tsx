@@ -3,7 +3,8 @@
 import type { Priority } from "@repo/api/src/types/common";
 import type { CreateProjectInput } from "@repo/api/src/types/project";
 import { ProjectStatus } from "@repo/api/src/types/project";
-import { TableViewMenu } from "@repo/app/documents/components/table/table-view-menu";
+import { PROJECTS_FILTER_SORT_MODEL_FLAG_KEY } from "@repo/api/src/types/projects-filter-sort-model-flag";
+import { useProjectIndexBulkActions } from "@repo/app/projects/components/project-index-bulk-actions";
 import {
   useCreateProject,
   useDeleteProject,
@@ -13,23 +14,36 @@ import {
   useUpdateProjectStatus,
   useUpdateProjectTargetDate,
 } from "@repo/app/projects/hooks/use-projects";
+import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import {
   PROJECT_DEFAULT_COLUMNS,
   useColumnVisibility,
 } from "@repo/app/shared/hooks/use-column-visibility";
+import { useViewStateKey } from "@repo/app/shared/hooks/use-view-state-key";
+import { PROJECTS_PORTABLE_SURFACE_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { useTeam } from "@repo/app/teams/hooks/use-teams";
+import { toast } from "@repo/design-system/components/ui/sonner";
 import { getStringRouteParam } from "@repo/navigation/route-param";
 import { useNavigation } from "@repo/navigation/use-navigation";
 import { useRouteParams } from "@repo/navigation/use-route-params";
 import { Loader2Icon } from "lucide-react";
+import type { ReactNode } from "react";
 import { useMemo, useState } from "react";
-import { toast } from "sonner";
 import { Header } from "@/app/(authenticated)/components/header";
 import { useOrgSlug } from "@/hooks/use-org-slug";
 import { CreateProjectModal } from "./components/create-project-modal";
+import { ProjectsFilteredSurface } from "./components/projects-filtered-surface";
+import { ProjectsListHeader } from "./components/projects-list-header";
+import { ProjectsPortableSurface } from "./components/projects-portable-surface";
 import { ProjectsTable } from "./components/projects-table";
 
-const COLUMN_VISIBILITY_KEY = "table:columns:team-projects";
+const COLUMN_VISIBILITY_BASE_KEY = "table:columns:team-projects";
+/**
+ * The portable surface's own view-state key. Deliberately NOT the one above:
+ * that payload is keyed by `DocumentColumn` ids and this one by the portable
+ * grid's, so sharing a key would hand each surface the other's column list.
+ */
+const PORTABLE_VIEW_STATE_BASE_KEY = "table:view:team-projects-portable";
 
 export default function TeamProjectsPage() {
   const params = useRouteParams();
@@ -37,9 +51,27 @@ export default function TeamProjectsPage() {
   const orgSlug = useOrgSlug();
   const teamId = getStringRouteParam(params, "teamId");
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
+  const [selectedProjectIds, setSelectedProjectIds] = useState<
+    ReadonlySet<string>
+  >(() => new Set());
 
+  // ISS-10476: the route's one read of this key. It picks between two whole
+  // surfaces — neither knows a flag exists — so nothing below is threaded it.
+  const portableSurfaceEnabled = useFeatureFlagEnabledOptional(
+    PROJECTS_PORTABLE_SURFACE_FEATURE_FLAG_KEY
+  );
+
+  // ISS-9346: this page's ONE read of the filter/sort key. It picks between two
+  // whole surfaces — the plain table, and the filtered surface that wraps it —
+  // and never hands the boolean to either.
+  const filterSortModelEnabled = useFeatureFlagEnabledOptional(
+    PROJECTS_FILTER_SORT_MODEL_FLAG_KEY
+  );
+
+  const columnVisibilityKey = useViewStateKey(COLUMN_VISIBILITY_BASE_KEY);
+  const portableViewStateKey = useViewStateKey(PORTABLE_VIEW_STATE_BASE_KEY);
   const { visibility, userVisibility, toggleColumn } = useColumnVisibility({
-    storageKey: COLUMN_VISIBILITY_KEY,
+    storageKey: columnVisibilityKey,
   });
   const visibleColumns = useMemo(
     () => PROJECT_DEFAULT_COLUMNS.filter((c) => userVisibility[c] !== false),
@@ -70,6 +102,15 @@ export default function TeamProjectsPage() {
   const createProjectMutation = useCreateProject();
   const deleteProjectMutation = useDeleteProject();
   const updateStatusMutation = useUpdateProjectStatus();
+  const projectBulkActions = useProjectIndexBulkActions({
+    projects,
+    selectedIds: selectedProjectIds,
+  });
+  const bulkSelection = {
+    ...projectBulkActions,
+    onChange: setSelectedProjectIds,
+    selectedIds: selectedProjectIds,
+  };
 
   const handleUpdateAssignee = (
     projectId: string,
@@ -78,11 +119,22 @@ export default function TeamProjectsPage() {
     updateAssigneeMutation.mutate({ projectId, assigneeId });
   };
 
-  const handleUpdateTargetDate = (projectId: string, date: Date | null) => {
-    updateTargetDateMutation.mutate({ projectId, targetDate: date });
+  const handleUpdateTargetDate = (
+    projectId: string,
+    date: Date | null,
+    recoverableErrorOwner?: () => boolean
+  ) => {
+    return updateTargetDateMutation.mutateAsync({
+      projectId,
+      targetDate: date,
+      ...(recoverableErrorOwner ? { recoverableErrorOwner } : {}),
+    });
   };
 
-  const handleUpdatePriority = (projectId: string, priority: Priority) => {
+  const handleUpdatePriority = (
+    projectId: string,
+    priority: Priority | null
+  ) => {
     updatePriorityMutation.mutate({ projectId, priority });
   };
 
@@ -148,6 +200,68 @@ export default function TeamProjectsPage() {
     );
   }
 
+  // ISS-10476 + ISS-9346: two independent flags, one precedence, decided once
+  // here so neither surface below is handed a boolean. The promoted portable
+  // surface supersedes both of the older shapes when it is on.
+  let projectsSurface: ReactNode;
+  if (portableSurfaceEnabled) {
+    projectsSurface = (
+      <ProjectsPortableSurface
+        bulkSelection={bulkSelection}
+        onCreateProject={() => setCreateProjectOpen(true)}
+        onDelete={handleDeleteProject}
+        onUpdateAssignee={handleUpdateAssignee}
+        onUpdatePriority={handleUpdatePriority}
+        onUpdateStatus={handleUpdateStatus}
+        onUpdateTargetDate={handleUpdateTargetDate}
+        orgSlug={orgSlug}
+        projects={projects}
+        teamId={teamId}
+        viewStateKey={portableViewStateKey}
+      />
+    );
+  } else if (filterSortModelEnabled) {
+    projectsSurface = (
+      <ProjectsFilteredSurface
+        bulkSelection={bulkSelection}
+        onCreateProject={() => setCreateProjectOpen(true)}
+        onDelete={handleDeleteProject}
+        onToggleColumn={toggleColumn}
+        onUpdateAssignee={handleUpdateAssignee}
+        onUpdatePriority={handleUpdatePriority}
+        onUpdateStatus={handleUpdateStatus}
+        onUpdateTargetDate={handleUpdateTargetDate}
+        projects={projects}
+        teamId={teamId}
+        visibility={visibility}
+        visibleColumns={visibleColumns}
+      />
+    );
+  } else {
+    projectsSurface = (
+      <>
+        <ProjectsListHeader
+          onToggleColumn={toggleColumn}
+          visibility={visibility}
+        />
+        <div className="flex-1 overflow-auto">
+          <ProjectsTable
+            bulkSelection={bulkSelection}
+            onCreateProject={() => setCreateProjectOpen(true)}
+            onDelete={handleDeleteProject}
+            onUpdateAssignee={handleUpdateAssignee}
+            onUpdatePriority={handleUpdatePriority}
+            onUpdateStatus={handleUpdateStatus}
+            onUpdateTargetDate={handleUpdateTargetDate}
+            projects={projects}
+            teamId={teamId}
+            visibleColumns={visibleColumns}
+          />
+        </div>
+      </>
+    );
+  }
+
   return (
     <>
       <Header
@@ -168,29 +282,7 @@ export default function TeamProjectsPage() {
       </Header>
       {/* plain <div>, not <main>: the shell's SidebarInset owns the page's single main landmark (no-nested-main-landmark gate). */}
       <div className="flex flex-1 flex-col overflow-hidden">
-        {/* Title bar */}
-        <div className="flex min-w-fit items-center justify-between border-b px-4 pt-4 pb-2">
-          <h1 className="font-semibold text-xl">Projects</h1>
-          <TableViewMenu
-            columns={PROJECT_DEFAULT_COLUMNS}
-            onToggle={toggleColumn}
-            visibility={visibility}
-          />
-        </div>
-        {/* Table scroll area */}
-        <div className="flex-1 overflow-auto">
-          <ProjectsTable
-            onCreateProject={() => setCreateProjectOpen(true)}
-            onDelete={handleDeleteProject}
-            onUpdateAssignee={handleUpdateAssignee}
-            onUpdatePriority={handleUpdatePriority}
-            onUpdateStatus={handleUpdateStatus}
-            onUpdateTargetDate={handleUpdateTargetDate}
-            projects={projects}
-            teamId={teamId}
-            visibleColumns={visibleColumns}
-          />
-        </div>
+        {projectsSurface}
       </div>
     </>
   );

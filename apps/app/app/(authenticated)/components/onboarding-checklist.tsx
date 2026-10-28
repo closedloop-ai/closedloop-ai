@@ -2,6 +2,7 @@
 
 import type { ChecklistItemId } from "@repo/api/src/types/onboarding";
 import { useDismissChecklist } from "@repo/app/onboarding/hooks/use-onboarding";
+import { useOnboardingChecklistCompletionEvents } from "@repo/app/onboarding/hooks/use-onboarding-checklist-analytics";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Card,
@@ -13,6 +14,7 @@ import {
 } from "@repo/design-system/components/ui/card";
 import { Progress } from "@repo/design-system/components/ui/progress";
 import { Link } from "@repo/navigation/link";
+import { useOrgPath } from "@repo/navigation/use-org-path";
 import { Check, Circle, ExternalLink, X } from "lucide-react";
 import {
   CHECKLIST_ITEM_ATTRIBUTE,
@@ -24,6 +26,11 @@ export function OnboardingChecklist() {
   const dismissChecklist = useDismissChecklist();
   const { visible, items, completedCount, totalCount } =
     useOnboardingChecklist();
+
+  // PRD-736 (ISS-10500): observed on the CARD, not inside the shared view
+  // hook — the invite spotlight reads the same view, and two observers would
+  // report every flip twice.
+  useOnboardingChecklistCompletionEvents(items);
 
   if (!visible) {
     return null;
@@ -97,6 +104,7 @@ function ChecklistItem({
   external,
   itemId,
 }: ChecklistItemProps) {
+  const buildOrgPath = useOrgPath();
   const content = (
     <div
       className="flex items-start gap-3 rounded-md px-2 py-2 transition-colors hover:bg-muted/50"
@@ -144,7 +152,11 @@ function ChecklistItem({
         </a>
       );
     }
-    return <Link href={href}>{content}</Link>;
+    // Org-prefixed here rather than left to the proxy's missing-org-prefix
+    // redirect: a redirect never carries the URL fragment (the browser does not
+    // send one), so `/settings?tab=organization#/organization-members` arrived
+    // at the Organization tab with the members deep link stripped.
+    return <Link href={buildOrgPath(href)}>{content}</Link>;
   }
 
   return content;

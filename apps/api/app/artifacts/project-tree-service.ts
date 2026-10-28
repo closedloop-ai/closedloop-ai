@@ -1,5 +1,4 @@
-import { LinkType } from "@repo/api/src/types/artifact";
-import type { GenerationStatus } from "@repo/api/src/types/document";
+import { ArtifactSubtype, LinkType } from "@repo/api/src/types/artifact";
 import type {
   ArtifactViewDetails,
   DetailedTreeNode,
@@ -7,31 +6,99 @@ import type {
   ProjectTreeDetailsResponse,
   ProjectTreeQueryFilters,
   ProjectTreeResponse,
-  TreeChild,
   TreeNode,
 } from "@repo/api/src/types/project-tree";
-import { TreeTruncationReason } from "@repo/api/src/types/project-tree";
 import {
-  type ArtifactLink,
+  ProjectTreeCategory,
+  TreeTruncationReason,
+} from "@repo/api/src/types/project-tree";
+import {
   ArtifactType,
   Prisma,
+  type TransactionClient,
   withDb,
 } from "@repo/database";
 import { branchContributorExistsSql } from "@/app/branches/branch-contribution-sql";
-import {
-  mergeLoopStatuses,
-  suppressDismissedFailuresForDocumentMap,
-} from "@/app/documents/generation-status-helpers";
-import { mapTagRelations } from "@/app/tags/service";
+import { branchProductEligibilityService } from "@/app/branches/branch-product-eligibility-service";
+import { branchProviderFallbackService } from "@/app/branches/branch-provider-fallback-service";
+import { readDocumentFieldValues } from "@/app/documents/document-field-values-read";
+import { buildDocumentStatusMutation } from "@/app/documents/document-status-mutation-capability";
+import { readProjectPlacementVersion } from "@/app/documents/project-artifact-placement-state";
+import { fetchDocumentVersionsByArtifact } from "@/app/documents/project-tree-version-read";
+import { mapTagRelations } from "@/app/tags/tag-projection-select";
 import { basicUserSelect } from "@/lib/db-utils";
 import {
   type ArtifactWithAssignee,
+  applyBranchProductEligibility,
+  applyBranchProviderFallbackAvailability,
+  applySessionDisplayedStatus,
   compareByStackRank,
+  compareParentRankedArtifacts,
+  flattenCanonicalSubtree,
+  groupChildIdsByParent,
   normalizeArtifactRowSubtype,
+  type ParentEdge,
 } from "./artifact-tree-shared";
+import {
+  type CanonicalParentLinkRow,
+  resolveCanonicalParents,
+} from "./project-tree-service/canonical-parents";
+import {
+  buildHierarchyResponse,
+  flattenHierarchyWindow,
+  hierarchyWindowTruncationReasons,
+  type ProjectHierarchyReadError,
+  projectHierarchyReadError,
+} from "./project-tree-service/hierarchy-projection";
+import { readBoundedProjectHierarchy } from "./project-tree-service/project-hierarchy-read";
+import {
+  fetchTagRelationsByArtifact,
+  type TagRelationRow,
+} from "./project-tree-service/tag-relations-read";
+import { sessionDisplayedStatusService } from "./session-displayed-status-service";
 
 export const projectTreeService = {
   async getProjectTree(
+    projectId: string,
+    organizationId: string,
+    options: ProjectTreeQueryFilters = {}
+  ): Promise<ProjectTreeResponse> {
+    if (options.hierarchy) {
+      return withDb.tx(
+        async (tx) =>
+          (
+            await buildBoundedHierarchySnapshot(
+              tx,
+              projectId,
+              organizationId,
+              options
+            )
+          ).tree,
+        { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead }
+      );
+    }
+    const contributorBranchIds = await fetchContributorBranchIds(
+      projectId,
+      organizationId,
+      options.contributorUserId
+    );
+    const cohort = await loadProjectTreeCohort(
+      projectId,
+      organizationId,
+      contributorBranchIds
+    );
+    const artifacts = cohort.artifacts;
+    return buildProjectTree(
+      projectId,
+      organizationId,
+      artifacts,
+      options.contributorUserId,
+      options.limit,
+      options.category
+    );
+  },
+
+  async getManuallyOrderedProjectTree(
     projectId: string,
     organizationId: string,
     options: ProjectTreeQueryFilters = {}
@@ -41,23 +108,85 @@ export const projectTreeService = {
       organizationId,
       options.contributorUserId
     );
-    return getProjectTreeForContributorBranches(
+    const cohort = await loadProjectTreeCohort(
       projectId,
       organizationId,
-      contributorBranchIds,
+      contributorBranchIds
+    );
+    return buildManuallyOrderedProjectTree(
+      projectId,
+      organizationId,
+      cohort.artifacts,
       options.contributorUserId,
-      options.limit
+      options.limit,
+      options.category
     );
   },
 
   /**
    * `getProjectTree` with every artifact node enriched in place with
-   * artifact-level view details (tags, generation status) — the
-   * `?include=details` contract (FEA-1763, PLN-874). The enrichment lookups
-   * run in parallel with the tree build; the tree shape is untouched and no
-   * parallel flat collection is returned.
+   * artifact-level view details (tags and document versions) — the
+   * `?include=details` contract (FEA-1763, PLN-874). The tree shape is
+   * untouched and no parallel flat collection is returned.
+   *
+   * ISS-8857: the enrichment used to re-select the whole project scope a second
+   * time just to reach `tagArtifacts`, then re-join the two row sets in
+   * JavaScript. The scope is now read ONCE and both the tree and the details map
+   * are built from those same rows; every remaining query either has a genuinely
+   * different scope (links, external parents, branch eligibility) or is keyed by
+   * the ids this read already holds (tags), and they all run
+   * concurrently with the tree assembly.
    */
   async getProjectTreeWithDetails(
+    projectId: string,
+    organizationId: string,
+    options: ProjectTreeQueryFilters = {}
+  ): Promise<ProjectTreeDetailsResponse> {
+    if (options.hierarchy) {
+      return withDb.tx(
+        async (tx) => {
+          const snapshot = await buildBoundedHierarchySnapshot(
+            tx,
+            projectId,
+            organizationId,
+            options
+          );
+          return attachTreeDetails(
+            snapshot.tree,
+            snapshot.artifacts,
+            organizationId
+          );
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead }
+      );
+    }
+    const contributorBranchIds = await fetchContributorBranchIds(
+      projectId,
+      organizationId,
+      options.contributorUserId
+    );
+    const cohort = await loadProjectTreeCohort(
+      projectId,
+      organizationId,
+      contributorBranchIds
+    );
+    const artifacts = cohort.artifacts;
+    const [tree, detailsById] = await Promise.all([
+      buildProjectTree(
+        projectId,
+        organizationId,
+        artifacts,
+        options.contributorUserId,
+        options.limit,
+        options.category
+      ),
+      buildArtifactViewDetails(artifacts, organizationId, cohort.tagRelations),
+    ]);
+
+    return attachProjectTreeDetails(tree, detailsById);
+  },
+
+  async getManuallyOrderedProjectTreeWithDetails(
     projectId: string,
     organizationId: string,
     options: ProjectTreeQueryFilters = {}
@@ -67,69 +196,291 @@ export const projectTreeService = {
       organizationId,
       options.contributorUserId
     );
+    const cohort = await loadProjectTreeCohort(
+      projectId,
+      organizationId,
+      contributorBranchIds
+    );
     const [tree, detailsById] = await Promise.all([
-      getProjectTreeForContributorBranches(
+      buildManuallyOrderedProjectTree(
         projectId,
         organizationId,
-        contributorBranchIds,
+        cohort.artifacts,
         options.contributorUserId,
-        options.limit
+        options.limit,
+        options.category
       ),
-      fetchArtifactViewDetails(projectId, organizationId, contributorBranchIds),
+      buildArtifactViewDetails(
+        cohort.artifacts,
+        organizationId,
+        cohort.tagRelations
+      ),
     ]);
 
-    const nodes: DetailedTreeNode[] = tree.nodes.map((node) => ({
-      root: attachViewDetails(node.root, detailsById),
-      children: node.children.map((child) =>
-        attachViewDetails(child, detailsById)
-      ),
-    }));
+    return attachProjectTreeDetails(tree, detailsById);
+  },
 
-    // Spread the bounded read's truncation rather than assigning it: the
-    // contract says an untruncated tree OMITS the field, so a plain
-    // `truncation: tree.truncation` would serialize an explicit `undefined`
-    // key and change the shape a complete read has always had.
-    return {
-      nodes,
-      externalParents: tree.externalParents,
-      ...(tree.truncation && { truncation: tree.truncation }),
-    };
+  /** Route-facing read contract: expected hierarchy refusals are values. */
+  getProjectTreeResult(
+    projectId: string,
+    organizationId: string,
+    options: ProjectTreeQueryFilters = {}
+  ): Promise<ProjectTreeReadResult<ProjectTreeResponse>> {
+    return projectTreeReadResult(() =>
+      projectTreeService.getProjectTree(projectId, organizationId, options)
+    );
+  },
+
+  /** Detailed route-facing sibling of {@link getProjectTreeResult}. */
+  getProjectTreeWithDetailsResult(
+    projectId: string,
+    organizationId: string,
+    options: ProjectTreeQueryFilters = {}
+  ): Promise<ProjectTreeReadResult<ProjectTreeDetailsResponse>> {
+    return projectTreeReadResult(() =>
+      projectTreeService.getProjectTreeWithDetails(
+        projectId,
+        organizationId,
+        options
+      )
+    );
   },
 };
 
-async function getProjectTreeForContributorBranches(
+export type ProjectTreeReadResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: ProjectHierarchyReadError };
+
+async function projectTreeReadResult<T>(
+  read: () => Promise<T>
+): Promise<ProjectTreeReadResult<T>> {
+  try {
+    return { ok: true, value: await read() };
+  } catch (error) {
+    const expected = projectHierarchyReadError(error);
+    if (expected) {
+      return { error: expected, ok: false };
+    }
+    throw error;
+  }
+}
+
+async function attachTreeDetails(
+  tree: ProjectTreeResponse,
+  artifacts: ArtifactRow[],
+  organizationId: string
+): Promise<ProjectTreeDetailsResponse> {
+  const detailsById = await buildArtifactViewDetails(artifacts, organizationId);
+  return attachProjectTreeDetails(tree, detailsById);
+}
+
+function attachProjectTreeDetails(
+  tree: ProjectTreeResponse,
+  detailsById: Map<string, ArtifactViewDetails>
+): ProjectTreeDetailsResponse {
+  const nodes: DetailedTreeNode[] = tree.nodes.map((node) => ({
+    root: attachViewDetails(node.root, detailsById),
+    children: node.children.map((child) =>
+      attachViewDetails(child, detailsById)
+    ),
+    ...(node.hierarchy && { hierarchy: node.hierarchy }),
+  }));
+
+  return {
+    nodes,
+    externalParents: tree.externalParents,
+    ...(tree.projectVersion && { projectVersion: tree.projectVersion }),
+    ...(tree.hierarchyRevision && {
+      hierarchyRevision: tree.hierarchyRevision,
+    }),
+    ...(tree.flatParents && { flatParents: tree.flatParents }),
+    ...(tree.truncation && { truncation: tree.truncation }),
+    ...(tree.hierarchy && { hierarchy: tree.hierarchy }),
+  };
+}
+
+type BoundedHierarchySnapshot = {
+  artifacts: ArtifactRow[];
+  tree: ProjectTreeResponse;
+};
+
+/** Hydrate only one hierarchy window from PRD-725's minimal placement index. */
+async function buildBoundedHierarchySnapshot(
+  tx: TransactionClient,
   projectId: string,
   organizationId: string,
-  contributorBranchIds: string[] | null,
-  contributorUserId: string | undefined,
-  limit?: number
-): Promise<ProjectTreeResponse> {
-  const artifacts = await withDb((db) =>
-    db.artifact.findMany({
-      where: {
-        projectId,
-        organizationId,
-        ...contributorArtifactWhere(contributorBranchIds),
-      },
-      include: { assignee: basicUserSelect },
-    })
+  options: ProjectTreeQueryFilters
+): Promise<BoundedHierarchySnapshot> {
+  const { childCountsByParent, state, window } =
+    await readBoundedProjectHierarchy(tx, projectId, organizationId, options);
+  const flatCategoryRead =
+    options.parentArtifactId === undefined && options.category !== undefined;
+  const flatParentIds = flatCategoryRead
+    ? [...window.includedArtifactIds].flatMap((artifactId) => {
+        const parentId = state.canonicalParents.get(artifactId)?.parentId;
+        return parentId ? [parentId] : [];
+      })
+    : [];
+  const artifactIds = [
+    ...new Set([...window.includedArtifactIds, ...flatParentIds]),
+  ];
+  const artifacts =
+    artifactIds.length === 0
+      ? []
+      : await tx.artifact.findMany({
+          where: { id: { in: artifactIds }, organizationId, projectId },
+          include: { assignee: basicUserSelect },
+        });
+  const artifactsById = new Map<string, ArtifactWithAssignee>(
+    artifacts.map((artifact) => [
+      artifact.id,
+      normalizeArtifactRowSubtype(artifact),
+    ])
   );
+  await enrichArtifactRows(organizationId, artifacts, artifactsById);
 
+  const links = await fetchArtifactLinks(organizationId, artifactIds);
+  const incomingExternalLinks = links.filter(
+    (link) =>
+      link.linkType === LinkType.Produces &&
+      artifactsById.has(link.targetId) &&
+      !artifactsById.has(link.sourceId)
+  );
+  const externalParents = await buildExternalParents(
+    projectId,
+    organizationId,
+    incomingExternalLinks,
+    undefined
+  );
+  const nodes = window.rootIds.flatMap((rootId): TreeNode[] => {
+    const root = artifactsById.get(rootId);
+    if (!root) {
+      return [];
+    }
+    return [
+      {
+        root,
+        children: flattenHierarchyWindow(rootId, artifactsById, state),
+      },
+    ];
+  });
+  const reasons = hierarchyWindowTruncationReasons(window);
+  const legacyResponse: ProjectTreeResponse = {
+    nodes,
+    externalParents,
+    projectVersion: window.mutationVersion ?? window.version,
+    ...(reasons.length > 0 && {
+      truncation: {
+        anchorsIncluded: nodes.length,
+        anchorsMatchedAtLeast: nodes.length + (window.rootNextCursor ? 1 : 0),
+        reasons,
+      },
+    }),
+  };
+  const flatParents = flatCategoryRead
+    ? buildFlatParents(nodes, state.canonicalParents, artifactsById)
+    : [];
+  return {
+    artifacts,
+    tree: buildHierarchyResponse({
+      canonicalParents: flatCategoryRead
+        ? new Map<string, ParentEdge>()
+        : state.canonicalParents,
+      childCountsByParent,
+      childIdsByParent: state.childrenByParent,
+      legacyResponse: withFlatParents(legacyResponse, flatParents),
+      window,
+    }),
+  };
+}
+
+async function buildProjectTree(
+  projectId: string,
+  organizationId: string,
+  artifacts: ArtifactRow[],
+  contributorUserId: string | undefined,
+  limit?: number,
+  category?: ProjectTreeCategory
+): Promise<ProjectTreeResponse> {
   if (artifacts.length === 0) {
     return { nodes: [], externalParents: [] };
   }
 
+  const prepared = await prepareProjectTree(
+    projectId,
+    organizationId,
+    artifacts,
+    contributorUserId
+  );
+  return assembleProjectTree(
+    prepared,
+    groupChildIdsByParent(prepared.canonicalParents),
+    limit,
+    category
+  );
+}
+
+async function buildManuallyOrderedProjectTree(
+  projectId: string,
+  organizationId: string,
+  artifacts: ArtifactRow[],
+  contributorUserId: string | undefined,
+  limit?: number,
+  category?: ProjectTreeCategory
+): Promise<ProjectTreeResponse> {
+  const projectVersion = await readProjectPlacementVersion(
+    projectId,
+    organizationId
+  );
+  if (artifacts.length === 0) {
+    return { nodes: [], externalParents: [], projectVersion };
+  }
+
+  const prepared = await prepareProjectTree(
+    projectId,
+    organizationId,
+    artifacts,
+    contributorUserId
+  );
+  const childIdsByParent = groupChildIdsByParent(prepared.canonicalParents);
+  for (const [parentId, childIds] of childIdsByParent) {
+    const children = childIds
+      .map((id) => prepared.artifactsById.get(id))
+      .filter((artifact): artifact is ArtifactWithAssignee =>
+        Boolean(artifact)
+      );
+    children.sort((left, right) =>
+      compareParentRankedArtifacts(left, right, prepared.canonicalParents)
+    );
+    childIdsByParent.set(
+      parentId,
+      children.map((artifact) => artifact.id)
+    );
+  }
+  return {
+    ...assembleProjectTree(prepared, childIdsByParent, limit, category),
+    projectVersion,
+  };
+}
+
+async function prepareProjectTree(
+  projectId: string,
+  organizationId: string,
+  artifacts: ArtifactRow[],
+  contributorUserId: string | undefined
+) {
   const artifactsById = new Map<string, ArtifactWithAssignee>(
     artifacts.map((a) => [a.id, normalizeArtifactRowSubtype(a)])
   );
+  await enrichArtifactRows(organizationId, artifacts, artifactsById);
 
   const links = await fetchArtifactLinks(
     organizationId,
     Array.from(artifactsById.keys())
   );
 
-  const internalLinks: ArtifactLink[] = [];
-  const incomingExternalLinks: ArtifactLink[] = [];
+  const internalLinks: CanonicalParentLinkRow[] = [];
+  const incomingExternalLinks: CanonicalParentLinkRow[] = [];
   for (const link of links) {
     // Only PRODUCES links express a parent-child relationship. BLOCKS and
     // RELATES_TO are peer/sibling links and must not drive tree nesting or
@@ -154,87 +505,263 @@ async function getProjectTreeForContributorBranches(
     contributorUserId
   );
 
-  const graph = buildGraph(internalLinks);
-  const components = findConnectedComponents(graph.undirected, artifactsById);
-  const linkedIds = new Set<string>();
+  return {
+    artifactsById,
+    canonicalParents: resolveCanonicalParents(internalLinks),
+    externalParents,
+  };
+}
+
+function assembleProjectTree(
+  prepared: Awaited<ReturnType<typeof prepareProjectTree>>,
+  childIdsByParent: Map<string, string[]>,
+  limit?: number,
+  category?: ProjectTreeCategory
+): ProjectTreeResponse {
+  const { artifactsById, canonicalParents, externalParents } = prepared;
 
   const nodes: TreeNode[] = [];
 
-  for (const component of components) {
-    for (const id of component) {
-      linkedIds.add(id);
+  for (const artifact of artifactsById.values()) {
+    // A root is an artifact no surviving edge parents. Reading it off the
+    // RESOLVED map rather than off raw in-degree is what keeps a cycle member
+    // eligible: it can hold a real incoming edge and still be canonically
+    // parentless because its only candidate closed the cycle.
+    if (canonicalParents.has(artifact.id)) {
+      continue;
     }
-
-    const rootId = findComponentRoot(
-      component,
-      graph.incomingCount,
-      artifactsById
-    );
-    const root = artifactsById.get(rootId)!;
-    const children = dfsCollectChildren(
-      rootId,
-      graph.adjacency,
-      artifactsById,
-      component
-    );
-
-    nodes.push({ root, children });
-  }
-
-  for (const [id, artifact] of artifactsById) {
-    if (!linkedIds.has(id)) {
-      nodes.push({ root: artifact, children: [] });
-    }
+    nodes.push({
+      root: artifact,
+      children: flattenCanonicalSubtree(
+        artifact.id,
+        artifactsById,
+        childIdsByParent,
+        canonicalParents
+      ),
+    });
   }
 
   nodes.sort(compareByStackRank);
 
-  return boundRootNodes(nodes, externalParents, limit);
+  const filtered = filterTreeToCategory(
+    nodes,
+    externalParents,
+    canonicalParents,
+    artifactsById,
+    category
+  );
+
+  const response = withFlatParents(
+    boundRootNodes(filtered.nodes, filtered.externalParents, limit),
+    filtered.flatParents
+  );
+  return response;
 }
 
 /**
- * Batch-load per-artifact view details for a project: tag summaries for all
- * artifacts, and generation status (resolved from Loop records, dismissed
- * failures suppressed) for DOCUMENT artifacts.
+ * Narrow an assembled tree to one artifact category, BEFORE the root bound —
+ * ordering is what makes the bound honest. Bounding first and filtering after
+ * (what the client used to do) makes `?limit=` count MIXED roots, so a
+ * filtered tab both under-fills its pages and reports "no matches" for a
+ * project whose matches all sort past the bound.
+ *
+ * Matching artifacts are collected from ANYWHERE in the tree — a PRD nested
+ * under a feature chain is still a PRD the tab must find — and returned as
+ * FLAT roots, deduped by id (an artifact can be reachable through more than
+ * one chain). The tabs that filter render flat rows, so nesting carries no
+ * information for them, and a promoted child sheds its chain-position fields
+ * (`linkType`/`depth`/`parentId`) rather than serializing a chain the response
+ * no longer contains. Re-sorted by the same stack-rank order the unfiltered
+ * tree uses, so the bound returns the same prefix on every read.
+ *
+ * Shedding the chain-position fields does NOT shed the parent itself: the
+ * survivors' in-project parents come back as `flatParents`, because the Parent
+ * column is rebuilt from `parentId` plus a `children` array and a promoted root
+ * has neither. Dropping them here would make a filtered tab render an empty
+ * Parent column — and, once every visible row is empty, no Parent column at all
+ * — for rows whose parents the unfiltered tree shows (whitlockk, PR #6745).
+ *
+ * `externalParents` is narrowed to surviving ids for the same contract reason
+ * `boundRootNodes` narrows it: an entry's `childId` must be present in
+ * `nodes`.
  */
-async function fetchArtifactViewDetails(
-  projectId: string,
-  organizationId: string,
-  contributorBranchIds: string[] | null
-): Promise<Map<string, ArtifactViewDetails>> {
-  const rows = await withDb((db) =>
-    db.artifact.findMany({
-      where: {
-        projectId,
-        organizationId,
-        ...contributorArtifactWhere(contributorBranchIds),
-      },
-      select: {
-        id: true,
-        type: true,
-        tagArtifacts: { include: { tag: true } },
-      },
-    })
-  );
+function filterTreeToCategory(
+  nodes: TreeNode[],
+  externalParents: ExternalParentLink[],
+  canonicalParents: Map<string, ParentEdge>,
+  artifactsById: Map<string, ArtifactWithAssignee>,
+  category?: ProjectTreeCategory
+): {
+  nodes: TreeNode[];
+  externalParents: ExternalParentLink[];
+  flatParents: ExternalParentLink[];
+} {
+  if (category === undefined) {
+    return { externalParents, flatParents: [], nodes };
+  }
+  const flat: TreeNode[] = [];
+  const seen = new Set<string>();
+  for (const node of nodes) {
+    if (!seen.has(node.root.id) && matchesTreeCategory(node.root, category)) {
+      seen.add(node.root.id);
+      flat.push({ children: [], root: node.root });
+    }
+    for (const child of node.children) {
+      if (seen.has(child.id) || !matchesTreeCategory(child, category)) {
+        continue;
+      }
+      seen.add(child.id);
+      const {
+        linkType: _linkType,
+        depth: _depth,
+        parentId: _parentId,
+        ...root
+      } = child;
+      flat.push({ children: [], root });
+    }
+  }
+  flat.sort(compareByStackRank);
+  return {
+    externalParents: externalParents.filter((entry) => seen.has(entry.childId)),
+    flatParents: buildFlatParents(flat, canonicalParents, artifactsById),
+    nodes: flat,
+  };
+}
 
+/**
+ * The in-project canonical parent of every node the category filter promoted to
+ * a root, in the same order the nodes come back.
+ *
+ * Only the CANONICAL parent, so this cannot disagree with the lineage the
+ * unfiltered tree nests by — both read `resolveCanonicalParents`. A node whose
+ * parent lies outside the project is absent here and already covered by
+ * `externalParents`; a genuine root is absent from both, which is the honest
+ * "no parent" the Parent column renders as an em-dash.
+ */
+function buildFlatParents(
+  nodes: TreeNode[],
+  canonicalParents: Map<string, ParentEdge>,
+  artifactsById: Map<string, ArtifactWithAssignee>
+): ExternalParentLink[] {
+  const links: ExternalParentLink[] = [];
+  for (const node of nodes) {
+    const edge = canonicalParents.get(node.root.id);
+    const parent = edge && artifactsById.get(edge.parentId);
+    if (edge && parent) {
+      links.push({ childId: node.root.id, linkType: edge.linkType, parent });
+    }
+  }
+  return links;
+}
+
+/**
+ * Attach the flat result's parent context to the bounded response, narrowed to
+ * the roots that survived the bound.
+ *
+ * Narrowed for the contract reason `boundRootNodes` narrows `externalParents`:
+ * an entry names a `childId` the response promises to carry, and an entry whose
+ * child was bounded away would leave the client holding a parent link to a row
+ * it never received. Omitted rather than emitted empty, so the response an
+ * unfiltered read has always produced is unchanged key-for-key.
+ */
+function withFlatParents(
+  response: ProjectTreeResponse,
+  flatParents: ExternalParentLink[]
+): ProjectTreeResponse {
+  const keptIds = new Set(response.nodes.map((node) => node.root.id));
+  const kept = flatParents.filter((entry) => keptIds.has(entry.childId));
+  if (kept.length === 0) {
+    return response;
+  }
+  return { ...response, flatParents: kept };
+}
+
+/**
+ * The server-side twin of the client's `filterByCategory` tab predicates
+ * (`packages/app/documents/lib/table-view-pipeline.ts`): PRDs, issues, and
+ * plans are DOCUMENT artifacts split by persisted subtype; branches are the
+ * BRANCH artifact type. Subtypes here are post-`normalizeArtifactRowSubtype`,
+ * so the input-only `ISSUE` alias has already been folded to `FEATURE`.
+ */
+function matchesTreeCategory(
+  artifact: Pick<TreeNode["root"], "type" | "subtype">,
+  category: ProjectTreeCategory
+): boolean {
+  switch (category) {
+    case ProjectTreeCategory.Prds:
+      return (
+        artifact.type === ArtifactType.DOCUMENT &&
+        artifact.subtype === ArtifactSubtype.Prd
+      );
+    case ProjectTreeCategory.Features:
+      return (
+        artifact.type === ArtifactType.DOCUMENT &&
+        artifact.subtype === ArtifactSubtype.Feature
+      );
+    case ProjectTreeCategory.Plans:
+      return (
+        artifact.type === ArtifactType.DOCUMENT &&
+        artifact.subtype === ArtifactSubtype.ImplementationPlan
+      );
+    case ProjectTreeCategory.Branches:
+      return artifact.type === ArtifactType.BRANCH;
+    default: {
+      const exhaustive: never = category;
+      return exhaustive;
+    }
+  }
+}
+
+/**
+ * Per-artifact view details for the rows the tree read ALREADY loaded: tag
+ * summaries for all artifacts.
+ *
+ * ISS-8857: this used to re-run the project scope against `artifacts` purely to
+ * reach `tagArtifacts`, so every row crossed the wire twice. It now takes the
+ * rows and reads the tag JOIN keyed by the ids already in hand. Keying it by id
+ * is what puts the artifact COUNT into that statement's width, so the read owns
+ * its own bind-parameter bound — see `TAG_RELATION_ID_CHUNK_SIZE` in
+ * `project-tree-service/tag-relations-read.ts`. Nesting the tag relation inside the artifact
+ * `include` would also select each row once, but it chains
+ * `artifacts -> assignee -> tag_artifacts -> tags` into ONE serial round-trip
+ * train ahead of everything else; measured on a 2000-artifact project that cost
+ * ~44ms -> ~50ms, so the tag read is kept as its own query that runs CONCURRENTLY
+ * with the tree assembly.
+ */
+async function buildArtifactViewDetails(
+  rows: ArtifactRow[],
+  organizationId: string,
+  prefetchedTagRelations?: Map<string, TagRelationRow[]>
+): Promise<Map<string, ArtifactViewDetails>> {
   const documentIds = rows
     .filter((row) => row.type === ArtifactType.DOCUMENT)
     .map((row) => row.id);
-  const generationStatusMap = new Map<string, GenerationStatus>();
-  await mergeLoopStatuses(documentIds, generationStatusMap);
-  await suppressDismissedFailuresForDocumentMap(
-    documentIds,
-    generationStatusMap
-  );
+  const [tagRelationsByArtifact, versionsByArtifact, fieldValuesByArtifact] =
+    await Promise.all([
+      prefetchedTagRelations ??
+        fetchTagRelationsByArtifact(rows.map((row) => row.id)),
+      fetchDocumentVersionsByArtifact(organizationId, documentIds),
+      readDocumentFieldValues(organizationId, documentIds),
+    ]);
 
   const detailsById = new Map<string, ArtifactViewDetails>();
   for (const row of rows) {
-    const tags = mapTagRelations(row.tagArtifacts);
-    const generationStatus = generationStatusMap.get(row.id);
-    if (tags.length > 0 || generationStatus) {
+    const tagRelations = tagRelationsByArtifact.get(row.id);
+    const tags = tagRelations ? mapTagRelations(tagRelations) : [];
+    const currentVersion = versionsByArtifact.get(row.id);
+    const customFieldValues =
+      row.type === ArtifactType.DOCUMENT && fieldValuesByArtifact !== null
+        ? (fieldValuesByArtifact.get(row.id) ?? [])
+        : undefined;
+    if (
+      tags.length > 0 ||
+      currentVersion !== undefined ||
+      customFieldValues !== undefined
+    ) {
       detailsById.set(row.id, {
-        ...(tags.length > 0 && { tags }),
-        ...(generationStatus && { generationStatus }),
+        ...(tags.length > 0 ? { tags } : {}),
+        ...(currentVersion === undefined ? {} : { currentVersion }),
+        ...(customFieldValues === undefined ? {} : { customFieldValues }),
       });
     }
   }
@@ -283,18 +810,34 @@ async function fetchContributorBranchIdsById(
   return new Set(rows.map((row) => row.id));
 }
 
-function contributorArtifactWhere(contributorBranchIds: string[] | null): {
-  OR?: Array<{ type: { not: ArtifactType } } | { id: { in: string[] } }>;
-} {
-  if (contributorBranchIds === null) {
-    return {};
-  }
-  return {
-    OR: [
-      { type: { not: ArtifactType.BRANCH } },
-      { id: { in: contributorBranchIds } },
-    ],
-  };
+/**
+ * The ONE read of a project's artifact scope, shared by the plain and the
+ * detailed tree (ISS-8857). Both used to spell this `where` out for themselves,
+ * which is how the scope came to be selected twice; a single owner also means a
+ * predicate — above all `organizationId`, whose absence would be a cross-tenant
+ * read — cannot be present on one spelling of the scope and missing from
+ * another.
+ */
+function fetchProjectArtifacts(
+  projectId: string,
+  organizationId: string,
+  contributorBranchIds: string[] | null
+): Promise<ArtifactRow[]> {
+  const contributorFilter =
+    contributorBranchIds === null
+      ? {}
+      : {
+          OR: [
+            { type: { not: ArtifactType.BRANCH } },
+            { id: { in: contributorBranchIds } },
+          ],
+        };
+  return withDb((db) =>
+    db.artifact.findMany({
+      where: { projectId, organizationId, ...contributorFilter },
+      include: { assignee: basicUserSelect },
+    })
+  );
 }
 
 function attachViewDetails<T extends { id: string }>(
@@ -305,10 +848,46 @@ function attachViewDetails<T extends { id: string }>(
   return details ? { ...artifact, ...details } : artifact;
 }
 
+function applyDocumentStatusMutation(
+  artifactsById: Map<string, ArtifactWithAssignee>
+): void {
+  for (const [id, artifact] of artifactsById) {
+    if (artifact.type === ArtifactType.DOCUMENT) {
+      artifactsById.set(id, {
+        ...artifact,
+        statusMutation: buildDocumentStatusMutation(artifact.subtype),
+      });
+    }
+  }
+}
+
+async function enrichArtifactRows(
+  organizationId: string,
+  artifacts: ArtifactRow[],
+  artifactsById: Map<string, ArtifactWithAssignee>
+): Promise<void> {
+  const branchIds = artifacts
+    .filter((artifact) => artifact.type === ArtifactType.BRANCH)
+    .map((artifact) => artifact.id);
+  const sessionIds = artifacts
+    .filter((artifact) => artifact.type === ArtifactType.SESSION)
+    .map((artifact) => artifact.id);
+  const [eligibilityById, branchIdsWithFallback, displayedSessionStatusById] =
+    await Promise.all([
+      branchProductEligibilityService.findByIds(organizationId, branchIds),
+      branchProviderFallbackService.findByIds(organizationId, branchIds),
+      sessionDisplayedStatusService.findByIds(organizationId, sessionIds),
+    ]);
+  applyBranchProductEligibility(artifactsById, eligibilityById);
+  applyBranchProviderFallbackAvailability(artifactsById, branchIdsWithFallback);
+  applySessionDisplayedStatus(artifactsById, displayedSessionStatusById);
+  applyDocumentStatusMutation(artifactsById);
+}
+
 function fetchArtifactLinks(
   organizationId: string,
   artifactIds: string[]
-): Promise<ArtifactLink[]> {
+): Promise<CanonicalParentLinkRow[]> {
   if (artifactIds.length === 0) {
     return Promise.resolve([]);
   }
@@ -322,7 +901,8 @@ function fetchArtifactLinks(
           { targetId: { in: artifactIds } },
         ],
       },
-      orderBy: { createdAt: "asc" },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      select: CANONICAL_PARENT_LINK_SELECT,
     })
   );
 }
@@ -336,7 +916,7 @@ function fetchArtifactLinks(
 async function buildExternalParents(
   projectId: string,
   organizationId: string,
-  incomingExternalLinks: ArtifactLink[],
+  incomingExternalLinks: CanonicalParentLinkRow[],
   contributorUserId: string | undefined
 ): Promise<ExternalParentLink[]> {
   if (incomingExternalLinks.length === 0) {
@@ -396,226 +976,6 @@ async function buildExternalParents(
   return result;
 }
 
-// ---------------------------------------------------------------------------
-// Graph building — operates directly on artifact_links keyed by artifact id.
-// ---------------------------------------------------------------------------
-
-type GraphEdge = { targetId: string; linkType: LinkType };
-
-type Graph = {
-  adjacency: Map<string, GraphEdge[]>;
-  undirected: Map<string, Set<string>>;
-  incomingCount: Map<string, number>;
-};
-
-function buildGraph(artifactLinks: ArtifactLink[]): Graph {
-  const adjacency = new Map<string, GraphEdge[]>();
-  const undirected = new Map<string, Set<string>>();
-  const incomingCount = new Map<string, number>();
-
-  for (const link of artifactLinks) {
-    const edges = adjacency.get(link.sourceId) ?? [];
-    edges.push({ targetId: link.targetId, linkType: link.linkType });
-    adjacency.set(link.sourceId, edges);
-
-    incomingCount.set(
-      link.targetId,
-      (incomingCount.get(link.targetId) ?? 0) + 1
-    );
-    if (!incomingCount.has(link.sourceId)) {
-      incomingCount.set(link.sourceId, 0);
-    }
-
-    const sourceNeighbors = undirected.get(link.sourceId) ?? new Set();
-    sourceNeighbors.add(link.targetId);
-    undirected.set(link.sourceId, sourceNeighbors);
-
-    const targetNeighbors = undirected.get(link.targetId) ?? new Set();
-    targetNeighbors.add(link.sourceId);
-    undirected.set(link.targetId, targetNeighbors);
-  }
-
-  return { adjacency, undirected, incomingCount };
-}
-
-function findConnectedComponents(
-  undirected: Map<string, Set<string>>,
-  artifactsById: Map<string, ArtifactWithAssignee>
-): string[][] {
-  const visited = new Set<string>();
-  const components: string[][] = [];
-
-  for (const id of undirected.keys()) {
-    if (visited.has(id) || !artifactsById.has(id)) {
-      continue;
-    }
-
-    const component: string[] = [];
-    const queue = [id];
-    visited.add(id);
-
-    while (queue.length > 0) {
-      const current = queue.shift()!;
-      component.push(current);
-
-      const neighbors = undirected.get(current);
-      if (neighbors) {
-        for (const neighbor of neighbors) {
-          if (!visited.has(neighbor) && artifactsById.has(neighbor)) {
-            visited.add(neighbor);
-            queue.push(neighbor);
-          }
-        }
-      }
-    }
-
-    components.push(component);
-  }
-
-  return components;
-}
-
-/**
- * Pick the representative root of one connected component: the earliest-created
- * parentless member, ties broken on the unique artifact id.
- *
- * ISS-5307 (whitlockk): the id tie-break matters here, not only in
- * `compareByStackRank`. That comparator orders roots that have ALREADY been
- * chosen, so it cannot rescue a component whose representative was picked
- * nondeterministically in the first place. For `A -> C <- B` with A and B
- * created in the same transaction (a shared millisecond is routine), the old
- * `createdAt <` test never fired on the tie, so the winner was whichever id the
- * `pool` happened to list first — and that order comes from link/BFS iteration,
- * i.e. from the database. Two reads could therefore name different roots for
- * the same component and move a different row across the bounded-read
- * boundary. Comparing ids on a timestamp tie makes the choice a pure function
- * of the component's contents, independent of the order they arrive in.
- */
-function findComponentRoot(
-  component: string[],
-  incomingCount: Map<string, number>,
-  artifactsById: Map<string, ArtifactWithAssignee>
-): string {
-  const candidates = component.filter(
-    (id) => (incomingCount.get(id) ?? 0) === 0
-  );
-
-  // Caller guarantees `component` only contains ids present in `artifactsById`;
-  // `pool` is either a filtered subset or `component` itself.
-  const pool = candidates.length > 0 ? candidates : component;
-
-  let best = pool[0];
-  const initial = artifactsById.get(best);
-  if (!initial) {
-    return best;
-  }
-  let bestTime = initial.createdAt.getTime();
-
-  for (let i = 1; i < pool.length; i++) {
-    const candidate = pool[i];
-    const artifact = artifactsById.get(candidate);
-    if (!artifact) {
-      continue;
-    }
-    const candidateTime = artifact.createdAt.getTime();
-    if (isBetterComponentRoot(candidate, candidateTime, best, bestTime)) {
-      best = candidate;
-      bestTime = candidateTime;
-    }
-  }
-
-  return best;
-}
-
-/** Earlier `createdAt` wins; on an exact tie the lexicographically lower id does. */
-function isBetterComponentRoot(
-  candidateId: string,
-  candidateTime: number,
-  bestId: string,
-  bestTime: number
-): boolean {
-  if (candidateTime !== bestTime) {
-    return candidateTime < bestTime;
-  }
-  return candidateId.localeCompare(bestId) < 0;
-}
-
-function dfsCollectChildren(
-  rootId: string,
-  adjacency: Map<string, GraphEdge[]>,
-  artifactsById: Map<string, ArtifactWithAssignee>,
-  componentIds: string[]
-): TreeChild[] {
-  const children: TreeChild[] = [];
-  const visited = new Set<string>([rootId]);
-
-  dfsStep(rootId, 1, { adjacency, artifactsById, visited, children });
-  collectUnreachableComponentMembers(
-    rootId,
-    componentIds,
-    adjacency,
-    artifactsById,
-    { visited, children }
-  );
-
-  return children;
-}
-
-type DfsState = {
-  adjacency: Map<string, GraphEdge[]>;
-  artifactsById: Map<string, ArtifactWithAssignee>;
-  visited: Set<string>;
-  children: TreeChild[];
-};
-
-function dfsStep(currentId: string, depth: number, state: DfsState): void {
-  const edges = state.adjacency.get(currentId) ?? [];
-  for (const edge of edges) {
-    if (state.visited.has(edge.targetId)) {
-      continue;
-    }
-    state.visited.add(edge.targetId);
-    const artifact = state.artifactsById.get(edge.targetId);
-    if (artifact) {
-      state.children.push({
-        ...artifact,
-        linkType: edge.linkType,
-        depth,
-        parentId: currentId,
-      });
-      dfsStep(edge.targetId, depth + 1, state);
-    }
-  }
-}
-
-function collectUnreachableComponentMembers(
-  rootId: string,
-  componentIds: string[],
-  adjacency: Map<string, GraphEdge[]>,
-  artifactsById: Map<string, ArtifactWithAssignee>,
-  state: Pick<DfsState, "visited" | "children">
-): void {
-  for (const id of componentIds) {
-    if (state.visited.has(id)) {
-      continue;
-    }
-    const artifact = artifactsById.get(id);
-    if (artifact) {
-      // The graph only contains PRODUCES edges (BLOCKS/RELATES_TO are filtered
-      // out upstream), so any component member attached under the root here is
-      // a produces-child.
-      const edges = adjacency.get(id) ?? [];
-      const linkType = edges[0]?.linkType ?? LinkType.Produces;
-      state.children.push({
-        ...artifact,
-        linkType,
-        depth: 1,
-        parentId: rootId,
-      });
-    }
-  }
-}
-
 /**
  * Apply the optional `?limit=` root bound to an already-ordered tree
  * (ISS-5307), and say so when it bit.
@@ -664,7 +1024,45 @@ function boundRootNodes(
       // exact value satisfies. No caller may render it as a precise "of N"
       // (the field name is the contract), and none does.
       anchorsMatchedAtLeast: nodes.length,
-      reasons: [TreeTruncationReason.AnchorCap],
+      // `satisfies` the PRODUCER set, not the wire set the field is typed
+      // against: the open arm on `TreeTruncation.reasons` exists so a CONSUMER
+      // can hold a reason a newer server invented, never so this build can
+      // emit one it never declared.
+      reasons: [
+        TreeTruncationReason.AnchorCap,
+      ] satisfies TreeTruncationReason[],
     },
+  };
+}
+
+/** An artifact row as the tree read selects it: its columns plus its assignee. */
+type ArtifactRow = Prisma.ArtifactGetPayload<{
+  include: { assignee: typeof basicUserSelect };
+}>;
+
+const CANONICAL_PARENT_LINK_SELECT = {
+  id: true,
+  sourceId: true,
+  targetId: true,
+  linkType: true,
+  sortOrder: true,
+  metadata: true,
+  createdAt: true,
+} as const satisfies Record<keyof CanonicalParentLinkRow, true>;
+
+async function loadProjectTreeCohort(
+  projectId: string,
+  organizationId: string,
+  contributorBranchIds: string[] | null
+): Promise<{
+  artifacts: ArtifactRow[];
+  tagRelations?: Map<string, TagRelationRow[]>;
+}> {
+  return {
+    artifacts: await fetchProjectArtifacts(
+      projectId,
+      organizationId,
+      contributorBranchIds
+    ),
   };
 }

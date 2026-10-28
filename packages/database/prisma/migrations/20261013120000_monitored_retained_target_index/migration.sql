@@ -1,0 +1,38 @@
+-- #8737 follow-up — a target-keyed index over the retained monitored-activity
+-- rows of one session.
+--
+-- WHY. Every monitored-session delivery that holds a candidate (and every one
+-- that writes an atom or files a ceiling expiry) asks which of THIS delivery's
+-- targets already have a retained row. The read used to fetch every
+-- `monitored_activity_retained` row of the session, `after` JSON included, and
+-- filter in memory, inside the sync transaction. A session keeps one such row
+-- per (target, carrier event), so that read grew without bound over a
+-- long-lived session. `readRetainedMonitoredActivityRows`
+-- (apps/api/app/agent-sessions/service/monitored-session-activity-retained-rows.ts)
+-- now asks only for the delivery's targets; this index lets Postgres answer it
+-- with one probe per target instead of a walk of the session's rows.
+--
+-- THE KEY IS THE TARGET AS THE ROW STORES IT: `kind`, `repositoryFullName`, and
+-- the branch name or PR number (`->>` renders the JSON integer as plain digits,
+-- which is what the reader binds). The read's expressions are this key verbatim;
+-- change the two together, or the planner can no longer match them.
+--
+-- PARTIAL on the action, so the index covers only retained rows and adds no
+-- maintenance to the rest of `artifact_activity_events` (ISS-8496 measured this
+-- table's index upkeep as the largest single cost in a project delete). The
+-- reader inlines the action as a literal rather than binding it, so a generic
+-- plan can still prove the predicate.
+--
+-- Entry width is bounded: `repositoryFullName` and `branchName` are capped at the
+-- wire (200 and 300 characters, `session-artifact-link.ts`), well under btree's
+-- per-entry limit.
+--
+-- EXPRESSION INDEX: PSL cannot declare it, so it lives only here and is pinned by
+-- packages/database/__tests__/integration/psl-inexpressible-partial-indexes.integration.test.ts.
+--
+-- CONCURRENTLY, so this file is ONE bare statement: do not add BEGIN/COMMIT or a
+-- `DO` block. NO `IF NOT EXISTS`, per scripts/lint/destructive-migrations/
+-- index-ddl.ts: a retry over an INVALID remnant must fail closed (42P07). To
+-- recover from a cancelled build, drop the remnant once and re-deploy:
+--       DROP INDEX IF EXISTS "artifact_activity_events_monitored_retained_target_idx";
+CREATE INDEX CONCURRENTLY "artifact_activity_events_monitored_retained_target_idx" ON "artifact_activity_events" ("organization_id", "artifact_id", ("after" ->> 'kind'), ("after" ->> 'repositoryFullName'), (COALESCE("after" ->> 'branchName', "after" ->> 'prNumber'))) WHERE "action" = 'monitored_activity_retained';

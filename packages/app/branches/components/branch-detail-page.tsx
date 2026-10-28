@@ -1,7 +1,6 @@
 "use client";
 
 import type {
-  BranchAnalytics,
   BranchDataState,
   BranchPageDetail,
   BranchPrCommentsResponse,
@@ -10,7 +9,9 @@ import { BranchDataState as BranchDataStateValue } from "@repo/api/src/types/bra
 import type { BranchSelectedPullRequestIdentity } from "@repo/api/src/types/branch-associated-pull-request";
 import type { TraceTextAnchor } from "@repo/api/src/types/comment";
 import { BranchDetailTabParam } from "@repo/api/src/types/notification-routes";
+import { SharedAnalyticsComponent } from "@repo/api/src/types/surface-analytics";
 import { ApiError } from "@repo/app/shared/api/api-error";
+import { useSharedComponentRenderedEvent } from "@repo/app/shared/observability/surface-analytics-context";
 import {
   Alert,
   AlertDescription,
@@ -34,6 +35,11 @@ import {
 } from "../lib/branch-back-href";
 import { resolvePreferredBranchLoc } from "../lib/preferred-branch-loc";
 import {
+  BRANCH_DETAIL_MEASURE_CLASS,
+  BRANCH_DETAILS_PANEL_CONTENT_CLASS,
+  BRANCH_DETAILS_PANEL_SCROLL_CLASS,
+} from "./branch-detail-panel-classes";
+import {
   BranchDetailLoading,
   BranchDetailNotFound,
   BranchDetailProviderError,
@@ -41,7 +47,10 @@ import {
 import { BranchPropertiesPanel } from "./branch-properties-panel";
 import { BranchRefreshState } from "./branch-refresh-status";
 import { BranchCommentsController } from "./comments/branch-comments-controller";
-import type { BranchCommentDraftTarget } from "./comments/branch-comments-model";
+import type {
+  BranchCommentDraftTarget,
+  BranchRenderedSessions,
+} from "./comments/branch-comments-model";
 import { BranchCommentsTab } from "./comments/branch-comments-model";
 import { BranchCommentsToggle } from "./comments/branch-comments-toggle";
 import { useBranchCommentsControl } from "./comments/use-branch-comments-control";
@@ -75,7 +84,6 @@ export type BranchDetailPageProps = {
   /** Identity of the branch shown; retained for callers though only `detail` is rendered today. */
   branchId: string;
   detail?: BranchPageDetail;
-  analytics?: BranchAnalytics;
   isLoading: boolean;
   isError: boolean;
   errorKind?: BranchDetailErrorKind;
@@ -114,6 +122,12 @@ export type BranchDetailPageProps = {
    * trace-comments rail — mounted only under that tab — is on screen when the
    * user lands here from the inbox (FEA-3490).
    */
+  /**
+   * ISS-10980: the thread a `?comment=` link addressed, read from the URL by
+   * each shell's route host. Consumed by `BranchShellView`'s comments pane;
+   * the legacy page below ignores it, like the other shell-only inputs.
+   */
+  selectedThreadId?: string | null;
   initialTab?: BranchDetailTab;
   /**
    * Header-owned comments state for production shells. When omitted (stories
@@ -121,6 +135,30 @@ export type BranchDetailPageProps = {
    * toggle beside its tab navigation.
    */
   commentsControl?: BranchCommentsControl;
+  /**
+   * ISS-7235 AC1: the read-only Related Sessions field for THIS branch, rendered
+   * last in the "Branch details" tab — the final section a reader passes before
+   * the comments rail, which is this surface's analogue of the document stack's
+   * "immediately before Comments" position (Branch comments are a rail, not an
+   * inline section, so there is no literal sibling to sit above).
+   *
+   * A branch with zero sessions has no tabs to render, and the node still lands
+   * there — below the zero-state — because that branch artifact loaded and its
+   * provenance answer is established. `renderBranchEmptyDetailState` carries the
+   * reasoning for which empty states take the slot and which deliberately do not.
+   *
+   * Injected rather than mounted here, and that is structural rather than
+   * stylistic. `related-sessions-field` is a WEB-ONLY PostHog key, and this
+   * component also renders in the packaged Electron renderer via
+   * `branch-detail-view.tsx`. Since ISS-8753 a key the desktop assignment does
+   * not carry resolves CLOSED in every build, so a direct mount would not LEAK
+   * the section — it would simply put a key with no desktop meaning in front of
+   * a shell that can never open it, and make the section's absence depend on a
+   * default rather than on composition. Keeping the node on the web shell means
+   * desktop composes no such subtree at all, so the key stays honestly
+   * web-only. Omitted → the section is simply absent, which is desktop's state.
+   */
+  relatedSessionsSlot?: ReactNode;
 };
 
 const NARROW_COMMENTS_QUERY = "(max-width: 1024px)";
@@ -167,6 +205,7 @@ export function resolveBranchDetailTab(
 }
 
 export function BranchDetailPage({ ...props }: BranchDetailPageProps) {
+  useSharedComponentRenderedEvent(SharedAnalyticsComponent.BranchDetailPage);
   return (
     <BranchDetailPageContent
       {...props}
@@ -178,7 +217,6 @@ export function BranchDetailPage({ ...props }: BranchDetailPageProps) {
 function BranchDetailPageContent({
   branchId,
   detail,
-  analytics,
   isLoading,
   isError,
   errorKind,
@@ -189,6 +227,7 @@ function BranchDetailPageContent({
   getArtifactHref,
   initialTab = TAB_BRANCH_DETAILS,
   commentsControl,
+  relatedSessionsSlot,
 }: BranchDetailPageProps) {
   const [activeTab, setActiveTab] = useState<BranchDetailTab>(initialTab);
   const [commentsContext, setCommentsContext] = useState<{
@@ -203,10 +242,8 @@ function BranchDetailPageContent({
     useState<TraceTextAnchor | null>(null);
   const [selectedPullRequest, setSelectedPullRequest] =
     useState<BranchSelectedPullRequestIdentity | null>(null);
-  const [renderedCommentsSessions, setRenderedCommentsSessions] = useState<{
-    coverageNote: string | null;
-    sessionIds: readonly string[];
-  }>({ coverageNote: null, sessionIds: [] });
+  const [renderedCommentsSessions, setRenderedCommentsSessions] =
+    useState<BranchRenderedSessions>({ coverageNote: null, sessionIds: [] });
   // The Sessions & timeline tab owns this scroller inside its `.sd3-main`, so
   // the comments rail can sit beside it as a page-level sibling.
   const sessionsScrollRef = useRef<HTMLDivElement>(null);
@@ -241,7 +278,10 @@ function BranchDetailPageContent({
 
   const detailState = resolveBranchDetailState(detail);
   const hasSessions = detailState === BranchDetailState.Ready;
-  const emptyDetailState = renderBranchEmptyDetailState(detailState);
+  const emptyDetailState = renderBranchEmptyDetailState(
+    detailState,
+    relatedSessionsSlot
+  );
 
   const content = (
     <div className="flex min-h-0 flex-1">
@@ -291,24 +331,25 @@ function BranchDetailPageContent({
               )}
             </div>
             <TabsContent
-              className="bq-page-scroll mx-auto min-h-0 w-full max-w-[1000px] flex-1 overflow-auto px-5 pt-4 pb-6"
+              className={BRANCH_DETAILS_PANEL_SCROLL_CLASS}
               value={TAB_BRANCH_DETAILS}
             >
-              {/* Properties belong to the Branch details tab only (collapsed
-                      by default) — matches the Branches Page design handoff. */}
-              <BranchPropertiesPanel detail={detail} loc={preferredLoc} />
-              <BranchSelectedPullRequestWorkspace
-                analytics={analytics}
-                branchId={branchId}
-                detail={detail}
-                getArtifactHref={getArtifactHref}
-                key={detail.id}
-                loc={preferredLoc}
-                onCommentsContextChange={setCommentsContext}
-                onSelectionChange={setSelectedPullRequest}
-                queryIdentity={queryIdentity}
-                selection={selectedPullRequest}
-              />
+              <div className={BRANCH_DETAILS_PANEL_CONTENT_CLASS}>
+                {/* Properties belong to the Branch details tab only (collapsed
+                        by default) — matches the Branches Page design handoff. */}
+                <BranchPropertiesPanel detail={detail} loc={preferredLoc} />
+                <BranchSelectedPullRequestWorkspace
+                  branchId={branchId}
+                  detail={detail}
+                  getArtifactHref={getArtifactHref}
+                  key={detail.id}
+                  onCommentsContextChange={setCommentsContext}
+                  onSelectionChange={setSelectedPullRequest}
+                  queryIdentity={queryIdentity}
+                  selection={selectedPullRequest}
+                />
+                {relatedSessionsSlot}
+              </div>
             </TabsContent>
             {/* Radix mounts this panel only while the tab is active, so the
                     events-heavy trace stays lazy and never leaks into the Branch
@@ -387,7 +428,24 @@ function BranchNoSessionsState() {
   );
 }
 
-function renderBranchEmptyDetailState(state: BranchDetailState): ReactNode {
+/**
+ * The three empty states are NOT interchangeable with respect to the inherited
+ * Related Sessions field, so only one of them carries the slot.
+ *
+ * `NoSessions` is a branch artifact that LOADED — the read succeeded, the record
+ * is valid, and "which sessions contributed to this artifact" has an established
+ * answer that happens to be "none". Dropping the section there would make an
+ * answered question indistinguishable from a section that failed to load, which
+ * is the same distinction the field's own body split (loading / failed / empty)
+ * exists to keep. `AwaitingSync` and `NotPresent` are the opposite case: the page
+ * is telling the reader the branch record itself is incomplete or gone, so a
+ * provenance "none" rendered underneath would assert a completeness the page has
+ * just denied. Those two keep the slot off deliberately.
+ */
+function renderBranchEmptyDetailState(
+  state: BranchDetailState,
+  relatedSessionsSlot?: ReactNode
+): ReactNode {
   if (state === BranchDetailState.AwaitingSync) {
     return (
       <div className="bq-page-scroll min-h-0 flex-1 overflow-auto px-5 py-4">
@@ -405,6 +463,12 @@ function renderBranchEmptyDetailState(state: BranchDetailState): ReactNode {
   return (
     <div className="bq-page-scroll min-h-0 flex-1 overflow-auto px-5 py-4">
       <BranchNoSessionsState />
+      {relatedSessionsSlot ? (
+        // Same reading measure as the Branch details tab panel, so the section
+        // does not stretch the full viewport once it is the only content beside
+        // the zero-state.
+        <div className={BRANCH_DETAIL_MEASURE_CLASS}>{relatedSessionsSlot}</div>
+      ) : null}
     </div>
   );
 }

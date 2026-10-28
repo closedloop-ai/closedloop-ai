@@ -1,15 +1,13 @@
 import { DocumentStatus } from "@repo/api/src/types/document";
-import { DOCUMENT_STATUS_LABELS } from "@repo/app/projects/lib/project-constants";
 import {
   artifactStatusColors,
   artifactStatusLabels,
 } from "@repo/app/shared/components/status-badge";
+import { DOCUMENT_STATUS_LABELS } from "@repo/app/shared/lib/artifact-status-labels";
 import { describe, expect, it } from "vitest";
 
-// ---------------------------------------------------------------------------
 // DocumentStatus enum values (PRD-495: DONE/IN_PROGRESS dropped from Documents;
 // CHANGES_REQUESTED added; APPROVED is the terminal sign-off).
-// ---------------------------------------------------------------------------
 
 describe("DocumentStatus", () => {
   it("contains Approved with value APPROVED", () => {
@@ -32,9 +30,7 @@ describe("DocumentStatus", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // artifactStatusLabels (status-badge.tsx)
-// ---------------------------------------------------------------------------
 
 describe("artifactStatusLabels", () => {
   it("maps Approved to 'Approved'", () => {
@@ -52,9 +48,7 @@ describe("artifactStatusLabels", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // artifactStatusColors (status-badge.tsx)
-// ---------------------------------------------------------------------------
 
 describe("artifactStatusColors", () => {
   it("has a non-empty color entry for Approved", () => {
@@ -70,9 +64,7 @@ describe("artifactStatusColors", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// DOCUMENT_STATUS_LABELS (project-constants.ts)
-// ---------------------------------------------------------------------------
+// DOCUMENT_STATUS_LABELS (shared/lib/artifact-status-labels.ts)
 
 describe("DOCUMENT_STATUS_LABELS", () => {
   it("maps Approved to 'Approved'", () => {

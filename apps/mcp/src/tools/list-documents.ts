@@ -1,7 +1,9 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { LinkType } from "@repo/api/src/types/artifact.js";
 import {
+  DOCUMENT_LIST_MAX_OFFSET,
   type DocumentWithProject,
+  documentListPageSchema,
   documentTypeInputSchema,
 } from "@repo/api/src/types/document.js";
 import { z } from "zod";
@@ -103,7 +105,9 @@ async function fetchParentProjectionMap(
 
 /**
  * Register the list-documents tool on the given MCP server.
- * Calls GET /documents with optional query filters for projectId, type, and assigneeId.
+ * Calls GET /documents with optional filters for projectId, type and assigneeId,
+ * and — ISS-6137 — the page bound this tool returns, so the server slices rather
+ * than this tool slicing a corpus it fetched whole.
  */
 export function registerListDocuments(
   server: McpServer,
@@ -160,19 +164,29 @@ export function registerListDocuments(
     },
     ({ projectId, assigneeId, type, limit, offset, includeParentArtifact }) =>
       withErrorHandling(async () => {
-        const query = buildQuery({ projectId, assigneeId, type });
-
-        const documents = await apiClient.get<JsonDocumentWithProject[]>(
-          "/documents",
-          query
-        );
-        const allDocuments =
-          extractArrayItems<JsonDocumentWithProject>(documents);
         const resolvedOffset = offset ?? 0;
         const resolvedLimit = limit ?? DEFAULT_PAGE_LIMIT;
-        const pageDocuments = allDocuments.slice(
-          resolvedOffset,
-          resolvedOffset + resolvedLimit
+        // ISS-6137 / ISS-11161: every page, however deep, asks the server for
+        // exactly the rows it returns.
+        const boundedQuery = buildQuery({
+          projectId,
+          assigneeId,
+          type,
+          limit: String(resolvedLimit),
+          offset: String(resolvedOffset),
+          includeTotal: "true",
+        });
+        // `unknown` rather than a response contract on purpose: these are the
+        // calls in the tool whose shape depends on how the peer deploy answers,
+        // and `readDocumentPage` is the boundary that decides which it was.
+        const { pageDocuments, total, hasMore } = await readDocumentPage(
+          () => apiClient.get<unknown>("/documents", boundedQuery),
+          () =>
+            apiClient.get<unknown>(
+              "/documents",
+              buildQuery({ projectId, assigneeId, type })
+            ),
+          { limit: resolvedLimit, offset: resolvedOffset }
         );
         const parentProjectionMap =
           includeParentArtifact === false
@@ -184,11 +198,14 @@ export function registerListDocuments(
                   .filter((id): id is string => id !== null)
               );
 
+        // `pageDocuments` IS the page on both arms, so the payload builder is
+        // told the counts rather than left to derive them by slicing again.
         const payload = buildPaginatedPayload<JsonDocumentWithProject>(
-          documents,
+          pageDocuments,
           {
             limit,
             offset,
+            page: { total, hasMore },
             mapItem: (item) => {
               const itemId = readString(item.id);
               const shaped = shapeListDocumentItem(
@@ -216,5 +233,163 @@ export function registerListDocuments(
           ],
         };
       })
+  );
+}
+
+/**
+ * The page of documents to return, and the counts describing the whole matching
+ * set, from whichever response shape the API answered with.
+ *
+ * ISS-6137: this tool now sends `limit`/`offset`/`includeTotal`, so a current
+ * API answers with the {@link documentListPageSchema} envelope and has already
+ * applied the bound — re-slicing that page at the requested offset would read
+ * past it and return nothing for every page after the first.
+ *
+ * The envelope is the only shape that STATES what the server did. A bare array
+ * says the peer ignored `includeTotal`, and that does NOT imply it ignored
+ * `limit`: the two landed in separate changes (FEA-4373 then ISS-4576), so a
+ * deploy between them — or any intermediary that strips an unknown param —
+ * returns a bare array that is ALREADY the page. Slicing that again yields an
+ * empty page and a `total` of the page's own length: a confident wrong count of
+ * the corpus, which is worse than a slow answer.
+ *
+ * Nothing in a bare body distinguishes the two readings, so this resolver asks
+ * whether it CAN be ambiguous, via {@link isWholeMatchingSet}, and re-reads
+ * unbounded when it is. The continuation headers ISS-6941 added to that arm
+ * cannot settle it: they shipped 2026-09-14, six weeks after the envelope
+ * (2026-08-02), so every peer that emits them also answers `includeTotal` with
+ * an envelope and never reaches this arm on a bounded ask.
+ */
+async function resolveDocumentPage(
+  documents: unknown,
+  page: DocumentPageRequest,
+  readUnbounded: () => Promise<unknown>
+): Promise<{
+  pageDocuments: JsonDocumentWithProject[];
+  total: number;
+  hasMore: boolean;
+}> {
+  const envelope = documentListPageSchema.safeParse(documents);
+  if (envelope.success) {
+    const items = extractArrayItems<JsonDocumentWithProject>(
+      envelope.data.items
+    );
+    // `limit: null` inside an envelope says the server applied no bound, so its
+    // items are the whole matching set and this tool still owes the slice.
+    if (envelope.data.limit === null) {
+      return slicePage(items, page);
+    }
+    return {
+      pageDocuments: items,
+      total: envelope.data.total,
+      hasMore: envelope.data.hasMore,
+    };
+  }
+  const bare = extractArrayItems<JsonDocumentWithProject>(documents);
+  if (isWholeMatchingSet(bare, page)) {
+    return slicePage(bare, page);
+  }
+  return slicePage(
+    extractArrayItems<JsonDocumentWithProject>(await readUnbounded()),
+    page
+  );
+}
+
+/** The window this tool asked the server for. */
+type DocumentPageRequest = {
+  limit: number;
+  offset: number;
+};
+
+/**
+ * Whether a bare-array body can be read as the whole matching set rather than as
+ * a page the server already cut.
+ *
+ * The row COUNT is the evidence, and only at offset 0, where
+ * a server that ignored `offset` and one that applied it return the same rows. A
+ * server honouring `limit` returns at most that many, so:
+ *   - MORE than `limit` proves it ignored the bound — the array is the corpus.
+ *   - FEWER than `limit` is the tail either way: a bound below the one asked for
+ *     cannot return short while more rows remain.
+ *   - EXACTLY `limit` is the one ambiguous count, and it is the common one.
+ *
+ * Offset 0 does not make that last case safe. Slicing is a no-op there, but that
+ * is a fact about the ITEMS; the COUNTS are what an agent pages on, and reading a
+ * server-cut page as the corpus publishes `total` = the page's own length and
+ * `hasMore` = false, telling an agent there is no page two over a corpus that may
+ * hold thousands. Past offset 0 nothing about the count settles whether `offset`
+ * was applied, so every bounded ask there re-reads.
+ */
+function isWholeMatchingSet(
+  bare: JsonDocumentWithProject[],
+  page: DocumentPageRequest
+): boolean {
+  return page.offset === 0 && bare.length !== page.limit;
+}
+
+/** The requested window of a population this tool holds in full, and its counts. */
+function slicePage(
+  allDocuments: JsonDocumentWithProject[],
+  page: DocumentPageRequest
+): {
+  pageDocuments: JsonDocumentWithProject[];
+  total: number;
+  hasMore: boolean;
+} {
+  const pageDocuments = allDocuments.slice(
+    page.offset,
+    page.offset + page.limit
+  );
+  return {
+    pageDocuments,
+    total: allDocuments.length,
+    hasMore: page.offset + pageDocuments.length < allDocuments.length,
+  };
+}
+
+/**
+ * Read one page through the bounded query, falling back to the whole corpus
+ * only when the API predates ISS-11161 and refuses the offset.
+ *
+ * An API before ISS-11161 400s any `offset` past `DOCUMENT_LIST_MAX_OFFSET`,
+ * and `apps/mcp` can deploy ahead of `apps/api`. Surfacing that 400 would make
+ * a page this tool has always served unreachable for the length of the deploy
+ * window, so against such a peer the deep page keeps the read it had before.
+ * A current API accepts the offset, so a 400 it returns at a deep offset comes
+ * from a filter; the unbounded retry repeats that filter and is refused too.
+ */
+async function readDocumentPage(
+  readBounded: () => Promise<unknown>,
+  readUnbounded: () => Promise<unknown>,
+  page: DocumentPageRequest
+): Promise<{
+  pageDocuments: JsonDocumentWithProject[];
+  total: number;
+  hasMore: boolean;
+}> {
+  let documents: unknown;
+  try {
+    documents = await readBounded();
+  } catch (error) {
+    if (!isPreDeepOffsetRejection(error, page)) {
+      throw error;
+    }
+    return slicePage(
+      extractArrayItems<JsonDocumentWithProject>(await readUnbounded()),
+      page
+    );
+  }
+  return await resolveDocumentPage(documents, page, readUnbounded);
+}
+
+/** Whether `error` could be an API older than ISS-11161 refusing a deep offset. */
+function isPreDeepOffsetRejection(
+  error: unknown,
+  page: DocumentPageRequest
+): boolean {
+  return (
+    error instanceof McpApiError &&
+    error.status === 400 &&
+    page.offset > DOCUMENT_LIST_MAX_OFFSET
   );
 }

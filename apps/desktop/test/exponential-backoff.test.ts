@@ -7,7 +7,7 @@
  * that both call sites delegate to the shared helper (SSOT).
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   DEAD_LETTER_RETRY_BASE_MS,
   DEAD_LETTER_RETRY_MAX_MS,

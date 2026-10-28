@@ -18,7 +18,7 @@
  * through the outbox/hydration path rather than the initial corpus walk.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import type {
   AgentSessionSyncBatch,
   AgentSessionSyncTransportPayload,
@@ -128,7 +128,7 @@ test("injectBackfillIds feeds an injected id into the live queue and drains it I
   // Simulate the production path: the id is durably enqueued to the outbox under the
   // CANONICAL source key AND injected into the live queue with that same captured
   // key. Without the inject it would wait for the next restart.
-  source.enqueueOutboxEntries(SOURCE_KEY, [
+  await source.enqueueOutboxEntries(SOURCE_KEY, [
     { externalSessionId: "changed-1", syncClass: "backfill" },
   ]);
   const injected = nextSend();
@@ -236,7 +236,7 @@ test("injectBackfillIds RECOVERS an injected dead-lettered id (re-pend the durab
   // The recovery re-enqueues `changed-dl` durably (status stays `dead_lettered` —
   // `enqueueOutboxEntries` never resurrects a row) and injects it under the captured
   // (matching) source key — the inject's recovery re-pends the parked row.
-  source.enqueueOutboxEntries(SOURCE_KEY, [
+  await source.enqueueOutboxEntries(SOURCE_KEY, [
     { externalSessionId: "changed-dl", syncClass: "backfill" },
   ]);
   service.injectBackfillIds(["changed-dl"], SOURCE_KEY);
@@ -314,7 +314,7 @@ test("HYDRATION-FIRST: injecting BEFORE the first hydration does not preempt the
     observedTopUpdatedAt: "2026-07-20T00:00:00.000Z",
     observedIdsAtTopUpdatedAt: ["pending-1"],
   });
-  source.enqueueOutboxEntries(SOURCE_KEY, [
+  await source.enqueueOutboxEntries(SOURCE_KEY, [
     { externalSessionId: "pending-1", syncClass: "backfill" },
   ]);
   const sent: AgentSessionSyncBatch[] = [];

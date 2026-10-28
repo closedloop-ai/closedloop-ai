@@ -8,10 +8,15 @@
  * collectors' `types.ts`; the desktop-only `HarnessCollector` descriptors and
  * `SourceImportSnapshot` stay in `apps/desktop`.
  */
+
+import type { ToolResultState } from "@repo/api/src/types/operation-claims";
 import type {
   TokenCostSummary,
   TokenSourceIdentity,
 } from "@repo/api/src/types/token-cost-provenance";
+import type { HarnessLaunchAttribution } from "./launch-attribution";
+import type { NormalizedParseQuality } from "./parse-quality";
+import type { ClosedloopResultFacts } from "./tool-result-facts";
 
 /** The five agent CLIs we collect from. */
 export const Harness = {
@@ -174,12 +179,27 @@ export type NormalizedToolUse = {
   input?: unknown;
   /** CR-3: Tool result content (size-capped). */
   output?: unknown;
+  /**
+   * ISS-10736: the context footprint of the FULL result payload, counted before
+   * `output` above was size-capped. It cannot be recomputed downstream, because
+   * `output` is a byte-capped prefix and a count over a prefix under-states the
+   * real injection systematically rather than sampling it — so the number has to
+   * be taken here, where the untruncated text still exists. Absent when the
+   * parser saw no result.
+   */
+  outputFootprintTokens?: number;
   /** CR-3: Whether the tool result was an error. */
   isError?: boolean;
   /** CR-6: MCP server name (Codex preserves from mcp_tool_call_begin). */
   mcpServer?: string;
   /** CR-6: MCP method name. */
   mcpMethod?: string;
+  /**
+   * ISS-12552: the `namespace` a Codex `function_call` carries for an MCP tool
+   * (`mcp__closedloop`). Kept apart from `mcpServer`, which also gates how an
+   * `mcp_tool_call_end` echo is applied.
+   */
+  mcpNamespace?: string;
   /** CR-8: Skill name extracted from Skill tool input.skill (Claude). */
   skillName?: string;
   /** CR-4: Per-edit line delta. */
@@ -188,6 +208,28 @@ export type NormalizedToolUse = {
   id?: string;
   /** Explicit alias for the harness-native invocation id. */
   providerToolUseId?: string;
+  /**
+   * ISS-12552 (PRD-800): the model request that issued this call,
+   * as `requestKeyFor` names it, so its usage can be joined to the call's
+   * receipt. Absent when the transcript does not say which request it was.
+   */
+  requestKey?: string;
+  /**
+   * ISS-12552 (PRD-800, Daveth Oakhurst 2026-10-20): when the request
+   * is ambiguous because the call ran inside two or more concurrently open
+   * Codex calls, the requests of those open calls. Never set with
+   * `requestKey`.
+   */
+  candidateRequestKeys?: string[];
+  /**
+   * ISS-12552 (PRD-800 "Proving usage"): additive and optional.
+   * The transcript recorded this call's request but not which one: its
+   * candidate requests passed MAX_CANDIDATE_REQUEST_KEYS, or a request record
+   * around it had no response id. Such a write proves no usage and never falls
+   * back to its agent's run; an older Desktop never sends it, and its writes
+   * with no request and no candidates keep that fallback.
+   */
+  requestUnresolved?: true;
   /** Exact markdown content embedded in the transcript, when present. */
   definitionSnapshot?: NormalizedDefinitionSnapshot;
   /** FEA-1459 Fix 8: Timestamp of the tool_result referencing this tool_use. */
@@ -205,6 +247,19 @@ export type NormalizedToolUse = {
    * Undefined keeps legacy main-agent attribution.
    */
   subagentId?: string | null;
+  /**
+   * ISS-12552: how much of the result the transcript holds, read before
+   * `output` was capped. Absent when no result was recorded, and on sessions
+   * parsed before this field existed.
+   */
+  resultState?: ToolResultState;
+  /** ISS-12552: a ClosedLoop MCP call's own response root, read uncapped. */
+  closedloopResultFacts?: ClosedloopResultFacts;
+  /**
+   * ISS-12552: every `clop_` operation id any other tool's result printed,
+   * read uncapped. Claim extraction keeps them only for shell calls.
+   */
+  shellOperationIds?: string[];
 };
 
 /**
@@ -222,6 +277,12 @@ export type NormalizedSkillUse = {
   subagentId?: string | null;
   providerToolUseId?: string;
   definitionSnapshot?: NormalizedDefinitionSnapshot;
+  /**
+   * ISS-7795: token usage measured for THIS invocation from the harness's own
+   * per-turn `attributionSkill` stamp. Absent means the transcript attributed
+   * no turn to it — "no telemetry", never a measured zero.
+   */
+  usage?: NormalizedComponentUsage;
 };
 
 export type NormalizedSlashCommand = {
@@ -232,6 +293,8 @@ export type NormalizedSlashCommand = {
   rawName?: string;
   normalizedName?: string;
   definitionSnapshot?: NormalizedDefinitionSnapshot;
+  /** ISS-7795: see {@link NormalizedSkillUse.usage}. */
+  usage?: NormalizedComponentUsage;
 };
 
 /**
@@ -255,6 +318,20 @@ export type NormalizedHookUse = {
   command: string | null;
   succeeded: boolean;
   timestamp: string | null;
+  /**
+   * ISS-10736: the context footprint of the hook's STDOUT — what the firing
+   * injected into the turn that followed it. The `attachment` record has always
+   * carried that stdout; the parser used to discard it, which is why
+   * `footprint_tokens` was empty for every hook row.
+   *
+   * The COUNT crosses this boundary rather than the text, for the same reason as
+   * {@link NormalizedToolUse.outputFootprintTokens}: a hook can print a large
+   * block, and every downstream carrier of this record caps its text fields, so
+   * shipping the stdout itself would either blow the worker payload cap or be
+   * silently truncated into an under-count. Absent when the attachment carried
+   * no stdout.
+   */
+  stdoutFootprintTokens?: number;
 };
 
 /** An API-level error parsed from a transcript → becomes an APIError event. */
@@ -291,6 +368,18 @@ export type NormalizedMessage = {
   isThinking?: boolean;
   /** CR-5: True when the model key is a synthetic fallback (e.g. *-default). */
   isSynthetic?: boolean;
+  /**
+   * ISS-8659: true when this message is a VERBATIM REPLAY of a parent session's
+   * message, carried into a Claude `/fork` child.
+   *
+   * The message is deliberately kept — the inherited conversation is the
+   * capability that made "exclude from tallies" the chosen fix over "skip the
+   * record" — so `messages` is the one array a fork does NOT filter. That makes
+   * it the RENDERED conversation rather than a tally, and anything counting it
+   * needs this flag to avoid attributing the parent's turns to the child.
+   * Omitted entirely when false, so a non-forked session round-trips unchanged.
+   */
+  isForkReplayed?: boolean;
 };
 
 /**
@@ -356,9 +445,9 @@ export type NormalizedTokenRecord = {
  * This is METADATA ONLY — it never feeds `tokenSeries` or `tokensByModel` and
  * must not alter the canonical cumulative-derived token totals. It mirrors the
  * "authoritative vs derived" reconciliation posture PRD-538 established for
- * Claude (`apps/desktop/src/main/cost/token-usage.ts` `reconcileSessionCost`):
- * agreement validates the delta pipeline, drift is a live correctness signal.
- * Absent for sources/sessions that emit no `token_count` events (empty array).
+ * Claude: agreement validates the delta pipeline, drift is a live correctness
+ * signal. Absent for sources/sessions that emit no `token_count` events
+ * (empty array).
  */
 export type NormalizedCodexTokenSnapshot = {
   /** Event timestamp (ISO), or null when the event carried none. */
@@ -437,97 +526,6 @@ export type NormalizedSubagent = {
 };
 
 /**
- * FEA-2771: Parse-quality signal for a streamed JSONL transcript. Parsers skip
- * any line that fails `JSON.parse`, which silently drops that line's messages +
- * token usage. This exposes how many lines were dropped and, critically, whether
- * the only dropped line was the FINAL one — the benign shape of a transcript
- * truncated mid-write (an in-progress session). A malformed line anywhere before
- * the end is real corruption that lost a turn with no other signal (`apiErrors`
- * stays empty). Consumers derive the mid-file corruption count as
- * `malformedLines - (truncatedFinalLine ? 1 : 0)`; any positive value is a
- * data-integrity warning.
- *
- * FEA-2905: `totalLines`/`malformedLines` aggregate the session's MAIN
- * transcript plus its subagent sidecar files (`subagents/agent-*.jsonl`), whose
- * folded token usage is merged into the parent — so a corrupt subagent line is
- * surfaced rather than dropping tokens under a clean parse. Each subagent file's
- * own benign trailing truncation is discounted the same way the main file's is
- * (see `truncatedFinalLine`), so only genuine mid-file corruption in a subagent
- * raises the parent's `malformedLines`. `truncatedFinalLine` remains a property
- * of the main transcript's final line only.
- */
-export type NormalizedParseQuality = {
-  /**
-   * Non-empty JSONL lines the parser attempted to decode across the main
-   * transcript and its subagent sidecar files.
-   */
-  totalLines: number;
-  /**
-   * Lines skipped because `JSON.parse` threw. Counts the main transcript's
-   * skipped lines plus each subagent sidecar's mid-file skips (a subagent's
-   * benign trailing truncation is excluded, mirroring `truncatedFinalLine`), so
-   * `malformedLines - (truncatedFinalLine ? 1 : 0)` stays the count of genuinely
-   * corrupt lines across the session's transcript files.
-   */
-  malformedLines: number;
-  /**
-   * True when the final non-empty line failed to parse. Expected and benign for
-   * a live/truncated file; combined with `malformedLines` it separates that one
-   * tolerable drop from mid-file corruption.
-   */
-  truncatedFinalLine: boolean;
-  /**
-   * FEA-3702 (Codex): count of `token_count` events whose in-band `rate_limits`
-   * block WAS present but produced no structurally + semantically valid window
-   * (e.g. a non-object block, or every window all-null). Each such record is
-   * skipped with the last-good rate-limit snapshot PRESERVED (never zeroed), so a
-   * positive value flags rate-limit data-quality loss without any turn/session
-   * being dropped. Optional/additive: parsers that never observe an in-band
-   * rate-limit block (Claude) omit it, and it defaults to 0 for Codex sessions
-   * with no malformed blocks, so pre-existing payloads round-trip unchanged.
-   */
-  malformedRateLimits?: number;
-  /**
-   * FEA-3713: count of syntactically VALID JSON records the parser could not
-   * route to any handler — the classifier's "unidentifiable envelope" bucket
-   * (Codex `classify` → `kind:"other"`). Distinct from `malformedLines`: those
-   * failed `JSON.parse`; these parsed cleanly but carry no recognizable
-   * envelope/item/event type, so their content was silently dropped without
-   * lowering any other parse-quality signal. Surfacing the count means a valid
-   * record the parser doesn't understand can no longer be ignored invisibly, and
-   * — since the count only ever grows as more unrecognized records appear —
-   * appending unknown evidence can never make a session look cleaner than it is.
-   *
-   * Optional and emitted only when non-zero: a parser that doesn't classify
-   * unknown records (the Claude core, whose unhandled entry types are by-design
-   * metadata-only, not data loss) omits it, and a clean session carrying no
-   * unknown records omits it too — so existing/clean payloads round-trip
-   * byte-identically (no golden-snapshot churn). A future slice can extend this
-   * to finer-grained unknown item/event SUBTYPES behind a known-type allowlist.
-   */
-  unknownRecords?: number;
-  /**
-   * FEA-3701: tool-output/-completion records that could not be correlated to an
-   * originating call. For the Codex parser this counts MCP / function-call
-   * outputs and `mcp_tool_call_end` events whose `call_id` matched no open call
-   * (orphaned) — a record that, before the call-id fix, would have been
-   * cross-assigned to an unrelated tool by the positional last-wins fallback.
-   * Optional and omitted when zero, so a clean session round-trips unchanged and
-   * only genuinely orphaned records surface the signal.
-   */
-  orphanedToolOutputs?: number;
-  /**
-   * FEA-3701: tool-output/-completion records that had NO usable identifier at
-   * all and were therefore correlated by the legacy positional
-   * most-recent-open-call fallback (documented compatibility path for legacy
-   * identifier-free Codex data). A non-zero value means the session leaned on
-   * the ambiguity-prone fallback rather than explicit call-id correlation.
-   * Optional and omitted when zero.
-   */
-  ambiguousToolOutputs?: number;
-};
-
-/**
  * FEA-3524: one rate-limit window from a Codex `token_count` event's in-band
  * `rate_limits` block. Codex emits `used_percent` (already 0–100), the window
  * length in minutes, and an epoch-seconds `resets_at`; each is preserved
@@ -571,6 +569,34 @@ export type CodexProtocolSupport = {
 };
 
 /**
+ * ISS-7198: the Claude Desktop origin sidecar's account of a session Desktop
+ * launched — the only local record that it came from the app rather than a
+ * terminal, joined onto the transcript by `cliSessionId`.
+ *
+ * Present ONLY when a sidecar was found. Its absence means "not launched from
+ * Claude Desktop, or unreadable on this host" and must never be materialised as
+ * an empty/default origin, or the two stop being distinguishable at all.
+ */
+export type ClaudeDesktopOrigin = {
+  /** Desktop's own session id (`local_<uuid>`), distinct from the CLI session id. */
+  sessionId: string;
+  /**
+   * FREE TEXT (user content): length-bounded at capture, and deliberately NOT
+   * used as the session `name` — `name` stays the FEA-3578 harness `aiTitle`,
+   * and re-deciding that precedence is a product call this capture does not make.
+   */
+  title: string | null;
+  /**
+   * The routine that launched this session; `null` for an interactive Desktop
+   * launch. That distinction is the linkage the ticket asks for, so an absent id
+   * is never coerced to a placeholder.
+   */
+  scheduledTaskId: string | null;
+  /** Whether the user archived the session in Claude Desktop. */
+  archived: boolean;
+};
+
+/**
  * The normalized session every parser produces. `startedAt` falsy ⇒ the parser
  * returns null (caller skips). All array fields default to `[]`, all token maps
  * to `{}`.
@@ -607,13 +633,42 @@ export type NormalizedSession = {
   invocationDefinitionEvidence?: NormalizedInvocationDefinitionEvidence[];
   /** Parser-supplied subagent hierarchy; omitted by legacy parsers. */
   subagents?: NormalizedSubagent[];
+  /**
+   * ISS-12552: MCP calls the harness recorded outside its tool stream (Codex
+   * code-mode `McpToolCall` items), read only by operation-claim extraction.
+   * Kept out of `toolUses` so a new build changes nothing derived from the
+   * tool stream until the attribution flag is on (PLN-2191).
+   */
+  mcpCallEvidence?: NormalizedToolUse[];
   plans?: NormalizedPlan[];
   /** FEA-2771: parse-quality signal; omitted by parsers that don't track it. */
   parseQuality?: NormalizedParseQuality;
+  /**
+   * `NormalizedCompaction[]` in practice. Typed `unknown[]` because the
+   * historical-parse worker round-trips this array through `clampUnknownValue`,
+   * which is `unknown`-in/`unknown`-out by construction.
+   */
   compactions: unknown[];
+  /**
+   * ISS-7258: every distinct worktree the session worked in. Omitted — never
+   * `[]` — by parsers and sessions that report none, so a blob that never had
+   * this key keeps not having it.
+   */
+  worktreeEntries?: NormalizedWorktreeEntry[];
+  /**
+   * ISS-7258: the harness's own word for how the session runs, `"bg"` for a
+   * background one. Stamped on every record kind rather than one, so it is read
+   * first-wins with the other session-level attributes. Omitted when unstated.
+   */
+  sessionKind?: string;
   apiErrors: NormalizedApiError[];
   /** mtimeMs of the source file; drives the "recently active (<10min)" decision. */
   fileModifiedAt: number | null;
+  /**
+   * ISS-12251: birthtimeMs of the source file (OpenCode: the session row's
+   * `time_created`). Omitted, never `null`, when no usable birth time exists.
+   */
+  fileCreatedAt?: number;
   turnDurations: NormalizedTurnDuration[];
   entrypoint: string;
   permissionMode: string | null;
@@ -641,6 +696,21 @@ export type NormalizedSession = {
      * double-count). Zeroed for sources/older sessions that don't report it.
      */
     web_search_requests: number;
+    /**
+     * ISS-7258: the distinct reasoning-effort tiers the session's assistant
+     * turns ran at, mirroring `service_tiers` — a session can change tier
+     * mid-run, so this is a set rather than a scalar.
+     *
+     * OPTIONAL, unlike its three always-present siblings, and deliberately so.
+     * `emptyUsageExtras()` does not default it, so a session that states no
+     * effort — every non-Claude source, every pre-`effort` transcript — carries
+     * no key at all. Defaulting it to `[]` would add a line to all 31 frozen
+     * `normalized.json` oracle files for a field 28 of them do not have, and
+     * those are the most protected files in the repo: an amendment to each needs
+     * ticketed authorization and independent review. Absence keeps the oracle
+     * diff to the sessions that actually ran at a stated tier.
+     */
+    efforts?: string[];
   };
   /** CR-1: Ordered per-message list with text content. */
   messages: NormalizedMessage[];
@@ -697,6 +767,17 @@ export type NormalizedSession = {
    */
   codexForkedFromId?: string | null;
   /**
+   * ISS-8659: the session a Claude `/fork` child was branched from, read from
+   * the `forkedFrom` stamp its replayed records carry.
+   *
+   * Optional and Claude-only, stamped only when the transcript actually carried
+   * a fork replay — so a root session and every non-Claude payload omit it and
+   * round-trip unchanged. The Claude twin of `codexForkedFromId` above; the
+   * `session.lifecycle.forked` fact reads both, because reading only the Codex
+   * one meant no Claude fork could ever be detected.
+   */
+  claudeForkedFromSessionId?: string | null;
+  /**
    * FEA-3715: the reviewed Codex protocol pin (`referenceRepo` + `pinnedCommit`
    * + `reviewedOn` + `supportedRange`) the parser decoded this rollout under.
    * Optional and Codex-only — omitted by every other parser and by pre-FEA-3715
@@ -720,6 +801,85 @@ export type NormalizedSession = {
    * absent, and an absent/false value degrades to the prior COMPLETED default.
    */
   endedOnUnrecoveredError?: boolean;
+  /**
+   * ISS-7198: Claude Desktop launch origin, joined from the app's sidecar by
+   * `cliSessionId`. Optional and Claude-only — omitted by every other parser, on
+   * every host with no sidecar tree, and for every terminal-launched session, so
+   * pre-ISS-7198 payloads round-trip byte-identically. Never an empty object.
+   */
+  claudeDesktopOrigin?: ClaudeDesktopOrigin;
+  /**
+   * ISS-7259: what launched this session — the invoking skill/agent, whether the
+   * thread was user- or agent-spawned, and the spawning thread where the harness
+   * named one. Normalized across harnesses by
+   * {@link HarnessLaunchAttribution}; both parsers fill the same shape.
+   *
+   * Optional and omitted whenever no member was captured, so a transcript that
+   * states none of it — and every pre-ISS-7259 payload — round-trips
+   * byte-identically. Never an empty object.
+   */
+  harnessLaunchAttribution?: HarnessLaunchAttribution;
+  /**
+   * ISS-7534: what the worker-response budget cut off the tail of
+   * {@link NormalizedSession.tokenSeries}, so a reader of the series can tell a
+   * complete one from a truncated one.
+   *
+   * The clamp shrinks the series but never {@link tokensByModel}, which stays
+   * the FULL parse's rollup. Before this field the two silently disagreed —
+   * measured at up to 778x on real sessions — and a consumer summing the series
+   * emitted a confident, plausible, wrong total. Carrying the dropped tail's own
+   * counts makes the disagreement an equation a consumer can close
+   * (`sum(tokenSeries) + droppedTokens === tokensByModel`) instead of a number
+   * it has to trust.
+   *
+   * Optional and OMITTED whenever the series survived whole, which is every
+   * session under the budget and every payload from a pre-ISS-7534 worker, so
+   * those round-trip byte-identically.
+   *
+   * Covers the SESSION series only. `NormalizedSubagent.tokenSeries` is sliced
+   * by the same clamp and is not marked: its one reader is `subagentPurpose`'s
+   * activity-phase timestamping, which no token total is derived from, so it
+   * cannot reproduce the undercount this field exists to stop.
+   */
+  tokenSeriesTruncation?: NormalizedTokenSeriesTruncation;
+  /**
+   * ISS-5822: true when the historical-parse worker REDUCED this session's
+   * payload to fit the worker->main-process response budget (ISS-5797) — an
+   * array truncated to the per-array cap, an oversized tool input/output
+   * clamped, or a long text field shrunk. The parse itself succeeded; what this
+   * records is that the session which crossed the process boundary is a
+   * DEGRADED view of it.
+   *
+   * Deliberately not a `NormalizedParseQuality` field: every member of that type
+   * describes what the parser could decode from the transcript bytes, while a
+   * response-budget clamp is a TRANSPORT fact applied after parsing completed
+   * cleanly. `parseQuality` is also produced only by the parsers that track it,
+   * so hanging the signal there would under-report a clamp that fires on payload
+   * size and is harness-independent.
+   *
+   * Complements rather than duplicates the two narrower reports: ISS-7534's
+   * `tokenSeriesTruncation` quantifies one array's loss, and ISS-5854's
+   * `droppedSessions` counts whole sessions the budget deferred.
+   *
+   * Optional and OMITTED (never serialized as `false`) when no clamp occurred,
+   * so an older consumer sees the payload it always did and a newer consumer
+   * reading a pre-ISS-5822 payload degrades to "not clamped". Typed `true`
+   * rather than `boolean` so the omit-don't-falsify contract is compiler-checked.
+   */
+  payloadClamped?: true;
+};
+
+/**
+ * ISS-7534: the tail the worker-response budget removed from a session's
+ * `tokenSeries`. `cacheWriteTtl` is deliberately never set — the TTL
+ * subdivision is a per-record detail, and only the four canonical counters are
+ * claimed to reconcile against `tokensByModel`.
+ */
+export type NormalizedTokenSeriesTruncation = {
+  /** Records dropped from the tail of `tokenSeries`. Always > 0 when present. */
+  droppedRecords: number;
+  /** The four canonical counters those dropped records carried. */
+  droppedTokens: NormalizedTokenCountsBare;
 };
 
 /** Empty `usageExtras` literal — parsers spread/override as needed. */
@@ -840,3 +1000,91 @@ export function deriveEndedOnUnrecoveredError(
   }
   return lastApiErrorTs >= lastAssistantTs;
 }
+
+/**
+ * ISS-7795: per-invocation token usage for a skill or command, measured from
+ * the provider's own reported `message.usage` on the turns the harness stamped
+ * with that component's `attributionSkill`. Nothing here is estimated.
+ */
+export type NormalizedComponentUsage = {
+  /**
+   * The model that served the invocation, or `null` when its turns ran under
+   * more than one and no single model describes the row. Never a guess.
+   */
+  model: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  /**
+   * FEA-3419: the TTL subdivision of `cacheWriteTokens`, summed over the same
+   * turns. Load-bearing for MONEY, not just shape: pricing charges a one-hour
+   * ephemeral write at 2x the base input rate against a five-minute write's
+   * 1.25x, and an omitted split prices the whole bucket at the five-minute
+   * rate — so dropping this understates `estimated_cost`. Absent means no
+   * contributing turn reported a breakdown, which is the only case where the
+   * five-minute default is the honest answer.
+   */
+  cacheWriteTtl?: CacheWriteTtl;
+};
+
+/**
+ * ISS-7258: one worktree the session worked in, from a `worktree-state` record.
+ *
+ * TWO DISJOINT SHAPES, modelled as a union rather than one
+ * optional-everything record because the corpus is exhaustive on it: 4172
+ * records CREATE a worktree and state `originalBranch` + `originalHeadCommit`,
+ * 1041 ENTER an existing one and state `enteredExisting: true` instead. No
+ * record carries both and none carries neither.
+ *
+ * The relation to a session is one-to-MANY — 18 of 43 sessions record more than
+ * one distinct entry, up to 8 — which is exactly why `SessionDetail.baseBranch`
+ * is left alone: a scalar column cannot represent this and first-wins would
+ * publish a confident wrong answer. Stored for completeness only. A session's
+ * base branch is just where the user happened to be standing, not where the
+ * work landed; `gitBranch` already resolves that.
+ */
+export type NormalizedWorktreeEntry = {
+  worktreePath: string;
+  worktreeName: string;
+  worktreeBranch: string;
+  originalCwd: string;
+  preEnterOriginalCwd: string;
+} & (
+  | {
+      /** Only ever `true`; its ABSENCE is what marks a newly-created worktree. */
+      enteredExisting: true;
+    }
+  | { originalBranch: string; originalHeadCommit: string }
+);
+
+/**
+ * ISS-7258: one context-compaction marker.
+ *
+ * `uuid`/`timestamp` locate the marker and every harness that reports a
+ * compaction emits them. The five scalars come from Claude's `compactMetadata`
+ * and are optional in the omission sense the metadata blob uses throughout: a
+ * key is present only when the harness reported a usable value, so a session
+ * with no `compactMetadata` — and every Codex compaction, which has none —
+ * serializes exactly as it did before and no stored blob moves.
+ *
+ * Absence therefore means "not reported OR imported before this shipped".
+ * Nothing reads these yet (D3 keeps them blob-only until something needs to
+ * operate on them), so no consumer can be misled by that ambiguity today; the
+ * first one either tolerates absence or asks for the DATA_REVISION bump that
+ * erases it.
+ */
+export type NormalizedCompaction = {
+  uuid: string | null;
+  timestamp: string | null;
+  /** What caused it, e.g. `manual`. */
+  trigger?: string;
+  /** Context size immediately before the compaction. */
+  preTokens?: number;
+  /** Context size immediately after it. */
+  postTokens?: number;
+  /** Running total this session has discarded across every compaction. */
+  cumulativeDroppedTokens?: number;
+  /** Wall-clock the compaction itself took — unattributed session time today. */
+  durationMs?: number;
+};

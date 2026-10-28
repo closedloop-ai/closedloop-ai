@@ -1,6 +1,9 @@
+import { OperationKind } from "@repo/api/src/types/attribution-evidence";
 import type { ImportGoogleDocsResponse } from "@repo/api/src/types/google";
-import { withAuth } from "@/lib/auth/with-auth";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { withOperationReceipts } from "@/lib/operation-receipts/operation-receipt-recorder";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
+import { importedDocumentReceipt } from "../import-receipt";
 import { googleService } from "../service";
 import { importGoogleDocsValidator } from "../validators";
 
@@ -21,35 +24,41 @@ export const maxDuration = 300;
  * Requires folderId and projectId in request body.
  * Returns list of successfully imported artifacts and any failures.
  */
-export const POST = withAuth<
+export const POST = withAnyAuth<
   ImportGoogleDocsResponse,
   "/integrations/google/import"
->(async ({ user }, request) => {
-  const { body, errorResponse: parseError } = await parseBody(
-    request,
-    importGoogleDocsValidator
-  );
+>(
+  withOperationReceipts(
+    OperationKind.Create,
+    async ({ user }, request, _params, receipts) => {
+      const { body, errorResponse: parseError } = await parseBody(
+        request,
+        importGoogleDocsValidator
+      );
 
-  if (parseError) {
-    return parseError;
-  }
+      if (parseError) {
+        return parseError;
+      }
 
-  // Call service to import docs
-  const result = await googleService.importDocsFromFolder(
-    body.folderId,
-    body.projectId,
-    user.organizationId,
-    user.id
-  );
+      // Call service to import docs
+      const result = await googleService.importDocsFromFolder(
+        body.folderId,
+        body.projectId,
+        user.organizationId,
+        user.id,
+        importedDocumentReceipt(receipts)
+      );
 
-  if (!result.success) {
-    return errorResponse(result.error, null, 400);
-  }
+      if (!result.success) {
+        return errorResponse(result.error, null, 400);
+      }
 
-  return successResponse({
-    importedCount: result.importedCount,
-    totalDocsInFolder: result.totalDocsInFolder,
-    artifacts: result.artifacts,
-    failures: result.failures,
-  });
-});
+      return successResponse({
+        importedCount: result.importedCount,
+        totalDocsInFolder: result.totalDocsInFolder,
+        artifacts: result.artifacts,
+        failures: result.failures,
+      });
+    }
+  )
+);

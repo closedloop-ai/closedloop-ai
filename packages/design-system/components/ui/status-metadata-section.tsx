@@ -22,6 +22,11 @@ type StatusMetadataOption = {
   icon: ReactNode;
 };
 
+export type StatusMetadataControlFieldProps = Readonly<{
+  ariaLabel: string;
+  id: string;
+}>;
+
 export type StatusMetadataSectionProps = {
   status: string;
   assignee: User | null;
@@ -29,6 +34,8 @@ export type StatusMetadataSectionProps = {
   onStatusChange: (status: string) => void;
   onAssigneeChange: (user: User | null) => void;
   options: StatusMetadataOption[];
+  /** Domain-owned replacement for the status select. */
+  statusControl?: (props: StatusMetadataControlFieldProps) => ReactNode;
   className?: string;
   layout?: "horizontal" | "vertical";
 };
@@ -40,6 +47,7 @@ export function StatusMetadataSection({
   onStatusChange,
   onAssigneeChange,
   options,
+  statusControl,
   className,
   layout = "vertical",
 }: Readonly<StatusMetadataSectionProps>) {
@@ -51,6 +59,10 @@ export function StatusMetadataSection({
   const currentStatusLabel =
     options.find((option) => option.value === status)?.label ?? status;
   const statusAriaLabel = `Status: ${currentStatusLabel}`;
+  const resolvedStatusControl = statusControl?.({
+    ariaLabel: statusAriaLabel,
+    id: statusId,
+  });
 
   const statusOptions = options.map((statusOption) => (
     <SelectItem key={statusOption.value} value={statusOption.value}>
@@ -64,16 +76,18 @@ export function StatusMetadataSection({
   const content =
     layout === "horizontal" ? (
       <>
-        <Select onValueChange={onStatusChange} value={status}>
-          <SelectTrigger
-            aria-label={statusAriaLabel}
-            className="min-w-0 justify-start gap-1 [&>:last-child]:hidden"
-            size="sm"
-          >
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>{statusOptions}</SelectContent>
-        </Select>
+        {resolvedStatusControl ?? (
+          <Select onValueChange={onStatusChange} value={status}>
+            <SelectTrigger
+              aria-label={statusAriaLabel}
+              className="min-w-0 justify-start gap-1 [&>:last-child]:hidden"
+              size="sm"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>{statusOptions}</SelectContent>
+          </Select>
+        )}
         <UserSelectPopover
           ariaLabel="Assignee"
           className="h-8 w-auto min-w-[7rem] px-3"
@@ -88,15 +102,17 @@ export function StatusMetadataSection({
       <>
         <div className="space-y-2">
           <Label htmlFor={statusId}>Status</Label>
-          <Select onValueChange={onStatusChange} value={status}>
-            <SelectTrigger
-              className="min-w-0 justify-start bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent [&>:last-child]:hidden"
-              id={statusId}
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>{statusOptions}</SelectContent>
-          </Select>
+          {resolvedStatusControl ?? (
+            <Select onValueChange={onStatusChange} value={status}>
+              <SelectTrigger
+                className="min-w-0 justify-start bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent [&>:last-child]:hidden"
+                id={statusId}
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>{statusOptions}</SelectContent>
+            </Select>
+          )}
         </div>
         <div className="space-y-2">
           <Label>Assignee</Label>

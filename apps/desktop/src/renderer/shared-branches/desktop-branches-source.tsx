@@ -57,8 +57,19 @@ export function DesktopBranchesSource({
     if (override) {
       return override;
     }
+    // One source per surface, never a merge of the two (`DesktopAppCoreMode`:
+    // "The two modes are never unioned"), so a row is only ever the active
+    // source's row, however fresh the other store is. It also decides what a
+    // consumer may ASK: local rows omit `artifactId`, so an artifact-keyed
+    // provenance read (Related Sessions, ISS-9456) is absent in Local mode
+    // rather than empty. "Cannot ask" is not "nothing contributed", the same
+    // line the web branch-detail route draws at its `relatedSessionsSlot`.
+    // PRD-721: an installed Desktop build can be newer than the deployed API,
+    // and a `/branches` route older than its `listQuery` compiler refuses the
+    // param, so this cloud read keeps the legacy params until production
+    // serves the compiler. The local source sends `listQuery` to its own main.
     return useCanonicalCloudSource
-      ? createHttpBranchesDataSource(apiClient)
+      ? createHttpBranchesDataSource(apiClient, { canonicalListQuery: false })
       : localSource;
   }, [override, useCanonicalCloudSource, apiClient, localSource]);
 

@@ -10,12 +10,15 @@ describe("cloud sync reconciliation", () => {
   it.each([
     TranscriptDisposition.Syncing,
     TranscriptDisposition.FailedTransient,
-  ])("marks %s as pending while the transcript blob is still coming", (value) => {
-    expect(isTranscriptBlobBehind(value)).toBe(true);
-    expect(reconcileCloudSyncState(value)).toBe(
-      AgentSessionCloudSyncState.Pending
-    );
-  });
+  ])(
+    "marks %s as pending while the transcript blob is still coming",
+    (value) => {
+      expect(isTranscriptBlobBehind(value)).toBe(true);
+      expect(reconcileCloudSyncState(value)).toBe(
+        AgentSessionCloudSyncState.Pending
+      );
+    }
+  );
 
   it.each([
     TranscriptDisposition.Synced,

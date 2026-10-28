@@ -29,9 +29,9 @@ const comparison = {
 };
 
 const meta = {
-  title: "Design System/Primitives/Time Series Area Chart",
+  title: "Composites v1.0/Charts/Time Series Area Chart",
   component: TimeSeriesAreaChart,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "centered" },
   args: {
     comparison,

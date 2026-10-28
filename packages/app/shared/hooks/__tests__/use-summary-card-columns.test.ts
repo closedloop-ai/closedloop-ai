@@ -158,5 +158,18 @@ describe("resolveSummaryCardColumns (ISS-4966)", () => {
         columnGap: COLUMN_GAP,
       })
     ).toBeNull();
+    // ISS-7303: an UNSTYLED row resolves `column-gap` to the keyword `normal`,
+    // which `Number.parseFloat` turns into `NaN` while every other input still
+    // looks plausible — and `Math.floor((width + NaN) / (min + NaN))` would hand
+    // back a confident 1. Drop the gap clause and this is the only case in the
+    // file that notices; every other one passes a real 16px gutter.
+    expect(
+      resolveSummaryCardColumns({
+        availableWidth: DEFAULT_DESKTOP_CONTENT_WIDTH,
+        cardCount: FIVE_CARD_STRIP,
+        cardMinWidth: CARD_MIN_WIDTH,
+        columnGap: Number.NaN,
+      })
+    ).toBeNull();
   });
 });

@@ -6,7 +6,7 @@
  * declared-layer collection, undateable-signal dropping, and determinism.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { buildEvidenceTimeline } from "../src/main/collectors/evidence/build-session-evidence.js";
 import {
   EvidenceLayer,
@@ -91,5 +91,44 @@ test("unrecognized tool names contribute no structural unit", () => {
     timeline.map((u) => u.category),
     [ToolCategory.ReadSearch],
     "only the recognized Read maps to a category"
+  );
+});
+
+test("ISS-8659: a fork's replayed human turns are not drawn on its timeline", () => {
+  // ISS-8659: `session.userMessages` (the turn COUNT) already excludes a
+  // fork's replayed turns. Walking `messages` unfiltered here would disagree
+  // with that count — the count says the fork asked once, the timeline would
+  // draw the parent's prompts beside it.
+  const timeline = buildEvidenceTimeline(
+    makeSession({
+      userMessages: 1,
+      messages: [
+        {
+          role: "human",
+          text: "the parent's prompt",
+          timestamp: "2026-01-01T00:01:00.000Z",
+          isForkReplayed: true,
+        },
+        {
+          role: "human",
+          text: "the fork's own prompt",
+          timestamp: "2026-01-01T00:02:00.000Z",
+        },
+      ],
+    }),
+    Harness.Claude
+  );
+  const humanTurns = timeline.filter(
+    (unit) => unit.category === ToolCategory.HumanTurn
+  );
+  assert.equal(
+    humanTurns.length,
+    1,
+    "only the fork's own prompt is a human turn on its timeline"
+  );
+  assert.equal(
+    humanTurns[0].ms,
+    ms("2026-01-01T00:02:00.000Z"),
+    "and it is the OWN one that survives, not the inherited one"
   );
 });

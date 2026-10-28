@@ -1,19 +1,19 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
+import { writeGatewayLogEntry } from "../src/main/logging/durable-log-sink.js";
 import {
   electronLog,
   initializePersistentLogging,
   parsePreviousSessionLogLine,
   parsePreviousSessionLogTail,
   readPreviousSessionLogTail,
-  writeGatewayLogEntry,
 } from "../src/main/logging/persistent-log.js";
 import { createTempDirManager } from "./helpers/temp-dir.js";
 
 const { makeTempDir } = createTempDirManager("desktop-persistent-log-");
-const PRE_INIT_TAG = "gpu-workaround";
+const PRE_INIT_TAG = "pre-init-probe";
 
 describe("persistent log tail parsing", () => {
   test("parses GatewayLogger JSON lines as previous-session entries", () => {
@@ -113,9 +113,9 @@ describe("persistent log tail parsing", () => {
   // initialized-once state is what the pair is pinning, and it cannot be reset.
   test("a write before initialization touches no file at all", () => {
     // Until initializePersistentLogging configures the redirect, electron-log's
-    // file transport still resolves the PRODUCTION path — so the macOS
-    // GPU-workaround line, the single-instance-lock line and the migration lines
-    // all landed in the operator's real main.log even on a redirected launch.
+    // file transport still resolves the PRODUCTION path, so the launch line,
+    // the single-instance-lock line and the migration lines all landed in the
+    // operator's real main.log even on a redirected launch.
     const preInitPath = electronLog.transports.file.getFile().path;
     const sizeBefore = fs.existsSync(preInitPath)
       ? fs.statSync(preInitPath).size
@@ -125,7 +125,7 @@ describe("persistent log tail parsing", () => {
       timestamp: "2026-05-08T12:34:55.000Z",
       level: "info",
       tag: PRE_INIT_TAG,
-      message: "disable-mac-overlays applied",
+      message: "Desktop launch: pid=1 platform=darwin",
     });
 
     const sizeAfter = fs.existsSync(preInitPath)

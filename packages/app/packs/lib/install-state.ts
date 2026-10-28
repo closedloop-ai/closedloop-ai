@@ -26,7 +26,10 @@
  *    guard), so a future member fails typecheck until it is given a treatment.
  */
 
-import type { StatusGlyph } from "@repo/design-system/components/ui/status-icon-primitives";
+import {
+  PROGRESS_RING_COLOR,
+  type StatusGlyph,
+} from "@repo/design-system/components/ui/status-icon-primitives";
 
 /**
  * The single display state a packs surface renders for a pack on a given install
@@ -146,14 +149,14 @@ export function installStateTreatment(
       return {
         kind: "glyph",
         glyph: "swap",
-        fill: "var(--progress-foreground)",
+        fill: PROGRESS_RING_COLOR,
         emphatic: true,
       };
     }
     case PackInstallState.Converting: {
       return {
         kind: "ring",
-        color: "var(--progress-foreground)",
+        color: PROGRESS_RING_COLOR,
         thinking: true,
         emphatic: true,
       };

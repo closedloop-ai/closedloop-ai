@@ -4,18 +4,16 @@ import {
   Harness,
   SourceType,
 } from "@repo/api/src/types/agent-component";
-import { act, renderHook } from "@testing-library/react";
-import { describe, expect, test } from "vitest";
 import {
   DEFAULT_AGENT_COMPONENT_FILTERS,
   filterAgentComponentRows,
   harnessMatchesFacet,
-  useAgentComponentsFilterState,
-} from "../use-agent-components-filter-state";
+} from "@repo/api/src/utils/agent-component-reduce";
+import { act, renderHook } from "@testing-library/react";
+import { describe, expect, test } from "vitest";
+import { useAgentComponentsFilterState } from "../use-agent-components-filter-state";
 
-// ---------------------------------------------------------------------------
 // Fixture helpers
-// ---------------------------------------------------------------------------
 
 function makeRow(
   id: string,

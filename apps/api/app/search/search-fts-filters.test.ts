@@ -8,9 +8,11 @@
  * only-filters recency path.
  */
 
+import { Priority } from "@repo/api/src/types/common";
 import { SearchMode } from "@repo/api/src/types/search";
 import { SearchEntityType } from "@repo/api/src/types/search-entity-kind";
 import {
+  PriorityFilterKind,
   SearchFilterOperator,
   type SearchFilters,
 } from "@repo/api/src/types/search-query";
@@ -99,9 +101,20 @@ function flattenSql(node: SqlNode): { sql: string; values: unknown[] } {
  * assertion, (2) resolves `user.findMany` (owner) and `project.findMany`
  * (project) to the given ids, and (3) authorizes every candidate on re-auth so
  * the filter SQL is what the test inspects, not redaction.
+ *
+ * The scan honours exactly ONE predicate: a candidate that declares a
+ * `priority` is withheld unless the composed SQL's `"priority" IS NULL` agrees
+ * with its stored value. Without that, a filter test seeded with one row asserts
+ * the fake and not the filter — the row comes back whatever predicate the query
+ * carried. Every other predicate is unhonoured, which is why a test that needs
+ * one asserts on the captured SQL instead.
  */
 function installDb(options: {
-  candidates: Array<{ entity_type: string; entity_id: string }>;
+  candidates: Array<{
+    entity_type: string;
+    entity_id: string;
+    priority?: string | null;
+  }>;
   ownerUserIds?: string[];
   projectRows?: Array<{ id: string }>;
   capture: (captured: { sql: string; values: unknown[] }) => void;
@@ -112,23 +125,31 @@ function installDb(options: {
     );
 
   const queryRaw = vi.fn((node: SqlNode) => {
+    const flattened = flattenSql(node);
     // The FIRST $queryRaw call is the candidate scan (the one we assert on).
     if (queryRaw.mock.calls.length === 1) {
-      options.capture(flattenSql(node));
+      options.capture(flattened);
     }
+    const wantsUnsetPriority = flattened.sql.includes('"priority" IS NULL');
     return Promise.resolve(
-      options.candidates.map((c) => ({
-        entity_type: c.entity_type,
-        entity_id: c.entity_id,
-        title: "T",
-        snippet: "T",
-        rank: 0,
-        updated_at: new Date("2026-01-01"),
-        slug: null,
-        entity_subtype: null,
-        team_id: null,
-        anchor_entity_id: null,
-      }))
+      options.candidates
+        .filter(
+          (c) =>
+            !(Object.hasOwn(c, "priority") && wantsUnsetPriority) ||
+            c.priority === null
+        )
+        .map((c) => ({
+          entity_type: c.entity_type,
+          entity_id: c.entity_id,
+          title: "T",
+          snippet: "T",
+          rank: 0,
+          updated_at: new Date("2026-01-01"),
+          slug: null,
+          entity_subtype: null,
+          team_id: null,
+          anchor_entity_id: null,
+        }))
     );
   });
 
@@ -143,7 +164,6 @@ function installDb(options: {
       findMany: vi.fn(() => Promise.resolve(options.projectRows ?? [])),
     },
     artifact: { findMany: authorizeAll() },
-    loop: { findMany: authorizeAll() },
   };
   mockWithDb.mockImplementation((cb: (d: unknown) => unknown) => cb(db));
   return db;
@@ -266,7 +286,11 @@ describe("searchFtsService.searchUnified — query-language filters (FEA-3930)",
     });
     await searchFtsService.searchUnified(
       baseParams({
-        priority: { operator: SearchFilterOperator.Gte, value: "MEDIUM" },
+        priority: {
+          kind: PriorityFilterKind.Ordinal,
+          operator: SearchFilterOperator.Gte,
+          value: "MEDIUM",
+        },
       })
     );
     // The predicate maps priority TEXT → ordinal and compares with `>=`.
@@ -288,11 +312,174 @@ describe("searchFtsService.searchUnified — query-language filters (FEA-3930)",
     });
     await searchFtsService.searchUnified(
       baseParams({
-        priority: { operator: SearchFilterOperator.Eq, value: "HIGH" },
+        priority: {
+          kind: PriorityFilterKind.Ordinal,
+          operator: SearchFilterOperator.Eq,
+          value: "HIGH",
+        },
       })
     );
     // The comparison target is the HIGH ordinal, 2.
     expect(captured.values).toContain(2);
+  });
+
+  it(":priority = NONE → an IS NULL test, never an ordinal comparison", async () => {
+    installDb({
+      candidates: [{ entity_type: SearchEntityType.Document, entity_id: "d1" }],
+      capture: (c) => {
+        captured = c;
+      },
+    });
+    await searchFtsService.searchUnified(
+      baseParams({
+        priority: {
+          kind: PriorityFilterKind.Unset,
+          operator: SearchFilterOperator.Eq,
+        },
+      })
+    );
+    expect(captured.sql).toContain('"priority" IS NULL');
+    // The negative half matters as much as the positive one: an ordinal CASE in
+    // this predicate would silently exclude every row it claims to select,
+    // because a NULL compares to nothing (ISS-9665).
+    expect(captured.sql).not.toContain('"priority" IS NOT NULL');
+    expect(captured.sql).not.toContain('CASE "priority"');
+  });
+
+  it("scopes = NONE to the kinds that can hold a priority", async () => {
+    // The comment, PR and component projections write a literal
+    // `priority: null` because the field does not APPLY to them. Without this
+    // clause `priority:none` answers with every one of those in the org — a
+    // NULL meaning "not applicable" read as a NULL meaning "unset". Sessions
+    // and branches joined the priority-bearing set with ISS-10332.
+    installDb({
+      candidates: [{ entity_type: SearchEntityType.Document, entity_id: "d1" }],
+      capture: (c) => {
+        captured = c;
+      },
+    });
+    // Faceted to documents so the corpus `types` predicate binds only
+    // Document; every other kind below can then come only from the priority
+    // clause.
+    await searchFtsService.searchUnified({
+      ...baseParams({
+        priority: {
+          kind: PriorityFilterKind.Unset,
+          operator: SearchFilterOperator.Eq,
+        },
+      }),
+      types: [SearchEntityType.Document],
+    });
+
+    expect(captured.sql).toContain('"entity_type" IN (');
+    expect(captured.values).toContain(SearchEntityType.Document);
+    expect(captured.values).toContain(SearchEntityType.Project);
+    expect(captured.values).toContain(SearchEntityType.Branch);
+    expect(captured.values).toContain(SearchEntityType.AgentSession);
+    for (const entityType of [
+      SearchEntityType.Comment,
+      SearchEntityType.PullRequest,
+      SearchEntityType.AgentComponent,
+    ]) {
+      expect(captured.values).not.toContain(entityType);
+    }
+  });
+
+  it(":priority != NONE → an IS NOT NULL test", async () => {
+    installDb({
+      candidates: [{ entity_type: SearchEntityType.Document, entity_id: "d1" }],
+      capture: (c) => {
+        captured = c;
+      },
+    });
+    await searchFtsService.searchUnified(
+      baseParams({
+        priority: {
+          kind: PriorityFilterKind.Unset,
+          operator: SearchFilterOperator.Neq,
+        },
+      })
+    );
+    expect(captured.sql).toContain('"priority" IS NOT NULL');
+    expect(captured.sql).not.toContain('CASE "priority"');
+  });
+
+  /**
+   * ISS-9441: a project whose priority a user CLEARED now exists, and the two
+   * priority predicates have to answer for it in opposite directions.
+   *
+   * The `>=` half is the one that can silently break. Its ordinal `CASE` yields
+   * NULL for a cleared row, and `NULL >= 0` is NULL, so the row is not matched —
+   * which is correct and is also entirely a property of three-valued logic
+   * rather than of anything written down. A `COALESCE("priority", 'MEDIUM')`
+   * added to that CASE, the obvious way to "fix" an ordinal over a nullable
+   * column, would put every cleared project into `:priority>=low` while leaving
+   * every other case in this file green.
+   */
+  it("answers a cleared project for = NONE and never folds it into an ordinal bound", async () => {
+    // A MIXED population, and both rows authorized, so the result assertion is
+    // about the PREDICATE: a scan that lost `"priority" IS NULL` returns the
+    // MEDIUM project too, and the `toEqual` below fails.
+    const projectCandidates = [
+      {
+        entity_type: SearchEntityType.Project,
+        entity_id: "proj-cleared",
+        priority: null,
+      },
+      {
+        entity_type: SearchEntityType.Project,
+        entity_id: "proj-medium",
+        priority: Priority.Medium,
+      },
+    ];
+    const authorizedProjects = [{ id: "proj-cleared" }, { id: "proj-medium" }];
+    installDb({
+      candidates: projectCandidates,
+      projectRows: authorizedProjects,
+      capture: (c) => {
+        captured = c;
+      },
+    });
+    const unset = await searchFtsService.searchUnified(
+      baseParams({
+        priority: {
+          kind: PriorityFilterKind.Unset,
+          operator: SearchFilterOperator.Eq,
+        },
+      })
+    );
+
+    expect(captured.sql).toContain('"priority" IS NULL');
+    expect(captured.values).toContain(SearchEntityType.Project);
+    expect(
+      unset.results.map((result) => [result.entityType, result.entityId])
+    ).toEqual([[SearchEntityType.Project, "proj-cleared"]]);
+
+    installDb({
+      candidates: projectCandidates,
+      projectRows: authorizedProjects,
+      capture: (c) => {
+        captured = c;
+      },
+    });
+    await searchFtsService.searchUnified(
+      baseParams({
+        priority: {
+          kind: PriorityFilterKind.Ordinal,
+          operator: SearchFilterOperator.Gte,
+          value: Priority.Low,
+        },
+      })
+    );
+
+    // The CASE reads the BARE column, so a cleared row maps to NULL. A
+    // `CASE COALESCE("priority", 'MEDIUM')` fails this line.
+    expect(captured.sql).toContain('CASE "priority"');
+    // LOW's ordinal, the weakest bound there is: if a cleared project can be
+    // pulled into any ordinal comparison, it is pulled into this one.
+    expect(captured.values).toContain(0);
+    // And no null-rescuing disjunct beside the comparison.
+    expect(captured.sql).not.toContain('"priority" IS NULL');
   });
 
   it(":project → resolves slug/name to ids then project_id IN", async () => {

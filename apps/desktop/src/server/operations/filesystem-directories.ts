@@ -44,7 +44,7 @@ export function registerFilesystemDirectoriesRoutes(
       const directories: DirectoryEntry[] = [];
       // FEA-3641: when browsing the home directory, skip TCC-protected user
       // folders (Music, Pictures, Documents, …) entirely. Listing them as
-      // descendable entries would let the browser stat/probe inside them on a
+      // descendable entries would let the browser list inside them on a
       // subsequent request, triggering a macOS permission prompt. They are
       // never valid sandbox roots, so hiding them here (in addition to the
       // `.git` probe skip in isGitRepository) keeps them out of reach.

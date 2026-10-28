@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import { gunzipSync } from "node:zlib";
 import { SyncPayloadEncoding } from "@repo/api/src/types/agent-session";
 import { SYNC_DECOMPRESSED_BYTE_CEILING } from "@repo/api/src/types/agent-session-sync-limits";
+import { describe, test } from "vitest";
 import {
   gzipJson,
   gzippedByteLength,

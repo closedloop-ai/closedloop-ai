@@ -21,7 +21,6 @@ async function countProfileModels(ctx: EphemeralDbContext) {
     comments: await prisma.comment.count({
       where: { thread: { organizationId } },
     }),
-    loops: await prisma.loop.count({ where: { organizationId } }),
   };
 }
 

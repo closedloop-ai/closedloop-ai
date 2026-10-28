@@ -11,6 +11,10 @@ import { ATTACHMENT_UPLOAD_SIGNED_URL_EXPIRY_SECONDS } from "./attachments-servi
  * `createInlineImageAttachment`). Scoping the sweep to this prefix guarantees
  * it only ever touches attachment objects, even if `FILE_ATTACHMENTS_BUCKET` is
  * shared with other object families.
+ * Desktop bootstrap logos deliberately stage under attachments/desktop-bootstrap/:
+ * they have no fileAttachment row, and their five-minute credential expires
+ * before this sweep's fifteen-minute grace window. This also cleans uploads
+ * abandoned before organization creation, including late presigned PUT retries.
  */
 const ATTACHMENT_KEY_PREFIX = "attachments/";
 

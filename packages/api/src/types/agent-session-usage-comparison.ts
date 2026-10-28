@@ -24,7 +24,7 @@
 /**
  * The metrics the Sessions summary compares period-over-period.
  *
- * Deliberately NOT a member: `LOC / $ (Merged)`. ISS-6398 windowed its divisor —
+ * Deliberately NOT a member: `LOC / $`. ISS-6398 windowed its divisor —
  * the ratio is now merged lines in range ÷ API-billed spend in range — which
  * removed the misattribution that kept it out (the old all-time divisor made the
  * ratio move only with merged lines under a label reading "$"). What blocks it now
@@ -38,6 +38,32 @@ export const AgentSessionComparisonMetric = {
   Tokens: "tokens",
   MeteredCost: "meteredCost",
   ApiCost: "apiCost",
+  /**
+   * ISS-4748 — movement of the SUBSCRIPTION-INCLUSIVE grand total.
+   *
+   * Its own cost basis rather than a rename of an existing one, for the same
+   * reason `meteredCost` and `apiCost` are separate: the Cost card can headline
+   * more than one, and a single "cost" delta would grade whichever basis this
+   * module happened to pick against whatever the card actually rendered. The
+   * card reads the entry matching the basis it resolved.
+   *
+   * ISS-8791 retired the client basis that read `meteredCost`, and ISS-10636
+   * then put every mode on the inclusive total, so this member is the only one
+   * the renderer resolves. `meteredCost` and `apiCost` are still emitted here
+   * deliberately — they are cross-deploy wire surface a version-skewed client
+   * may still read, and removing either needs explicit approval.
+   *
+   * Derived from figures both periods already read — `subscriptionEstimatedCost
+   * + apiEstimatedCost`, the same construction the summary's own
+   * `totalEstimatedCost` uses — so it costs no additional database work and
+   * cannot disagree with the headline it grades.
+   *
+   * Additive and optional on the wire, like every other member: a key is present
+   * only when an honest comparison exists, so a consumer that does not know this
+   * metric is unaffected and one that does sees absence as "no comparison",
+   * never as a zero.
+   */
+  TotalCost: "totalCost",
   PrsShipped: "prsShipped",
 } as const;
 export type AgentSessionComparisonMetric =

@@ -34,11 +34,6 @@ const mockHeadline = {
   documentsByType: [],
   totalComments: 5,
   totalPRsLanded: 3,
-  totalLoops: 7,
-  avgConcurrency: 1.2,
-  totalTokensInput: 1000,
-  totalTokensOutput: 500,
-  totalEstimatedCost: 4.2,
 };
 
 const mockHeatmap = { contributionHeatmap: [] };
@@ -99,7 +94,7 @@ async function renderPage() {
     );
     await PARAMS;
   });
-  await screen.findByRole("group");
+  await screen.findByRole("radiogroup");
 }
 
 /** Read the `filters` arg (2nd positional) of the latest headline-hook call. */
@@ -115,7 +110,7 @@ describe("UserProfilePage — range toggle (FEA-4064)", () => {
   it("renders the three range options and defaults to 30d", async () => {
     await renderPage();
 
-    const group = screen.getByRole("group");
+    const group = screen.getByRole("radiogroup");
     expect(within(group).getByText("30d")).toBeInTheDocument();
     expect(within(group).getByText("90d")).toBeInTheDocument();
     expect(within(group).getByText("1y")).toBeInTheDocument();

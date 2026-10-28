@@ -14,7 +14,10 @@ import { githubService } from "@/app/integrations/github/service";
 import { mapWithDbConcurrency } from "@/lib/db-fanout";
 import { reconcileOrgRepoSyncStatesBestEffort } from "@/lib/github/github-repo-sync-state";
 import type { GitHubWebhookObservationContext } from "@/lib/github/github-webhook-observation";
-import { publishGitHubDirtyScopes } from "./dirty-scope-publisher";
+import {
+  prepareGitHubDirtyScopeBatch,
+  publishGitHubDirtyScopes,
+} from "./dirty-scope-publisher";
 import { toRepositoryInput } from "./installation-handler";
 
 const installationRepositoriesValidator = z
@@ -82,20 +85,32 @@ export async function handleInstallationRepositoriesAdded(
     // hundreds of entries — and each publish opens several pooled connections
     // plus a transaction per eligible target. Unbounded, one grant change could
     // drain the pool and starve every other route (FEA-3299 / PRD-528).
+    //
+    // The bound above caps CONCURRENT connections, not total round trips, so the
+    // org-wide target read and the expired-nudge sweep are hoisted here and
+    // resolved once for the whole payload rather than once per repository
+    // (ISS-7276).
+    const dirtyScopeBatch =
+      addedRepositories.length > 0
+        ? await prepareGitHubDirtyScopeBatch(organizationId)
+        : undefined;
     await mapWithDbConcurrency(addedRepositories, (repo) =>
-      publishGitHubDirtyScopes({
-        organizationId,
-        repositoryId: repo.id,
-        repositoryFullName: repo.fullName,
-        scopes: [
-          {
-            kind: GitHubDirtyScopeKind.Repository,
-            repositoryId: repo.id,
-            repositoryFullName: repo.fullName,
-          },
-        ],
-        triggers: [GitHubDirtyTrigger.InstallationRepositories],
-      })
+      publishGitHubDirtyScopes(
+        {
+          organizationId,
+          repositoryId: repo.id,
+          repositoryFullName: repo.fullName,
+          scopes: [
+            {
+              kind: GitHubDirtyScopeKind.Repository,
+              repositoryId: repo.id,
+              repositoryFullName: repo.fullName,
+            },
+          ],
+          triggers: [GitHubDirtyTrigger.InstallationRepositories],
+        },
+        dirtyScopeBatch
+      )
     );
     // PLN-1535 M1: added repos gain installation coverage → re-evaluate this
     // org's per-repo sync tiers. Scheduled off the response path (waitUntil):
@@ -149,21 +164,30 @@ export async function handleInstallationRepositoriesRemoved(
   );
   const organizationId = existingInstallation.organizationId;
   if (organizationId) {
-    // Bounded for the same reason as the added path above (FEA-3299).
+    // Bounded for the same reason as the added path above (FEA-3299), and the
+    // per-organization publish prerequisites are hoisted for the same reason as
+    // above (ISS-7276).
+    const dirtyScopeBatch =
+      removedRepositories.length > 0
+        ? await prepareGitHubDirtyScopeBatch(organizationId)
+        : undefined;
     await mapWithDbConcurrency(removedRepositories, (repo) =>
-      publishGitHubDirtyScopes({
-        organizationId,
-        repositoryId: repo.id,
-        repositoryFullName: repo.fullName,
-        scopes: [
-          {
-            kind: GitHubDirtyScopeKind.Repository,
-            repositoryId: repo.id,
-            repositoryFullName: repo.fullName,
-          },
-        ],
-        triggers: [GitHubDirtyTrigger.InstallationRepositories],
-      })
+      publishGitHubDirtyScopes(
+        {
+          organizationId,
+          repositoryId: repo.id,
+          repositoryFullName: repo.fullName,
+          scopes: [
+            {
+              kind: GitHubDirtyScopeKind.Repository,
+              repositoryId: repo.id,
+              repositoryFullName: repo.fullName,
+            },
+          ],
+          triggers: [GitHubDirtyTrigger.InstallationRepositories],
+        },
+        dirtyScopeBatch
+      )
     );
     // PLN-1535 M1: removed repos lose installation coverage → re-evaluate this
     // org's per-repo sync tiers (they drop to tier-2 or tier-3). Scheduled off

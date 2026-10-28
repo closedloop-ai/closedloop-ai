@@ -28,6 +28,7 @@ import {
   type DistributionDto,
   type DistributionMode,
 } from "@repo/api/src/types/distribution";
+import { compareNullableNumber } from "@repo/lib/sort-comparators";
 import { distributionToPackDistribution } from "./catalog-item-to-pack-view";
 import type { PackDistribution, PackView } from "./pack-view";
 
@@ -241,29 +242,4 @@ function compareByKey(
     return a.mode.localeCompare(b.mode);
   }
   return a.name.localeCompare(b.name);
-}
-
-/**
- * Compare two nullable numbers with nulls parked last in BOTH sort directions.
- * The direction only orders the real values against each other; a null is always
- * "after" a real value regardless of asc/desc, so unavailable rows never lead an
- * ascending sort.
- */
-function compareNullableNumber(
-  a: number | null,
-  b: number | null,
-  direction: "asc" | "desc"
-): number {
-  if (a === null && b === null) {
-    return 0;
-  }
-  // Nulls always sink, independent of direction.
-  if (a === null) {
-    return 1;
-  }
-  if (b === null) {
-    return -1;
-  }
-  const sign = direction === "asc" ? 1 : -1;
-  return sign * (a - b);
 }

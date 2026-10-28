@@ -5,16 +5,37 @@ import type {
   SessionLinkedArtifact,
   SessionPR,
 } from "@repo/api/src/types/agent-session";
+import type { DisplayedSessionStatus } from "@repo/api/src/types/session-status";
+import { foldToDisplayedSessionStatus } from "@repo/api/src/types/session-status";
+import { TOTAL_ESTIMATED_COST_ALIAS_LABEL } from "@repo/api/src/types/total-estimated-cost-copy";
+import { UNIVERSAL_ARTIFACT_STATUS_FLAG_KEY } from "@repo/api/src/types/universal-artifact-status-flag";
 import { getStatusDisplay } from "@repo/app/agents/components/detail/session-status-display";
 import {
   formatCodexRateLimitWindow,
   formatCodexRateLimitWindowLabel,
 } from "@repo/app/agents/lib/codex-rate-limit-format";
-import { deriveSessionCostLabel } from "@repo/app/agents/lib/cost-availability";
+import {
+  costLabelIsFigure,
+  deriveCostAvailability,
+  deriveSessionCostLabel,
+  hasRecordedTokenUsage,
+} from "@repo/app/agents/lib/cost-availability";
+import { resolveSessionOwner } from "@repo/app/agents/lib/session-owner";
 import {
   resolveSessionRepositoryFullName,
   SESSION_REPOSITORY_UNKNOWN_LABEL,
 } from "@repo/app/agents/lib/session-repository-label";
+import { UNKNOWN_MODEL_LABEL } from "@repo/app/agents/lib/session-timeline-stacks";
+import { ArtifactStatus } from "@repo/app/shared/components/artifact-status/artifact-status";
+import { artifactStatusLabel } from "@repo/app/shared/components/artifact-status/artifact-status-presentation";
+import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { sessionStatusView } from "@repo/app/shared/lib/artifact-status-adapter";
+import { ArtifactStatusVariant } from "@repo/app/shared/lib/artifact-status-view-contract";
+import {
+  SESSION_METRIC_POPULATION_DISCLOSURE_FEATURE_FLAG_KEY,
+  SESSION_TIMELINE_COVERAGE_DISCLOSURE_FEATURE_FLAG_KEY,
+  SESSION_TOUCHED_BRANCHES_FEATURE_FLAG_KEY,
+} from "@repo/app/shared/lib/feature-flags";
 import { getUserDisplayName } from "@repo/app/shared/lib/user-utils";
 import { GridEmptyValue } from "@repo/design-system/components/ui/grid-table";
 import { activateOnEnterOrSpace } from "@repo/design-system/lib/keyboard-activation";
@@ -35,16 +56,19 @@ import {
   TimerIcon,
   UserIcon,
 } from "lucide-react";
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import {
   type CodexRateLimitWindowView,
   type CodexRuntimeMetadata,
   extractCodexRuntimeMetadata,
-} from "./detail-content";
+} from "./codex-runtime-metadata";
 import { PropertyValue } from "./property-values";
+import { SessionBranchesRow } from "./session-branches-row";
 import { SessionDurationProperty } from "./session-duration-property";
 import {
   CacheWriteTtlProperty,
+  SessionCostValue,
+  SessionLaunchAttributionProperties,
   SessionSyncProperty,
 } from "./session-flagged-properties";
 import { SessionLinkedArtifactsRow } from "./session-linked-artifacts-row";
@@ -54,8 +78,16 @@ import {
   SessionTokensProperty,
   SessionWorkProperty,
 } from "./session-measured-properties";
+import {
+  joinPropertySentences,
+  resolveMetricProvenanceNote,
+  SessionProvenanceMetric,
+} from "./session-metric-provenance";
+import { SessionOtherRepositoriesRow } from "./session-other-repositories-row";
 import { SessionOutputDiff } from "./session-output-diff";
+import { SESSION_COST_POPULATION_NOTE } from "./session-population-notes";
 import { SessionPullRequestsRow } from "./session-pull-requests-row";
+import { resolveDisplayedBranches } from "./values/session-branches-value";
 
 /**
  * ISS-5818: the Session detail PROPERTIES panel — its disclosure shell, the
@@ -63,9 +95,9 @@ import { SessionPullRequestsRow } from "./session-pull-requests-row";
  * strip, and the one derivation (`getSessionPropertySummary`) all three read so
  * they cannot disagree about a session.
  *
- * Split out of `agent-session-detail-view.tsx`, which is a grandfathered
- * over-ceiling file (packages/../AGENTS.md: a substantive change to one must
- * leave it smaller). The seam is a real responsibility boundary, not a line
+ * Split out of `agent-session-detail-view.tsx` rather than grown inside it
+ * (packages/../AGENTS.md → "File Size and Organization"). The seam is a real
+ * responsibility boundary, not a line
  * count: everything here answers "what does this session\u2019s record say about
  * itself", and nothing here knows anything about the timeline strip, the trace,
  * or the comments rail that the view still owns. ISS-5818 moved this panel above
@@ -76,9 +108,13 @@ export function SessionPropertiesPanel({
   session,
   buildArtifactHref,
   artifactHrefPending,
+  displayedStatus,
   getBranchHref,
+  transcriptNeverExpected,
 }: Readonly<{
   session: AgentSessionDetail;
+  /** The same derived status rendered in the detail header. */
+  displayedStatus?: DisplayedSessionStatus;
   buildArtifactHref?: (artifact: SessionLinkedArtifact) => string | null;
   /**
    * ISS-5366: true while the shell still cannot say whether artifact links are
@@ -87,9 +123,34 @@ export function SessionPropertiesPanel({
    */
   artifactHrefPending?: boolean;
   getBranchHref?: (branchArtifactId: string) => string;
+  /** ISS-7516: forwarded to the Sync row; `SessionTranscriptPanel` owns the contract. */
+  transcriptNeverExpected?: boolean;
 }>) {
   const [open, setOpen] = useState(false);
-  const summary = getSessionPropertySummary(session);
+  const champion = useFeatureFlagEnabledOptional(
+    UNIVERSAL_ARTIFACT_STATUS_FLAG_KEY
+  );
+  const status = displayedStatus ?? session.status;
+  const legacySummary = getSessionPropertySummary(session, status);
+  // ISS-10364 (operator ruling): an unparsable session status reads Active
+  // everywhere, so the champion sees the folded displayed status only, the
+  // same value the header badge renders.
+  const statusView = sessionStatusView(
+    session.id,
+    foldToDisplayedSessionStatus(status)
+  );
+  const summary = champion
+    ? {
+        ...legacySummary,
+        statusLabel: artifactStatusLabel(statusView),
+        statusLeading: (
+          <ArtifactStatus
+            variant={ArtifactStatusVariant.Icon}
+            view={statusView}
+          />
+        ),
+      }
+    : legacySummary;
   return (
     <section className="prd-props-section sd3-props" data-open={open}>
       {/* biome-ignore lint/a11y/useSemanticElements: FEA-1769 specifies div role="button" instead of a semantic button for design parity. */}
@@ -113,6 +174,7 @@ export function SessionPropertiesPanel({
           getBranchHref={getBranchHref}
           session={session}
           summary={summary}
+          transcriptNeverExpected={transcriptNeverExpected}
         />
       ) : (
         <SessionPropertiesPreview
@@ -150,13 +212,7 @@ type SessionPropertySummary = {
   // with anything else derived from it.
   statusLabel: string;
   statusIcon: LucideIcon;
-  /**
-   * ISS-4654: the canonical explanation when `statusLabel` is this build's hedge
-   * rather than a state it recognizes — the same sentence the Sessions LIST
-   * Unknown pill carries. Absent for every recognized state, which is what keeps
-   * their rows byte-identical to what they render today.
-   */
-  statusTooltip?: string;
+  statusLeading?: ReactNode;
 };
 
 /**
@@ -233,9 +289,12 @@ function SessionPropertiesExpanded({
   buildArtifactHref,
   artifactHrefPending,
   getBranchHref,
+  transcriptNeverExpected,
 }: Readonly<{
   session: AgentSessionDetail;
   summary: SessionPropertySummary;
+  /** ISS-7516: forwarded to the Sync row; `SessionTranscriptPanel` owns the contract. */
+  transcriptNeverExpected?: boolean;
   buildArtifactHref?: (artifact: SessionLinkedArtifact) => string | null;
   /**
    * ISS-5366: true while the shell still cannot say whether artifact links are
@@ -257,34 +316,74 @@ function SessionPropertiesExpanded({
     session.branch && session.branchArtifactId && getBranchHref
       ? getBranchHref(session.branchArtifactId)
       : null;
+  // ISS-8427 (ISS-4779 closed-by-default): the plural Branches row is a
+  // perceivable change to a pane both surfaces mount, so it is gated on web
+  // (PostHog) and desktop (Labs) over one key. Branch AT the read — the boolean
+  // is never handed on, so `no-threaded-feature-flag` has nothing to allowlist.
+  // With the gate closed `branches` is null, which is the same value a producer
+  // that computed no set yields, and the pane renders today's row unchanged.
+  const touchedBranchesEnabled =
+    useFeatureFlagEnabledOptional(SESSION_TOUCHED_BRANCHES_FEATURE_FLAG_KEY) ===
+    true;
+  // null means "render the single-branch row unchanged" — see
+  // {@link resolveDisplayedBranches}.
+  const branches = touchedBranchesEnabled
+    ? resolveDisplayedBranches(session)
+    : null;
+  // ISS-7427 (AC4): ONE read for the three rows that share the gate — Cost here,
+  // Tokens and Duration threaded down. Reading it per row would put three
+  // subscriptions behind one disclosure and let a future refactor gate one of
+  // the three differently, which is the split this ticket exists to close.
+  const discloseEvidence =
+    useFeatureFlagEnabledOptional(
+      SESSION_TIMELINE_COVERAGE_DISCLOSURE_FEATURE_FLAG_KEY
+    ) === true;
+  // ISS-7737's population sentence is a SEPARATE, independently-rolled-out
+  // disclosure on the same rows, not a duplicate of the one above: it names WHAT
+  // each figure counts, where `discloseEvidence` names WHERE the figure came
+  // from. Two keys because they are two rollouts; both default OFF.
+  const populationDisclosed = useFeatureFlagEnabledOptional(
+    SESSION_METRIC_POPULATION_DISCLOSURE_FEATURE_FLAG_KEY
+  );
+  // PLN-2061 M5: the Other repositories row wraps tall like the Branches row, so
+  // it triggers the same ISS-8427 top-alignment, and only when it renders.
+  const untrackedRepositoryTargets = session.untrackedRepositoryTargets ?? [];
+  const topAligned = Boolean(branches) || untrackedRepositoryTargets.length > 0;
   // FEA-3330 / FEA-3725: the Owner row is always shown (in step with the
-  // Sessions table column and filter facet). Owner is already on the contract
-  // (`session.user`); when it is null the session outlived its owner
-  // (FEA-1699), so it renders the shared em-dash `GridEmptyValue` — the same
-  // null-owner convention the Sessions table column uses, keeping the two
-  // surfaces consistent.
+  // Sessions table column and filter facet). The Owner is the assignee
+  // (ISS-12251 D-1, `resolveSessionOwner`); with none, it renders the shared
+  // em-dash `GridEmptyValue` — the same null-owner convention the Sessions
+  // table column uses, keeping the two surfaces consistent.
+  const owner = resolveSessionOwner(session);
+  // ISS-8427: the top-alignment the tall Branches row needs rides WITH that
+  // row, never ahead of it — an unscoped `.prd-props { align-items: start }`
+  // re-aligned every session's pane with the gate shut.
   return (
-    <div className="prd-props">
-      {/* ISS-4654: when the state is one this build cannot interpret, the row
-          carries the REASON with the word — the same disclosure the Sessions
-          list's Unknown pill has had since ISS-4997 — so the two surfaces cannot
-          read explained-unknown on one screen and unexplained-unknown on the
-          other. Every recognized state passes `undefined` and renders exactly as
-          before. */}
+    <div
+      className={topAligned ? "prd-props sd3-props-top-aligned" : "prd-props"}
+    >
       <PropertyValue
-        explanation={summary.statusTooltip}
-        icon={summary.statusIcon}
+        icon={summary.statusLeading ? null : summary.statusIcon}
         label="Status"
+        leading={summary.statusLeading}
       >
         {summary.statusLabel}
       </PropertyValue>
-      <SessionSyncProperty session={session} />
+      <SessionSyncProperty
+        session={session}
+        transcriptNeverExpected={transcriptNeverExpected}
+      />
       <PropertyValue icon={UserIcon} label="Owner">
-        {session.user ? getUserDisplayName(session.user) : <GridEmptyValue />}
+        {owner ? getUserDisplayName(owner) : <GridEmptyValue />}
       </PropertyValue>
       <PropertyValue icon={TerminalIcon} label="Harness">
         {session.harness}
       </PropertyValue>
+      {/* ISS-7259: how the harness said this thread came to run, immediately
+          after the Harness row that names which harness said it. Self-gating on
+          both the ISS-4779 flag and presence — a session whose harness stamped
+          no attribution renders nothing here. */}
+      <SessionLaunchAttributionProperties session={session} />
       <PropertyValue
         copyValue={session.externalSessionId}
         icon={FingerprintIcon}
@@ -307,27 +406,43 @@ function SessionPropertiesExpanded({
           <span className="text-muted-foreground">{summary.repo}</span>
         )}
       </PropertyValue>
-      <SessionDurationProperty session={session} />
-      <SessionTokensProperty session={session} />
+      <SessionDurationProperty
+        discloseEvidence={discloseEvidence}
+        session={session}
+      />
+      <SessionTokensProperty
+        discloseEvidence={discloseEvidence}
+        session={session}
+      />
       <CacheWriteTtlProperty session={session} />
       <CodexRuntimeProperties session={session} />
       <SessionAutonomyProperty session={session} />
       <PropertyValue icon={BotIcon} label="Model" mono>
         {summary.model}
       </PropertyValue>
-      <PropertyValue href={branchHref} icon={GitBranchIcon} label="Branch" mono>
-        {session.branch ?? "None"}
-      </PropertyValue>
+      {branches ? (
+        <SessionBranchesRow branches={branches} getBranchHref={getBranchHref} />
+      ) : (
+        <PropertyValue
+          href={branchHref}
+          icon={GitBranchIcon}
+          label={SESSION_BRANCH_ROW_LABEL}
+          mono
+        >
+          {session.branch ?? "None"}
+        </PropertyValue>
+      )}
       <SessionPullRequestsRow
         prs={summary.prs}
         repositoryFullName={getSessionRepositoryFullName(session)}
       />
+      <SessionOtherRepositoriesRow targets={untrackedRepositoryTargets} />
       {/* FEA-4378: LOC is its own labeled fact, not a value trailing the PR pills
           — a number after the pills reads as "LOC for those PRs" when it is really
           the session's working-tree diff. Same PropertyValue row every other fact
           in this pane uses (Tokens, Duration, Autonomy, Branch); the value shows
           the honest +added / -removed working-tree diff, or the summed authored-PR
-          roll-up qualified "in PRs" when that is the larger, real delivered code. */}
+          roll-up qualified "in merged PRs" when that is the larger, real delivered code. */}
       <PropertyValue icon={FileDiffIcon} label="Lines changed" mono>
         <SessionOutputDiff session={session} />
       </PropertyValue>
@@ -349,8 +464,51 @@ function SessionPropertiesExpanded({
           use) rather than the raw pre-formatted `session.cost`, so a zero-usage
           session reads the honest `—` here too instead of a fabricated
           `$0.00`/stale dollar value that would contradict the metric card. */}
-      <PropertyValue icon={CircleDollarSignIcon} label="Cost" mono>
-        {deriveSessionCostLabel(session)}
+      {/* ISS-7427 (AC4): the $5,994.85 on the reported screen is this row. It is
+          priced off the synced usage rollup, which the archive never fed — so
+          when the server says the main transcript is terminally absent, the row
+          says where its figure came from rather than leaving the reader to
+          reconcile it against a panel that renders nothing. Gated on a REAL
+          figure: a Cost dash has no provenance to state.
+
+          Two independently-gated sentences share this row after the ISS-7737
+          merge — what the figure counts, then where it came from — joined by the
+          shared `joinPropertySentences` so either flag alone still yields one
+          clean sentence and neither can clobber the other's `explanation`. */}
+      <PropertyValue
+        explanation={joinPropertySentences(
+          costPopulationNote(session, populationDisclosed),
+          resolveMetricProvenanceNote({
+            disclosureEnabled: discloseEvidence,
+            evidenceCoverage: session.evidenceCoverage,
+            metric: SessionProvenanceMetric.Cost,
+            // AND the usage predicate, not the paint verdict alone.
+            // `Subscription` renders `$0.00` for a session that took a turn but
+            // consumed no tokens, and "priced from synced usage" on an all-zero
+            // rollup claims a source the producer says it cannot tell apart from
+            // a default. `costLabelIsFigure` is the canonical predicate main
+            // extracted for exactly this question; ISS-7427's own
+            // `isCostFigureRendered` copy was folded into it on merge.
+            valueIsSourceBacked:
+              costLabelIsFigure(deriveCostAvailability(session)) &&
+              hasRecordedTokenUsage(session),
+          })
+        )}
+        icon={CircleDollarSignIcon}
+        label={TOTAL_ESTIMATED_COST_ALIAS_LABEL}
+        mono
+      >
+        {/* ISS-7229: Claude's own reported figure rides INSIDE this
+            row's value rather than in a sibling row. `.prd-props` is a
+            multi-column `auto-fit` grid, so a second row was an independent grid
+            item — at two columns the estimate sat right while "Claude reported"
+            landed in the LEFT column a line below, labelling nothing. Self-gates
+            on the ISS-4779 flag and on presence; absent, this renders exactly
+            the bare estimate it always did. */}
+        <SessionCostValue
+          estimate={deriveSessionCostLabel(session)}
+          session={session}
+        />
       </PropertyValue>
       {/* FEA-3630 / ISS-4667: per-session LOC/$ next to Cost — its numerator is
           this panel's own "Lines changed" and its denominator this panel's own
@@ -372,14 +530,15 @@ function SessionPropertiesPreview({
 }>) {
   return (
     <button className="sd3-props-preview" onClick={onOpen} type="button">
-      {/* ISS-5818 (design review): NO status here. The title one line up carries
-          a status chip off the `SESSION_STATUS` lifecycle axis, while this strip
-          read `AgentSessionState` via `getStatusDisplay` — two axes that are
-          deliberately not aliases (ISS-5695 owns the reconciliation), so they
-          could legitimately disagree in one viewport ("Stale" above "Running").
+      {/* ISS-5818 (design review): NO status here. The title one line up already
+          carries a status chip, and repeating it in this strip would state the
+          same fact twice in one viewport. The original reason was stronger —
+          this strip read a SECOND axis (`AgentSessionState`) that could
+          legitimately disagree with the chip above it ("Stale" over "Running").
+          ISS-7019 deleted that axis, so the two can no longer contradict each
+          other, but the design call to keep the preview status-free stands.
           The prototype's preview likewise carries model + repo + PR count and no
-          status. The ISS-4654 unrecognized-state explanation still ships, on the
-          EXPANDED `Status` row below. */}
+          status. */}
       <span className="sd3-pp mono" title={summary.model}>
         <BotIcon aria-hidden className="size-3" />
         <span className="min-w-0 truncate">{summary.model}</span>
@@ -424,13 +583,16 @@ function SessionPropertiesPreview({
 }
 
 function getSessionPropertySummary(
-  session: AgentSessionDetail
+  session: AgentSessionDetail,
+  displayedStatus: string
 ): SessionPropertySummary {
   const linkedArtifacts = session.linkedArtifacts ?? [];
-  const statusDisplay = getStatusDisplay(session.state);
+  // ISS-7019: the displayed status, the same value the Sessions list renders.
+  // Was `session.state` (`AgentSessionState`), a second axis now deleted.
+  const statusDisplay = getStatusDisplay(displayedStatus);
   const repositoryFullName = resolveSessionRepositoryFullName(session);
   return {
-    model: session.primaryModel ?? session.model ?? "Unknown model",
+    model: session.primaryModel ?? session.model ?? UNKNOWN_MODEL_LABEL,
     prs: session.prs ?? [],
     linkedArtifacts,
     // ISS-4449: the wire carries the FULL resolved link set (the API no longer
@@ -451,7 +613,6 @@ function getSessionPropertySummary(
     repoResolved: repositoryFullName !== null,
     statusLabel: statusDisplay.label,
     statusIcon: statusDisplay.icon,
-    statusTooltip: statusDisplay.tooltip,
   };
 }
 
@@ -478,3 +639,32 @@ function formatPrCountLabel(session: AgentSessionDetail): string {
   const count = getPrCount(session);
   return `${count} ${count === 1 ? "PR" : "PRs"}`;
 }
+
+/**
+ * ISS-7737: the Cost row's population sentence, or `undefined` when the row has
+ * no dollars to describe.
+ *
+ * Gated on `costLabelIsFigure`, the predicate `formatCostLabel` itself answers
+ * from, so the sentence is stated exactly when the row shows dollars and never
+ * when it shows a dash — naming what a dash covers describes a sum nobody
+ * computed. Keying this on `CostAvailability.Available` instead was the review's
+ * catch: `Subscription` prints its covered spend through the very same
+ * `formatCost` call, so an `Available`-only gate annotated Turns and Tokens and
+ * then went silent on the dollar figure four rows down for every
+ * subscription-billed session — the ticket's own reported harm, rebuilt inside
+ * the fix.
+ */
+function costPopulationNote(
+  session: AgentSessionDetail,
+  disclosed: boolean | undefined
+): string | undefined {
+  if (!disclosed) {
+    return undefined;
+  }
+  return costLabelIsFigure(deriveCostAvailability(session))
+    ? SESSION_COST_POPULATION_NOTE
+    : undefined;
+}
+
+/** The single-branch row's label, shown when the payload carries no branch set. */
+export const SESSION_BRANCH_ROW_LABEL = "Branch";

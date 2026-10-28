@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseClaudeTranscript } from "./parse-claude-core";
+import { parseClaudeTranscript } from "./parse-claude";
 
 // FEA-4093: hook firings are captured from `attachment` records whose
 // `attachment.type` is `hook_success` / `hook_error` /

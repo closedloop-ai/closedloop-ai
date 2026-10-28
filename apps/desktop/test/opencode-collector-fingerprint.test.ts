@@ -20,13 +20,15 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { test } from "node:test";
+import { test } from "vitest";
 import { createOpencodeCollector } from "../src/main/collectors/opencode/opencode-collector.js";
 import { loadOpencodeSessionsFromDb } from "../src/main/collectors/opencode/opencode-parser.js";
 import { writeOpencodeDb } from "./opencode-store-fixture.js";
 
 /** Ultracite `useTopLevelRegex`: assertion matchers live at module scope. */
 const DURABLE_PROBE_REPORT = /summary-column probe failed durably/;
+const BOTH_DATA_DIR_OVERRIDES = /pass dataDir or dataDirs, never both/;
+const ONE_FINGERPRINT_FILE = /cannot describe multiple data dirs/;
 
 test("first-party OpenCode collector does not persist changed fingerprint after stale parse", () => {
   const dir = mkdtempSync(join(tmpdir(), "opencode-fingerprint-drift-"));
@@ -200,6 +202,126 @@ test("ISS-5302: a FRESH collector drops an unchanged store on its first listSour
     const moved = new Date(1_710_000_600_000);
     utimesSync(dbPath, moved, moved);
     assert.deepEqual(relaunched.listSources(), [dbPath]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ISS-8561: one collector over SEVERAL stores keeps a separate fingerprint per store", async () => {
+  const dirA = mkdtempSync(join(tmpdir(), "opencode-multistore-a-"));
+  const dirB = mkdtempSync(join(tmpdir(), "opencode-multistore-b-"));
+  try {
+    const dbA = writeOpencodeDb(dirA, [{ id: "ses_a" }]);
+    const dbB = writeOpencodeDb(dirB, [{ id: "ses_b" }]);
+    const collector = createOpencodeCollector({ dataDirs: [dirA, dirB] });
+
+    assert.deepEqual(
+      collector.listSources(),
+      [dbA, dbB],
+      "both staged stores are offered"
+    );
+    assert.equal((await collector.parse(dbA)).length, 1);
+    assert.equal(
+      collector.markSourceImported?.(dbA, {
+        fingerprint: collector.sourceFingerprint?.(dbA) ?? null,
+      }),
+      true
+    );
+    assert.deepEqual(
+      collector.listSources(),
+      [dbB],
+      "the sealed store drops out; the other is still pending"
+    );
+
+    assert.equal((await collector.parse(dbB)).length, 1);
+    assert.equal(
+      collector.markSourceImported?.(dbB, {
+        fingerprint: collector.sourceFingerprint?.(dbB) ?? null,
+      }),
+      true
+    );
+    // The mutation this kills: ONE shared high-water mark. Sealing B would
+    // overwrite A's fingerprint with B's, so A — whose bytes never moved —
+    // would be re-offered forever and the import would never settle.
+    assert.deepEqual(
+      collector.listSources(),
+      [],
+      "with both stores sealed the collector offers nothing"
+    );
+
+    // And the gate is still a comparison, not a latch: touch A alone and only
+    // A comes back.
+    const moved = new Date(1_710_000_600_000);
+    utimesSync(dbA, moved, moved);
+    assert.deepEqual(collector.listSources(), [dbA]);
+  } finally {
+    rmSync(dirA, { recursive: true, force: true });
+    rmSync(dirB, { recursive: true, force: true });
+  }
+});
+
+test("ISS-8561: a side-report naming no store refuses every seal until an attributable one arrives", async () => {
+  const dirA = mkdtempSync(join(tmpdir(), "opencode-unattributed-a-"));
+  const dirB = mkdtempSync(join(tmpdir(), "opencode-unattributed-b-"));
+  try {
+    const dbA = writeOpencodeDb(dirA, [{ id: "ses_a" }]);
+    const dbB = writeOpencodeDb(dirB, [{ id: "ses_b" }]);
+    const collector = createOpencodeCollector({ dataDirs: [dirA, dirB] });
+
+    assert.deepEqual(collector.listSources(), [dbA, dbB]);
+    assert.equal((await collector.parse(dbA)).length, 1);
+
+    // A report that names neither store could be describing a load of either
+    // that came back short, so no store may be sealed over it.
+    await collector.applyParseSideReport?.({});
+    assert.equal(
+      collector.markSourceImported?.(dbA, {
+        fingerprint: collector.sourceFingerprint?.(dbA) ?? null,
+      }),
+      false,
+      "an unattributable report refuses store A's seal"
+    );
+    assert.equal(
+      collector.markSourceImported?.(dbB, {
+        fingerprint: collector.sourceFingerprint?.(dbB) ?? null,
+      }),
+      false,
+      "and store B's"
+    );
+
+    // It describes the LAST report rather than latching: an attributable one
+    // clears it, so this converges instead of wedging the collector.
+    await collector.applyParseSideReport?.({ sourcePath: dbA });
+    assert.equal(
+      collector.markSourceImported?.(dbA, {
+        fingerprint: collector.sourceFingerprint?.(dbA) ?? null,
+      }),
+      true
+    );
+    assert.deepEqual(collector.listSources(), [dbB]);
+  } finally {
+    rmSync(dirA, { recursive: true, force: true });
+    rmSync(dirB, { recursive: true, force: true });
+  }
+});
+
+test("ISS-8561: the two data-dir overrides are refused together, and several stores refuse one fingerprint file", () => {
+  const dir = mkdtempSync(join(tmpdir(), "opencode-override-conflict-"));
+  try {
+    assert.throws(
+      () => createOpencodeCollector({ dataDir: dir, dataDirs: [dir] }),
+      BOTH_DATA_DIR_OVERRIDES,
+      "two overrides would disagree about which stores exist, and the loser's sessions would silently never import"
+    );
+    assert.throws(
+      () =>
+        createOpencodeCollector({
+          dataDirs: [dir, join(dir, "second")],
+          fingerprintPath: join(dir, "state", "fp"),
+        }),
+      ONE_FINGERPRINT_FILE,
+      "one persisted high-water mark cannot describe several stores"
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node scripts/smoke-dist-imports.mjs",
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && node ../../scripts/run-untraced.mjs tsc -p tsconfig.build.json && node scripts/smoke-dist-imports.mjs",
     "clean": "git clean -xdf .cache .turbo dist *.tsbuildinfo node_modules",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage --coverage.reporter=json --coverage.reporter=json-summary --coverage.reportOnFailure '--coverage.include=src/**/*.{ts,tsx}'",
@@ -15,16 +15,15 @@
   ],
   "dependencies": {
     "@closedloop-ai/loops-api": "workspace:*",
-    "@repo/crewd": "workspace:*",
     "@repo/shared-platform": "workspace:@closedloop-ai/shared-platform@*",
     "uuid": "^14.0.0",
-    "zod": "^4.3.6"
+    "zod": "catalog:"
   },
   "devDependencies": {
-    "@octokit/webhooks-types": "^7.6.1",
     "@repo/typescript-config": "workspace:*",
+    "@repo/vitest-config": "workspace:*",
     "@types/node": "^25.9.1",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.9"
+    "vitest": "^5.0.2"
   }
 }

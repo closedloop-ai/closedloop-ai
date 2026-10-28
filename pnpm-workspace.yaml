@@ -28,18 +28,33 @@ supportedArchitectures:
 # dedupe override below all pin one version — replacing the `next: "$next"`
 # override, whose `$<name>` syntax pnpm 11.7 deprecated in favour of catalogs.
 catalog:
-  # 16.4.1 fixes GHSA-673q-mjm6-r5xr (`use cache` RCE), GHSA-2464-fhr4-w9xw /
-  # CVE-2026-96889 (librsvg via Image Optimization), GHSA-p3m5-59mp-jv5r
+  # ISS-12874: 16.4.1 fixes GHSA-673q-mjm6-r5xr (`use cache` RCE),
+  # GHSA-2464-fhr4-w9xw (librsvg via Image Optimization), GHSA-p3m5-59mp-jv5r
   # (Server Actions DoS) and CVE-2026-94483 (image-optimization SSRF, 16.3.8).
   next: 16.4.1
-  # GHSA-wq5f-xc86-pv6w (sharp's bundled librsvg): fixed in 0.35.5.
+  # GHSA-wq5f-xc86-pv6w (librsvg memory safety): fixed in 0.35.5.
   sharp: 0.35.5
+  # ISS-12135: one zod for the client bundle. `apps/app/lib/zod-jitless.ts`
+  # configures only the copy it imports, and a package resolving another copy
+  # (realtime-client got 4.6.5 off `^4.3.6`) trips the strict CSP.
+  zod: 4.3.6
+  # ISS-12506: the HTTP router doc-sync and realtime share (@repo/http-service).
+  # The overrides below keep the GHSA-88fw-hqm2-52qc floor for transitive copies.
+  hono: 4.12.25
+  "@hono/node-server": 1.19.14
 
 # Supply-chain hardening (Shai-Hulud / TanStack-style npm worm mitigations).
 # minimumReleaseAge: refuse to install package versions younger than 7 days
 # (10080 minutes), giving the registry time to detect and yank compromised
 # releases before they land in our lockfile.
 minimumReleaseAge: 10080
+# ISS-7361 / ISS-11736: price-table-only package; 0.1.9 tarball audited by hand 2026-09-30
+# (provenance, no install scripts, data-only diff against 0.1.6); see PR. Excluded so new
+# model prices land the day they publish. Pinned to the audited version on purpose — a bare
+# package-name entry matches every future version, so the next bump would skip the 7-day
+# window it was never audited for.
+minimumReleaseAgeExclude:
+  - '@pydantic/genai-prices@0.1.9'
 # blockExoticSubdeps: refuse non-registry specifiers (git:, github:, http(s):,
 # file:, link:) introduced via transitive deps — closes the github-ref bypass.
 blockExoticSubdeps: true
@@ -79,11 +94,21 @@ allowBuilds:
 overrides:
   # Force transitive `next` to the workspace version (the catalog entry above).
   next: "catalog:"
-  # Next ships sharp transitively; keep it on the patched catalog release so
-  # apps/web's direct dep and next's copy stay one version.
+  # GHSA-rgj7-g3m4-5g8c, GHSA-wq5f-xc86-pv6w: Next ships sharp transitively;
+  # keep it at the patched release. Goes through the catalog so apps/web's
+  # direct dep and this dedupe override stay one value — bump the catalog
+  # entry, not this line.
   sharp: "catalog:"
+  # plist is carried by electron-builder and resolves both xmldom release lines.
+  # Floor each advisory-affected line at its patched release, as a RANGE so the
+  # next xmldom fix is picked up by an ordinary lockfile regen. An exact value
+  # here freezes the line instead: pnpm will not move off it even when a newer
+  # patch is published. Caret, not ">=" — ">=0.8.15" is unbounded upward and
+  # resolves the 0.8 line to 0.9.x.
+  "@xmldom/xmldom@0.8": "^0.8.15"
+  "@xmldom/xmldom@0.9": "^0.9.12"
   # Pin the entire @tiptap/* graph to a single consistent version set. The
-  # direct deps use ~3.22.3,
+  # direct deps use ~3.31.3,
   # but @tiptap/starter-kit pulls its individual extension packages (bold,
   # italic, heading, blockquote, code, …) TRANSITIVELY with ranges that float to
   # the latest 3.x on any lockfile regen, while @tiptap/core stays pinned. The
@@ -94,43 +119,58 @@ overrides:
   # transitive extensions to match core. Bump these deliberately as a set.
   # (FEA-2798 Workstream B; band-aid pending the Dependabot→Renovate migration,
   # which does pnpm lockFileMaintenance natively.)
-  "@tiptap/core": "3.22.3"
-  "@tiptap/extension-blockquote": "3.22.3"
-  "@tiptap/extension-bold": "3.22.3"
-  "@tiptap/extension-bubble-menu": "3.22.3"
-  "@tiptap/extension-bullet-list": "3.22.3"
-  "@tiptap/extension-code-block": "3.22.3"
-  "@tiptap/extension-code": "3.22.3"
-  "@tiptap/extension-document": "3.22.3"
-  "@tiptap/extension-dropcursor": "3.22.3"
-  "@tiptap/extension-floating-menu": "3.22.3"
-  "@tiptap/extension-gapcursor": "3.22.3"
-  "@tiptap/extension-hard-break": "3.22.3"
-  "@tiptap/extension-heading": "3.22.3"
-  "@tiptap/extension-horizontal-rule": "3.22.3"
-  "@tiptap/extension-italic": "3.22.3"
-  "@tiptap/extension-link": "3.22.3"
-  "@tiptap/extension-list-item": "3.22.3"
-  "@tiptap/extension-list-keymap": "3.22.3"
-  "@tiptap/extension-list": "3.22.3"
-  "@tiptap/extension-ordered-list": "3.22.3"
-  "@tiptap/extension-paragraph": "3.22.3"
-  "@tiptap/extension-placeholder": "3.22.3"
-  "@tiptap/extension-strike": "3.22.3"
-  "@tiptap/extension-table-cell": "3.22.3"
-  "@tiptap/extension-table-header": "3.22.3"
-  "@tiptap/extension-table-row": "3.22.3"
-  "@tiptap/extension-table": "3.22.3"
-  "@tiptap/extension-text": "3.22.3"
-  "@tiptap/extension-underline": "3.22.3"
-  "@tiptap/extensions": "3.22.3"
-  "@tiptap/markdown": "3.22.3"
-  "@tiptap/pm": "3.22.3"
-  "@tiptap/react": "3.22.3"
-  "@tiptap/starter-kit": "3.22.3"
-  # suggestion is versioned independently upstream (no 3.22.3 release); pin to
-  # its current known-good resolution, not the 3.22.3 the rest of the graph uses.
-  "@tiptap/suggestion": "3.19.0"
+  "@tiptap/core": "3.31.3"
+  "@tiptap/extension-blockquote": "3.31.3"
+  "@tiptap/extension-bold": "3.31.3"
+  "@tiptap/extension-bubble-menu": "3.31.3"
+  "@tiptap/extension-bullet-list": "3.31.3"
+  "@tiptap/extension-code-block": "3.31.3"
+  "@tiptap/extension-code": "3.31.3"
+  "@tiptap/extension-collaboration-caret": "3.31.3"
+  "@tiptap/extension-collaboration": "3.31.3"
+  "@tiptap/extension-document": "3.31.3"
+  "@tiptap/extension-dropcursor": "3.31.3"
+  "@tiptap/extension-floating-menu": "3.31.3"
+  "@tiptap/extension-gapcursor": "3.31.3"
+  "@tiptap/extension-hard-break": "3.31.3"
+  "@tiptap/extension-heading": "3.31.3"
+  "@tiptap/extension-horizontal-rule": "3.31.3"
+  "@tiptap/extension-italic": "3.31.3"
+  "@tiptap/extension-link": "3.31.3"
+  "@tiptap/extension-list-item": "3.31.3"
+  "@tiptap/extension-list-keymap": "3.31.3"
+  "@tiptap/extension-list": "3.31.3"
+  "@tiptap/extension-ordered-list": "3.31.3"
+  "@tiptap/extension-paragraph": "3.31.3"
+  "@tiptap/extension-placeholder": "3.31.3"
+  "@tiptap/extension-strike": "3.31.3"
+  "@tiptap/extension-table-cell": "3.31.3"
+  "@tiptap/extension-table-header": "3.31.3"
+  "@tiptap/extension-table-row": "3.31.3"
+  "@tiptap/extension-table": "3.31.3"
+  "@tiptap/extension-text": "3.31.3"
+  "@tiptap/extension-underline": "3.31.3"
+  "@tiptap/extensions": "3.31.3"
+  "@tiptap/markdown": "3.31.3"
+  "@tiptap/pm": "3.31.3"
+  "@tiptap/react": "3.31.3"
+  "@tiptap/starter-kit": "3.31.3"
+  "@tiptap/suggestion": "3.31.3"
+  # @tiptap/pm 3.31.3 wraps this ProseMirror set. Keep every transitive consumer
+  # on those exact versions so its exported types do not split across versions.
+  prosemirror-changeset: "2.4.2"
+  prosemirror-commands: "1.7.1"
+  prosemirror-dropcursor: "1.8.2"
+  prosemirror-gapcursor: "1.4.1"
+  prosemirror-history: "1.5.0"
+  prosemirror-inputrules: "1.5.1"
+  prosemirror-keymap: "1.2.3"
+  prosemirror-model: "1.25.11"
+  prosemirror-schema-list: "1.5.1"
+  prosemirror-state: "1.4.4"
+  prosemirror-tables: "1.8.5"
+  prosemirror-transform: "1.12.1"
+  prosemirror-view: "1.42.3"
   # Pin a single React instance across the workspace. Caret peer ranges
   # (^19.2.0) otherwise float react/react-dom to multiple patch versions
   # (19.2.3/19.2.5/19.2.6), which makes pnpm emit peer-keyed duplicate copies
@@ -138,25 +178,30 @@ overrides:
   # The provider then populates one context while useTheme() reads another,
   # silently breaking the theme toggle. Keep these aligned with the apps'
   # pinned react/react-dom version. 19.2.9 is the 19.2-line release for
-  # GHSA-xqc2-xf4c-x3h3 and GHSA-h3gv-c5rc-p453.
+  # GHSA-xqc2-xf4c-x3h3 and GHSA-h3gv-c5rc-p453 (ISS-12874).
   react: "19.2.9"
   react-dom: "19.2.9"
+  # recharts reads `react-is` as an unpinned peer and only a 19.x copy knows
+  # React 19's element symbol (`isFragment` checks `react.transitional.element`).
+  # Re-keying the react peers above re-resolved it to the 17.x/18.x copies the
+  # tree already carries, so pin it to the React line here (ISS-12874).
+  "recharts>react-is": "19.2.9"
   # Pin one react-hook-form across the workspace (FEA-1510). Caret ranges
   # (apps/app ^7.71.1, apps/desktop ^7.76.1) otherwise resolve to two copies,
   # which splits design-system's FormField Control<> from its consumers
   # (packages/app/custom-fields) and breaks typecheck. 7.76.1 satisfies every
   # declared range and survives lockfile churn that a per-package pin would not.
   react-hook-form: "7.76.1"
-  # >=7.3.5 closes GHSA-fx9v-vv6r-65h4 (server.fs.deny bypass; 7.0.0-7.3.4).
-  # The <8.0.0 cap holds the whole workspace on Vite 7 (single hoisted version).
-  # Blocker for Vite 8 is electron-vite: stable 5.x peer-requires vite <8, and
-  # only electron-vite 6 — currently a stalled beta (6.0.0-beta.1, Apr 2026) —
-  # supports Vite 8. Vitest 4.1.x and @tailwindcss/vite already support Vite 8
-  # (the old "vitest JSX import-analysis" rationale here was stale/disproven).
-  # A validated migration exists on branch explore/vite8-spike; lift this cap to
-  # ">=8.1.1 <9.0.0" as part of it once electron-vite 6 ships stable/rc. Plan:
-  # ClosedLoop PLN-1286 (Vite 8 Toolchain Migration).
-  vite: ">=7.3.5 <8.0.0"
+  # Vite is single-version-hoisted, so this override IS the workspace's Vite
+  # version. The floor is 8.1.1 because the 8.0 line carries two advisories of
+  # its own, both fixed in 8.0.16 and neither of which `>=8.0.0` would clear:
+  # GHSA-fx2h-pf6j-xcff (server.fs.deny bypass on Windows alternate paths;
+  # vite >=8.0.0 <=8.0.15, and >=7.0.0 <=7.3.4) and GHSA-v6wh-96g9-6wx3
+  # (launch-editor NTLMv2 hash disclosure via UNC paths; same vite ranges).
+  # It also satisfies `@vitejs/plugin-react` 6's `vite: ^8.0.0` peer; `<9.0.0`
+  # keeps the next major a deliberate migration, paired with the
+  # `@vitejs/plugin-react` major ignore in .github/dependabot.yml.
+  vite: ">=8.1.1 <9.0.0"
   # >=4.12.25 closes GHSA-88fw-hqm2-52qc (CORS reflects any Origin with
   # Access-Control-Allow-Credentials; affects <4.12.25). hono is in a production
   # runtime closure via @modelcontextprotocol/sdk (apps/mcp).
@@ -171,19 +216,40 @@ overrides:
   dompurify: ">=3.4.11"
   # >=7.6.1 closes GHSA-76w4-37v2-3rm6 (Any-expansion DoS; affects <=7.6.0).
   protobufjs: ">=7.6.1 <8.0.0"
-  # >=7.28.0 closes the 7.x undici advisories: GHSA-vxpw-j846-p89q,
-  # GHSA-hm92-r4w5-c3mj, GHSA-vmh5-mc38-953g, GHSA-p88m-4jfj-68fv,
-  # GHSA-pr7r-676h-xcf6, GHSA-g8m3-5g58-fq7m, GHSA-35p6-xmwp-9g52 (all fixed in
-  # 7.28.0). The <8.0.0 bound keeps undici on the 7.x line our consumers target.
-  undici: ">=7.28.0 <8.0.0"
+  # >=7.29.0 closes every open 7.x undici advisory. Fixed in 7.28.0:
+  # GHSA-vxpw-j846-p89q, GHSA-hm92-r4w5-c3mj, GHSA-vmh5-mc38-953g,
+  # GHSA-p88m-4jfj-68fv, GHSA-pr7r-676h-xcf6, GHSA-g8m3-5g58-fq7m,
+  # GHSA-35p6-xmwp-9g52. Fixed in 7.29.0: GHSA-4cwx-7wf7-3272 (high),
+  # GHSA-m8rv-5g2x-5cg5, GHSA-jr45-8vmc-qm54, GHSA-v3r7-h72x-cjcm,
+  # GHSA-8xcm-r25x-g524. The <8.0.0 bound keeps undici on the 7.x line our
+  # consumers target.
+  undici: ">=7.29.0 <8.0.0"
   flatted: ">=3.4.0"
-  socket.io-parser: ">=4.2.6"
+  # >=6.6.7 closes GHSA-gr94-w7qr-f4j3 (Engine.IO WebTransport SID DoS) and
+  # GHSA-r635-g3xr-vw7x (polling-transport connection exhaustion), both fixed in
+  # 6.6.7. The <6.7.0 bound is socket.io@4.8.3's own declared ceiling
+  # (engine.io "~6.6.0"): an override replaces the specifier outright instead of
+  # intersecting with it, so a looser <7.0.0 would let the next lockfile
+  # regeneration float engine.io onto a minor socket.io never declared
+  # compatible, with nothing in the tree objecting.
+  engine.io: ">=6.6.7 <6.7.0"
+  # >=4.2.7 closes GHSA-2m8v-j782-fhvr (zero-attachment memory exhaustion, fixed
+  # 4.2.7) and GHSA-677m-j7p3-52f9 (unbounded binary attachments, fixed 4.2.6).
+  # The <4.3.0 bound is socket.io@4.8.3's own declared ceiling
+  # (socket.io-parser "~4.2.4"), for the same reason as engine.io above.
+  socket.io-parser: ">=4.2.7 <4.3.0"
+  # Express 5 resolves body-parser 2.x; 2.3.0 rejects malformed limits rather
+  # than disabling request-size enforcement (GHSA-v422-hmwv-36x6).
+  body-parser: ">=2.3.0 <3.0.0"
   express-rate-limit: ">=8.2.2"
   effect: ">=3.20.0"
   yaml: ">=2.8.3"
   minimatch: ">=10.2.3"
   picomatch: ">=4.0.4"
-  brace-expansion: ">=5.0.6"
+  # >=5.0.9 closes GHSA-rgw5-rvv9-x895 (unbounded intermediate arrays, bypassing
+  # the CVE-2026-14257 mitigation; fixed 5.0.9), which supersedes the earlier
+  # GHSA-mh99-v99m-4gvg (5.0.8) and GHSA-jxxr-4gwj-5jf2 (5.0.6) floors.
+  brace-expansion: ">=5.0.9 <6.0.0"
   lodash: ">=4.18.0"
   lodash-es: ">=4.18.0"
   axios: ">=1.15.2"
@@ -211,7 +277,15 @@ overrides:
   markdown-it: ">=14.2.0"
   # >=7.29.6 closes GHSA-4x5r-pxfx-6jf8 (@babel/core RegExp complexity; affects
   # <=7.29.0, fixed 7.29.6). Patch-level; safe across the workspace.
-  "@babel/core": ">=7.29.6"
+  # The <8.0.0 cap holds the workspace on the Babel 7 line. The floor alone is
+  # open-ended, so the FIRST lockfile regen after @babel/core 8.0.1 shipped
+  # floated every edge in the graph onto a compiler major -- 322 resolutions at
+  # 7.29.7 became 330 at 8.0.1 on the Storybook Dependabot PR, reaching next,
+  # react-native and fumadocs. No direct dependency asked for it: the widest
+  # declared range in the tree is @storybook/nextjs's ^7.28.5. A security floor
+  # must not double as a major-version escalator; same shape as the vite and tar
+  # caps below. Babel 8 is a deliberate migration -- lift this as part of one.
+  "@babel/core": ">=7.29.6 <8.0.0"
   # >=0.28.1 closes GHSA-g7r4-m6w7-qqqr (esbuild; affects 0.27.3-0.28.0, fixed
   # 0.28.1). Scope the selector to the affected range so the non-vulnerable
   # 0.25.x copy that vite/vitest pin is left untouched (forcing it to 0.28.x
@@ -229,7 +303,8 @@ overrides:
   # above are still cleared — this only moves the floor up.
   "@opentelemetry/core": ">=2.10.0 <3.0.0"
   #
-  # ISS-4859 raised the experimental floor from 0.219.0 to 0.221.0. These two
+  # ISS-4859 raised the experimental floor from 0.219.0 to 0.221.0; the
+  # @opentelemetry/sdk-logs bump raised it again to 0.222.0. These two
   # overrides REPLACE the manifest specifier outright, so bumping
   # apps/desktop/package.json alone could not move sdk-node — the override kept
   # re-pinning it to the already-resolved 0.219.0 while its lockstep siblings
@@ -239,16 +314,16 @@ overrides:
   # family on one version. Bump these together with the apps/desktop specifiers.
   # Both CVE floors above are still cleared — this only moves the floor up.
   #
-  # CEILING (whitlockk review): the range is CLOSED at <0.222.0, not left open at
-  # `>=0.221.0`. The apps/desktop siblings (api-logs, otlp-transformer, sdk-logs)
-  # are `^0.221.0`, which on a 0.x line stops below 0.222.0 — an open-ended
+  # CEILING (whitlockk review): the range is CLOSED at <0.223.0, not left open at
+  # `>=0.222.0`. The apps/desktop siblings (api-logs, otlp-transformer, sdk-logs)
+  # are `^0.222.0`, which on a 0.x line stops below 0.223.0 — an open-ended
   # override here would let the next lockfile regeneration float sdk-node /
-  # exporter-prometheus onto 0.222.0 while the carets held their siblings at
-  # 0.221.0, recreating the exact split ISS-4859 closed. The whole experimental
+  # exporter-prometheus onto 0.223.0 while the carets held their siblings at
+  # 0.222.0, recreating the exact split ISS-4859 closed. The whole experimental
   # family moves as ONE deliberate bump: raise the carets in
   # apps/desktop/package.json and both bounds here in the same change.
-  "@opentelemetry/sdk-node": ">=0.221.0 <0.222.0"
-  "@opentelemetry/exporter-prometheus": ">=0.221.0 <0.222.0"
+  "@opentelemetry/sdk-node": ">=0.222.0 <0.223.0"
+  "@opentelemetry/exporter-prometheus": ">=0.222.0 <0.223.0"
   # Pin ONE @opentelemetry/api across the workspace. It is an *optional peer* of
   # `next`, so it lands in next's peer-resolution key. With two versions in the
   # tree (1.9.0 and 1.9.1) pnpm therefore emits two peer-keyed copies of next,
@@ -271,18 +346,50 @@ overrides:
   # Cleared the minimumReleaseAge: 10080 supply-chain window above. Reaches 28
   # production paths via @solana/web3.js and googleapis.
   uuid: ">=11.1.1"
-  # GHSA-h67p-54hq-rp68 (js-yaml special-char DoS). Scoped per major so the
-  # only 3.x consumer (front-matter@4 -> js-yaml@3.14.2) takes the 3.15.0 patch
-  # instead of a forced 4.x major; the 4.x closure floors at 4.2.0. Both patched
-  # releases have cleared the minimumReleaseAge: 10080 window (checked 2026-07-04).
-  "js-yaml@3": ">=3.15.0 <4.0.0"
-  "js-yaml@4": ">=4.2.0 <5.0.0"
+  # js-yaml merge-key/omap DoS chain. The binding floor on both majors is
+  # GHSA-2883-xcg3-v3hh (high, maxTotalMergeKeys does not limit CPU for empty
+  # merge sources; first patched 3.15.2 and 4.3.2), which supersedes
+  # GHSA-5p4m-2wfm-xmqj (3.15.1/4.3.1), GHSA-52cp-r559-cp3m (3.15.0/4.3.0) and
+  # GHSA-h67p-54hq-rp68 (3.15.0/4.2.0). Kept scoped per major so a 3.x consumer
+  # takes the 3.x patch rather than a forced 4.x major; no 3.x consumer resolves
+  # today (front-matter is gone from the tree), so the 3.x entry is a floor for
+  # anything that reintroduces one. Both patched releases shipped 2026-08-26 and
+  # have cleared the minimumReleaseAge: 10080 window (checked 2026-09-21).
+  "js-yaml@3": ">=3.15.2 <4.0.0"
+  "js-yaml@4": ">=4.3.2 <5.0.0"
+  # Nano ID infinite-loop advisories, per major so each keeps its own line.
+  # 3.x floors on GHSA-2v37-7h3g-55p8 (size zero; first patched 3.3.18), which
+  # also covers GHSA-28wg-ghj8-5hjv (negative size; 3.3.16). 5.x floors on
+  # GHSA-28wg-ghj8-5hjv (first patched 5.1.16), which covers the 5.x half of
+  # GHSA-2v37-7h3g-55p8 (5.1.6). Both releases have cleared the
+  # minimumReleaseAge: 10080 window (checked 2026-09-21).
+  "nanoid@3": ">=3.3.18 <4.0.0"
+  "nanoid@5": ">=5.1.16 <6.0.0"
   # >=6.15.2 closes GHSA-q8mj-m7cp-5q26 (qs prototype-pollution DoS; affects
   # 6.11.1-6.15.1). Cleared the minimumReleaseAge: 10080 window (6.15.2 is mature).
   # The <7.0.0 bound keeps qs on the 6.x line our consumers target.
   qs: ">=6.15.2 <7.0.0"
   ip-address: ">=10.1.1"
-  fast-uri: ">=3.1.2"
+  # >=3.1.6 closes the 3.x fast-uri host-confusion/SSRF set:
+  # GHSA-jqff-g426-hqxp (percent-encoded scheme normalization),
+  # GHSA-5jgf-p345-68v8 (skipped IDN canonicalization),
+  # GHSA-f65p-4m7j-42xc (malformed IPv6 normalization) and
+  # GHSA-fph4-wmhf-6fwf (repeated hostname percent-decoding), all fixed in
+  # 3.1.6. The <4.0.0 bound keeps fast-uri on the 3.x line our consumers target.
+  fast-uri: ">=3.1.6 <4.0.0"
+  # >=4.28.7 closes GHSA-c83g-rgw3-j3cx (unbounded cache growth -> OOM) and
+  # GHSA-73wf-gq98-2v4g (crash/prototype write via untrusted
+  # browserslist-stats.json), both fixed in 4.28.7.
+  browserslist: ">=4.28.7 <5.0.0"
+  # >=2.11.0 closes GHSA-w5vr-8v7q-w6rv (process termination on invalid input).
+  baseline-browser-mapping: ">=2.11.0 <3.0.0"
+  # Not a security floor: browserslist >=4.28.9 requires caniuse-lite
+  # ^1.0.30001810, which otherwise resolves as a second copy alongside the
+  # 1.0.30001793 that next and autoprefixer already hold. Both of their ranges
+  # (^1.0.30001579, ^1.0.30001646) admit the newer one, so pinning the floor
+  # here collapses the duplicate now rather than letting an unrelated future
+  # regeneration shift next's browser-target data.
+  caniuse-lite: ">=1.0.30001810"
   "@babel/plugin-transform-modules-systemjs": ">=7.29.4"
   mermaid: ">=11.15.0"
   "@protobufjs/utf8": ">=1.1.1"
@@ -299,9 +406,8 @@ overrides:
   # >=3.0.6 closes GHSA-f2pg-3vh2-46f8 (prototype hijack in assign()).
   js-cookie: ">=3.0.6"
   # 4.x only — closes GHSA-5xrq-8626-4rwp (CRITICAL: Vitest UI server file
-  # read/exec; 4.0.x). Scoped to 4.x so packages/shared-platform's vitest@3
-  # (^3.2.4) pin is untouched.
-  "vitest@4": ">=4.1.0"
+  # read/exec; 4.0.x). Capped below 5 so the override never escalates a major.
+  "vitest@4": ">=4.1.0 <5.0.0"
   # 8.x only — >=8.18.0 closes GHSA-2g4f-4pwh-qvx6 (moderate ReDoS via the `$data`
   # option; 8.0.0-8.17.x). Dedupes onto the 8.18.0 already in the tree
   # (@asyncapi/parser, @stoplight/spectral-core); the transitive apps/mcp >
@@ -341,6 +447,25 @@ packageExtensions:
   "@stryker-mutator/core":
     dependencies:
       typescript: "npm:@typescript/typescript6@6.0.2"
+  # Same root cause, same remedy, for the desktop design-system boundary gate
+  # (ISS-7240). dependency-cruiser probes
+  # `tryImportAvailable("typescript", ">=2.0.0 <7.0.0")` and declares no
+  # dependency on typescript, so under the workspace's typescript@7 the probe
+  # fails and `.ts` drops out of `scannableExtensions` -- ONE list feeding both
+  # the directory scan and the enhanced-resolve `extensions`. `depcruise src`
+  # then gathered 0 modules and exited 0, so `assert:design-system-boundary`
+  # passed by inspecting nothing from 2026-08-11 until this entry landed.
+  # `packageExtensions` and not `overrides`: dependency-cruiser declares no
+  # typescript dep for an override selector to rewrite, and an override would
+  # force typescript6 onto the app's real build tooling. Drop this once
+  # dependency-cruiser admits typescript@7 (18.2.0 still declares `<7.0.0`).
+  dependency-cruiser:
+    dependencies:
+      typescript: "npm:@typescript/typescript6@6.0.2"
 patchedDependencies:
   '@libsql/client@0.17.3': patches/@libsql__client@0.17.3.patch
+  '@liveblocks/react-tiptap@3.18.5': patches/@liveblocks__react-tiptap@3.18.5.patch
   '@stryker-mutator/vitest-runner@9.6.1': patches/@stryker-mutator__vitest-runner@9.6.1.patch
+  '@tiptap/markdown@3.31.3': patches/@tiptap__markdown@3.31.3.patch
+  app-builder-lib@26.15.3: patches/app-builder-lib@26.15.3.patch
+  lint-staged@16.3.2: patches/lint-staged@16.3.2.patch

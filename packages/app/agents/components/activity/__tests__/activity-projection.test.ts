@@ -32,7 +32,7 @@ describe("projectAgentSessionActivities", () => {
     });
     expect(activity?.metadata).toContainEqual({
       label: "Repository",
-      value: "closedloop-ai/example-repo",
+      value: "closedloop-ai/closedloop-ai",
     });
   });
 
@@ -203,7 +203,7 @@ describe("projectAgentSessionActivities", () => {
     ]);
 
     expect(withMetadata?.metadata).toEqual([
-      { label: "Repository", value: "closedloop-ai/example-repo" },
+      { label: "Repository", value: "closedloop-ai/closedloop-ai" },
       { label: "Project", value: "Agents" },
       { label: "Compute target", value: "MacBook Pro" },
       { label: "Artifact", value: "Desktop MLP" },

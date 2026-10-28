@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  assertRunnerSecretConfigured,
   getRunnerSecret,
   MIN_SECRET_LENGTH,
   MIN_UNIQUE_SECRET_CHARS,
@@ -20,35 +19,6 @@ function setSecret(value: string | undefined): void {
 describe("runner-jwt-base", () => {
   afterEach(() => {
     setSecret(undefined);
-  });
-
-  describe("assertRunnerSecretConfigured", () => {
-    it("throws when the env var is unset", () => {
-      setSecret(undefined);
-      expect(() => assertRunnerSecretConfigured(TEST_ENV_VAR)).toThrow(
-        `${TEST_ENV_VAR} is not configured`
-      );
-    });
-
-    it("throws when the secret is shorter than the minimum length", () => {
-      setSecret("a".repeat(MIN_SECRET_LENGTH - 1));
-      expect(() => assertRunnerSecretConfigured(TEST_ENV_VAR)).toThrow(
-        `${TEST_ENV_VAR} must be at least ${MIN_SECRET_LENGTH} characters`
-      );
-    });
-
-    it("throws when the secret lacks character diversity", () => {
-      setSecret("a".repeat(MIN_SECRET_LENGTH + 8));
-      expect(() => assertRunnerSecretConfigured(TEST_ENV_VAR)).toThrow(
-        `${TEST_ENV_VAR} is too weak (not enough character diversity)`
-      );
-    });
-
-    it("returns void for a sufficiently strong secret", () => {
-      setSecret("abcdefghijklmnopqrstuvwxyz123456");
-      expect(() => assertRunnerSecretConfigured(TEST_ENV_VAR)).not.toThrow();
-      expect(assertRunnerSecretConfigured(TEST_ENV_VAR)).toBeUndefined();
-    });
   });
 
   describe("getRunnerSecret", () => {

@@ -1,10 +1,9 @@
 "use client";
 
 import type { ThreadData } from "@liveblocks/client";
-import {
-  FeedSidebar,
-  FeedTab,
-} from "@repo/app/documents/components/feed-sidebar/feed-sidebar";
+import type { DocumentType } from "@repo/api/src/types/document";
+import { eraseFeedSource } from "@repo/app/documents/components/feed-sidebar/erase-feed-source";
+import { FeedSidebar } from "@repo/app/documents/components/feed-sidebar/feed-sidebar";
 import { activitySource } from "@repo/app/documents/components/feed-sidebar/sources/activity-source";
 import { ActivitySourceProvider } from "@repo/app/documents/components/feed-sidebar/sources/activity-source-provider";
 import {
@@ -17,8 +16,7 @@ import {
 } from "@repo/app/documents/components/feed-sidebar/sources/liveblocks-comment-source";
 import { LiveblocksSourceProvider } from "@repo/app/documents/components/feed-sidebar/sources/liveblocks-source-provider";
 import type { FeedArtifactType } from "@repo/app/documents/components/feed-sidebar/types";
-import type { ReactNode } from "react";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 
 type DocumentFeedRailProps = {
   artifactType: FeedArtifactType;
@@ -27,6 +25,7 @@ type DocumentFeedRailProps = {
    * `GET /documents/[id]/activity`. Threaded to `ActivitySourceProvider`.
    */
   documentId: string;
+  documentType: DocumentType;
   organizationId: string;
   /**
    * When false, renders nothing. Lets callers gate the rail on a
@@ -52,10 +51,6 @@ type DocumentFeedRailProps = {
    * source via `LiveblocksSourceProvider`.
    */
   onCommentClick?: (thread: ThreadData) => void;
-  /**
-   * Optional chat tab. When omitted, only the Feed tab renders.
-   */
-  chatPanel?: ReactNode;
 };
 
 export function buildDocumentFeedRailInitialSourceState({
@@ -80,6 +75,7 @@ export function buildDocumentFeedRailInitialSourceState({
 export function DocumentFeedRail({
   artifactType,
   documentId,
+  documentType,
   organizationId,
   enabled,
   visible,
@@ -88,14 +84,18 @@ export function DocumentFeedRail({
   currentVersion,
   isViewingHistorical,
   onCommentClick,
-  chatPanel,
 }: Readonly<DocumentFeedRailProps>) {
-  const [activeTab, setActiveTab] = useState<FeedTab>(FeedTab.Feed);
-  const sources = useMemo(() => [liveblocksCommentSource, activitySource], []);
+  const sources = useMemo(
+    () => [
+      eraseFeedSource(liveblocksCommentSource),
+      eraseFeedSource(activitySource),
+    ],
+    []
+  );
 
   const activitySourceContextValue = useMemo(
-    () => ({ documentId }),
-    [documentId]
+    () => ({ documentId, documentType }),
+    [documentId, documentType]
   );
 
   const initialSourceState = useMemo<Record<string, unknown> | undefined>(
@@ -128,12 +128,9 @@ export function DocumentFeedRail({
     <LiveblocksSourceProvider value={sourceContextValue}>
       <ActivitySourceProvider value={activitySourceContextValue}>
         <FeedSidebar
-          activeTab={activeTab}
           artifactType={artifactType}
-          chatPanel={chatPanel ?? null}
           initialSourceState={initialSourceState}
           key={filterSeedKey}
-          onActiveTabChange={setActiveTab}
           onClose={onClose}
           organizationId={organizationId}
           sources={sources}

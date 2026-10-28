@@ -22,9 +22,9 @@
  * concurrency) stay in `data-revision-rebuild.test.ts`.
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
-import { DATA_REVISION } from "../src/main/collectors/engine/data-revision.js";
+import { describe, test } from "vitest";
 import { runDataRevisionRebuild } from "../src/main/collectors/engine/data-revision-rebuild.js";
+import { effectiveDataRevision } from "../src/main/collectors/engine/effective-data-revision.js";
 import { fakeCollector } from "./normalized-session-test-utils.js";
 
 describe("missing-source analytics repair and the data_revision stamp gate", () => {
@@ -46,10 +46,10 @@ describe("missing-source analytics repair and the data_revision stamp gate", () 
           return Promise.resolve({
             rebuilt: true,
             activeRace: false,
-            contentChanged: true,
+            needsResync: true,
           });
         },
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
         recomputeAnalyticsRollups: (sessionIds) => {
           recomputed.push(sessionIds);
           // FEA-3597: the bridge now reports real per-chunk outcomes; the
@@ -68,7 +68,7 @@ describe("missing-source analytics repair and the data_revision stamp gate", () 
     });
 
     assert.deepEqual(rebuilt, [
-      { sessionId: "missing-source", revision: DATA_REVISION },
+      { sessionId: "missing-source", revision: effectiveDataRevision() },
     ]);
     assert.deepEqual(recomputed, [["missing-source"]]);
     assert.equal(result.rebuilt, 1);
@@ -93,7 +93,7 @@ describe("missing-source analytics repair and the data_revision stamp gate", () 
           storedBridgeCalls++;
           return Promise.resolve({ rebuilt: true, activeRace: false });
         },
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
         recomputeAnalyticsRollups: () =>
           Promise.reject(new Error("analytics write failed")),
       },
@@ -126,7 +126,7 @@ describe("missing-source analytics repair and the data_revision stamp gate", () 
           storedBridgeCalls++;
           return Promise.resolve({ rebuilt: true, activeRace: false });
         },
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
         // Resolves — but reports that the chunk did not rebuild: the PRIMARY
         // analytics transaction itself failed, so nothing committed.
         recomputeAnalyticsRollups: (ids) =>
@@ -170,7 +170,7 @@ describe("missing-source analytics repair and the data_revision stamp gate", () 
           storedBridgeCalls++;
           return Promise.resolve({ rebuilt: true, activeRace: false });
         },
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
         // The analytics transaction committed; only the metrics refresh failed.
         recomputeAnalyticsRollups: (ids) =>
           Promise.resolve({
@@ -212,7 +212,7 @@ describe("missing-source analytics repair and the data_revision stamp gate", () 
           storedBridgeCalls++;
           return Promise.resolve({ rebuilt: true, activeRace: false });
         },
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
         // recomputeAnalyticsRollups deliberately omitted.
       },
       useStoredComponentInvocationRebuild: true,
@@ -253,10 +253,10 @@ describe("missing-source analytics repair and the data_revision stamp gate", () 
           return Promise.resolve({
             rebuilt: true,
             activeRace: false,
-            contentChanged: false,
+            needsResync: false,
           });
         },
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
         recomputeAnalyticsRollups: (ids) =>
           Promise.resolve({
             attempted: ids.length,
@@ -305,7 +305,7 @@ describe("missing-source analytics repair and the data_revision stamp gate", () 
           storedBridgeCalls++;
           return Promise.resolve({ rebuilt: true, activeRace: false });
         },
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
         // Reports one failure but names none — the invariant is violated.
         recomputeAnalyticsRollups: (ids) =>
           Promise.resolve({
@@ -345,7 +345,7 @@ describe("missing-source analytics repair and the data_revision stamp gate", () 
           storedBridgeCalls++;
           return Promise.resolve({ rebuilt: true, activeRace: false });
         },
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
         // Pre-ISS-6165 shape: counts only, no `failedSessionIds`.
         recomputeAnalyticsRollups: (ids) =>
           Promise.resolve({
@@ -387,7 +387,7 @@ describe("missing-source analytics repair and the data_revision stamp gate", () 
           stamped.push(sessionId);
           return Promise.resolve({ rebuilt: true, activeRace: false });
         },
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
         recomputeAnalyticsRollups: (ids) =>
           Promise.resolve({
             attempted: ids.length,
@@ -427,7 +427,7 @@ describe("missing-source analytics repair and the data_revision stamp gate", () 
           stamped.push(sessionId);
           return Promise.resolve({ rebuilt: true, activeRace: false });
         },
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
         recomputeAnalyticsRollups: (ids) =>
           Promise.resolve({
             attempted: ids.length,
@@ -467,7 +467,7 @@ describe("missing-source analytics repair and the data_revision stamp gate", () 
           stamped.push(sessionId);
           return Promise.resolve({ rebuilt: true, activeRace: false });
         },
-        deleteSessionRow: () => Promise.resolve(),
+        deleteSessionRow: () => Promise.resolve(true),
         recomputeAnalyticsRollups: (ids) =>
           Promise.resolve({
             attempted: ids.length,

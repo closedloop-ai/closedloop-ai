@@ -16,9 +16,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, test } from "node:test";
 import type { BasicUser } from "@repo/api/src/types/user";
 import Store from "electron-store";
+import { afterEach, test } from "vitest";
 import { createOrgDirectoryPersistenceStore } from "../src/main/session/org-directory-persistence-store.js";
 
 const STORE_NAME = "org-directory-cache";

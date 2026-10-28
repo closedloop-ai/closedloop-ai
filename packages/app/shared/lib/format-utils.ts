@@ -1,6 +1,13 @@
 /**
- * Shared formatting utilities for loops UI.
+ * Shared formatting utilities for token, cost, duration and date-range values.
  */
+
+import { stableUtcListWindow } from "@closedloop-ai/loops-api/stable-utc-window";
+import { formatBinaryBytesWithDecimalLabels } from "@repo/lib/format-bytes";
+import {
+  DEFAULT_TIMEZONE_MODE,
+  TimezoneMode,
+} from "./date-window-timezone-mode";
 
 const B = 1_000_000_000;
 const M = 1_000_000;
@@ -134,21 +141,32 @@ export function buildSearchParams(
   return params;
 }
 
-export const DATE_RANGES = ["7d", "30d", "90d", "all"] as const;
+export const DateRange = {
+  Last7Days: "7d",
+  Last30Days: "30d",
+  Last60Days: "60d",
+  Last90Days: "90d",
+  AllTime: "all",
+} as const;
 
-export type DateRange = (typeof DATE_RANGES)[number];
+export type DateRange = (typeof DateRange)[keyof typeof DateRange];
+
+export const DATE_RANGES: readonly DateRange[] = Object.values(DateRange);
 
 /**
- * The default rolling window for the shared date-range control (FEA-4181 moved
- * it here from `useSharedDateRange` so the honest empty state can tell a
- * non-default window — a filter that is narrowing the list — from the default
- * without importing the zod-backed hook module into a bundle-sensitive surface).
+ * The default rolling window for EVERY time-window selector that offers a 7d
+ * option — Sessions, Branches (web + desktop), the insights dashboards, and the
+ * Usage dashboard all start on this value. FEA-4181 moved it here from
+ * `useSharedDateRange` so the honest empty state can tell a non-default window
+ * — a filter that is narrowing the list — from the default without importing
+ * the zod-backed hook module into a bundle-sensitive surface.
  */
-export const DEFAULT_DATE_RANGE: DateRange = "90d";
+export const DEFAULT_DATE_RANGE: DateRange = DateRange.Last7Days;
 
 export const DATE_RANGE_LABELS: Record<DateRange, string> = {
   "7d": "Last 7 days",
   "30d": "Last 30 days",
+  "60d": "Last 60 days",
   "90d": "Last 90 days",
   all: "All time",
 };
@@ -157,15 +175,22 @@ export const DATE_RANGE_LABELS: Record<DateRange, string> = {
 export const DATE_RANGE_SHORT_LABELS: Record<DateRange, string> = {
   "7d": "7d",
   "30d": "30d",
+  "60d": "60d",
   "90d": "90d",
   all: "All",
 };
 
 export function parseDateRange(value: string | null): DateRange {
-  if (value === "7d" || value === "30d" || value === "90d" || value === "all") {
+  if (
+    value === "7d" ||
+    value === "30d" ||
+    value === "60d" ||
+    value === "90d" ||
+    value === "all"
+  ) {
     return value;
   }
-  return "30d";
+  return DEFAULT_DATE_RANGE;
 }
 
 /**
@@ -196,6 +221,7 @@ export function getStartIsoForDays(
 const DATE_RANGE_DAYS: Record<Exclude<DateRange, "all">, number> = {
   "7d": 7,
   "30d": 30,
+  "60d": 60,
   "90d": 90,
 };
 
@@ -226,6 +252,11 @@ export function getDateWindowForRange(
  * millisecond clock reads, and adjacent windows stay equal-width. The existing
  * rolling helpers remain instant-relative.
  *
+ * ISS-10583: the insights dashboard resolves this same window from the same
+ * producer (`@closedloop-ai/loops-api/stable-utc-window`) on both shells, so the
+ * paragraphs below describe the dashboard's window too, not only the lists and
+ * cards this helper was written for.
+ *
  * ISS-5809: this window used to END at yesterday 23:59:59.999, excluding the
  * in-progress UTC day. That is the right shape for a period-over-period
  * COMPARISON (ISS-5264's rationale) but the wrong one for the row lists and
@@ -254,28 +285,10 @@ export function getStableUtcDateWindowForRange(
   range: DateRange,
   now: Date = new Date()
 ): { startDate?: string; endDate?: string } {
-  if (range === "all") {
-    return {};
-  }
-  const endDate = new Date(
-    Date.UTC(
-      now.getUTCFullYear(),
-      now.getUTCMonth(),
-      now.getUTCDate(),
-      23,
-      59,
-      59,
-      999
-    )
+  return stableUtcListWindow(
+    range === "all" ? null : DATE_RANGE_DAYS[range],
+    now
   );
-  const startDate = new Date(
-    Date.UTC(
-      now.getUTCFullYear(),
-      now.getUTCMonth(),
-      now.getUTCDate() - DATE_RANGE_DAYS[range] + 1
-    )
-  );
-  return { startDate: startDate.toISOString(), endDate: endDate.toISOString() };
 }
 
 /**
@@ -399,13 +412,6 @@ export function formatCompact(value: number): string {
   return `${Math.round(value)}`;
 }
 
-export function formatLoc(value: number): string {
-  if (Math.abs(value) >= K) {
-    return `${trimTrailingZero(value / K)} KLOC`;
-  }
-  return Math.round(value).toLocaleString("en-US");
-}
-
 /**
  * Format a plain numeric value with comma separators.
  *
@@ -509,6 +515,28 @@ export const WHOLE_CURRENCY_ABOVE_NEGATIVE_FLOOR = `> -$${WHOLE_CURRENCY_BOUND_U
 export const KPI_NO_VALUE = "—";
 
 /**
+ * Grouped-integer formatter for a metric TILE/card COUNT.
+ *
+ * ISS-10467: the SSOT for the count half of the honest-empty rule, extracted
+ * from the Agents detail's private `numOrDash` when the per-version drill-down
+ * became a second consumer. A finite number — INCLUDING a genuine `0` — formats;
+ * anything else renders {@link KPI_NO_VALUE}.
+ *
+ * `Number.isFinite` rather than `value == null` because the inputs are WIRE
+ * data: a version-skewed producer can omit a field entirely, and
+ * `Intl.NumberFormat.format(undefined)` renders the literal string "NaN" on a
+ * card. A measured `0` and a not-computed value are DIFFERENT answers and this
+ * is the one place that keeps them apart for counts.
+ */
+export function formatCountOrDash(value: number | null | undefined): string {
+  return typeof value === "number" && Number.isFinite(value)
+    ? COUNT_FORMAT.format(value)
+    : KPI_NO_VALUE;
+}
+
+const COUNT_FORMAT = new Intl.NumberFormat("en-US");
+
+/**
  * Whole-dollar formatter for a metric TILE/card value: an unavailable metric
  * (null / undefined / non-finite) renders the honest-empty {@link KPI_NO_VALUE}
  * `—` (never a misleading `$0`), and a finite number — including a genuine `0`
@@ -557,14 +585,48 @@ export function formatLocPerDollar(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) {
     return KPI_NO_VALUE;
   }
-  const magnitude = Math.abs(value);
-  if (magnitude > 0 && magnitude < LOC_PER_DOLLAR_TWO_DP_FLOOR) {
-    return value.toLocaleString("en-US", {
-      maximumSignificantDigits: LOC_PER_DOLLAR_SMALL_SIGNIFICANT_DIGITS,
-    });
+  const small = smallRatioDigits(value);
+  if (small !== null) {
+    return small;
   }
   return formatNumber(value, true);
 }
+
+/**
+ * ISS-9814: the Pensero points-per-dollar KPI formatter.
+ *
+ * A sibling of {@link formatLocPerDollar} rather than a reuse of it, because
+ * the two units round differently and the difference is a lie in one direction.
+ * LOC/$ falls through to `formatNumber(value, true)` above `0.01`, which ROUNDS
+ * TO A WHOLE NUMBER — correct for lines, which are whole. Pensero's descriptor
+ * declares `fractionDigits: 1` and its feed "emits tenth-of-a-point values
+ * verbatim", so rendering a measured 25.5 pts/$ as "26" discards a digit the
+ * provider actually measured.
+ *
+ * The tiny-value arm is {@link smallRatioDigits}, shared with every other
+ * per-unit ratio KPI rather than copied.
+ */
+export function formatPenseroPointsPerDollar(
+  value: number | null | undefined
+): string {
+  if (value == null || !Number.isFinite(value)) {
+    return KPI_NO_VALUE;
+  }
+  const small = smallRatioDigits(value);
+  if (small !== null) {
+    return small;
+  }
+  return value.toLocaleString("en-US", {
+    maximumFractionDigits: PENSERO_POINTS_FRACTION_DIGITS,
+  });
+}
+
+/**
+ * Tenths, matching `NUMERATOR_PROVIDER_DESCRIPTORS[Pensero].fractionDigits`.
+ * Declared here rather than imported so this bundle-sensitive formatter module
+ * stays free of the provider seam; the agreement is pinned by test.
+ */
+const PENSERO_POINTS_FRACTION_DIGITS = 1;
 
 /** Fixed decimal places for the LOC/$ TABLE column (ISS-4866). */
 const LOC_PER_DOLLAR_COLUMN_FRACTION_DIGITS = 2;
@@ -608,4 +670,160 @@ export function formatLocPerDollarColumn(
     maximumFractionDigits: LOC_PER_DOLLAR_COLUMN_FRACTION_DIGITS,
     minimumFractionDigits: LOC_PER_DOLLAR_COLUMN_FRACTION_DIGITS,
   });
+}
+
+/**
+ * Human-readable byte size. `null` is the honest unknown and renders "an
+ * unknown size" — never a fabricated `0 B` — so a caller that never measured a
+ * size cannot present one.
+ *
+ * ISS-8678 moved this out of `session-transcript-status-copy.ts`, where a
+ * file-size split (ISS-7516) had left a generic formatter inside a feature
+ * slice that imports the Zod-backed transcript contract. ISS-8506 then moved
+ * the IMPLEMENTATION to `@repo/lib/format-bytes`, the one owner of byte
+ * formatting repo-wide, leaving this as the name this surface already imports.
+ * Output is byte-identical to what it replaced, so every assertion pinning it
+ * stays green.
+ */
+export function formatBytes(bytes: number | null): string {
+  return formatBinaryBytesWithDecimalLabels(bytes);
+}
+
+/**
+ * ISS-9619 — the inclusive N-day window ending with the current LOCAL calendar
+ * day, the Local-mode counterpart of {@link getStableUtcDateWindowForRange}.
+ *
+ * Same contract as the UTC sibling and the same day map, so "last 7 days" cannot
+ * come to mean two different spans: the bounds are the reader's own midnight and
+ * their own end-of-day, serialized as the UTC instants those moments are. They
+ * stay stable throughout a LOCAL day, which is what keeps a query key stable for
+ * a reader who never crosses their own midnight — the UTC sibling's stability
+ * guarantee, restated on the boundary this mode actually uses.
+ *
+ * `new Date(y, m, d)` is local-midnight by construction, which is the whole
+ * mechanism: no offset arithmetic is done here, so a zone with a half-hour
+ * offset or a DST transition inside the window is handled by the platform
+ * calendar rather than by a subtraction that assumes 24-hour days.
+ */
+export function getStableLocalDateWindowForRange(
+  range: DateRange,
+  now: Date = new Date()
+): { startDate?: string; endDate?: string } {
+  if (range === "all") {
+    return {};
+  }
+  const endDate = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+    23,
+    59,
+    59,
+    999
+  );
+  const startDate = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate() - DATE_RANGE_DAYS[range] + 1
+  );
+  return { startDate: startDate.toISOString(), endDate: endDate.toISOString() };
+}
+
+/**
+ * ISS-9619 — the window for a range under the reader's chosen day boundary.
+ *
+ * The ONE seam every Sessions/Branches host resolves its window through, so the
+ * row list and the summary cards on a surface are windowed by a single call and
+ * cannot land in a mixed state where the cards describe a different span than
+ * the rows. Defaults to {@link DEFAULT_TIMEZONE_MODE}, so a caller that has not
+ * been taught about modes keeps today's UTC behaviour exactly.
+ */
+export function getStableDateWindowForRange(
+  range: DateRange,
+  mode: TimezoneMode = DEFAULT_TIMEZONE_MODE,
+  now: Date = new Date()
+): { startDate?: string; endDate?: string } {
+  if (mode === TimezoneMode.Local) {
+    return getStableLocalDateWindowForRange(range, now);
+  }
+  return getStableUtcDateWindowForRange(range, now);
+}
+
+/**
+ * ISS-8184: the Tokens-per-LOC KPI formatter.
+ *
+ * The KLOC shape of this ratio was thousands of tokens and rendered compactly.
+ * Per LINE it can sit under 1 whenever a window merges a large vendored diff
+ * against modest agent spend, and `formatCompact` rounds anything under 1000 to
+ * a whole number — so a window that burned real tokens rendered "0 tokens per
+ * LOC". Two decimals under 10, and {@link smallRatioDigits} below that.
+ */
+export function formatTokensPerLoc(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) {
+    return KPI_NO_VALUE;
+  }
+  return smallRatioDigits(value) ?? formatNumber(value, true);
+}
+
+/**
+ * The sub-`0.01` arm every per-unit ratio KPI shares, or `null` when the value
+ * is large enough for the caller's own precision rule. Significant digits rather
+ * than fixed decimals, so a genuinely small rate reads `0.0088` instead of
+ * flooring to the `0.00` ISS-4667 removed.
+ */
+function smallRatioDigits(value: number): string | null {
+  const magnitude = Math.abs(value);
+  if (magnitude > 0 && magnitude < LOC_PER_DOLLAR_TWO_DP_FLOOR) {
+    return value.toLocaleString("en-US", {
+      maximumSignificantDigits: LOC_PER_DOLLAR_SMALL_SIGNIFICANT_DIGITS,
+    });
+  }
+  return null;
+}
+
+/**
+ * ISS-10467: a token count for a metric row, or the honest-empty
+ * {@link KPI_NO_VALUE} when there is no measurement.
+ *
+ * The count/dash pair beside {@link formatCountOrDash}, composed rather than
+ * re-derived: {@link formatTokenCount} is the abbreviated (k/M/B) spelling every
+ * token figure on the Sessions surfaces already uses, and this adds only the
+ * null/non-finite guard so the same surface cannot print `NaN` for a token total
+ * a version-skewed producer omitted. A finite `0` passes through as a MEASURED
+ * zero, which is the whole ISS-5363 distinction.
+ */
+export function formatTokenCountOrDash(
+  value: number | null | undefined
+): string {
+  return typeof value === "number" && Number.isFinite(value)
+    ? formatTokenCount(value)
+    : KPI_NO_VALUE;
+}
+
+/**
+ * ISS-10468 (operator ruling, marisolashgrove 2026-10-01: "raise cost column's
+ * precision"): a cost for a metric ROW, at cents precision, or the honest-empty
+ * {@link KPI_NO_VALUE} when there is no measurement.
+ *
+ * The third member of the `…OrDash` family beside {@link formatCountOrDash} and
+ * {@link formatTokenCountOrDash}, and the ROW-precision counterpart to
+ * {@link formatCurrencyTileValue}: same null/non-finite guard, {@link
+ * formatCostPrecise} instead of {@link formatCurrencyWhole} behind it. No new
+ * currency arithmetic — {@link formatCostPrecise} is already this repo's
+ * cents-precision cost formatter, including the ISS-4919 sub-floor bound, so a
+ * second spelling of either would be the drift this guard exists to prevent.
+ *
+ * Which of the two guards a surface wants is the distinction
+ * {@link formatCurrencyWhole}'s own docstring already draws: whole dollars for a
+ * LARGE aggregate headline where cents are noise, cents for a per-row figure
+ * where the fractional part is the signal. A table row whose neighbour column
+ * states the CHANGE between two such figures is the second kind — at whole-dollar
+ * precision a real $0.20 move renders as two cells a dollar apart.
+ */
+export function formatCostPreciseOrDash(
+  value: number | null | undefined
+): string {
+  return typeof value === "number" && Number.isFinite(value)
+    ? formatCostPrecise(value)
+    : KPI_NO_VALUE;
 }

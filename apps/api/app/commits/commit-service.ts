@@ -8,7 +8,13 @@ import {
   type TransactionClient,
   withDb,
 } from "@repo/database";
+import { bindParameterChunkSize } from "@/app/agent-sessions/service/write-chunking";
+import { seedBranchOwners } from "@/app/branches/branch-owner-seed/branch-owner-seed";
 import { getPrismaErrorCode } from "@/lib/db-utils";
+import {
+  type CommitUpdateData,
+  updateCommitBatch,
+} from "./commit-batch-updates";
 
 /**
  * CommitDetail SSOT service (FEA-2731 / PRD-510 D7).
@@ -126,40 +132,6 @@ function pickSource(
 }
 
 /**
- * Find the existing `CommitDetail` row that is git-identity-equal to `sha`
- * within `(org, repo)`: one sha is a prefix of the other. Narrowed by the shared
- * 7-char prefix (an index range scan on the `(org, repo, sha)` unique key — a
- * git abbreviation is always a prefix of the full sha, so both share their first
- * seven hex chars), then confirmed by an exact prefix test. Prefers the fullest
- * matching row so a webhook full-sha row is chosen over a desktop abbrev row,
- * avoiding a needless sha expansion.
- */
-async function findCommitByShaPrefix(
-  tx: CommitTx,
-  organizationId: string,
-  repositoryFullName: string,
-  sha: string
-): Promise<CommitDetail | null> {
-  const candidates = await tx.commitDetail.findMany({
-    where: {
-      organizationId,
-      repositoryFullName,
-      sha: { startsWith: sha.slice(0, 7) },
-    },
-  });
-  let match: CommitDetail | null = null;
-  for (const candidate of candidates) {
-    if (
-      (sha.startsWith(candidate.sha) || candidate.sha.startsWith(sha)) &&
-      (match === null || candidate.sha.length > match.sha.length)
-    ) {
-      match = candidate;
-    }
-  }
-  return match;
-}
-
-/**
  * Reconcile one commit onto the `(org, repo, sha)` identity within a caller
  * transaction. Insert when absent; otherwise merge (field-level provenance) and
  * expand the stored sha to the longer/fuller form. Idempotent — a re-sync of the
@@ -183,106 +155,112 @@ async function findCommitByShaPrefix(
  * xact-lock keyed on `hashtext(org|repo|sha[:7])` (serializes same-prefix
  * reconciles so the read-then-write can't interleave), or SERIALIZABLE + retry.
  */
-export async function reconcileCommitOnTx(
+export function reconcileCommitOnTx(
   tx: CommitTx,
   input: ReconcileCommitInput
-): Promise<void> {
-  const repositoryFullName = normalizeRepoFullName(input.repositoryFullName);
-  const sha = input.sha.toLowerCase();
-  const authoritative = isAuthoritativeCommitSource(input.source);
+): Promise<string[]> {
+  return reconcileCommitsOnTx(tx, [input]);
+}
 
-  const existing = await findCommitByShaPrefix(
-    tx,
-    input.organizationId,
-    repositoryFullName,
-    sha
-  );
-
-  if (existing === null) {
-    await tx.commitDetail.create({
-      data: {
-        organizationId: input.organizationId,
-        repositoryFullName,
-        sha,
-        branchArtifactId: input.branchArtifactId,
-        source: input.source,
-        message: input.message ?? null,
-        committedAt: input.committedAt ?? null,
-        authoredAt: input.authoredAt ?? null,
-        authorName: input.authorName ?? null,
-        authorEmail: input.authorEmail ?? null,
-        authorLogin: input.authorLogin ?? null,
-        linesAdded: input.linesAdded ?? null,
-        linesRemoved: input.linesRemoved ?? null,
-        filesChanged: input.filesChanged ?? null,
-        isMerge: input.isMerge ?? false,
-        mergeCommitSha: input.mergeCommitSha ?? null,
-      },
-    });
-    return;
+/**
+ * Reconcile MANY commit observations onto their identity keys (ISS-8145).
+ *
+ * The desktop sync lane calls this once per session instead of awaiting
+ * `reconcileCommitOnTx` per ref. That loop was one read plus one write per
+ * commit, serialized inside the session's write transaction and bounded only by
+ * `MAX_SYNCED_ARTIFACT_REFS_PRODUCER` — a client-side courtesy, not a server
+ * guarantee — so its round-trip count was the producer's to choose. ISS-4445 and
+ * ISS-4440 batched this lane's READS; this is the other half.
+ *
+ * Round trips are now: one prefix read per (org, repo) scope, one `createMany`
+ * for everything absent, and a bounded UPDATE FROM VALUES for changed rows. The last part is what makes a re-sync cheap — reconciling is
+ * idempotent, so the steady state issues the read and nothing else, where it
+ * previously issued 2N statements to write nothing.
+ *
+ * Semantics are unchanged and deliberately so: git-style prefix identity,
+ * expansion to the fuller sha, field-level provenance, and `branchArtifactId`
+ * set once. Observations in the SAME call that are prefix-compatible are folded
+ * first, so two spellings of one commit still produce one row, exactly as the
+ * serial loop produced when the second call read back the first's insert.
+ *
+ * Returns the distinct Branch ids the reconciled rows live on. A stored row
+ * keeps the Branch it was first filed under, so that can be another Branch
+ * than the observation names.
+ */
+export async function reconcileCommitsOnTx(
+  tx: CommitTx,
+  inputs: readonly ReconcileCommitInput[]
+): Promise<string[]> {
+  if (inputs.length === 0) {
+    return [];
   }
-
-  // Expand to the fuller sha (full 40-char beats a 7-char abbrev). Because
-  // findCommitByShaPrefix prefers the longest existing row, an expansion here
-  // means no full-sha row existed yet, so setting the full sha cannot collide.
-  const canonicalSha = sha.length > existing.sha.length ? sha : existing.sha;
-
-  await tx.commitDetail.update({
-    where: { id: existing.id },
-    data: {
-      sha: canonicalSha,
-      // branchArtifactId is set once (first observation's branch wins);
-      // many-to-many commit↔branch is deferred (Q10).
-      message: pickField(existing.message, input.message, authoritative),
-      committedAt: pickField(
-        existing.committedAt,
-        input.committedAt,
-        authoritative
-      ),
-      authoredAt: pickField(
-        existing.authoredAt,
-        input.authoredAt,
-        authoritative
-      ),
-      authorName: pickField(
-        existing.authorName,
-        input.authorName,
-        authoritative
-      ),
-      authorEmail: pickField(
-        existing.authorEmail,
-        input.authorEmail,
-        authoritative
-      ),
-      authorLogin: pickField(
-        existing.authorLogin,
-        input.authorLogin,
-        authoritative
-      ),
-      linesAdded: pickField(
-        existing.linesAdded,
-        input.linesAdded,
-        authoritative
-      ),
-      linesRemoved: pickField(
-        existing.linesRemoved,
-        input.linesRemoved,
-        authoritative
-      ),
-      filesChanged: pickField(
-        existing.filesChanged,
-        input.filesChanged,
-        authoritative
-      ),
-      isMerge: pickIsMerge(existing.isMerge, input.isMerge, authoritative),
-      mergeCommitSha: pickField(
-        existing.mergeCommitSha,
-        input.mergeCommitSha,
-        authoritative
-      ),
-      source: pickSource(existing.source, input.source),
-    },
-  });
+  const branchArtifactIds = new Set<string>();
+  const scopes = foldCommitObservations(inputs);
+  const creates: CommitCreateData[] = [];
+  const updates: {
+    id: string;
+    organizationId: string;
+    data: CommitUpdateData;
+  }[] = [];
+  for (const [, scope] of scopes) {
+    const existingRows = await loadExistingCommits(tx, scope);
+    // One stored row can be prefix-compatible with SEVERAL observations here:
+    // a 7-char `abc1234` matches both `abc1234a…` and `abc1234b…`, which are not
+    // prefix-compatible with each OTHER and so survive the fold as the two
+    // distinct commits they are. Git produces exactly that shape — it extends an
+    // abbreviation past 7 chars precisely when 7 collides in the repo. The
+    // serial loop re-read between writes, so the first observation expanded the
+    // row and the second no longer matched it and inserted; claiming the row
+    // reproduces that, instead of letting the second update clobber the first.
+    const claimedRowIds = new Set<string>();
+    for (const observation of scope.observations) {
+      const existing = selectPrefixMatch(existingRows, observation.sha);
+      if (existing === null || claimedRowIds.has(existing.id)) {
+        creates.push(buildCommitCreateData(observation));
+        branchArtifactIds.add(observation.branchArtifactId);
+        continue;
+      }
+      claimedRowIds.add(existing.id);
+      branchArtifactIds.add(existing.branchArtifactId);
+      const data = buildCommitUpdateData(existing, observation);
+      // `null` means every stored value already equals what this observation
+      // would write. Issuing the update anyway is what made an idempotent
+      // re-sync cost a round trip per commit.
+      if (data !== null) {
+        updates.push({
+          id: existing.id,
+          organizationId: scope.organizationId,
+          data,
+        });
+      }
+    }
+  }
+  if (creates.length > 0) {
+    // Deliberately NO `skipDuplicates`. A racing insert of the same literal sha
+    // must still raise P2002, because that error is load-bearing rather than
+    // incidental: `recordWebhookCommits` catches exactly it and re-runs the
+    // transaction, and the retry's identity read then applies the
+    // GitHub-authoritative field merge onto the row that won the race.
+    // Swallowing the conflict would drop that observation permanently — the
+    // push webhook does not re-send — while still counting it as written.
+    //
+    // ISS-8145 (whitlockk review): ONE statement per bind-budget slice, not one per
+    // call. `creates` is as wide as the producer's ref set, bounded only by the
+    // client-side `MAX_SYNCED_ARTIFACT_REFS_PRODUCER` courtesy, so at
+    // {@link COMMIT_CREATE_CHUNK} rows a single `createMany` crosses Prisma's
+    // built-statement bind budget — where it is REFUSED outright and takes the
+    // enclosing session transaction with it, rather than merely running slow.
+    // Slicing stays all-or-nothing: every caller reconciles inside an
+    // interactive transaction, so a later chunk's failure rolls back the
+    // earlier ones.
+    for (let index = 0; index < creates.length; index += COMMIT_CREATE_CHUNK) {
+      await tx.commitDetail.createMany({
+        data: creates.slice(index, index + COMMIT_CREATE_CHUNK),
+      });
+    }
+  }
+  await updateCommitBatch(tx, updates);
+  return [...branchArtifactIds];
 }
 
 /**
@@ -301,15 +279,23 @@ async function recordWebhookCommits(
   }
   const run = (): Promise<{ written: number }> =>
     withDb.tx(async (tx) => {
+      const branchArtifactIds = new Set<string>();
       for (const commit of input.commits) {
-        await reconcileCommitOnTx(tx, {
+        const filedUnder = await reconcileCommitOnTx(tx, {
           organizationId: input.organizationId,
           repositoryFullName: input.repositoryFullName,
           branchArtifactId: input.branchArtifactId,
           source: CommitProvenanceSource.PushWebhook,
           ...commit,
         });
+        for (const branchArtifactId of filedUnder) {
+          branchArtifactIds.add(branchArtifactId);
+        }
       }
+      // ISS-12463: the only writer of `commit_detail.author_login`, so the
+      // commit-author rung can first resolve here, on every Branch the rows
+      // live on.
+      await seedBranchOwners(tx, input.organizationId, [...branchArtifactIds]);
       return { written: input.commits.length };
     });
   try {
@@ -325,3 +311,387 @@ async function recordWebhookCommits(
 export const commitService = {
   recordWebhookCommits,
 };
+
+/** Per-commit values this service writes; shared by the create and update paths. */
+type CommitCreateData = {
+  organizationId: string;
+  repositoryFullName: string;
+  sha: string;
+  branchArtifactId: string;
+  source: string;
+  message: string | null;
+  committedAt: Date | null;
+  authoredAt: Date | null;
+  authorName: string | null;
+  authorEmail: string | null;
+  authorLogin: string | null;
+  linesAdded: number | null;
+  linesRemoved: number | null;
+  filesChanged: number | null;
+  isMerge: boolean;
+  mergeCommitSha: string | null;
+};
+
+/** One commit observation, normalized and merged with any siblings in the call. */
+type CommitObservation = ReconcileCommitInput & { sha: string };
+
+type CommitScope = {
+  organizationId: string;
+  repositoryFullName: string;
+  observations: CommitObservation[];
+};
+
+/**
+ * The first seven hex chars two spellings of one commit must share.
+ *
+ * A git abbreviation is always a prefix of the full sha, so the shared prefix is
+ * what narrows the identity read to an index range instead of the whole repo.
+ */
+const COMMIT_SHA_PREFIX_LENGTH = 7;
+
+/**
+ * Distinct prefixes per identity read. Bounds the predicate rather than the
+ * payload: `apps/api/AGENTS.md` requires every predicate to be bounded, and the
+ * only thing limiting the ref count today is a producer-side courtesy constant.
+ */
+export const COMMIT_PREFIX_QUERY_CHUNK = 100;
+
+/**
+ * Group observations by `(org, repo)` and fold the prefix-compatible ones.
+ *
+ * Folding reproduces what the serial loop did implicitly: the second reconcile
+ * of one commit read back the first's row and merged onto it. Without this a
+ * batch carrying both an abbreviated and a full sha for the same commit would
+ * insert two rows that never self-heal.
+ */
+function foldCommitObservations(
+  inputs: readonly ReconcileCommitInput[]
+): Map<string, CommitScope> {
+  const scopes = new Map<string, CommitScope>();
+  for (const input of inputs) {
+    const repositoryFullName = normalizeRepoFullName(input.repositoryFullName);
+    const observation: CommitObservation = {
+      ...input,
+      repositoryFullName,
+      sha: input.sha.toLowerCase(),
+    };
+    const key = `${input.organizationId}\u0000${repositoryFullName}`;
+    const scope = scopes.get(key);
+    if (!scope) {
+      scopes.set(key, {
+        organizationId: input.organizationId,
+        repositoryFullName,
+        observations: [observation],
+      });
+      continue;
+    }
+    const sibling = scope.observations.findIndex((candidate) =>
+      isShaPrefixCompatible(candidate.sha, observation.sha)
+    );
+    if (sibling === -1) {
+      scope.observations.push(observation);
+      continue;
+    }
+    scope.observations[sibling] = mergeCommitObservations(
+      scope.observations[sibling],
+      observation
+    );
+  }
+  return scopes;
+}
+
+/** Git identity: one sha is a prefix of the other, within an already-scoped repo. */
+function isShaPrefixCompatible(left: string, right: string): boolean {
+  return left.startsWith(right) || right.startsWith(left);
+}
+
+/**
+ * Merge a later observation onto an earlier one, by the same field-level
+ * provenance rules the stored-row update uses — so folding in memory and
+ * reconciling through the database cannot disagree.
+ */
+function mergeCommitObservations(
+  base: CommitObservation,
+  incoming: CommitObservation
+): CommitObservation {
+  const authoritative = isAuthoritativeCommitSource(incoming.source);
+  return {
+    ...base,
+    sha: incoming.sha.length > base.sha.length ? incoming.sha : base.sha,
+    message: pickField(base.message ?? null, incoming.message, authoritative),
+    committedAt: pickField(
+      base.committedAt ?? null,
+      incoming.committedAt,
+      authoritative
+    ),
+    authoredAt: pickField(
+      base.authoredAt ?? null,
+      incoming.authoredAt,
+      authoritative
+    ),
+    authorName: pickField(
+      base.authorName ?? null,
+      incoming.authorName,
+      authoritative
+    ),
+    authorEmail: pickField(
+      base.authorEmail ?? null,
+      incoming.authorEmail,
+      authoritative
+    ),
+    authorLogin: pickField(
+      base.authorLogin ?? null,
+      incoming.authorLogin,
+      authoritative
+    ),
+    linesAdded: pickField(
+      base.linesAdded ?? null,
+      incoming.linesAdded,
+      authoritative
+    ),
+    linesRemoved: pickField(
+      base.linesRemoved ?? null,
+      incoming.linesRemoved,
+      authoritative
+    ),
+    filesChanged: pickField(
+      base.filesChanged ?? null,
+      incoming.filesChanged,
+      authoritative
+    ),
+    isMerge: pickIsMerge(
+      base.isMerge ?? false,
+      incoming.isMerge,
+      authoritative
+    ),
+    mergeCommitSha: pickField(
+      base.mergeCommitSha ?? null,
+      incoming.mergeCommitSha,
+      authoritative
+    ),
+    source: pickSource(base.source, incoming.source) as CommitProvenanceSource,
+  };
+}
+
+/**
+ * Every stored row that could be git-identity-equal to something in this scope,
+ * in as few reads as the prefix bound allows.
+ *
+ * A single distinct prefix keeps the plain `startsWith` predicate — the common
+ * case, and the same statement shape the per-commit read issued.
+ */
+async function loadExistingCommits(
+  tx: CommitTx,
+  scope: CommitScope
+): Promise<CommitDetail[]> {
+  const prefixes = [
+    ...new Set(
+      scope.observations.map((observation) =>
+        observation.sha.slice(0, COMMIT_SHA_PREFIX_LENGTH)
+      )
+    ),
+  ];
+  const rows: CommitDetail[] = [];
+  for (
+    let index = 0;
+    index < prefixes.length;
+    index += COMMIT_PREFIX_QUERY_CHUNK
+  ) {
+    const chunk = prefixes.slice(index, index + COMMIT_PREFIX_QUERY_CHUNK);
+    const shaWhere =
+      chunk.length === 1
+        ? { sha: { startsWith: chunk[0] } }
+        : { OR: chunk.map((prefix) => ({ sha: { startsWith: prefix } })) };
+    const found = await tx.commitDetail.findMany({
+      where: {
+        organizationId: scope.organizationId,
+        repositoryFullName: scope.repositoryFullName,
+        ...shaWhere,
+      },
+    });
+    rows.push(...found);
+  }
+  return rows;
+}
+
+/**
+ * The fullest git-identity-equal row for `sha` within an already-scoped
+ * `(org, repo)`: one sha is a prefix of the other. A webhook full-sha row is
+ * preferred over a desktop abbrev row, avoiding a needless sha expansion.
+ */
+function selectPrefixMatch(
+  candidates: readonly CommitDetail[],
+  sha: string
+): CommitDetail | null {
+  let match: CommitDetail | null = null;
+  for (const candidate of candidates) {
+    if (
+      isShaPrefixCompatible(candidate.sha, sha) &&
+      (match === null || candidate.sha.length > match.sha.length)
+    ) {
+      match = candidate;
+    }
+  }
+  return match;
+}
+
+/** The insert payload for an observation with no stored row yet. */
+function buildCommitCreateData(
+  observation: CommitObservation
+): CommitCreateData {
+  return {
+    organizationId: observation.organizationId,
+    repositoryFullName: observation.repositoryFullName,
+    sha: observation.sha,
+    branchArtifactId: observation.branchArtifactId,
+    source: observation.source,
+    message: observation.message ?? null,
+    committedAt: observation.committedAt ?? null,
+    authoredAt: observation.authoredAt ?? null,
+    authorName: observation.authorName ?? null,
+    authorEmail: observation.authorEmail ?? null,
+    authorLogin: observation.authorLogin ?? null,
+    linesAdded: observation.linesAdded ?? null,
+    linesRemoved: observation.linesRemoved ?? null,
+    filesChanged: observation.filesChanged ?? null,
+    isMerge: observation.isMerge ?? false,
+    mergeCommitSha: observation.mergeCommitSha ?? null,
+  };
+}
+
+/**
+ * The merge payload for an existing row, or `null` when it would be a no-op.
+ *
+ * Returning `null` is the batching win on a re-sync: the desktop re-sends its
+ * full ref set on every tick, so without this the steady state pays one write
+ * per commit to store values the row already holds.
+ */
+function buildCommitUpdateData(
+  existing: CommitDetail,
+  observation: CommitObservation
+): CommitUpdateData | null {
+  const authoritative = isAuthoritativeCommitSource(observation.source);
+  const data: CommitUpdateData = {
+    sha:
+      observation.sha.length > existing.sha.length
+        ? observation.sha
+        : existing.sha,
+    message: pickField(existing.message, observation.message, authoritative),
+    committedAt: pickField(
+      existing.committedAt,
+      observation.committedAt,
+      authoritative
+    ),
+    authoredAt: pickField(
+      existing.authoredAt,
+      observation.authoredAt,
+      authoritative
+    ),
+    authorName: pickField(
+      existing.authorName,
+      observation.authorName,
+      authoritative
+    ),
+    authorEmail: pickField(
+      existing.authorEmail,
+      observation.authorEmail,
+      authoritative
+    ),
+    authorLogin: pickField(
+      existing.authorLogin,
+      observation.authorLogin,
+      authoritative
+    ),
+    linesAdded: pickField(
+      existing.linesAdded,
+      observation.linesAdded,
+      authoritative
+    ),
+    linesRemoved: pickField(
+      existing.linesRemoved,
+      observation.linesRemoved,
+      authoritative
+    ),
+    filesChanged: pickField(
+      existing.filesChanged,
+      observation.filesChanged,
+      authoritative
+    ),
+    isMerge: pickIsMerge(existing.isMerge, observation.isMerge, authoritative),
+    mergeCommitSha: pickField(
+      existing.mergeCommitSha,
+      observation.mergeCommitSha,
+      authoritative
+    ),
+    source: pickSource(existing.source, observation.source),
+  };
+  return commitRowMatches(existing, data) ? null : data;
+}
+
+/** Whether the stored row already holds exactly what the merge would write. */
+function commitRowMatches(
+  existing: CommitDetail,
+  data: CommitUpdateData
+): boolean {
+  return (
+    existing.sha === data.sha &&
+    existing.message === data.message &&
+    sameInstant(existing.committedAt, data.committedAt) &&
+    sameInstant(existing.authoredAt, data.authoredAt) &&
+    existing.authorName === data.authorName &&
+    existing.authorEmail === data.authorEmail &&
+    existing.authorLogin === data.authorLogin &&
+    existing.linesAdded === data.linesAdded &&
+    existing.linesRemoved === data.linesRemoved &&
+    existing.filesChanged === data.filesChanged &&
+    existing.isMerge === data.isMerge &&
+    existing.mergeCommitSha === data.mergeCommitSha &&
+    existing.source === data.source
+  );
+}
+
+/** Dates compare by instant; two distinct objects can carry the same time. */
+function sameInstant(left: Date | null, right: Date | null): boolean {
+  if (left === null || right === null) {
+    return left === right;
+  }
+  return left.getTime() === right.getTime();
+}
+
+/**
+ * Every column one `createMany` row binds, named rather than counted.
+ *
+ * Derived from {@link CommitCreateData} so the budget cannot silently go stale:
+ * a new column on the create payload fails `tsc` here until it is named, where
+ * a hand-written `16` would simply start under-reserving and push the statement
+ * past the ceiling it exists to stay under.
+ */
+const COMMIT_CREATE_BIND_FIELDS: Record<keyof CommitCreateData, true> = {
+  organizationId: true,
+  repositoryFullName: true,
+  sha: true,
+  branchArtifactId: true,
+  source: true,
+  message: true,
+  committedAt: true,
+  authoredAt: true,
+  authorName: true,
+  authorEmail: true,
+  authorLogin: true,
+  linesAdded: true,
+  linesRemoved: true,
+  filesChanged: true,
+  isMerge: true,
+  mergeCommitSha: true,
+};
+
+/**
+ * Rows one identity-insert statement may carry.
+ *
+ * `createMany` binds no `where` of its own, so nothing is reserved beyond the
+ * headroom {@link bindParameterChunkSize} already keeps for Prisma itself.
+ */
+export const COMMIT_CREATE_CHUNK = bindParameterChunkSize(
+  Object.keys(COMMIT_CREATE_BIND_FIELDS).length,
+  0
+);

@@ -31,7 +31,7 @@ describe("AgentsNavBadge", () => {
     const source = createSource(5);
 
     render(<AgentsNavBadge isActive={false} />, {
-      wrapper: createWrapper(source),
+      wrapper: createDataSourceWrapper(source),
     });
 
     // No last-visited marker → the count query is disabled, so no request is
@@ -48,7 +48,7 @@ describe("AgentsNavBadge", () => {
     const source = createSource(3);
 
     render(<AgentsNavBadge isActive={false} />, {
-      wrapper: createWrapper(source),
+      wrapper: createDataSourceWrapper(source),
     });
 
     const badge = await screen.findByRole("status");
@@ -91,7 +91,7 @@ describe("AgentsNavBadge", () => {
     const source = createSource(412);
 
     render(<AgentsNavBadge isActive={false} />, {
-      wrapper: createWrapper(source),
+      wrapper: createDataSourceWrapper(source),
     });
 
     const badge = await screen.findByRole("status");
@@ -109,7 +109,7 @@ describe("AgentsNavBadge", () => {
     const source = createSource(3);
 
     render(<AgentsNavBadge isActive />, {
-      wrapper: createWrapper(source),
+      wrapper: createDataSourceWrapper(source),
     });
 
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
@@ -138,7 +138,7 @@ function createSource(total: number): AgentSessionsDataSource {
   };
 }
 
-function createWrapper(source: AgentSessionsDataSource) {
+function createDataSourceWrapper(source: AgentSessionsDataSource) {
   return ({ children }: { children: ReactNode }) => (
     <AppCoreStoryProviders>
       <AgentSessionsDataSourceProvider dataSource={source}>

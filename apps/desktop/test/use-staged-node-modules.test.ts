@@ -12,7 +12,7 @@
  * verified. One assertion, on the one value that matters.
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import useStagedNodeModules from "../scripts/use-staged-node-modules.mjs";
 
 describe("ISS-5303: the electron-builder beforeBuild hook", () => {

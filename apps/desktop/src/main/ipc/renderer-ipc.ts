@@ -61,27 +61,30 @@ export function sendToRendererWindow(
   if (!window || window.isDestroyed()) {
     return false;
   }
+  let contents: WebContents;
   try {
-    // Read webContents inside the try: on a destroyed-but-not-null window the
-    // native getter itself can throw "Object has been destroyed" before the
-    // isDestroyed()/send guards below run.
-    const contents = window.webContents;
-    if (contents.isDestroyed()) {
-      return false;
-    }
-    if (contents.mainFrame.isDestroyed()) {
-      return false;
-    }
-    contents.send(channel, ...args);
-    return true;
+    // On a destroyed-but-not-null window the native getter itself can throw
+    // "Object has been destroyed" before the guards below run.
+    contents = window.webContents;
   } catch (error) {
-    gatewayLog.warn(
-      "renderer-ipc",
-      `Dropped "${channel}": ${error instanceof Error ? error.message : String(error)}`
-    );
+    warnDroppedSend(channel, error);
     return false;
   }
+  return sendToRendererContents(contents, channel, ...args);
 }
+
+/**
+ * The outcome of one reload decision. `budgetExhausted` is the DERIVED half and
+ * the reason it is not inferable from `reload: false`: teardown and a tripped
+ * breaker both decline to reload, but only the second means recovery gave up on
+ * a window the user is still looking at (ISS-6331). Callers report those
+ * differently, so the decision function has to say which one it made.
+ */
+export type RenderProcessGoneDecision = {
+  reload: boolean;
+  budgetExhausted: boolean;
+  reloadTimestamps: number[];
+};
 
 /**
  * Decides whether to reload the renderer after a `render-process-gone` event,
@@ -95,22 +98,36 @@ export function evaluateRenderProcessGone(input: {
   quitting: boolean;
   now: number;
   reloadTimestamps: readonly number[];
-}): { reload: boolean; reloadTimestamps: number[] } {
+}): RenderProcessGoneDecision {
   const pruned = input.reloadTimestamps.filter(
     (timestamp) => input.now - timestamp < CRASH_RELOAD_WINDOW_MS
   );
   // "clean-exit" is the normal teardown path (dispose/quit/intentional close);
   // only an abnormal disappearance leaves a live window showing a blank frame.
-  if (
-    input.disposing ||
-    input.quitting ||
-    input.reason === "clean-exit" ||
-    pruned.length >= MAX_CRASH_RELOADS
-  ) {
-    return { reload: false, reloadTimestamps: pruned };
+  // All three report NO exhaustion, for the same reason they decline to reload:
+  // none of them is the breaker giving up on a window the user is still looking
+  // at. `disposing`/`quitting` are the app going away; `clean-exit` is a
+  // renderer this build already classifies as an intentional close, and
+  // reclassifying it is a behavior change beyond ISS-6331.
+  if (input.disposing || input.quitting || input.reason === "clean-exit") {
+    return { reload: false, budgetExhausted: false, reloadTimestamps: pruned };
   }
-  return { reload: true, reloadTimestamps: [...pruned, input.now] };
+  if (pruned.length >= MAX_CRASH_RELOADS) {
+    return { reload: false, budgetExhausted: true, reloadTimestamps: pruned };
+  }
+  return {
+    reload: true,
+    budgetExhausted: false,
+    reloadTimestamps: [...pruned, input.now],
+  };
 }
+
+/** {@link evaluateFrameRecovery}'s verdict; the sibling of {@link RenderProcessGoneDecision}. */
+export type FrameRecoveryDecision = {
+  shouldReload: boolean;
+  budgetExhausted: boolean;
+  reloadTimestamps: number[];
+};
 
 /**
  * Pure decision function for frame-disposal recovery. Encapsulates the full
@@ -124,24 +141,15 @@ export function evaluateFrameRecovery(input: {
   recovering: boolean;
   now: number;
   reloadTimestamps: readonly number[];
-}): { shouldReload: boolean; reloadTimestamps: number[] } {
+}): FrameRecoveryDecision {
   if (!input.window || input.window.isDestroyed()) {
-    return {
-      shouldReload: false,
-      reloadTimestamps: [...input.reloadTimestamps],
-    };
+    return declineFrameRecovery(input.reloadTimestamps);
   }
   if (input.disposing || input.quitting || input.recovering) {
-    return {
-      shouldReload: false,
-      reloadTimestamps: [...input.reloadTimestamps],
-    };
+    return declineFrameRecovery(input.reloadTimestamps);
   }
   if (!isFrameDisposed(input.window)) {
-    return {
-      shouldReload: false,
-      reloadTimestamps: [...input.reloadTimestamps],
-    };
+    return declineFrameRecovery(input.reloadTimestamps);
   }
   const decision = evaluateRenderProcessGone({
     reason: "frame-disposed",
@@ -152,7 +160,22 @@ export function evaluateFrameRecovery(input: {
   });
   return {
     shouldReload: decision.reload,
+    // The breaker is shared with `render-process-gone`, so exhaustion has to be
+    // reported from this path too — a frame disposed on the fourth sleep/wake
+    // inside the window leaves the same blank, un-retried app (ISS-6331).
+    budgetExhausted: decision.budgetExhausted,
     reloadTimestamps: decision.reloadTimestamps,
+  };
+}
+
+/** No recovery, no verdict on the budget, timestamps untouched. */
+function declineFrameRecovery(
+  reloadTimestamps: readonly number[]
+): FrameRecoveryDecision {
+  return {
+    shouldReload: false,
+    budgetExhausted: false,
+    reloadTimestamps: [...reloadTimestamps],
   };
 }
 
@@ -174,8 +197,62 @@ export function isTrustedRendererSender(
   window: BrowserWindow | null,
   sender: WebContents
 ): boolean {
-  if (!window || window.isDestroyed()) {
+  // The `!window` arm is a compiler narrowing guard, not a second copy of the
+  // policy: what counts as "gone" stays owned by the predicate below, and a
+  // null window is refused by it too.
+  if (!window || isRendererWindowGone(window)) {
     return false;
   }
   return sender === window.webContents;
+}
+
+/**
+ * True when there is no live renderer window to compare a sender against.
+ *
+ * ISS-8776 — the DECISION half of {@link isTrustedRendererSender}'s fail-closed
+ * branch, split out so a caller can report WHY a sender was refused without
+ * changing whether it was. Both states still refuse; nothing here widens trust.
+ *
+ * The distinction is load-bearing during teardown. `app.exit()` from the
+ * process error handlers destroys the window while the renderer is still alive
+ * and still polling `desktop:get-runtime-status` once a second, so every one of
+ * those polls arrives with no window to verify against and is refused. Reported
+ * as `untrusted sender` — the message this guard threw for every refusal — that
+ * reads as a foreign process attacking the IPC surface, and it sent the ISS-8776
+ * triage looking for a renderer-identity bug that does not exist. It is a
+ * lifecycle fact, and it has to say so.
+ */
+export function isRendererWindowGone(window: BrowserWindow | null): boolean {
+  return !window || window.isDestroyed();
+}
+
+/**
+ * {@link sendToRendererWindow} for a caller that holds the `WebContents`, such
+ * as an IPC handler answering its sender. Same guards, same drop.
+ */
+export function sendToRendererContents(
+  contents: WebContents,
+  channel: string,
+  ...args: unknown[]
+): boolean {
+  try {
+    if (contents.isDestroyed()) {
+      return false;
+    }
+    if (contents.mainFrame.isDestroyed()) {
+      return false;
+    }
+    contents.send(channel, ...args);
+    return true;
+  } catch (error) {
+    warnDroppedSend(channel, error);
+    return false;
+  }
+}
+
+function warnDroppedSend(channel: string, error: unknown): void {
+  gatewayLog.warn(
+    "renderer-ipc",
+    `Dropped "${channel}": ${error instanceof Error ? error.message : String(error)}`
+  );
 }

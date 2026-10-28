@@ -6,12 +6,18 @@
  * AccountMenu. This mounts the Sidebar under the real app-core provider stack +
  * the in-memory navigation adapter and asserts: the account destinations are not
  * top-level sidebar links; they render as menu items (Settings before
- * Diagnostics); the trigger reads as an account slot rather than product
- * branding; and the active destination carries a trailing check.
+ * Diagnostics); and the trigger reads as an account slot rather than product
+ * branding.
  *
- * Extracted from `renderer/__tests__/app-shell.test.tsx` so that grandfathered,
- * over-ceiling file shrinks rather than accumulating more responsibilities
- * (ISS-4478 review).
+ * ISS-10195 retired the workspace-experience gate, so the legacy footer account
+ * menu is gone and the shared `WorkspaceMenu` behind the same trigger is what
+ * every desktop launch renders. It marks no active destination, so the
+ * trailing-check case that pinned that treatment went with the component that
+ * carried it.
+ *
+ * Extracted from the former monolithic `renderer/__tests__/app-shell.test.tsx`
+ * rather than accumulating another responsibility there (ISS-4478 review); that
+ * file has since been split into the `app-shell-*.test.tsx` siblings.
  */
 import { SidebarProvider } from "@closedloop-ai/design-system/components/ui/sidebar";
 import { createMemoryNavigation } from "@repo/navigation/memory-adapter";
@@ -32,11 +38,20 @@ import {
   it,
   vi,
 } from "vitest";
+import { pageTitleForNav } from "../../../navigation/nav-config";
 import { NavId } from "../../../navigation/route-table";
 import { DesktopAppCoreProvider } from "../../../shared-agent-sessions/desktop-app-core-provider";
 import { Sidebar } from "../Sidebar";
 
+const guidedGettingStartedCardSpy = vi.hoisted(() => vi.fn());
 const ACCOUNT_MENU_TRIGGER_NAME = "Open account menu";
+
+vi.mock("@repo/app/onboarding/components/guided-getting-started-card", () => ({
+  GuidedGettingStartedCard: (props: Record<string, unknown>) => {
+    guidedGettingStartedCardSpy(props);
+    return null;
+  },
+}));
 
 beforeAll(() => {
   Object.defineProperty(window, "matchMedia", {
@@ -55,6 +70,7 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  guidedGettingStartedCardSpy.mockClear();
   // A partial stub: the sidebar reads session limits + auth/identity through the
   // bridge, all of which fail closed when absent. That leaves the account label
   // at its generic "Account" fallback and the session-limits footer hidden, which
@@ -69,8 +85,8 @@ afterEach(() => {
   cleanup();
 });
 
-function renderSidebar(activeNav: NavId) {
-  const memoryNav = createMemoryNavigation({ initialPath: "/sessions" });
+function renderSidebar(activeNav: NavId, initialPath = "/sessions") {
+  const memoryNav = createMemoryNavigation({ initialPath });
   return render(
     <DesktopAppCoreProvider>
       <NavigationProvider adapter={memoryNav.adapter}>
@@ -87,8 +103,12 @@ describe("Sidebar footer account menu (ISS-4478)", () => {
     renderSidebar(NavId.Sessions);
 
     // Neither is a top-level sidebar nav link now — they live behind the menu.
-    expect(screen.queryByRole("link", { name: "Settings" })).toBeNull();
-    expect(screen.queryByRole("link", { name: "Diagnostics" })).toBeNull();
+    expect(
+      screen.queryByRole("link", { name: pageTitleForNav(NavId.Settings) })
+    ).toBeNull();
+    expect(
+      screen.queryByRole("link", { name: pageTitleForNav(NavId.Diagnostics) })
+    ).toBeNull();
 
     const trigger = await screen.findByRole("button", {
       name: ACCOUNT_MENU_TRIGGER_NAME,
@@ -131,37 +151,24 @@ describe("Sidebar footer account menu (ISS-4478)", () => {
 
     // The trigger must read as "me and my stuff" so someone hunting for Settings
     // has a target — no longer the "Closedloop Gateway" product-branding label
-    // (ISS-4478 review). With the identity bridge absent it falls back to the
-    // generic "Account" account slot rather than a brand string.
+    // (ISS-4478 review).
+    //
+    // This fixture is a settled signed-out device, and since ISS-7995 retired the
+    // `guest-onboarding` flag that is unconditionally a GUEST: the slot says so
+    // rather than falling back to the generic "Account", because "Account" claims
+    // a thing a guest does not have (ISS-5112). Either way it is an account slot
+    // and never a brand string, which is what this case exists to hold.
     const trigger = await screen.findByRole("button", {
       name: ACCOUNT_MENU_TRIGGER_NAME,
     });
-    expect(trigger.textContent).toContain("Account");
+    expect(trigger.textContent).toContain("Guest");
     expect(trigger.textContent).not.toContain("Closedloop Gateway");
   });
 
-  it("marks the active account destination with a trailing check", async () => {
-    renderSidebar(NavId.Settings);
-
-    const trigger = await screen.findByRole("button", {
-      name: ACCOUNT_MENU_TRIGGER_NAME,
-    });
-    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
-
-    const menu = await screen.findByRole("menu");
-    const settingsItem = within(menu).getByRole("menuitem", {
-      name: "Settings",
-    });
-    const diagnosticsItem = within(menu).getByRole("menuitem", {
-      name: "Diagnostics",
-    });
-    // aria-current drives the active treatment; a trailing check renders off it
-    // (mirrors web's active-org CheckIcon) so the open menu shows you are here.
-    expect(settingsItem.getAttribute("aria-current")).toBe("page");
-    expect(diagnosticsItem.getAttribute("aria-current")).toBeNull();
-    // The active item carries its leading nav icon PLUS the trailing check svg;
-    // the inactive item carries only its leading icon.
-    expect(settingsItem.querySelectorAll("svg")).toHaveLength(2);
-    expect(diagnosticsItem.querySelectorAll("svg")).toHaveLength(1);
-  });
+  // ISS-10942: "preserves the current desktop search params in the sync
+  // Settings return target" MOVED to `sidebar-workspace-experience.test.tsx`.
+  // This fixture is a settled signed-out device, and a guest now gets the local
+  // Getting started module rather than the server-owned card that case asserts
+  // on; the contract itself is unchanged and is pinned there against the
+  // authenticated fixture it actually describes.
 });

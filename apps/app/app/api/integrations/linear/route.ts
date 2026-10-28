@@ -1,5 +1,5 @@
 import { auth } from "@repo/auth/server";
-import { generatePKCE } from "@repo/linear";
+import { generatePKCE } from "@repo/lib/security/pkce";
 import { log } from "@repo/observability/log";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
@@ -17,7 +17,8 @@ import {
  * GET /api/integrations/linear
  *
  * Initiates Linear OAuth flow by redirecting to Linear's authorization page.
- * Uses Clerk auth directly (no cross-domain workaround needed).
+ * Uses Clerk auth directly; the app and this route share a domain, so no
+ * cross-domain token handoff is involved.
  */
 export async function GET(): Promise<NextResponse> {
   try {

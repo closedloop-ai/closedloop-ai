@@ -5,7 +5,7 @@ import type {
 } from "@repo/api/src/types/agent-session";
 import { SESSION_TIMELINE_SYNTHESIZED_COST_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { AppCoreStoryProviders } from "@repo/app/shared/storybook/decorators";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import {
@@ -186,6 +186,20 @@ function synthesizedSession(): AgentSessionDetail {
   return baseSession({ activityBuckets: [] });
 }
 
+/**
+ * ISS-5632: the NARROWER predicate — no persisted buckets AND no real total to
+ * spread, so `hasSynthesizedBucketCosts` is true and every figure on the strip
+ * comes from the `Math.max(estimatedCost, 0.01)` floor.
+ *
+ * Deliberately not {@link synthesizedSession}, which carries a real `$4.82`.
+ * That one is `synthesized` but not `costsSynthesized`, so it keeps its figures
+ * with the flag off and cannot exercise ISS-5563's ungated withdrawal at all —
+ * which is why the flag-off hover card went unasserted for two issues.
+ */
+function floorPricedSession(): AgentSessionDetail {
+  return baseSession({ activityBuckets: [], estimatedCost: 0 });
+}
+
 /** Persisted buckets — the strip carries real measured per-model cost. */
 function measuredSession(): AgentSessionDetail {
   // ISS-5819 review (whitlockk): a measured strip states the clock its bins were
@@ -235,6 +249,24 @@ function firstStackedBar(): HTMLElement {
     throw new Error("the strip rendered no bar carrying a cost stack");
   }
   return bar;
+}
+
+/**
+ * The hover card itself, once it has mounted.
+ *
+ * ISS-5632: selected by its portal element rather than by any text it contains,
+ * because the withdrawn card has no text unique to it — the counts in its meta
+ * row also appear elsewhere on the page. A card located by content could not
+ * assert the absence of content.
+ */
+async function hoveredReadout(): Promise<HTMLElement> {
+  return await waitFor(() => {
+    const readout = document.querySelector<HTMLElement>(".sd3-tip");
+    if (!readout) {
+      throw new Error("Expected the bucket tooltip");
+    }
+    return readout;
+  });
 }
 
 describe("Session Timeline, session with no persisted activityBuckets (ISS-5566)", () => {
@@ -415,5 +447,251 @@ describe("Session Timeline synthesized-cost disclosure, flag off (ISS-4779)", ()
     // The pre-fix behavior, asserted so the closed default is a real default
     // rather than a change that shipped dark and was never exercised either way.
     expect(firstStackedBar()).toBeInTheDocument();
+  });
+});
+
+/*
+ * ISS-5632. ISS-5563 decided a strip priced from the `Math.max(estimatedCost,
+ * 0.01)` floor must not publish a figure, and that withdrawal shipped UNGATED —
+ * but it only ever reached the bar-label rail. The hover card one pixel away
+ * kept printing the same manufactured money to four decimal places, under a
+ * Properties Cost row that renders a dash on the same screen.
+ *
+ * Both surfaces are asserted from the same render, because the defect was never
+ * that either one was wrong in isolation — it was that they disagreed.
+ */
+describe("Session Timeline floor-priced strip, flag off (ISS-5632)", () => {
+  it("publishes no cost in the hover card, matching the rail beside it", async () => {
+    const user = userEvent.setup();
+    renderDetail(floorPricedSession(), []);
+
+    const bars = timelineBars();
+    expect(bars.length).toBeGreaterThan(0);
+    for (const bar of bars) {
+      expect(bar.textContent ?? "").not.toMatch(ANY_MONEY_RE);
+      /*
+       * The SPOKEN figure too. `buildBucketAccessibleCosts` withheld it and
+       * `withStackBreakdown` used to re-append a per-segment amount right after,
+       * so the one surface with no rail and no hover card to compare against was
+       * the one still reciting the floor split.
+       */
+      expect(bar.getAttribute("aria-label") ?? "").not.toMatch(ANY_MONEY_RE);
+    }
+
+    // A bar with weight, so there IS a floor-derived figure to publish — a card
+    // over an empty column would pass this with the bug still in place.
+    const pricedBar = bars.find(
+      (bar) => Number.parseFloat(bar.style.height) > 0
+    );
+    if (!pricedBar) {
+      throw new Error("Expected a weighted bucket on a floor-priced strip");
+    }
+    await user.hover(pricedBar);
+
+    const readout = await hoveredReadout();
+    // The `$0.0025` header and the per-model decomposition beneath it.
+    expect(readout.textContent ?? "").not.toMatch(ANY_MONEY_RE);
+    /*
+     * #5146 review (whitlockk): what comes off is the MONEY, not the mapping. The
+     * flag-off stack is still painted as coloured segments and the Group by
+     * control names only the dimension, so this table is the sole colour-to-
+     * label key a sighted reader has, while the bar's accessible name keeps the
+     * same labels for everyone else. An earlier revision returned no body at
+     * all, which encoded the cut in hue alone (WCAG 1.4.1).
+     *
+     * Asserted structurally, not against the Token Type label strings: those
+     * live unexported beside their producer, and re-typing them here would be
+     * the SSOT-drift-by-copy this repo keeps catching.
+     */
+    const groupedRows = within(readout).getAllByRole("row").slice(1);
+    expect(groupedRows.length).toBeGreaterThan(0);
+    for (const row of groupedRows) {
+      // The swatch and its label, together — a swatch with no name is the
+      // colour-only encoding this branch exists to prevent.
+      expect(row.querySelector("i")).not.toBeNull();
+      expect((row.textContent ?? "").trim()).not.toBe("");
+      // ONE cell, not two: the cost column is gone, header and cells together.
+      expect(within(row).getAllByRole("cell")).toHaveLength(1);
+    }
+    expect(within(readout).getAllByRole("columnheader")).toHaveLength(1);
+    // The counts are measured from the transcript and stay — withdrawing them
+    // would be its own dishonesty.
+    expect(within(readout).getByText(MEASURED_EVENT_COUNT_RE)).toBeVisible();
+  });
+
+  it("keeps the colour key on the ordinal strip, which paints the fixed cut", async () => {
+    const user = userEvent.setup();
+    /*
+     * The SIBLING of the case above, and the gap it left. `floorPricedSession`
+     * carries timed rows, so `buildTimedActivityBuckets` states each bin's clock,
+     * the projection resolves, and the card gets a `grouping` to describe. Strip
+     * the timestamps and `buildEvenActivityBuckets` runs instead — ordinal bins,
+     * no clock — so `useSessionTimelineScale` returns `controls: null` and
+     * `stacks: null`, and `grouping` is `undefined` by construction rather than by
+     * user choice. That is the DEFAULT shape for a floor-priced session whose
+     * turns carry no usable timestamp.
+     *
+     * `renderBarStack` gates on `costUnmeasured` alone, never on
+     * `costsUnpublished`, so the bar still paints — here as the three fixed
+     * `cb-cache`/`cb-out`/`cb-in` segments, whose only legend anywhere in the
+     * product is this card's header row. An earlier revision returned no body on
+     * this path, leaving three colours with nothing naming them (WCAG 1.4.1).
+     */
+    renderDetail(
+      baseSession({
+        activityBuckets: [],
+        estimatedCost: 0,
+        turnItems: untimedRows(),
+      }),
+      []
+    );
+
+    const pricedBar = timelineBars().find(
+      (bar) => bar.querySelector(".cb-cache") != null
+    );
+    if (!pricedBar) {
+      throw new Error(
+        "Expected the fixed three-colour stack on an ordinal strip"
+      );
+    }
+    // The premise, asserted rather than assumed: hue is carrying the split, and
+    // no grouped cut was painted in its place.
+    expect(pricedBar.querySelector(".cb-out")).not.toBeNull();
+    expect(pricedBar.querySelector(".cb-in")).not.toBeNull();
+    /*
+     * And the accessible name is no substitute here — `buildBucketAccessibleCosts`
+     * withholds every figure on a floor-priced strip and `withStackBreakdown`
+     * appends nothing when `stacks` is `null`, so there is no trailing clause.
+     * Same comma tell as the paired grouped case above, in the other direction.
+     */
+    expect(pricedBar.getAttribute("aria-label") ?? "").not.toContain(",");
+
+    await user.hover(pricedBar);
+    const readout = await hoveredReadout();
+
+    // The legend itself: every fixed stack colour carries its swatch AND its name.
+    expect(
+      within(readout)
+        .getAllByRole("columnheader")
+        .map((header) => header.textContent)
+    ).toEqual(["model", "cache", "out", "in"]);
+    for (const swatch of [".cb-cache", ".cb-out", ".cb-in"]) {
+      expect(readout.querySelector(swatch)).not.toBeNull();
+    }
+
+    // The money still comes off — the header total and all three amount columns.
+    expect(readout.textContent ?? "").not.toMatch(ANY_MONEY_RE);
+    const modelRows = within(readout).getAllByRole("row").slice(1);
+    expect(modelRows.length).toBeGreaterThan(0);
+    for (const row of modelRows) {
+      // ONE cell, not four: the amounts are gone, and the model name — an
+      // observation, not a figure — stays.
+      expect(within(row).getAllByRole("cell")).toHaveLength(1);
+    }
+    // The counts are measured from the transcript and stay.
+    expect(within(readout).getByText(MEASURED_EVENT_COUNT_RE)).toBeVisible();
+  });
+
+  it("renders no header over an idle column, which paints no cut at all", async () => {
+    const user = userEvent.setup();
+    // Sparse rows leave interior columns at zero weight, so their `segments` is
+    // an EMPTY array rather than absent — the case a bare `grouping && segments`
+    // guard waves through into a header with nothing under it.
+    renderDetail(
+      baseSession({
+        activityBuckets: [],
+        estimatedCost: 0,
+        turnItems: sparseRows(),
+      }),
+      []
+    );
+
+    const idleBar = timelineBars().find(
+      (bar) => Number.parseFloat(bar.style.height) === 0
+    );
+    if (!idleBar) {
+      throw new Error("Expected an unweighted bucket on a sparse strip");
+    }
+    await user.hover(idleBar);
+
+    const readout = await hoveredReadout();
+    expect(readout.querySelector(".sd3-tip-tbl")).toBeNull();
+    // The true-zero observation ISS-5566 fought to keep still reaches the screen.
+    expect(within(readout).getByText(MEASURED_EVENT_COUNT_RE)).toBeVisible();
+  });
+
+  it("adds no disclosure copy while the flag is off", async () => {
+    const user = userEvent.setup();
+    renderDetail(floorPricedSession(), []);
+
+    // The withdrawal is ungated; the sentences explaining it are not. A card
+    // that started narrating here would be ungated user-facing copy.
+    expect(screen.queryByText(TIMELINE_SYNTHESIZED_COST_LEGEND)).toBeNull();
+
+    await user.hover(timelineBars()[0]);
+    await hoveredReadout();
+    expect(screen.queryByText(TIMELINE_SYNTHESIZED_COST_TOOLTIP)).toBeNull();
+    expect(screen.queryByText(TIMELINE_SYNTHESIZED_IDLE_TOOLTIP)).toBeNull();
+    // The measured strip's line makes a billing claim nothing here backs.
+    expect(screen.queryByText(NO_TOKENS_BILLED_COPY)).toBeNull();
+  });
+
+  it("names the painted cut in the accessible name while the stack is coloured", () => {
+    renderDetail(floorPricedSession(), []);
+
+    /*
+     * The flag-off HALF of the pair below, and the reason that one can fail.
+     * `getBucketButtonLabel` appends a cost clause after a comma and the bucket
+     * labels are comma-free time ranges, so a comma in the name IS the clause.
+     * Here the stack is painted in colour, so the label-only cut must be in the
+     * name (ISS-5819, WCAG 1.4.1) even though the money is gone.
+     */
+    expect(
+      timelineBars().some((bar) =>
+        (bar.getAttribute("aria-label") ?? "").includes(",")
+      )
+    ).toBe(true);
+  });
+
+  it("stops naming the synthesized cut once the flag hatches the stack", () => {
+    /*
+     * #5146 review (whitlockk), the flag-ON floor-priced path. The default Token
+     * Type segments are the fixed 69/23/8 synthesis — their CATEGORIES are
+     * invented, not merely their amounts — and with the flag on the stack is
+     * hatched rather than cut into colours while the disclosure says the cost
+     * was not recorded. There is no colour-to-label mapping left to carry, so
+     * reciting those categories would put a certainty in the accessibility tree
+     * that the screen beside it has already withdrawn.
+     *
+     * Same fixture and same assertion shape as the flag-off case above, which is
+     * what makes this a pair rather than a restatement: only the flag differs.
+     */
+    renderDetail(floorPricedSession(), SYNTHESIZED_FLAGS);
+
+    const bars = timelineBars();
+    expect(bars.length).toBeGreaterThan(0);
+    for (const bar of bars) {
+      const name = bar.getAttribute("aria-label") ?? "";
+      expect(name).toMatch(ANY_BUCKET_NAME_RE);
+      // No trailing clause of any kind — no money, and no categories either.
+      expect(name).not.toContain(",");
+    }
+  });
+
+  it("still prints the measured session's dollars with the flag off", async () => {
+    const user = userEvent.setup();
+    // THE DISCRIMINATOR for this pair: same flag state, same assertions, and a
+    // session that differs only in carrying persisted buckets. Without it,
+    // "hide every cost when the flag is off" would pass the two cases above.
+    renderDetail(measuredSession(), []);
+
+    await user.hover(firstStackedBar());
+    const readout = await hoveredReadout();
+    // Scoped to the CARD, not `findByRole("table")` over the document: this is
+    // the assertion that stops the fix from becoming "hide every cost when the
+    // flag is off", so it must not be answerable by some other table on screen.
+    expect(within(readout).getByRole("table").textContent ?? "").toMatch(
+      ANY_MONEY_RE
+    );
   });
 });

@@ -1,7 +1,10 @@
+import { ArtifactType } from "@repo/api/src/types/artifact";
 import {
   DOCUMENT_LIST_DEFAULT_RECENCY_DAYS,
   DOCUMENT_LIST_MAX_LIMIT,
   DOCUMENT_LIST_MAX_OFFSET,
+  DocumentType,
+  DocumentTypeInput,
   type DocumentWithProject,
 } from "@repo/api/src/types/document";
 import { Prisma } from "@repo/database";
@@ -65,6 +68,55 @@ beforeEach(() => {
 });
 
 describe("documentListService.findPageWithCustomFields (ISS-4576)", () => {
+  it("counts org-wide issues across projects and keeps other tenants and subtypes out", async () => {
+    const rows = [
+      {
+        organizationId: ORGANIZATION_ID,
+        projectId: "project-a",
+        subtype: DocumentType.Feature,
+      },
+      {
+        organizationId: ORGANIZATION_ID,
+        projectId: "project-b",
+        subtype: DocumentType.Feature,
+      },
+      {
+        organizationId: "org-2",
+        projectId: "project-c",
+        subtype: DocumentType.Feature,
+      },
+      {
+        organizationId: ORGANIZATION_ID,
+        projectId: "project-a",
+        subtype: DocumentType.Prd,
+      },
+    ];
+    mockCount.mockImplementation(
+      ({ where }: CountArgs) =>
+        rows.filter((row) => {
+          const subtype = where?.subtype as { in?: string[] } | undefined;
+          return (
+            (!where?.organizationId ||
+              row.organizationId === where.organizationId) &&
+            (!where?.projectId || row.projectId === where.projectId) &&
+            (!subtype?.in || subtype.in.includes(row.subtype))
+          );
+        }).length
+    );
+    mockFindAllWithCustomFields.mockResolvedValue(makeItems(1));
+    const page = await documentListService.findPageWithCustomFields({
+      organizationId: ORGANIZATION_ID,
+      types: [DocumentTypeInput.Issue],
+      limit: 1,
+    });
+    expect(page.total).toBe(2);
+    expect(page.hasMore).toBe(true);
+    expect(page.appliedTypes).toEqual([DocumentType.Feature]);
+    expect(mockCount.mock.calls[0][0].where).toMatchObject({
+      type: ArtifactType.Document,
+    });
+    expect(mockCount.mock.calls[0][0].where).not.toHaveProperty("projectId");
+  });
   it("returns the server's real total, not the page length", async () => {
     mockFindAllWithCustomFields.mockResolvedValue(makeItems(50));
     mockCount.mockResolvedValue(1204);
@@ -146,11 +198,29 @@ describe("documentListService.findPageWithCustomFields (ISS-4576)", () => {
     const page = await documentListService.findPageWithCustomFields({
       organizationId: ORGANIZATION_ID,
       limit: DOCUMENT_LIST_MAX_LIMIT * 10,
-      offset: DOCUMENT_LIST_MAX_OFFSET * 10,
+      offset: 0,
     });
 
     expect(page.limit).toBe(DOCUMENT_LIST_MAX_LIMIT);
-    expect(page.offset).toBe(DOCUMENT_LIST_MAX_OFFSET);
+  });
+
+  it("serves an offset past DOCUMENT_LIST_MAX_OFFSET as a bounded page at that offset (ISS-11161)", async () => {
+    const offset = DOCUMENT_LIST_MAX_OFFSET + 50;
+    mockFindAllWithCustomFields.mockResolvedValue(makeItems(100));
+    mockCount.mockResolvedValue(offset + 500);
+
+    const page = await documentListService.findPageWithCustomFields({
+      organizationId: ORGANIZATION_ID,
+      limit: 100,
+      offset,
+    });
+
+    expect(mockFindAllWithCustomFields).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 100, offset }),
+      expect.any(Date)
+    );
+    expect(page.offset).toBe(offset);
+    expect(page.hasMore).toBe(true);
   });
 
   it("reports a null limit and a zero offset for an unbounded read", async () => {
@@ -269,7 +339,10 @@ describe("documentListService.findPageWithCustomFields recency instant (FEA-1626
     const pageNow: Date | undefined =
       mockFindAllWithCustomFields.mock.calls[0]?.[1];
     const countArgs: CountArgs | undefined = mockCount.mock.calls[0]?.[0];
-    const countCutoff = (countArgs?.where?.updatedAt as { gte: Date }).gte;
+    if (!countArgs?.where?.updatedAt) {
+      throw new Error("the count read carried no updatedAt cutoff");
+    }
+    const countCutoff = (countArgs.where.updatedAt as { gte: Date }).gte;
 
     expect(pageNow).toBeInstanceOf(Date);
     // The page read receives the instant; the count read receives the cutoff
@@ -278,5 +351,104 @@ describe("documentListService.findPageWithCustomFields recency instant (FEA-1626
     expect(countCutoff.getTime()).toBe(
       pageNow!.getTime() - DOCUMENT_LIST_DEFAULT_RECENCY_DAYS * 86_400_000
     );
+  });
+});
+
+/**
+ * ISS-6941 — the bare-array arm states its own bound.
+ *
+ * The decisive pair: an UNBOUNDED read must report "that was everything" without
+ * issuing a second query, and a BOUNDED read must report the server's real total
+ * and a next offset drawn from the rows actually served. A single arm cannot show
+ * both — an implementation that always counted would pass the second case and
+ * fail the first's query assertion, and one that never counted would pass the
+ * first and report the page length as the total in the second.
+ */
+describe("documentListService.findArrayWithContinuation (ISS-6941)", () => {
+  it("reports the whole set with no count query when the read is unbounded", async () => {
+    mockFindAllWithCustomFields.mockResolvedValue(makeItems(137));
+
+    const result = await documentListService.findArrayWithContinuation({
+      organizationId: ORGANIZATION_ID,
+      assigneeId: ASSIGNEE_ID,
+    });
+
+    expect(result.items).toHaveLength(137);
+    expect(result.continuation).toEqual({
+      total: 137,
+      offset: 0,
+      pageCount: 137,
+      hasMore: false,
+    });
+    // The free arm: an unbounded read already holds every matching row, so
+    // asking the database how many there are would be paying for an answer it
+    // was just handed.
+    expect(mockCount).not.toHaveBeenCalled();
+    expect(mockWithDbTx).not.toHaveBeenCalled();
+  });
+
+  it("reports the server's real total and the next offset when the read was capped", async () => {
+    mockFindAllWithCustomFields.mockResolvedValue(makeItems(50));
+    mockCount.mockResolvedValue(1204);
+
+    const result = await documentListService.findArrayWithContinuation({
+      organizationId: ORGANIZATION_ID,
+      assigneeId: ASSIGNEE_ID,
+      limit: 50,
+      offset: 100,
+    });
+
+    expect(result.items).toHaveLength(50);
+    expect(result.continuation).toEqual({
+      total: 1204,
+      offset: 100,
+      pageCount: 50,
+      hasMore: true,
+    });
+    // Through the single-snapshot page read, so the header and the body it
+    // describes are drawn from one instant.
+    expect(mockWithDbTx).toHaveBeenCalled();
+  });
+
+  it("says there is no more once the page reaches the end of the population", async () => {
+    mockFindAllWithCustomFields.mockResolvedValue(makeItems(4));
+    mockCount.mockResolvedValue(104);
+
+    const result = await documentListService.findArrayWithContinuation({
+      organizationId: ORGANIZATION_ID,
+      assigneeId: ASSIGNEE_ID,
+      limit: 50,
+      offset: 100,
+    });
+
+    // A short final page: `hasMore` false, and `pageCount` is what was served
+    // rather than the 50 that was asked for.
+    expect(result.continuation).toEqual({
+      total: 104,
+      offset: 100,
+      pageCount: 4,
+      hasMore: false,
+    });
+  });
+
+  it("reports a capped read at the ceiling as having more (the filed case)", async () => {
+    // The shape ISS-6941 was filed against: a scrape paging `limit=500`. A full
+    // page is evidence of nothing on its own, which is why the total is what
+    // answers it.
+    mockFindAllWithCustomFields.mockResolvedValue(
+      makeItems(DOCUMENT_LIST_MAX_LIMIT)
+    );
+    mockCount.mockResolvedValue(1101);
+
+    const result = await documentListService.findArrayWithContinuation({
+      organizationId: ORGANIZATION_ID,
+      assigneeId: ASSIGNEE_ID,
+      limit: DOCUMENT_LIST_MAX_LIMIT,
+      offset: 0,
+    });
+
+    expect(result.continuation.hasMore).toBe(true);
+    expect(result.continuation.total).toBe(1101);
+    expect(result.continuation.pageCount).toBe(DOCUMENT_LIST_MAX_LIMIT);
   });
 });

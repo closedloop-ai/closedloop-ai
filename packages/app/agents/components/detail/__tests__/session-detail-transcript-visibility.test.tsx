@@ -5,21 +5,20 @@ import { populatedAgentSessionDetailFixture } from "../agent-session-detail-fixt
 import { AgentSessionDetailView } from "../agent-session-detail-view";
 
 // FEA-4025: the Session Detail transcript was rendering behind the pinned
-// metadata header. The header pinned the WHOLE metadata dashboard (title,
-// Properties, Session Timeline, Activity Segments and Activity Breakdown), so on
-// a short viewport it grew taller than the scroll pane, stayed pinned across the
-// whole pane, and painted its opaque z-20 backdrop (FEA-2106) over the Session
-// Trace — leaving the transcript unreachable behind it.
+// metadata header. The header pinned the WHOLE metadata dashboard, so on a short
+// viewport it grew taller than the scroll pane, stayed pinned across the whole
+// pane, and painted its opaque z-20 backdrop (FEA-2106) over the Session Trace —
+// leaving the transcript unreachable behind it.
 //
-// The fix pins only the small orientation block and lets Properties, Activity
-// Segments and Activity Breakdown scroll away as normal document content, so the
-// pinned block is small by construction and can never occlude the trace.
+// The fix pins only the small orientation block and lets Properties scroll away
+// as normal document content, so the pinned block is small by construction and
+// can never occlude the trace.
 //
 // ISS-5818 (graduated by ISS-5999) shrank that block further: the identity row
 // left the pinned box too, so the Session Timeline strip rides alone. That serves
 // FEA-4025's rule harder, not less — the pinned block is strictly shorter than
-// the one this suite was written against — so the assertions below are on the
-// panels that must NOT ride pinned, plus the one thing that must.
+// the one this suite was written against — so the assertions below are on what
+// must NOT ride pinned, plus the one thing that must.
 //
 // This suite pins the structural guarantees that keep the pinned block small
 // (behavioral render — the DOM these render to). jsdom does not apply
@@ -58,25 +57,16 @@ describe("session detail transcript visibility (FEA-4025)", () => {
       "the session title must not ride pinned"
     ).toBeNull();
 
-    // ...but NOT the bulky metadata panels. Properties, the Activity Segments
-    // strip and the Activity Breakdown are no longer descendants of the pinned
-    // header — they scroll away as normal document content, so the pinned block
-    // stays small and cannot blanket the transcript.
+    // ...but NOT the bulky Properties panel, which is no longer a descendant of
+    // the pinned header — it scrolls away as normal document content, so the
+    // pinned block stays small and cannot blanket the transcript.
     expect(
       stickyHead?.querySelector(".sd3-props"),
       "Properties must not ride pinned"
     ).toBeNull();
-    expect(
-      stickyHead?.querySelector(".sd3-segs"),
-      "Activity Segments must not ride pinned"
-    ).toBeNull();
-    expect(
-      stickyHead?.querySelector('[aria-label="Activity breakdown"]'),
-      "Activity Breakdown must not ride pinned"
-    ).toBeNull();
 
-    // Those panels still render on the page (they just scroll), inside the same
-    // scroll container as the header and the trace.
+    // It still renders on the page (it just scrolls), inside the same scroll
+    // container as the header and the trace.
     const properties = container.querySelector<HTMLElement>(".sd3-props");
     expect(properties, "Properties still rendered").not.toBeNull();
     expect(scroll?.contains(properties as Node)).toBe(true);

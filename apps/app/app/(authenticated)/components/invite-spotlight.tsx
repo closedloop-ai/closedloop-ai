@@ -218,8 +218,8 @@ export function InviteSpotlight({
  * The card is `fixed`, so anything off-screen is unreachable — a user cannot
  * scroll to it and can only dismiss a thing they were never able to read. That
  * is not hypothetical here: the invite row is the last of six (seven with Drive
- * on) and sits above the agent-onboarding card, so it lands much further down
- * the page than the five-row prototype this was ported from.
+ * on), so it lands much further down the page than the five-row prototype this
+ * was ported from.
  *
  * Below the anchor when it fits, above when it does not, clamped to the viewport
  * when neither does.

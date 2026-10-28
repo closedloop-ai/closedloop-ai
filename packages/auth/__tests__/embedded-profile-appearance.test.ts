@@ -37,13 +37,18 @@ const DESIGN_SYSTEM_CHROME_ELEMENT_KEYS = [
 ] as const;
 
 // A hairline border (`1px solid var(--token)`), the focus-ring box-shadow
-// (`0 0 0 3px color-mix(... var(--ring) ...)`), and the pill radius (`9999px`,
-// what DS `rounded-full` compiles to) are the intentional raw-pixel idioms —
-// structural widths/radii that mirror the DS Input + Badge recipes, not
-// hard-coded colors or sizes. Everything else must resolve to a DS token.
+// (`0 0 0 3px var(--ring)`), and the pill radius (`9999px`, what DS
+// `rounded-full` compiles to) are the intentional raw-pixel idioms — structural
+// widths/radii that mirror the DS Input + Badge recipes, not hard-coded colors
+// or sizes. Everything else must resolve to a DS token.
+//
+// ISS-9063: the ring pattern admits the FULL token only. It used to admit any
+// `color-mix(in oklab, var(--ring) <n>%, transparent)`, which is what let the
+// embed keep a 50% ring — 2.16:1 on light `--background` — after the DS
+// primitives moved to full strength for WCAG 1.4.11.
 const RAW_PIXEL_IDIOM_PATTERNS = [
   /^1px solid var\(--[\w-]+\)$/,
-  /^0 0 0 3px color-mix\(in oklab, var\(--ring\) \d+%, transparent\)$/,
+  /^0 0 0 3px var\(--ring\)$/,
   /^9999px$/,
 ];
 
@@ -92,9 +97,16 @@ describe("embedded Clerk profile appearance (FEA-3965)", () => {
         borderColor: "var(--input-border)",
       })
     );
-    // The focus treatment matches DS `focus-visible:border-ring` + ring.
+    // The focus treatment matches DS `focus-visible:border-ring
+    // focus-visible:ring-ring focus-visible:ring-[3px]`. ISS-9063: the ring is
+    // asserted, not just the border — the embed sat on a 50% mix of the same
+    // token (2.16:1 on light `--background`, under WCAG 1.4.11's 3:1) while
+    // this case's name already claimed to cover it.
     expect(input["&:focus"]).toEqual(
-      expect.objectContaining({ borderColor: "var(--ring)" })
+      expect.objectContaining({
+        borderColor: "var(--ring)",
+        boxShadow: "0 0 0 3px var(--ring)",
+      })
     );
   });
 

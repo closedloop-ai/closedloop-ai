@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import { getSharedBranchesPageData } from "../src/main/branch/shared-branches-api.js";
+import { BRANCH_COST_SLICES_SQL_TAG } from "../src/main/database/branch-cost-window-reads.js";
 import { link, makeSource } from "./shared-branches-test-helpers.js";
 
 describe("getSharedBranchesPageData canonical query budget", () => {
@@ -19,25 +20,38 @@ describe("getSharedBranchesPageData canonical query budget", () => {
 
     await getSharedBranchesPageData(source);
 
-    assert.equal(labels.length, 12);
+    // ISS-12361: 12 reads plus the one SQL read that folds AI spend.
+    assert.equal(labels.length, 13);
+    assert.equal(
+      labels.filter((label) => label.includes(BRANCH_COST_SLICES_SQL_TAG))
+        .length,
+      1
+    );
     assert.equal(
       labels.filter((label) => label === "canonicalActivity").length,
       1
     );
     assert.deepEqual(canonicalActivityParameters, ["acme/web", "a"]);
-    assert.equal(labels.filter((label) => label === "links").length, 1);
+    // ISS-10324 moved the list link read off the typed delegate onto a raw
+    // statement, so it reports as its SQL like the other raw reads below. The
+    // contract is unchanged: exactly ONE list link read per page load.
+    assert.equal(
+      labels.filter((label) => label.includes("latest_push_observed_at"))
+        .length,
+      1
+    );
     assert.equal(
       labels.filter(
         (label) =>
           label.includes("FROM pull_requests") &&
-          !label.includes("WITH pr_branch")
+          !label.includes("pr_branch AS (")
       ).length,
       1
     );
     assert.equal(
       labels.filter(
         (label) =>
-          label.includes("kind = 'commit'") && !label.includes("WITH pr_branch")
+          label.includes("kind = 'commit'") && !label.includes("pr_branch AS (")
       ).length,
       1
     );
@@ -51,7 +65,8 @@ describe("getSharedBranchesPageData canonical query budget", () => {
       labels.filter(
         (label) =>
           label.includes("FROM token_events") &&
-          !label.includes("canonical_outside_events AS")
+          !label.includes("canonical_outside_events AS") &&
+          !label.includes(BRANCH_COST_SLICES_SQL_TAG)
       ).length,
       1
     );
@@ -72,7 +87,7 @@ describe("getSharedBranchesPageData canonical query budget", () => {
       1
     );
     assert.equal(
-      labels.filter((label) => label.includes("WITH pr_branch")).length,
+      labels.filter((label) => label.includes("pr_branch AS (")).length,
       1
     );
     assert.equal(
@@ -86,7 +101,7 @@ describe("getSharedBranchesPageData canonical query budget", () => {
     assert.equal(
       labels.filter(
         (label) =>
-          label.includes("WITH pr_branch") && label.includes("LIMIT 10001")
+          label.includes("pr_branch AS (") && label.includes("LIMIT 10001")
       ).length,
       1
     );

@@ -3,12 +3,16 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { ContextCards } from "./context-cards";
 
 /**
- * ISS-4828 (whitlockk review, PR #4256): `ContextCards` came out of
- * `agent-telemetry-analytics.tsx` as a prop-driven component and picked up real
- * visual states in the same change — the two flag states, the two sync
- * watermarks, the `Never` fallback, and online/offline rows. Driving those
- * through the parent analytics story is the only way to see them otherwise, so
- * they are canvassed directly here.
+ * ISS-4828 (whitlockk review, PR #4256): `ContextCards` was extracted as a
+ * prop-driven component and picked up real visual states in the same change —
+ * the two sync watermarks, the `Never` fallback, and online/offline rows.
+ * ISS-10733 deleted the analytics surface that held its only mount site and
+ * ruled `ContextCards` kept anyway (Cosimo Corrigan, 2026-09-21): that ticket
+ * deleted what nothing could reach, and this component is still reached — by
+ * this story, its test, and its catalog row — so it is production-orphaned
+ * rather than unreachable. ISS-10857 revisits it against every comparable
+ * orphan at once rather than in isolation; do not delete it piecemeal here.
+ * Until then these stories are the only place its visual states are canvassed.
  *
  * Timestamps are FIXED, not relative to now, so each story keeps a stable set of
  * relative labels rather than drifting to "Just now" the day it is opened.
@@ -71,9 +75,9 @@ const neverSyncedTarget: AgentSessionLastSyncTarget = {
 };
 
 const meta = {
-  title: "App Core/Agents/Context Cards",
+  title: "Composites v1.0/Agents/General/Context Cards",
   component: ContextCards,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   args: {
     targets: [syncingWithNothingNew, offlineTarget, neverSyncedTarget],

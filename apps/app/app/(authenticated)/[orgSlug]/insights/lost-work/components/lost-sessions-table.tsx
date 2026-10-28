@@ -6,7 +6,6 @@ import {
   type LostWorkSessionRow,
 } from "@repo/api/src/types/session-analytics";
 import { Section } from "@repo/design-system/components/ui/layout/section";
-import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import {
   SortableColumnHeader,
   type SortDirection,
@@ -27,6 +26,7 @@ import {
   formatHours,
   minutesToHours,
 } from "@/lib/analytics/format";
+import { renderTableSkeletonRows } from "@/lib/analytics/table-skeleton-rows";
 import { WidgetUnavailable } from "@/lib/analytics/unavailable";
 
 /**
@@ -163,20 +163,6 @@ function SessionRow({ row }: { readonly row: LostWorkSessionRow }) {
   );
 }
 
-function renderSkeletonRows() {
-  return Array.from({ length: SKELETON_ROW_COUNT }, (_, index) => (
-    // biome-ignore lint/suspicious/noArrayIndexKey: fixed-length placeholder rows with no identity of their own
-    <TableRow key={index}>
-      {Array.from({ length: SESSION_COLUMN_COUNT }, (__, cell) => (
-        // biome-ignore lint/suspicious/noArrayIndexKey: fixed-length placeholder cells
-        <TableCell key={cell}>
-          <Skeleton className="h-5 w-full rounded" />
-        </TableCell>
-      ))}
-    </TableRow>
-  ));
-}
-
 /**
  * No lost sessions in range is the BEST possible answer this table can give, so
  * it says so rather than rendering a header over nothing.
@@ -186,7 +172,7 @@ function renderSessionRows(
   rows: readonly LostWorkSessionRow[]
 ) {
   if (loading) {
-    return renderSkeletonRows();
+    return renderTableSkeletonRows(SKELETON_ROW_COUNT, SESSION_COLUMN_COUNT);
   }
   if (rows.length === 0) {
     return (

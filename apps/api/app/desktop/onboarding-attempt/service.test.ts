@@ -443,4 +443,34 @@ describe("desktopOnboardingAttemptsService", () => {
       status: DesktopProvisioningReadinessStatus.Incomplete,
     });
   });
+
+  // ISS-6318. `create` discards its row, so an absent `select` makes Postgres
+  // RETURNING every column of the attempt for a value nobody reads. The
+  // expected shape is written out literally rather than imported from the
+  // service, so deleting the `select` reddens this instead of agreeing with it.
+  // `DesktopOnboardingAttempt` keys on `attemptId` and carries no `id` column,
+  // so `{ id: true }` here would not compile against the generated client.
+  it("narrows the discarded create to the attempt's primary key", async () => {
+    let createArgs: Record<string, unknown> | undefined;
+
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
+      const mockDb = {
+        desktopOnboardingAttempt: {
+          create: vi.fn((args: Record<string, unknown>) => {
+            createArgs = args;
+            return Promise.resolve({ attemptId: "attempt-123" });
+          }),
+        },
+      };
+      return callback(mockDb);
+    });
+
+    await desktopOnboardingAttemptsService.create({
+      organizationId: "org-1",
+      userId: "user-1",
+      webAppOrigin: "https://app.closedloop.ai",
+    });
+
+    expect(createArgs?.select).toEqual({ attemptId: true });
+  });
 });

@@ -1,19 +1,22 @@
-import {
-  DISPLAYED_SESSION_STATUS,
-  SESSION_STATUS,
-} from "@repo/api/src/types/session-status";
+import { Priority } from "@repo/api/src/types/common";
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import { SESSION_STATUS_LABELS } from "@repo/api/src/types/session-status-display";
 import { createSessionTableRowFixture } from "@repo/app/agents/components/sessions/session-list-fixtures";
-import type { SessionTableRow } from "@repo/app/agents/components/sessions/sessions-table";
 import {
   buildSessionGroups,
   coerceSessionGroupBy,
+  compareSessionPriorityBands,
   hideSessionGroupedColumn,
   SESSION_GROUP_COLUMN_ID,
   SESSION_GROUP_UNATTRIBUTED_OWNER,
   SESSION_GROUP_UNSPECIFIED,
   SessionGroupBy,
 } from "@repo/app/agents/lib/session-grouping";
+import type { SessionTableRow } from "@repo/app/agents/lib/session-list-row";
+import {
+  PRIORITY_LABEL_NONE,
+  PRIORITY_LABELS,
+} from "@repo/design-system/lib/priority-order";
 import { describe, expect, it } from "vitest";
 
 function row(overrides: Partial<SessionTableRow>): SessionTableRow {
@@ -29,6 +32,49 @@ function row(overrides: Partial<SessionTableRow>): SessionTableRow {
     ...overrides,
   });
 }
+
+// ISS-10332 (visual QA, 2026-09-22): Priority is the one ORDINAL dimension, so
+// its bands rank by value rather than landing where their first member fell.
+describe("buildSessionGroups by Priority (ISS-10332)", () => {
+  it("orders bands most urgent first, unset after LOW, an omitted value last", () => {
+    const groups = buildSessionGroups(
+      [
+        row({ id: "omitted" }),
+        row({ id: "low", priority: Priority.Low }),
+        row({ id: "none", priority: null }),
+        row({ id: "urgent", priority: Priority.Urgent }),
+        row({ id: "high", priority: Priority.High }),
+        row({ id: "low-2", priority: Priority.Low }),
+      ],
+      SessionGroupBy.Priority
+    );
+
+    // Server order put `omitted` first and `low` before `urgent`; the ranking
+    // does not care where a row landed.
+    expect(groups?.map((group) => group.label)).toEqual([
+      PRIORITY_LABELS.URGENT,
+      PRIORITY_LABELS.HIGH,
+      PRIORITY_LABELS.LOW,
+      PRIORITY_LABEL_NONE,
+      SESSION_GROUP_UNSPECIFIED,
+    ]);
+    // Order INSIDE a band is still the incoming order.
+    expect(groups?.[2].items.map((item) => item.id)).toEqual(["low", "low-2"]);
+  });
+
+  it("ranks two representative rows the way the bands are ordered", () => {
+    const omitted = row({ id: "omitted" });
+    const none = row({ id: "none", priority: null });
+    const low = row({ id: "low", priority: Priority.Low });
+    const urgent = row({ id: "urgent", priority: Priority.Urgent });
+
+    expect(compareSessionPriorityBands(urgent, low)).toBeLessThan(0);
+    expect(compareSessionPriorityBands(low, none)).toBeLessThan(0);
+    expect(compareSessionPriorityBands(none, omitted)).toBeLessThan(0);
+    expect(compareSessionPriorityBands(omitted, omitted)).toBe(0);
+    expect(compareSessionPriorityBands(undefined, urgent)).toBeGreaterThan(0);
+  });
+});
 
 describe("buildSessionGroups (ISS-5315)", () => {
   it("returns undefined for the None dimension so the table renders a flat list", () => {
@@ -82,32 +128,26 @@ describe("buildSessionGroups (ISS-5315)", () => {
     expect(groups?.[0].label).toBe(SESSION_GROUP_UNSPECIFIED);
   });
 
-  // ISS-5366: `normalizeSessionStatus` fail-opens the DISPLAY-ONLY members to
-  // `active` for its other consumers, so banding through it filed a row whose
-  // pill reads "Stale" under the "Active" header — the band contradicting the
-  // cell inside it, and the Active band absorbing rows nobody claimed were
-  // running. Dark while the gate was off; the default for everyone once it
-  // retires.
-  it("bands a display-only status under its own header, not Active", () => {
+  // ISS-10364 (operator ruling, Cosimo Corrigan, 2026-09-23/24) retired the two
+  // display-only members (`stale`, `unknown`) this case used to pin as getting
+  // their OWN band header. Both are plain literals now — legacy/version-skewed
+  // spellings, not vocabulary members — and `foldToDisplayedSessionStatus`
+  // folds them to `active` like any other value it doesn't recognize, so they
+  // now band together WITH the genuinely active row rather than apart from it.
+  it("ISS-10364: bands a legacy stale/unknown status under Active, not its own header", () => {
     const groups = buildSessionGroups(
       [
         row({ id: "a", status: SESSION_STATUS.ACTIVE }),
-        row({ id: "b", status: DISPLAYED_SESSION_STATUS.STALE }),
-        row({ id: "c", status: DISPLAYED_SESSION_STATUS.UNKNOWN }),
+        row({ id: "b", status: "stale" }),
+        row({ id: "c", status: "unknown" }),
       ],
       SessionGroupBy.Status
     );
 
     expect(groups?.map((group) => group.label)).toEqual([
       SESSION_STATUS_LABELS[SESSION_STATUS.ACTIVE],
-      SESSION_STATUS_LABELS[DISPLAYED_SESSION_STATUS.STALE],
-      SESSION_STATUS_LABELS[DISPLAYED_SESSION_STATUS.UNKNOWN],
     ]);
-    // The band a reader would click to gather "the rest of them" holds exactly
-    // the row whose pill says so, and the Active band holds only the live one.
-    expect(groups?.[0].items.map((item) => item.id)).toEqual(["a"]);
-    expect(groups?.[1].items.map((item) => item.id)).toEqual(["b"]);
-    expect(groups?.[2].items.map((item) => item.id)).toEqual(["c"]);
+    expect(groups?.[0].items.map((item) => item.id)).toEqual(["a", "b", "c"]);
   });
 
   // The band label is the VALUE alone. The list is server-paginated, so a count

@@ -23,6 +23,7 @@ import {
 import { Prisma, withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { withFixtureClient } from "@/__tests__/utils/fixture-db";
 import {
   type AuditEntryRow,
   auditLedgerService,
@@ -181,8 +182,15 @@ describe.skipIf(!hasDatabase)(
     });
 
     it("rejects a TRUNCATE of the ledger (statement-level trigger)", async () => {
+      // Issued on the connection that OWNS the table, not the production one.
+      // The contract under test is the TRIGGER's refusal, and TRUNCATE is its
+      // own grantable privilege rather than an owner-only statement: the
+      // ISS-5978 role split does not grant it to the runtime role, so from
+      // there the statement is refused 42501 and never reaches the trigger.
       await expect(
-        withDb((db) => db.$executeRaw`TRUNCATE TABLE "audit_entries"`)
+        withFixtureClient("the audit-ledger TRUNCATE guard", (client) =>
+          client.query('TRUNCATE TABLE "audit_entries"')
+        )
       ).rejects.toThrow(appendOnlyErrorPattern);
 
       // The chain is untouched and still verifies.
@@ -196,14 +204,29 @@ describe.skipIf(!hasDatabase)(
       // action — then rewrites seq=2's `detail` in place WITHOUT recomputing its
       // hash. verifyChain must catch the now-stale hash. The trigger is
       // re-enabled in the same transaction so the ledger stays locked afterward.
-      await withDb.tx(async (tx) => {
-        await tx.$executeRaw`ALTER TABLE "audit_entries" DISABLE TRIGGER "audit_entries_append_only"`;
-        await tx.$executeRaw`
-          UPDATE "audit_entries"
-          SET "detail" = '{"index":2,"note":"TAMPERED","nested":{"a":2,"b":[1,2]}}'::jsonb
-          WHERE "organization_id" = ${orgId}::uuid AND "seq" = 2
-        `;
-        await tx.$executeRaw`ALTER TABLE "audit_entries" ENABLE TRIGGER "audit_entries_append_only"`;
+      //
+      // Hence the fixture connection: "a privileged operator" is precisely the
+      // role the ISS-5978 split took DDL away from the application to create.
+      await withFixtureClient("the audit-ledger tamper fixture", async (c) => {
+        await c.query("BEGIN");
+        try {
+          await c.query(
+            'ALTER TABLE "audit_entries" DISABLE TRIGGER "audit_entries_append_only"'
+          );
+          await c.query(
+            `UPDATE "audit_entries"
+               SET "detail" = '{"index":2,"note":"TAMPERED","nested":{"a":2,"b":[1,2]}}'::jsonb
+             WHERE "organization_id" = $1::uuid AND "seq" = 2`,
+            [orgId]
+          );
+          await c.query(
+            'ALTER TABLE "audit_entries" ENABLE TRIGGER "audit_entries_append_only"'
+          );
+          await c.query("COMMIT");
+        } catch (error) {
+          await c.query("ROLLBACK");
+          throw error;
+        }
       });
 
       const result = await auditLedgerService.verifyChain(orgId);

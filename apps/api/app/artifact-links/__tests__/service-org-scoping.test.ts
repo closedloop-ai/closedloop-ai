@@ -15,10 +15,21 @@
 import { LinkType } from "@repo/api/src/types/artifact";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+// PRODUCES admission reads the organization graph and placement state, which
+// this suite's database fake does not model; its own coverage is the
+// produces-cycle-admission integration suite.
+vi.mock("@/app/artifact-links/produces-link-admission", () => ({
+  refuseProducesLinkCycle: vi.fn(async () => null),
+  refuseProducesLinkDepth: vi.fn(async () => null),
+}));
+
 const mocks = vi.hoisted(() => ({
   artifactFindFirst: vi.fn(),
   linkCreate: vi.fn(),
-  withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
+  withDb: Object.assign(vi.fn(), {
+    tx: vi.fn(),
+    inTransaction: vi.fn(() => false),
+  }),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -26,6 +37,7 @@ vi.mock("@repo/database", () => ({
   Prisma: { DbNull: Symbol("DbNull") },
 }));
 
+import { unwrapCreatedLink } from "@/__tests__/support/artifact-links/create-link.test-helpers";
 import { artifactLinksService } from "../service";
 
 const RE_NOT_IN_ORG = /not found in organization/;
@@ -74,14 +86,19 @@ describe("artifactLinksService.createLink — two-org isolation (FEA-3951)", () 
     mocks.withDb.mockImplementation((cb: (client: typeof db) => unknown) =>
       cb(db)
     );
+    mocks.withDb.tx.mockImplementation((cb: (client: typeof db) => unknown) =>
+      cb(db)
+    );
   });
 
   it("creates the link when both endpoints belong to the caller's org", async () => {
-    const link = await artifactLinksService.createLink(ORG_A, {
-      sourceId: DOC_IN_A,
-      targetId: FEAT_IN_A,
-      linkType: LinkType.RelatesTo,
-    });
+    const link = unwrapCreatedLink(
+      await artifactLinksService.createLink(ORG_A, {
+        sourceId: DOC_IN_A,
+        targetId: FEAT_IN_A,
+        linkType: LinkType.RelatesTo,
+      })
+    );
 
     expect(link.sourceId).toBe(DOC_IN_A);
     expect(link.targetId).toBe(FEAT_IN_A);

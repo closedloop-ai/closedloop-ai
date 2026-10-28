@@ -23,7 +23,7 @@
  * file is on the shrink-only `noExcessiveLinesPerFile` grandfather list and must
  * never grow.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/database", async () => {
   const { createDatabaseMockModule } = await import(
@@ -49,6 +49,10 @@ import {
   mockWithDbTx,
 } from "../../__tests__/utils/db-helpers";
 import { branchReadService } from "./branch-read-service";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 /** `makeSessionLink` positional tail: userId, metadata, participation, timing. */
 function sessionWithMode(

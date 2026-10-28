@@ -7,7 +7,7 @@
  * `docs-help` IPC surfaces.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import type { DocsBundle } from "../src/main/docs-help/docs-bundle-types.js";
 import { buildDocsSearchIndex } from "../src/main/docs-help/docs-search-index.js";
 import { DocsHelpMatchField } from "../src/shared/docs-help-contract.js";

@@ -2,7 +2,7 @@ import { createMemoryNavigation } from "@repo/navigation/memory-adapter";
 import { NavigationProvider } from "@repo/navigation/provider";
 import { act, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import { useSortParams } from "../use-sort-params";
 
 /**
@@ -88,5 +88,132 @@ describe("useSortParams (navigation port)", () => {
     expect(params.get("sortDir")).toBeNull();
     expect(params.get("filter")).toBe("active");
     expect(result.current.sortBy).toBe("updatedAt");
+  });
+});
+
+const PERSISTENCE_KEY = "use-sort-params-test";
+
+type PersistedRenderOptions = {
+  defaultColumn?: TestColumn | null;
+  defaultDirection?: "asc" | "desc";
+  paramPrefix?: string;
+};
+
+function seedSavedSort(data: unknown): void {
+  localStorage.setItem(
+    PERSISTENCE_KEY,
+    JSON.stringify({ savedAt: Date.now(), data })
+  );
+}
+
+function renderPersistedSortParams(
+  initialPath: string,
+  options: PersistedRenderOptions = {}
+) {
+  const nav = createMemoryNavigation({ initialPath });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <NavigationProvider adapter={nav.adapter}>{children}</NavigationProvider>
+  );
+  const view = renderHook(
+    () =>
+      useSortParams<TestColumn>({
+        defaultColumn:
+          options.defaultColumn === undefined
+            ? "updatedAt"
+            : options.defaultColumn,
+        defaultDirection: options.defaultDirection,
+        paramPrefix: options.paramPrefix,
+        persistenceKey: PERSISTENCE_KEY,
+        validColumns: VALID_COLUMNS,
+      }),
+    { wrapper }
+  );
+  return { nav, ...view };
+}
+
+describe("useSortParams (persistence)", () => {
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  test("restores the saved column and direction when the URL has none", () => {
+    seedSavedSort({ column: "type", direction: "asc" });
+
+    const { result } = renderPersistedSortParams("/loops");
+
+    expect(result.current.sortBy).toBe("type");
+    expect(result.current.sortDir).toBe("asc");
+  });
+
+  test("ignores the saved direction when the URL names a column", () => {
+    seedSavedSort({ column: "type", direction: "asc" });
+
+    const { result } = renderPersistedSortParams("/loops?sortBy=title", {
+      defaultDirection: "desc",
+    });
+
+    expect(result.current.sortBy).toBe("title");
+    expect(result.current.sortDir).toBe("desc");
+  });
+
+  test.each([
+    ["an unknown column", { column: "bogus", direction: "asc" }],
+    ["an unknown direction", { column: "type", direction: "sideways" }],
+    ["a null payload", null],
+  ])("falls back to defaults when the saved sort has %s", (_label, data) => {
+    seedSavedSort(data);
+
+    const { result } = renderPersistedSortParams("/loops", {
+      defaultDirection: "asc",
+    });
+
+    expect(result.current.sortBy).toBe("updatedAt");
+    expect(result.current.sortDir).toBe("asc");
+  });
+
+  test("defaults to a null column and a descending direction when neither is configured", () => {
+    const { result } = renderPersistedSortParams("/loops", {
+      defaultColumn: null,
+    });
+
+    expect(result.current.sortBy).toBeNull();
+    expect(result.current.sortDir).toBe("desc");
+  });
+
+  test("reads and writes prefixed params and saves the chosen sort", () => {
+    const { result, nav } = renderPersistedSortParams(
+      "/loops?docsortBy=title&docsortDir=asc",
+      { paramPrefix: "doc" }
+    );
+
+    expect(result.current.sortBy).toBe("title");
+    expect(result.current.sortDir).toBe("asc");
+
+    act(() => {
+      result.current.setSort("type", "desc");
+    });
+
+    const params = queryOf(nav.getCurrentHref());
+    expect(params.get("docsortBy")).toBe("type");
+    expect(params.get("docsortDir")).toBe("desc");
+    expect(params.get("sortBy")).toBeNull();
+    expect(
+      JSON.parse(localStorage.getItem(PERSISTENCE_KEY) ?? "null").data
+    ).toEqual({ column: "type", direction: "desc" });
+  });
+
+  test("clearSort leaves a bare path and drops the saved sort", () => {
+    seedSavedSort({ column: "type", direction: "asc" });
+    const { result, nav } = renderPersistedSortParams(
+      "/loops?sortBy=title&sortDir=asc"
+    );
+
+    act(() => {
+      result.current.clearSort();
+    });
+
+    expect(nav.getCurrentHref()).toBe("/loops");
+    expect(result.current.sortBy).toBe("updatedAt");
+    expect(result.current.sortDir).toBe("desc");
   });
 });

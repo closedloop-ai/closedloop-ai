@@ -1,18 +1,9 @@
 /**
- * Freshness-group contract (whitlockk review on #4825).
+ * Freshness-group contract.
  *
- * ISS-5975 removes the Sessions list's manual Refresh control, whose one click
- * re-read BOTH halves of the page — the table and the usage/summary tiles — so
- * the rows and the cards could not describe different populations. ISS-5976's
- * focus/reconnect defaults do NOT preserve that on their own: they revalidate
- * each query against its OWN `dataUpdatedAt`, and two fetches never resolve at
- * the same instant, so the two 60-second windows are offset and a focus event
- * landing between them refetches exactly one half.
- *
- * The case that matters here is therefore ONE-STALE/ONE-FRESH — the mixed
- * state, which is the state the defect actually occurs in. A both-stale test
- * passes with `useQueryFreshnessGroup` deleted (the built-in trigger handles
- * it), so it cannot discriminate and is not the guard.
+ * ISS-12286 (PRD-792): a focus or reconnect event re-reads each STALE member
+ * and leaves a fresh one alone. The case that discriminates is therefore
+ * ONE-STALE/ONE-FRESH: the rule this replaced re-read both members there.
  *
  * These tests drive the REAL `focusManager`/`onlineManager` events the
  * production policy is wired to, and assert on `refetch` call counts, rather
@@ -56,10 +47,7 @@ afterEach(() => {
 });
 
 describe("useQueryFreshnessGroup", () => {
-  it("re-reads the FRESH member too when only its partner has gone stale", () => {
-    // The defect, exactly: the table's window has elapsed and the tiles' has
-    // not. Ungrouped, focus refetches the table alone and the cards keep
-    // describing the previous population.
+  it("re-reads only the stale member when its partner is still fresh", () => {
     const table = member({ isStale: true });
     const tiles = member({ isStale: false });
     renderHook(() => useQueryFreshnessGroup([table, tiles]));
@@ -67,13 +55,24 @@ describe("useQueryFreshnessGroup", () => {
     fireWindowFocus();
 
     expect(table.refetch).toHaveBeenCalledTimes(1);
+    expect(tiles.refetch).not.toHaveBeenCalled();
+  });
+
+  it("re-reads only the stale member with the roles swapped", () => {
+    // Same mixed state with the roles swapped, so the rule cannot be satisfied
+    // by one that only ever re-reads a fixed position.
+    const table = member({ isStale: false });
+    const tiles = member({ isStale: true });
+    renderHook(() => useQueryFreshnessGroup([table, tiles]));
+
+    fireWindowFocus();
+
+    expect(table.refetch).not.toHaveBeenCalled();
     expect(tiles.refetch).toHaveBeenCalledTimes(1);
   });
 
-  it("re-reads the STALE member too when only its partner has gone stale", () => {
-    // Same mixed state with the roles swapped, so the grouping cannot be
-    // satisfied by a rule that only ever pushes in one direction.
-    const table = member({ isStale: false });
+  it("re-reads every member when all of them are stale", () => {
+    const table = member({ isStale: true });
     const tiles = member({ isStale: true });
     renderHook(() => useQueryFreshnessGroup([table, tiles]));
 
@@ -94,7 +93,6 @@ describe("useQueryFreshnessGroup", () => {
     fireWindowFocus();
 
     expect(table.refetch).toHaveBeenCalledWith({ cancelRefetch: false });
-    expect(tiles.refetch).toHaveBeenCalledWith({ cancelRefetch: false });
   });
 
   it("does nothing when every member is still fresh", () => {
@@ -124,7 +122,7 @@ describe("useQueryFreshnessGroup", () => {
     expect(tiles.refetch).not.toHaveBeenCalled();
   });
 
-  it("groups the re-read on reconnect as well as on focus", () => {
+  it("re-reads the stale member on reconnect as well as on focus", () => {
     const table = member({ isStale: true });
     const tiles = member({ isStale: false });
     renderHook(() => useQueryFreshnessGroup([table, tiles]));
@@ -133,7 +131,7 @@ describe("useQueryFreshnessGroup", () => {
     onlineManager.setOnline(true);
 
     expect(table.refetch).toHaveBeenCalledTimes(1);
-    expect(tiles.refetch).toHaveBeenCalledTimes(1);
+    expect(tiles.refetch).not.toHaveBeenCalled();
   });
 
   it("acts on the current render's queries, not the ones it first mounted with", () => {
@@ -153,7 +151,7 @@ describe("useQueryFreshnessGroup", () => {
     fireWindowFocus();
 
     expect(nextTable.refetch).toHaveBeenCalledTimes(1);
-    expect(nextTiles.refetch).toHaveBeenCalledTimes(1);
+    expect(nextTiles.refetch).not.toHaveBeenCalled();
     expect(initialTable.refetch).not.toHaveBeenCalled();
     expect(initialTiles.refetch).not.toHaveBeenCalled();
   });

@@ -82,11 +82,11 @@ export function resolveLauncherExitCode(code, signal) {
  *
  * @param {number | null | undefined} code
  * @param {NodeJS.Signals | string | null | undefined} signal
- * @param {{ cleanup: () => Promise<void> | void; exit: (status: number) => void }} io
+ * @param {{ cleanup: () => Promise<void> | void; exit: (status: number) => void; timeoutMs?: number }} io
  * @returns {Promise<void>}
  */
 export async function handleElectronExit(code, signal, io) {
-  await io.cleanup();
+  await settleWithin(io.cleanup, io.timeoutMs ?? CLEANUP_TIMEOUT_MS);
   io.exit(resolveLauncherExitCode(code, signal));
 }
 
@@ -112,4 +112,58 @@ export function handleBuildStepExit(code, signal, io) {
     return;
   }
   io.exit(code ?? 1);
+}
+
+/**
+ * ISS-12135: how long the launcher waits for its servers to close before it
+ * exits anyway. A listener on SIGTERM replaces Node's default exit, and Vite
+ * registers one of its own, so a close that never settled left the launcher
+ * running through every SIGTERM until something SIGKILLed it.
+ */
+export const CLEANUP_TIMEOUT_MS = 5000;
+
+/**
+ * The launcher's SIGINT/SIGTERM/SIGHUP handler: forward the signal to
+ * Electron, close the servers within `timeoutMs`, then exit 0 whether or not
+ * they closed. A repeat signal while it is closing exits at once.
+ *
+ * @param {{ forward: (signal: NodeJS.Signals) => void; cleanup: () => Promise<void> | void; exit: (status: number) => void; timeoutMs?: number }} io
+ * @returns {(signal: NodeJS.Signals) => Promise<void>}
+ */
+export function createSignalShutdown(io) {
+  let closing = false;
+  return async (signal) => {
+    if (closing) {
+      io.exit(0);
+      return;
+    }
+    closing = true;
+    io.forward(signal);
+    await settleWithin(io.cleanup, io.timeoutMs ?? CLEANUP_TIMEOUT_MS);
+    io.exit(0);
+  };
+}
+
+/**
+ * Runs `cleanup` and resolves when it settles or `timeoutMs` passes, whichever
+ * comes first; a cleanup that throws counts as settled.
+ *
+ * @param {() => Promise<void> | void} cleanup
+ * @param {number} timeoutMs
+ * @returns {Promise<void>}
+ */
+async function settleWithin(cleanup, timeoutMs) {
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let timer;
+  const timedOut = new Promise((resolve) => {
+    timer = setTimeout(resolve, timeoutMs);
+  });
+  const settled = Promise.resolve()
+    .then(cleanup)
+    .catch(() => undefined);
+  try {
+    await Promise.race([settled, timedOut]);
+  } finally {
+    clearTimeout(timer);
+  }
 }

@@ -37,8 +37,8 @@
  *     `session_count: 0` the COUNT never measured.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import type { IpcMainInvokeEvent } from "electron";
+import { test } from "vitest";
 import { createDbIpcHandlerWrappers } from "../src/main/dashboard/agent-dashboard-ipc-handler-wrappers.js";
 import {
   instrumentIpcPerf,
@@ -55,7 +55,7 @@ import { runShutdownSequence } from "../src/main/lifecycle/shutdown.js";
 import {
   DesktopIpcOperation,
   type DesktopIpcPerfEventInput,
-} from "../src/main/telemetry/app-otel-runtime.js";
+} from "../src/main/telemetry/app-otel-runtime-ipc.js";
 import {
   DB_HOST_SHUTTING_DOWN_STATUS,
   isDbHostShuttingDownResult,
@@ -208,6 +208,9 @@ function fakeRuntimeOptions(): AgentDashboardDesignSystemRuntimeOptions {
     getWindow: () => null,
     isTrustedSender: () => true,
     onTerminalFailure: () => {
+      // unused
+    },
+    setAgentMonitorRuntimeStatus: () => {
       // unused
     },
   } as AgentDashboardDesignSystemRuntimeOptions;
@@ -601,7 +604,13 @@ test("a shutdown-time session COUNT reports unknown, never a fabricated 0", asyn
   assert.deepEqual(reported, [], "and nothing was reported as a failure");
 });
 
-test("a real COUNT failure still falls back to 0 AND reports", async () => {
+test("a real COUNT failure also reports unknown, and still reports the error", async () => {
+  // ISS-8773 changed this expectation deliberately. The 0 was FEA-2211's
+  // observable fallback, and the observability half survives — but a COUNT that
+  // did not run has no count, whatever the cause, and 0 is a number a reader
+  // cannot tell apart from an empty store. The two failure classes now differ
+  // only in whether the error is surfaced, which is the distinction ISS-5262
+  // actually drew.
   const broken = {
     sessions: {
       count: () => Promise.reject(new Error("SQLITE_BUSY: database is locked")),
@@ -611,8 +620,22 @@ test("a real COUNT failure still falls back to 0 AND reports", async () => {
 
   const count = await ipcSessionCount(broken, (error) => reported.push(error));
 
-  assert.equal(count, 0, "the FEA-2211 observable fallback is unchanged");
+  assert.equal(count, null, "unknown, not 0 — the COUNT never ran");
   assert.equal(reported.length, 1, "and the failure is still surfaced");
+});
+
+test("a COUNT that RAN still answers its real number", async () => {
+  // The sibling proving the nulls above come from the failure, not from a
+  // helper that stopped answering.
+  const healthy = {
+    sessions: { count: () => Promise.resolve(41) },
+  } as unknown as DbHostAgentDatabase;
+  const reported: unknown[] = [];
+
+  const count = await ipcSessionCount(healthy, (error) => reported.push(error));
+
+  assert.equal(count, 41);
+  assert.deepEqual(reported, []);
 });
 
 test("no perf wide event is emitted when the count is unknown", async () => {

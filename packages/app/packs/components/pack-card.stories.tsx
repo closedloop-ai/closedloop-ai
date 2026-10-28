@@ -4,9 +4,9 @@ import { createPacksContext, PacksMode } from "../lib/packs-context";
 import { PackCard } from "./pack-card";
 
 const meta = {
-  title: "App Core/Packs/Pack Card",
+  title: "Composites v1.0/Packs/Pack Card",
   component: PackCard,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   args: {
     pack: mockPackViews[1],
     context: createPacksContext(PacksMode.DesktopTeam),

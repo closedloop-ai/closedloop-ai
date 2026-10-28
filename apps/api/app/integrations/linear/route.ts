@@ -1,8 +1,17 @@
+import { OperationKind } from "@repo/api/src/types/attribution-evidence";
 import type {
   LinearDisconnectResponse,
   LinearIntegrationStatus,
 } from "@repo/api/src/types/linear";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import {
+  withOperationReceipt,
+  withOperationReceipts,
+} from "@/lib/operation-receipts/operation-receipt-recorder";
+import {
+  recordNoOpUnlessRecorded,
+  recordOrganizationWrite,
+} from "@/lib/organization-write-receipt";
 
 import { errorResponse, successResponse } from "@/lib/route-utils";
 import { linearService } from "./service";
@@ -36,13 +45,23 @@ export const DELETE = withAnyAuth<
   LinearDisconnectResponse,
   "/integrations/linear"
 >(
-  async ({ user }) => {
-    try {
-      await linearService.disconnect(user.organizationId);
-      return successResponse({ disconnected: true });
-    } catch (error) {
-      return errorResponse("Failed to disconnect Linear", error);
+  withOperationReceipts(
+    OperationKind.OrganizationWrite,
+    async ({ user }, _request, _params, receipts) => {
+      try {
+        await linearService.disconnect(
+          user.organizationId,
+          recordOrganizationWrite(receipts)
+        );
+        // ISS-12552: with no integration to disconnect nothing is written.
+        await recordNoOpUnlessRecorded(receipts);
+        return successResponse(
+          withOperationReceipt({ disconnected: true }, receipts)
+        );
+      } catch (error) {
+        return errorResponse("Failed to disconnect Linear", error);
+      }
     }
-  },
+  ),
   { requiredScopes: ["delete"] }
 );

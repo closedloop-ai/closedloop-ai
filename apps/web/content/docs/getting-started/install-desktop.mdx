@@ -8,12 +8,12 @@ The desktop client is the execution surface for Closedloop.ai. It runs a localho
 ## Download
 
 - **macOS:** [download the latest signed, notarized universal DMG](https://github.com/closedloop-ai/closedloop-ai/releases/download/desktop-latest/Closedloop-universal.dmg) — no GitHub account required. Drag the `Closedloop.app` bundle into `/Applications`.
-- **Linux:** run the app from source (see below). Linux is supported for development but not yet packaged.
+- **Linux (x64):** [download the latest AppImage](https://github.com/closedloop-ai/closedloop-ai/releases/download/desktop-latest/Closedloop-linux-x64.AppImage) — no GitHub account required. Make it executable (`chmod +x Closedloop-linux-x64.AppImage`), then run it.
 - **Windows:** not supported.
 
 The installer is built and signed by ClosedLoop's release pipeline and published to the public `closedloop-ai/closedloop-ai` repository so you can download it without a GitHub account. It is not built from that repository's source at the release tag — the tag names the version, so identify the build you are running by its version number rather than by the tagged commit.
 
-### Verify the signature
+### Verify the signature (macOS)
 
 The signature and notarization are on the app, not the `.dmg` — the disk image itself is not code-signed, so verify the installed app. After dragging `Closedloop.app` into `/Applications`, confirm it was signed by ClosedLoop's Developer ID (Developer ID Application: **ClosedLoop.ai, Inc.**, Apple Team ID `S3789XCTMA`):
 
@@ -61,7 +61,7 @@ Alternatively, export `CLOSEDLOOP_API_KEY` in your shell before launching. Envir
 The built-in onboarding overlay walks you through:
 
 - confirming the API key works against the Closedloop API
-- registering this machine as a compute target via `POST /compute-targets/register`
+- registering this machine as a compute target, which the API does when the gateway's cloud socket connects (`desktop.hello`)
 - choosing a sandbox base directory (the only path the gateway will let operations touch)
 - selecting a default approval tier (`low`, `medium`, or `high`, default `high`)
 
@@ -82,8 +82,8 @@ A ready gateway responds with:
   "status": "ok",
   "machineName": "<your-host>",
   "capabilities": {
-    "tools": { "claude": true, "codex": true, "gh": true, "git": true, "python3": true },
-    "versions": {}
+    "versions": {},
+    "commandSigning": false
   },
   "version": "<package version>",
   "port": 19432
@@ -94,7 +94,7 @@ The active port is also written in plaintext to `~/.closedloop-ai/electron-port`
 
 If the default port is in use, the client will fall back through `19433 → 19434 → 19435`. The discovery file always reflects the active port.
 
-## Run from source (Linux or contributors)
+## Run from source (contributors)
 
 The desktop source is published in the public community-edition repository, [`closedloop-ai/closedloop-ai`](https://github.com/closedloop-ai/closedloop-ai):
 

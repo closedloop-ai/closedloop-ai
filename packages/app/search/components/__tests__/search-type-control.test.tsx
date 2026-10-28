@@ -12,7 +12,7 @@ describe("SearchTypeControl (FEA-4134)", () => {
   it("summarizes the active-kind count on the trigger", () => {
     render(
       <SearchTypeControl
-        activeKinds={[SearchEntityType.Loop, SearchEntityType.Document]}
+        activeKinds={[SearchEntityType.Project, SearchEntityType.Document]}
         onToggleKind={vi.fn()}
       />
     );
@@ -34,15 +34,15 @@ describe("SearchTypeControl (FEA-4134)", () => {
     const onToggleKind = vi.fn();
     render(
       <SearchTypeControl
-        activeKinds={[SearchEntityType.Loop]}
+        activeKinds={[SearchEntityType.Project]}
         onToggleKind={onToggleKind}
       />
     );
 
     await user.click(screen.getByRole("button", { name: RE_TRIGGER }));
 
-    const loopOption = screen.getByRole("button", { name: "Loop" });
-    expect(loopOption).toHaveAttribute("aria-pressed", "true");
+    const projectOption = screen.getByRole("button", { name: "Project" });
+    expect(projectOption).toHaveAttribute("aria-pressed", "true");
 
     await user.click(screen.getByRole("button", { name: "Document" }));
     expect(onToggleKind).toHaveBeenCalledWith(SearchEntityType.Document);

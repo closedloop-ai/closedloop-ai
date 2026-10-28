@@ -6,8 +6,7 @@
  * field so the failing check name and affected object reach the backend.
  */
 import assert from "node:assert/strict";
-import { afterEach, describe, test } from "node:test";
-import { vi } from "vitest";
+import { afterEach, describe, test, vi } from "vitest";
 import { Observability } from "../src/main/telemetry/observability.js";
 import type { StoreIntegrityDiagnostics } from "../src/main/telemetry/telemetry-protocol.js";
 import type { EnrichedTelemetryEvent } from "../src/main/telemetry/telemetry-service.js";

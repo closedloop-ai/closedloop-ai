@@ -112,6 +112,19 @@ describe.skipIf(!hasDatabase)("agent-session attribution integration", () => {
     });
   });
 
+  it("returns null when the artifact belongs to another organization", async () => {
+    await autoRollbackTransaction(async () => {
+      const fixture = await seedAttributionFixture();
+
+      const artifactUsage = await agentSessionsService.getArtifactSessionUsage(
+        fixture.crossOrgId,
+        fixture.branchOneArtifactId
+      );
+
+      expect(artifactUsage).toBeNull();
+    });
+  });
+
   // FEA-3119 (PRD-525 P3, DoD #7/#8): the branch cost/usage numerator must
   // include implementation + code-review + VQA + rework sessions from EVERY
   // contributor who touched the branch id (first push → merge/production), with
@@ -366,6 +379,7 @@ async function seedAttributionFixture() {
     branchOneArtifactId,
     branchThreeArtifactId,
     branchTwoArtifactId,
+    crossOrgId,
     crossOrgBranchArtifactId,
     organizationId,
     userId: user.id,
@@ -500,6 +514,8 @@ async function createSession(input: {
     db.artifact.create({
       data: {
         createdById: input.userId,
+        // ISS-12251: ingest's create arm makes the uploader the Owner too.
+        assigneeId: input.userId,
         name: "Shared session",
         organizationId: input.organizationId,
         projectId: input.projectId,
@@ -523,8 +539,8 @@ async function createSession(input: {
         model: "gpt-5.5",
         outputTokens,
         sessionStartedAt: new Date("2026-06-01T12:00:00.000Z"),
+        lastActivityAt: new Date("2026-06-01T12:00:00.000Z"),
         sessionUpdatedAt: new Date("2026-06-01T12:05:00.000Z"),
-        userId: input.userId,
       },
     })
   );

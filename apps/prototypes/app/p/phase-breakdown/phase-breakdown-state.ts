@@ -1,7 +1,3 @@
-// Pure view-state model for the prototype, kept out of the page so the sandbox's
-// node-only test suite can exercise the expand/collapse and detail/back
-// transitions directly (the suite has no jsdom/testing-library by design).
-//
 // Both the phase-expansion state and the "show all" state live ABOVE the
 // breakdown/detail view switch (in the page), so opening a session and coming
 // back does not collapse the phases the user had expanded.

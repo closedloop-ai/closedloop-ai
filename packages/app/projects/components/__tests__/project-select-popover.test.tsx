@@ -48,6 +48,38 @@ describe("ProjectSelectPopover", () => {
     });
   });
 
+  it("lists projects alphabetically regardless of input order", async () => {
+    // The tied pair arrives p5 before p2, so only the id tiebreak (not a stable
+    // sort) puts p2 first; the slugs make the two rows distinguishable.
+    const unsorted: ProjectOption[] = [
+      { id: "p1", name: "platform" },
+      { id: "p5", name: "Growth", slug: "growth-b" },
+      { id: "p3", name: "Apollo" },
+      { id: "p2", name: "Growth", slug: "growth-a" },
+      { id: "p4", name: "Zeta" },
+    ];
+    render(
+      <ProjectSelectPopover
+        onSelect={vi.fn()}
+        projects={unsorted}
+        value={null}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("combobox"));
+    await screen.findByText("Apollo");
+
+    expect(
+      screen.getAllByRole("option").map((option) => option.textContent)
+    ).toEqual([
+      "Apollo",
+      "Growthgrowth-a",
+      "Growthgrowth-b",
+      "platform",
+      "Zeta",
+    ]);
+  });
+
   it("filters the options by the typed query", async () => {
     render(
       <ProjectSelectPopover

@@ -15,6 +15,8 @@ import {
   type GatewayProfileRowProps,
 } from "../gateway-profile-row";
 
+const SELECT_BUTTON_LABEL = "Select";
+
 const PROFILE: GatewayProfileRowData = {
   id: "profile-1",
   name: "Staging",
@@ -76,7 +78,7 @@ describe("GatewayProfileRow — resting state", () => {
   it("offers Select while the row is not already selected", () => {
     const handlers = renderRow({ isSelected: false });
 
-    fireEvent.click(screen.getByRole("button", { name: "Select" }));
+    fireEvent.click(screen.getByRole("button", { name: SELECT_BUTTON_LABEL }));
 
     expect(handlers.onSelect).toHaveBeenCalledTimes(1);
   });
@@ -84,7 +86,9 @@ describe("GatewayProfileRow — resting state", () => {
   it("drops Select once the row is the selected one", () => {
     renderRow({ isSelected: true });
 
-    expect(screen.queryByRole("button", { name: "Select" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: SELECT_BUTTON_LABEL })
+    ).toBeNull();
   });
 
   it("offers Apply while the profile is not the active one", () => {

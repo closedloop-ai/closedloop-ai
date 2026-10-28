@@ -1,8 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ApiKeyScope } from "@repo/api/src/types/api-key.js";
 import type { ApiClient } from "./api-client.js";
-import { DELETE_SCOPE, READ_SCOPE } from "./oauth-scopes.js";
-import { registerAddLoopEvent } from "./tools/add-loop-event.js";
+import { DELETE_SCOPE, READ_SCOPE, WRITE_SCOPE } from "./oauth-scopes.js";
 import {
   registerGetAgentComponent,
   registerListAgentComponents,
@@ -15,40 +14,39 @@ import {
   registerGetAgentSessionAnalytics,
   registerGetAgentSessionUsage,
 } from "./tools/agent-session-reporting.js";
-import { registerCancelLoop } from "./tools/cancel-loop.js";
-import { registerCompleteLoop } from "./tools/complete-loop.js";
 import { registerCreateArtifactLink } from "./tools/create-artifact-link.js";
 import { registerCreateBranchArtifact } from "./tools/create-branch-artifact.js";
 import { registerCreateDocument } from "./tools/create-document.js";
 import { registerCreateDocumentThread } from "./tools/create-document-thread.js";
 import { registerCreateDocumentVersion } from "./tools/create-document-version.js";
 import { registerCreateInlineImageAttachment } from "./tools/create-inline-image-attachment.js";
-import { registerCreateLoop } from "./tools/create-loop.js";
 import { registerCreateProject } from "./tools/create-project.js";
 import { registerDeleteArtifactLink } from "./tools/delete-artifact-link.js";
 import { registerDeleteAttachment } from "./tools/delete-attachment.js";
 import { registerDownloadAttachment } from "./tools/download-attachment.js";
-import { registerFailLoop } from "./tools/fail-loop.js";
 import { registerGetDocument } from "./tools/get-document.js";
 import { registerGetDocumentComments } from "./tools/get-document-comments.js";
+import { registerGetDocumentContent } from "./tools/get-document-content.js";
 import { registerGetGithubStatus } from "./tools/get-github-status.js";
 import { registerGetGoogleStatus } from "./tools/get-google-status.js";
 import { registerGetLinearStatus } from "./tools/get-linear-status.js";
-import { registerGetLoop } from "./tools/get-loop.js";
 import { registerGetMe } from "./tools/get-me.js";
 import { registerGetProject } from "./tools/get-project.js";
 import { registerListArtifactLinks } from "./tools/list-artifact-links.js";
 import { registerListAttachments } from "./tools/list-attachments.js";
 import { registerListDocumentVersions } from "./tools/list-document-versions.js";
 import { registerListDocuments } from "./tools/list-documents.js";
-import { registerListLoops } from "./tools/list-loops.js";
 import { registerListProjects } from "./tools/list-projects.js";
 import { registerListSessionComments } from "./tools/list-session-comments.js";
+import { registerListTags } from "./tools/list-tags.js";
+import { registerListTeams } from "./tools/list-teams.js";
 import { registerListTemplates } from "./tools/list-templates.js";
 import { registerListUsers } from "./tools/list-users.js";
 import { registerMoveArtifact } from "./tools/move-artifact.js";
 import { registerSearch } from "./tools/search.js";
+import { registerTagArtifact } from "./tools/tag-artifact.js";
 import type { McpUrlBuilder } from "./tools/tool-utils.js";
+import { registerUntagArtifact } from "./tools/untag-artifact.js";
 import { registerUpdateDocument } from "./tools/update-document.js";
 import { registerUpdateProject } from "./tools/update-project.js";
 import { registerUploadAttachment } from "./tools/upload-attachment.js";
@@ -101,6 +99,10 @@ export const TOOL_REGISTRATIONS: ToolRegistration[] = [
   { name: "search", register: registerSearch },
   { name: "list-projects", register: registerListProjects },
   { name: "get-project", register: registerGetProject },
+  // Read-only, so no `requiresWrite`: `toolRequiredScopes` supplies the
+  // `[READ_SCOPE]` default. Sits with the project tools because that is what it
+  // is for — a project must name a team, and this is where the id comes from.
+  { name: "list-teams", register: registerListTeams },
   {
     name: "create-project",
     register: registerCreateProject,
@@ -113,6 +115,11 @@ export const TOOL_REGISTRATIONS: ToolRegistration[] = [
   },
   { name: "list-documents", register: registerListDocuments },
   { name: "get-document", register: registerGetDocument },
+  {
+    name: "get-document-content",
+    register: registerGetDocumentContent,
+    requiredScopes: [READ_SCOPE],
+  },
   {
     name: "create-document",
     register: registerCreateDocument,
@@ -158,33 +165,6 @@ export const TOOL_REGISTRATIONS: ToolRegistration[] = [
     requiredScopes: [DELETE_SCOPE],
   },
   { name: "get-me", register: registerGetMe },
-  { name: "list-loops", register: registerListLoops },
-  { name: "get-loop", register: registerGetLoop },
-  {
-    name: "create-loop",
-    register: registerCreateLoop,
-    requiresWrite: true,
-  },
-  {
-    name: "add-loop-event",
-    register: registerAddLoopEvent,
-    requiresWrite: true,
-  },
-  {
-    name: "complete-loop",
-    register: registerCompleteLoop,
-    requiresWrite: true,
-  },
-  {
-    name: "fail-loop",
-    register: registerFailLoop,
-    requiresWrite: true,
-  },
-  {
-    name: "cancel-loop",
-    register: registerCancelLoop,
-    requiresWrite: true,
-  },
   { name: "list-users", register: registerListUsers },
   { name: "list-artifact-links", register: registerListArtifactLinks },
   {
@@ -196,6 +176,28 @@ export const TOOL_REGISTRATIONS: ToolRegistration[] = [
     name: "delete-artifact-link",
     register: registerDeleteArtifactLink,
     requiredScopes: [DELETE_SCOPE],
+  },
+  // ISS-6967. The two write tools name `read` explicitly because each resolves
+  // the document and the tag list before it writes, and scope matching is flat
+  // — `write` does not imply `read`, so a grant missing it would be offered a
+  // tool that fails on its first call. `requiresWrite` is deliberately absent:
+  // an explicit `requiredScopes` is returned verbatim by `toolRequiredScopes`,
+  // which makes the flag unreachable AND would let the scope tests pass with
+  // WRITE_SCOPE deleted.
+  {
+    name: "list-tags",
+    register: registerListTags,
+    requiredScopes: [READ_SCOPE],
+  },
+  {
+    name: "tag-artifact",
+    register: registerTagArtifact,
+    requiredScopes: [READ_SCOPE, WRITE_SCOPE],
+  },
+  {
+    name: "untag-artifact",
+    register: registerUntagArtifact,
+    requiredScopes: [READ_SCOPE, DELETE_SCOPE],
   },
   {
     name: "create_branch_artifact",

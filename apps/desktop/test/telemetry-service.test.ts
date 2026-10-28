@@ -9,32 +9,15 @@
  * - large stderrTail fields are truncated to TELEMETRY_MAX_FIELD_BYTES
  * - sendTelemetry callback never called (disconnected relay simulation) does not throw
  *
- * readLogTail() edge cases (imported directly from symphony-loop.ts per T-4.3):
- * - file smaller than maxBytes returns full content
- * - file larger than maxBytes returns tail content
- * - nonexistent file returns null
- * - empty file returns null
- * - partial first line dropped on mid-file offset
- *
- * stripAnsi():
+ * stripAnsi() (imported directly from diagnostics-helpers.ts):
  * - removes standard ANSI escape sequences
  * - passes through clean text unchanged
- *
- * readFileTail():
- * - respects custom maxBytes and maxLines limits
- *
- * readStderrTail():
- * - reads claude-stderr.log from work dir
  */
 
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { afterEach, describe, test } from "node:test";
+import { describe, test } from "vitest";
+import { stripAnsi } from "../src/main/diagnostics/diagnostics-helpers.js";
 import {
-  STDERR_TAIL_MAX_BYTES,
-  TELEMETRY_LOG_TAIL_MAX_BYTES,
   TELEMETRY_MAX_FIELD_BYTES,
   type TelemetryEventPayload,
 } from "../src/main/telemetry/telemetry-protocol.js";
@@ -42,37 +25,33 @@ import {
   type EnrichedTelemetryEvent,
   TelemetryService,
 } from "../src/main/telemetry/telemetry-service.js";
-import {
-  readFileTail,
-  readLogTail,
-  readStderrTail,
-  stripAnsi,
-} from "../src/server/operations/symphony-loop.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-const tempDirs: string[] = [];
-
-afterEach(() => {
-  for (const dir of tempDirs.splice(0)) {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-function makeTempDir(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telemetry-service-test-"));
-  tempDirs.push(dir);
-  return dir;
-}
+/**
+ * Gateway session ids are UUIDs on the wire (whitlockk, #5732 review). The cloud
+ * ingress validates them as `z.union([z.uuid(), /^[0-9a-f]{12}$/])` —
+ * `gatewaySessionIdSchema` in `packages/observability/telemetry/schema.ts`, the
+ * second arm being the redaction hash. `TelemetryService` itself does no
+ * validation, so a `gw-*` placeholder passes here while being a shape no real
+ * event could carry; the precedence contract below is worth pinning against a
+ * value that could actually traverse the boundary.
+ *
+ * Not imported from the schema: `apps/desktop` does not depend on
+ * `@repo/observability`, and adding that dependency to satisfy a fixture would
+ * be a worse trade than restating the constraint here.
+ */
+const SERVICE_GATEWAY_SESSION_ID = "11111111-1111-4111-8111-111111111111";
+const CALLER_GATEWAY_SESSION_ID = "22222222-2222-4222-8222-222222222222";
 
 function makeEvent(
   overrides: Partial<TelemetryEventPayload> = {}
 ): TelemetryEventPayload {
   return {
     severity: "info",
-    category: "job.started",
+    category: "queue.stats_changed",
     message: "test event",
     ...overrides,
   } as TelemetryEventPayload;
@@ -89,12 +68,15 @@ describe("TelemetryService.emit()", () => {
       sendTelemetry: (evt) => received.push(evt),
     });
 
-    const event = makeEvent({ message: "hello", category: "job.started" });
+    const event = makeEvent({
+      message: "hello",
+      category: "queue.stats_changed",
+    });
     svc.emit(event);
 
     assert.equal(received.length, 1);
     assert.equal(received[0].message, "hello");
-    assert.equal(received[0].category, "job.started");
+    assert.equal(received[0].category, "queue.stats_changed");
     assert.equal(received[0].severity, "info");
     assert.equal(received[0].schemaVersion, "1");
     assert.equal(typeof received[0].timestamp, "string");
@@ -163,14 +145,14 @@ describe("TelemetryService.setTargetId()", () => {
     svc.setTargetId("target-xyz");
     svc.emit(
       makeEvent({
-        trace: { commandId: "cmd-1", loopId: "loop-1" },
+        trace: { commandId: "cmd-1", gatewaySessionId: "gw-1" },
       })
     );
 
     assert.equal(received.length, 1);
     assert.equal(received[0].trace?.computeTargetId, "target-xyz");
     assert.equal(received[0].trace?.commandId, "cmd-1");
-    assert.equal(received[0].trace?.loopId, "loop-1");
+    assert.equal(received[0].trace?.gatewaySessionId, "gw-1");
   });
 
   test("does not inject computeTargetId before setTargetId is called", () => {
@@ -183,6 +165,149 @@ describe("TelemetryService.setTargetId()", () => {
 
     assert.equal(received.length, 1);
     assert.equal(received[0].trace?.computeTargetId, "");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ISS-7488 — required trace fields survive a caller's absent values
+// ---------------------------------------------------------------------------
+
+describe("TelemetryService required trace defaults (ISS-7488)", () => {
+  test("keeps commandId and operationId as strings when the caller forwards absent values", () => {
+    const received: EnrichedTelemetryEvent[] = [];
+    const svc = new TelemetryService({
+      sendTelemetry: (evt) => received.push(evt),
+    });
+
+    // Every member of TelemetryTraceContext is optional, and producers forward
+    // their own optional args straight through — so the keys arrive PRESENT holding undefined.
+    svc.emit(
+      makeEvent({
+        trace: {
+          commandId: undefined,
+          operationId: undefined,
+          gatewaySessionId: "gw-9",
+        },
+      })
+    );
+
+    assert.equal(received.length, 1);
+    const trace = received[0].trace;
+    // The cloud schema types these `z.string()`, so an undefined here rejects
+    // the WHOLE event as telemetry.validation_failed.
+    assert.equal(trace?.commandId, "");
+    assert.equal(trace?.operationId, "");
+    assert.equal(trace?.gatewaySessionId, "gw-9");
+    assert.equal(typeof trace?.commandId, "string");
+    assert.equal(typeof trace?.operationId, "string");
+  });
+
+  test("falls back to the service target id when the caller forwards an absent computeTargetId", () => {
+    const received: EnrichedTelemetryEvent[] = [];
+    const svc = new TelemetryService({
+      sendTelemetry: (evt) => received.push(evt),
+    });
+
+    svc.setTargetId("target-abc-123");
+    svc.emit(makeEvent({ trace: { computeTargetId: undefined } }));
+
+    assert.equal(received.length, 1);
+    assert.equal(received[0].trace?.computeTargetId, "target-abc-123");
+  });
+
+  test("omits gatewaySessionId entirely when none is known", () => {
+    const received: EnrichedTelemetryEvent[] = [];
+    const svc = new TelemetryService({
+      sendTelemetry: (evt) => received.push(evt),
+    });
+
+    svc.emit(makeEvent({ trace: { commandId: "cmd-1" } }));
+
+    assert.equal(received.length, 1);
+    // Absent optional cross-process fields stay omitted, never an explicit
+    // undefined key (root AGENTS.md, Cross-Repo Compatibility).
+    assert.equal(
+      Object.hasOwn(received[0].trace ?? {}, "gatewaySessionId"),
+      false
+    );
+  });
+
+  test("omits gatewaySessionId when the caller FORWARDS an absent one", () => {
+    const received: EnrichedTelemetryEvent[] = [];
+    const svc = new TelemetryService({
+      sendTelemetry: (evt) => received.push(evt),
+    });
+
+    // The case above proves nothing on its own: with no `gatewaySessionId` key
+    // in the input there is none in the output whether or not the conditional
+    // exists. THIS is the shape this ticket is about — a caller forwarding its
+    // own optional arg puts the key on the object holding `undefined`, and a
+    // conditional spread after `...trace` can add a key but cannot remove one.
+    svc.emit(
+      makeEvent({ trace: { commandId: "cmd-1", gatewaySessionId: undefined } })
+    );
+
+    assert.equal(received.length, 1);
+    assert.equal(
+      Object.hasOwn(received[0].trace ?? {}, "gatewaySessionId"),
+      false
+    );
+  });
+
+  test("injects the service gatewaySessionId when the caller has none", () => {
+    const received: EnrichedTelemetryEvent[] = [];
+    const svc = new TelemetryService({
+      sendTelemetry: (evt) => received.push(evt),
+    });
+
+    // The other half of the conditional, and previously uncovered: deleting the
+    // whole branch left all 36 tests green.
+    svc.setGatewaySessionId(SERVICE_GATEWAY_SESSION_ID);
+    svc.emit(
+      makeEvent({ trace: { commandId: "cmd-1", gatewaySessionId: undefined } })
+    );
+
+    assert.equal(received.length, 1);
+    assert.equal(
+      received[0].trace?.gatewaySessionId,
+      SERVICE_GATEWAY_SESSION_ID
+    );
+  });
+
+  test("the SERVICE gatewaySessionId wins over a caller-supplied one", () => {
+    const received: EnrichedTelemetryEvent[] = [];
+    const svc = new TelemetryService({
+      sendTelemetry: (evt) => received.push(evt),
+    });
+
+    svc.setGatewaySessionId(SERVICE_GATEWAY_SESSION_ID);
+    svc.emit(
+      makeEvent({ trace: { gatewaySessionId: CALLER_GATEWAY_SESSION_ID } })
+    );
+
+    assert.equal(received.length, 1);
+    // Deliberately the opposite precedence from `commandId`/`operationId`, and
+    // pinned here because nothing else states it. The gateway session (like
+    // `computeTargetId`) identifies THIS process, so a caller cannot claim to be
+    // emitting from a different one; the required-field defaults above only fill
+    // a gap the caller left. Enforced upstream in `enrichEvent`, where the
+    // service values spread AFTER `event.trace`.
+    assert.equal(
+      received[0].trace?.gatewaySessionId,
+      SERVICE_GATEWAY_SESSION_ID
+    );
+  });
+
+  test("a caller-supplied commandId still wins over the default", () => {
+    const received: EnrichedTelemetryEvent[] = [];
+    const svc = new TelemetryService({
+      sendTelemetry: (evt) => received.push(evt),
+    });
+
+    svc.emit(makeEvent({ trace: { commandId: "cmd-real" } }));
+
+    assert.equal(received.length, 1);
+    assert.equal(received[0].trace?.commandId, "cmd-real");
   });
 });
 
@@ -259,104 +384,6 @@ describe("TelemetryService logTail truncation", () => {
 });
 
 // ---------------------------------------------------------------------------
-// readLogTail() edge cases
-// ---------------------------------------------------------------------------
-
-describe("readLogTail()", () => {
-  test("returns null for nonexistent file", () => {
-    const dir = makeTempDir();
-    const result = readLogTail(path.join(dir, "does-not-exist.log"));
-    assert.equal(result, null);
-  });
-
-  test("returns null for empty file", () => {
-    const dir = makeTempDir();
-    const logPath = path.join(dir, "empty.log");
-    fs.writeFileSync(logPath, "");
-    const result = readLogTail(logPath);
-    assert.equal(result, null);
-  });
-
-  test("returns full content for file smaller than maxBytes (32 KiB)", () => {
-    const dir = makeTempDir();
-    const logPath = path.join(dir, "small.log");
-    const content = "line 1\nline 2\nline 3\n";
-    fs.writeFileSync(logPath, content);
-    const result = readLogTail(logPath);
-    assert.equal(result, content);
-  });
-
-  test("returns tail content for file larger than maxBytes", () => {
-    const dir = makeTempDir();
-    const logPath = path.join(dir, "large.log");
-
-    // Write more than 32 KiB (LOG_TAIL_MAX_BYTES)
-    const LOG_TAIL_MAX_BYTES = TELEMETRY_LOG_TAIL_MAX_BYTES;
-    // Build content: a "header" section followed by many lines, total > 32 KiB
-    const line = `${"a".repeat(100)}\n`; // 101 bytes per line
-    const numLines = Math.ceil((LOG_TAIL_MAX_BYTES + 1000) / line.length) + 1;
-    const header = "HEADER_LINE\n";
-    const body = line.repeat(numLines);
-    fs.writeFileSync(logPath, header + body);
-
-    const result = readLogTail(logPath);
-    assert.ok(result !== null, "should return string for large file");
-
-    const byteLength = Buffer.byteLength(result, "utf8");
-    assert.ok(
-      byteLength <= LOG_TAIL_MAX_BYTES,
-      `result byte length ${byteLength} exceeds LOG_TAIL_MAX_BYTES ${LOG_TAIL_MAX_BYTES}`
-    );
-
-    // The HEADER_LINE should not appear in the result (it's from the start of a big file)
-    assert.ok(
-      !result.includes("HEADER_LINE"),
-      "should not contain header from start of oversized file"
-    );
-  });
-
-  test("drops partial first line on mid-file offset", () => {
-    const dir = makeTempDir();
-    const logPath = path.join(dir, "mid-offset.log");
-
-    // Write more than 32 KiB so we're guaranteed to start mid-file
-    const LOG_TAIL_MAX_BYTES = TELEMETRY_LOG_TAIL_MAX_BYTES;
-    // Line 1 is unique and will be cut: it must start before the 32 KiB tail window
-    const uniquePrefix = "UNIQUE_PARTIAL_LINE_";
-    // Pad to make sure the total file exceeds LOG_TAIL_MAX_BYTES
-    const padding = "p".repeat(LOG_TAIL_MAX_BYTES);
-    const tailLines = "complete line 1\ncomplete line 2\n";
-    // Layout: padding (32 KiB) + partial unique line that straddles the boundary
-    // We'll ensure UNIQUE_PARTIAL_LINE_ falls just before the 32 KiB boundary
-    const content = `${padding + uniquePrefix}rest_of_line\n${tailLines}`;
-    fs.writeFileSync(logPath, content);
-
-    const result = readLogTail(logPath);
-    assert.ok(result !== null, "should return string");
-
-    // The partial line (UNIQUE_PARTIAL_LINE_) falls right at the boundary -
-    // if the file is offset, the function should drop the partial first line
-    // The tail lines should be present since they are after the partial line
-    assert.ok(
-      result.includes("complete line 1"),
-      "should include complete tail lines"
-    );
-    // The unique prefix may or may not appear depending on exact byte boundaries,
-    // but if it does appear, it should be a complete occurrence (not partial).
-    // The important property: the result doesn't start with a partial line.
-    const firstNewline = result.indexOf("\n");
-    if (firstNewline > 0) {
-      // First line should be a complete line (not ending abruptly mid-word)
-      const firstLine = result.slice(0, firstNewline);
-      // A partial line from UNIQUE_PARTIAL_LINE_ would be "rest_of_line" without the prefix
-      assert.ok(
-        !firstLine.startsWith("rest_of_line"),
-        `first line should not be a partial tail of a split line, got: "${firstLine}"`
-      );
-    }
-  });
-});
-
 // ---------------------------------------------------------------------------
 // stderrTail truncation
 // ---------------------------------------------------------------------------
@@ -473,91 +500,4 @@ describe("stripAnsi()", () => {
 });
 
 // ---------------------------------------------------------------------------
-// readFileTail()
 // ---------------------------------------------------------------------------
-
-describe("readFileTail()", () => {
-  test("returns null for nonexistent file", () => {
-    const dir = makeTempDir();
-    const result = readFileTail(path.join(dir, "missing.log"), 4096, 50);
-    assert.equal(result, null);
-  });
-
-  test("returns null for empty file", () => {
-    const dir = makeTempDir();
-    const fp = path.join(dir, "empty.log");
-    fs.writeFileSync(fp, "");
-    assert.equal(readFileTail(fp, 4096, 50), null);
-  });
-
-  test("respects custom maxBytes limit", () => {
-    const dir = makeTempDir();
-    const fp = path.join(dir, "big.log");
-    // Write 8 KiB of data, read with 2 KiB limit
-    const content = `${"x".repeat(8192)}\n`;
-    fs.writeFileSync(fp, content);
-    const result = readFileTail(fp, 2048, 1000);
-    assert.ok(result !== null);
-    assert.ok(Buffer.byteLength(result, "utf8") <= 2048);
-  });
-
-  test("respects custom maxLines limit", () => {
-    const dir = makeTempDir();
-    const fp = path.join(dir, "many-lines.log");
-    const lines = Array.from({ length: 100 }, (_, i) => `line ${i}`).join("\n");
-    fs.writeFileSync(fp, lines);
-    const result = readFileTail(fp, 65_536, 10);
-    assert.ok(result !== null);
-    const resultLines = result.split("\n");
-    assert.ok(
-      resultLines.length <= 10,
-      `Expected at most 10 lines, got ${resultLines.length}`
-    );
-  });
-
-  test("returns full content for small file", () => {
-    const dir = makeTempDir();
-    const fp = path.join(dir, "small.log");
-    const content = "line 1\nline 2\n";
-    fs.writeFileSync(fp, content);
-    assert.equal(readFileTail(fp, 4096, 50), content);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// readStderrTail()
-// ---------------------------------------------------------------------------
-
-describe("readStderrTail()", () => {
-  test("reads claude-stderr.log from work dir", () => {
-    const dir = makeTempDir();
-    const stderrContent = "Error: something went wrong\nStack trace here\n";
-    fs.writeFileSync(path.join(dir, "claude-stderr.log"), stderrContent);
-    const result = readStderrTail(dir);
-    assert.equal(result, stderrContent);
-  });
-
-  test("returns null when claude-stderr.log does not exist", () => {
-    const dir = makeTempDir();
-    assert.equal(readStderrTail(dir), null);
-  });
-
-  test("returns null for empty stderr file", () => {
-    const dir = makeTempDir();
-    fs.writeFileSync(path.join(dir, "claude-stderr.log"), "");
-    assert.equal(readStderrTail(dir), null);
-  });
-
-  test("truncates large stderr to STDERR_TAIL_MAX_BYTES", () => {
-    const dir = makeTempDir();
-    // Write more than STDERR_TAIL_MAX_BYTES
-    const bigContent = `${"e".repeat(STDERR_TAIL_MAX_BYTES + 2000)}\n`;
-    fs.writeFileSync(path.join(dir, "claude-stderr.log"), bigContent);
-    const result = readStderrTail(dir);
-    assert.ok(result !== null);
-    assert.ok(
-      Buffer.byteLength(result, "utf8") <= STDERR_TAIL_MAX_BYTES,
-      "readStderrTail should respect STDERR_TAIL_MAX_BYTES limit"
-    );
-  });
-});

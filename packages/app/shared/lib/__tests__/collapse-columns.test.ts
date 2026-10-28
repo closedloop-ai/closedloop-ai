@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 
 /**
  * FEA-3968: unit coverage for the generic constant/empty column-collapse helper
- * shared by the Loops (`DataTable`), Branches, and Agents (`GridTable`) tables.
+ * shared by `DataTable` and the Branches and Agents (`GridTable`) tables.
  * Colocated in `@repo/app` because `@repo/design-system` has no test runner and
  * this package is the helper's consumer.
  */
@@ -36,7 +36,7 @@ function keyOf(columnId: string, row: Row): CollapseCellKey {
   }
 }
 
-// The constant-only mode the Loops/Branches/Agents tables use.
+// The constant-only mode the Branches/Agents tables use.
 const CONSTANT_ONLY = { collapseEmptyColumns: false } as const;
 
 describe("shouldCollapseColumn", () => {

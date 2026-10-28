@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // ISS-12115: the scripts reach into `src/` and `test/` (the live-sync
+    // harness passes fakes into the sync lanes' typed ports), so the program
+    // is rooted at the package. Emission is off, so this only widens it.
+    "rootDir": ".",
+    // Infer the shared hermetic Git helper directly from its JSDoc, as tests do.
+    "allowJs": true,
+    "types": ["node"]
+  },
+  "include": ["scripts/**/*.ts", "scripts/**/*.mts"]
+}

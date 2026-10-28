@@ -1,10 +1,10 @@
 import "server-only";
 
-import { PUBLIC_GITHUB_REPOS_FEATURE_FLAG_KEY } from "@repo/api/src/types/github";
 import {
   type FeatureFlagIdentity,
   isFeatureFlagEnabledForAnyIdentity,
 } from "@/lib/feature-flag-identity";
+import { PUBLIC_GITHUB_REPOS_SERVER_FLAG } from "@/lib/feature-flags/server-feature-flags";
 
 export type PublicGithubReposFeatureIdentity = FeatureFlagIdentity;
 
@@ -18,7 +18,7 @@ export function isPublicGithubReposEnabled(
   identity: PublicGithubReposFeatureIdentity
 ): Promise<boolean> {
   return isFeatureFlagEnabledForAnyIdentity(
-    PUBLIC_GITHUB_REPOS_FEATURE_FLAG_KEY,
+    PUBLIC_GITHUB_REPOS_SERVER_FLAG,
     identity,
     "public_github_repos_feature_flag_unavailable"
   );

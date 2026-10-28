@@ -37,6 +37,28 @@ export function localSessionSourceGateEnv(
   return enabled ? { CL_E2E_LOCAL_SESSION_SOURCE_GATE: "1" } : {};
 }
 
+export type LocalSessionSourceGateStats = {
+  heldProbes: number;
+  heldSessionListReads: number;
+  heldZeroSessionListReads: number;
+};
+
+/** Read the held-source gate counters without releasing the source. */
+export function readLocalSessionSourceGateStats(
+  app: ElectronApplication
+): Promise<LocalSessionSourceGateStats> {
+  return app.evaluate((_electron, key) => {
+    const gate: { stats: () => LocalSessionSourceGateStats } | undefined =
+      Reflect.get(globalThis, key);
+    if (!gate) {
+      throw new Error(
+        "the local session-source gate preload was never installed"
+      );
+    }
+    return gate.stats();
+  }, GATE_KEY);
+}
+
 /**
  * Stop holding the source down; resolves with how many probes were answered
  * while it was held.

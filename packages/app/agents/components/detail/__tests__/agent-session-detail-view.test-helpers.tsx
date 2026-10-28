@@ -10,6 +10,7 @@ import {
 } from "@repo/app/agents/data-source/__tests__/fake-trace-comments-source";
 import type { TraceCommentsDataSource } from "@repo/app/agents/data-source/trace-comments-data-source";
 import { TraceCommentsDataSourceProvider } from "@repo/app/agents/data-source/trace-comments-provider";
+import { screen, waitFor } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { AppCoreStoryProviders } from "../../../../shared/storybook/decorators";
 
@@ -146,4 +147,37 @@ function findTextNode(node: Node, text: string): Text | null {
     }
   }
   return null;
+}
+
+/**
+ * ISS-10598's `SessionTimelineLegend` prints the same marker-semantic labels
+ * ("Commits & PRs", "Failures & limits", ...) permanently, above the strip, so
+ * a bare `screen.findByText(...)` for one of those labels can match the legend
+ * before any dot is hovered rather than the marker tooltip these tests are
+ * asserting on.
+ *
+ * IT DOES NOT COLLIDE TODAY, and saying otherwise describes a state the next
+ * reader cannot reproduce (tamsinb, #7602). The legend is gated on
+ * `session-timeline-legend`, `renderDetail` calls `withProviders(ui)` with no
+ * `enabledFlags`, and the static adapter resolves every unlisted key `false` —
+ * so it renders `null` in all four callers below. This exists for when that
+ * gate opens: scoping to the tooltip's own DOM (`.sd3-tip-mk`,
+ * `session-timeline-strip-parts.tsx`'s marker-tooltip root) keeps the match
+ * proving a hover-triggered tooltip either way.
+ *
+ * `waitFor` rather than `findAllByText`'s own polling, for the same
+ * flag-on case: the legend's match would exist from the very first render, so
+ * an unscoped poll tick resolves immediately without ever waiting for the
+ * tooltip to mount.
+ */
+export function findTooltipLabel(text: string): Promise<HTMLElement> {
+  return waitFor(() => {
+    const match = screen
+      .getAllByText(text)
+      .find((element) => element.closest(".sd3-tip-mk"));
+    if (!match) {
+      throw new Error(`Marker tooltip text "${text}" not yet rendered`);
+    }
+    return match;
+  });
 }

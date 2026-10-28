@@ -6,7 +6,7 @@
  * while pressure is high and PROCEED once it clears — bounded, never infinite.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { getMemoryPressure } from "../src/main/database/db-host/db-host-memory-watchdog.js";
 import {
   awaitMemoryPressureClearForAdmission,

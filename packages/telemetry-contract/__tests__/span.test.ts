@@ -1,13 +1,20 @@
 import { describe, expect, it } from "vitest";
 import {
+  ApiSpanTelemetryAttributes,
+  CodeSpanTelemetryAttributes,
+  CompatibilitySpanTelemetryAttributes,
   DeprecatedCodeTelemetryAttributes,
+  ErrorSpanTelemetryAttributes,
+  HttpSpanTelemetryAttributes,
   TelemetryAttribute,
 } from "../src/attributes";
 import { TelemetryTextMaxLength } from "../src/schema-primitives";
 import {
+  MAX_SPAN_LINKS,
   MAX_SPAN_NAME_LENGTH,
   MAX_SPAN_STATUS_MESSAGE_LENGTH,
   SpanEnvelopeSchema,
+  SpanErrorSource,
   SpanKind,
   SpanStatusCode,
   SpanTelemetrySchema,
@@ -92,6 +99,122 @@ describe("SpanTelemetrySchema", () => {
     ).toBe(false);
   });
 
+  it("accepts the cl-api request attribution attributes", () => {
+    expect(
+      SpanTelemetrySchema.parse(
+        spanPayload({
+          [TelemetryAttribute.AppOrganizationId]:
+            "0190f6a1-5b2c-7d3e-8f40-6a7b8c9d0e1f",
+          [TelemetryAttribute.AppErrorSource]: SpanErrorSource.RouteHandler,
+          [TelemetryAttribute.ArtifactType]: "IMPLEMENTATION_PLAN",
+          [TelemetryAttribute.ArtifactStatus]: "IN_REVIEW",
+          [TelemetryAttribute.ErrorType]: "PrismaClientKnownRequestError.P2002",
+        })
+      )
+    ).toMatchObject({
+      [TelemetryAttribute.AppErrorSource]: SpanErrorSource.RouteHandler,
+      [TelemetryAttribute.ArtifactType]: "IMPLEMENTATION_PLAN",
+    });
+  });
+
+  /**
+   * ISS-7217: the span rides the keyless lane, so an error MESSAGE has to be
+   * unrepresentable in the contract, not merely discouraged in the producer.
+   * Each string below is a shape a real 5xx message takes — prose, a path, a
+   * query string, an address, a title — and every one needs a character
+   * `error.type`'s identifier shape (or the artifact attributes' uppercase
+   * token shape) forbids.
+   */
+  it("makes an error message and a free-text artifact label unrepresentable", () => {
+    for (const payload of [
+      spanPayload({
+        [TelemetryAttribute.ErrorType]: "Invalid document id supplied",
+      }),
+      spanPayload({
+        [TelemetryAttribute.ErrorType]: "ENOENT:/srv/app/secrets.json",
+      }),
+      spanPayload({
+        [TelemetryAttribute.ErrorType]: "BadRequest?token=sk_live_abc",
+      }),
+      spanPayload({
+        [TelemetryAttribute.ErrorType]: "Rejected@example.com",
+      }),
+      spanPayload({ [TelemetryAttribute.ArtifactType]: "My Draft PRD" }),
+      spanPayload({ [TelemetryAttribute.ArtifactStatus]: "in-review" }),
+      spanPayload({ [TelemetryAttribute.AppErrorSource]: "database" }),
+    ]) {
+      expect(SpanTelemetrySchema.safeParse(payload).success).toBe(false);
+    }
+  });
+
+  it("accepts the authenticated user id as a UUID", () => {
+    expect(
+      SpanTelemetrySchema.parse(
+        spanPayload({
+          [TelemetryAttribute.UserId]: "0190f6a1-5b2c-7d3e-8f40-6a7b8c9d0e1f",
+        })
+      )
+    ).toMatchObject({
+      [TelemetryAttribute.UserId]: "0190f6a1-5b2c-7d3e-8f40-6a7b8c9d0e1f",
+    });
+  });
+
+  /**
+   * ISS-8748: the span rides the keyless lane, so a personal identifier has to
+   * be unrepresentable in the contract rather than merely discouraged in the
+   * producer. Each string below is what a caller reaches for when it wants to
+   * name a person — an address, a display name, the Clerk id, a bare database
+   * label — and the UUID shape is what refuses all of them.
+   */
+  it("makes an email, a name, and a Clerk id unrepresentable as the user id", () => {
+    for (const value of [
+      "owner@example.com",
+      "Ada Lovelace",
+      "user_2abcDEFghiJKLmnoPQRstu",
+      "user-1",
+      "",
+      "019c24db-a261-738f-8eff-ea275fb2747",
+    ]) {
+      expect(
+        SpanTelemetrySchema.safeParse(
+          spanPayload({ [TelemetryAttribute.UserId]: value })
+        ).success,
+        value
+      ).toBe(false);
+    }
+  });
+
+  it("accepts the caller-attested Desktop install and build", () => {
+    expect(
+      SpanTelemetrySchema.parse(
+        spanPayload({
+          [TelemetryAttribute.AppInstallationId]:
+            "0190f6a1-5b2c-7d3e-8f40-6a7b8c9d0e1f",
+          [TelemetryAttribute.AppClientVersion]: "1.24.3",
+        })
+      )
+    ).toMatchObject({
+      [TelemetryAttribute.AppInstallationId]:
+        "0190f6a1-5b2c-7d3e-8f40-6a7b8c9d0e1f",
+      [TelemetryAttribute.AppClientVersion]: "1.24.3",
+    });
+  });
+
+  it("bounds the attested client build and rejects control characters", () => {
+    for (const value of [
+      "",
+      "1.24.3\n",
+      "a".repeat(TelemetryTextMaxLength.AppClientVersion + 1),
+    ]) {
+      expect(
+        SpanTelemetrySchema.safeParse(
+          spanPayload({ [TelemetryAttribute.AppClientVersion]: value })
+        ).success,
+        value
+      ).toBe(false);
+    }
+  });
+
   it("rejects deprecated experimental code aliases", () => {
     for (const attribute of Object.values(DeprecatedCodeTelemetryAttributes)) {
       expect(
@@ -155,6 +278,18 @@ describe("SpanEnvelopeSchema", () => {
     }
   });
 
+  /**
+   * Absolute literals, deliberately not derived. Every boundary fixture below
+   * re-derives its length from these constants, so widening a bound moves both
+   * sides of the comparison at once and leaves those cases green; this is the
+   * only case that reddens.
+   */
+  it("pins the envelope bounds to their contract values", () => {
+    expect(MAX_SPAN_NAME_LENGTH).toBe(256);
+    expect(MAX_SPAN_STATUS_MESSAGE_LENGTH).toBe(1024);
+    expect(MAX_SPAN_LINKS).toBe(32);
+  });
+
   it("accepts max-boundary name and status message text", () => {
     expect(
       SpanEnvelopeSchema.safeParse(
@@ -183,14 +318,17 @@ describe("SpanEnvelopeSchema", () => {
     }
   });
 
-  it("rejects oversized links, malformed link ids, link attributes, and unknown link keys", () => {
-    const links = Array.from({ length: 33 }, (_, index) => ({
-      trace_id: `${index.toString(16).padStart(32, "0")}`,
-      span_id: `${index.toString(16).padStart(16, "0")}`,
-    }));
+  it("accepts links at exactly the cap", () => {
+    expect(
+      SpanEnvelopeSchema.safeParse(
+        spanEnvelopePayload({ links: spanLinks(MAX_SPAN_LINKS) })
+      ).success
+    ).toBe(true);
+  });
 
+  it("rejects oversized links, malformed link ids, link attributes, and unknown link keys", () => {
     for (const payload of [
-      spanEnvelopePayload({ links }),
+      spanEnvelopePayload({ links: spanLinks(MAX_SPAN_LINKS + 1) }),
       spanEnvelopePayload({
         links: [{ trace_id: "bad", span_id: "0123456789abcdef" }],
       }),
@@ -241,3 +379,50 @@ describe("SpanEnvelopeSchema", () => {
     }
   });
 });
+
+/**
+ * ISS-7227: the five per-schema groups must together advertise exactly what the
+ * span schema admits, the same exact-set parity `SyncTelemetryAttributes`
+ * carries (`sync.test.ts`).
+ *
+ * The existing semconv guards only require an attribute to sit in AT LEAST ONE
+ * group, so an attribute already grouped under another schema — `sync.batch_id`
+ * is in `SyncTelemetryAttributes` — could be added to `SpanTelemetrySchema` and
+ * left out of `ApiSpanTelemetryAttributes` with nothing red. That is drift a
+ * consumer of the published inventory reads as "a cl-api request span cannot
+ * carry this", while the emitter stamps it.
+ */
+describe("span attribute group inventory", () => {
+  it("advertises exactly the key set SpanTelemetrySchema admits", () => {
+    expect(
+      new Set<string>([
+        ...HttpSpanTelemetryAttributes,
+        ...CompatibilitySpanTelemetryAttributes,
+        ...CodeSpanTelemetryAttributes,
+        ...ErrorSpanTelemetryAttributes,
+        ...ApiSpanTelemetryAttributes,
+      ])
+    ).toEqual(new Set(Object.keys(SpanTelemetrySchema.shape)));
+  });
+
+  it("names the sync join key, so the published inventory is not a stale answer", () => {
+    // A literal, not `TelemetryAttribute.SyncBatchId`: a deleted enum member
+    // evaluates to `undefined` on BOTH sides of a reference-based comparison,
+    // which is the assertion shape that cannot fail.
+    expect(new Set<string>(ApiSpanTelemetryAttributes)).toContain(
+      "sync.batch_id"
+    );
+  });
+});
+
+/**
+ * Link ids are numbered from 1 so no generated id collides with the all-zero
+ * trace or span id, which the schema rejects on its own — a cap fixture built
+ * from index 0 would be refused for the wrong reason.
+ */
+function spanLinks(count: number) {
+  return Array.from({ length: count }, (_, index) => ({
+    trace_id: (index + 1).toString(16).padStart(32, "0"),
+    span_id: (index + 1).toString(16).padStart(16, "0"),
+  }));
+}

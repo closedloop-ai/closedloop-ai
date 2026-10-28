@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import type {
   SessionMarker,
   SyncedAgentSession,
@@ -81,7 +81,7 @@ test("FEA-2060: created and workspace PR links produce markers while referenced 
     }
     await seedPullRequestArtifact(db, {
       id: "pr-artifact",
-      repoFullName: "closedloop-ai/example-repo",
+      repoFullName: "closedloop-ai/closedloop-ai",
       prNumber: 2060,
       title: "Capture artifact timeline markers",
       observedAt: "2026-06-22T10:02:00.000Z",
@@ -169,7 +169,7 @@ test("FEA-2060: timestamp fallbacks and malformed rows follow the marker contrac
     });
     await seedPullRequestArtifact(db, {
       id: "fallback-pr",
-      repoFullName: "closedloop-ai/example-repo",
+      repoFullName: "closedloop-ai/closedloop-ai",
       prNumber: 2061,
       title: null,
       observedAt: "2026-06-22T10:07:00.000Z",
@@ -177,7 +177,7 @@ test("FEA-2060: timestamp fallbacks and malformed rows follow the marker contrac
     });
     await seedPullRequestArtifact(db, {
       id: "last-seen-pr",
-      repoFullName: "closedloop-ai/example-repo",
+      repoFullName: "closedloop-ai/closedloop-ai",
       prNumber: 2062,
       title: null,
       observedAt: null,
@@ -825,13 +825,16 @@ test("FEA-2060: runtime store-op backfill summaries invalidate marker projection
   assert.deepEqual(unchanged.sentMessages, []);
 });
 
-// FEA-2986: marker `label` is sourced from free text (commit/PR titles, tool
-// names, event summaries) with no upstream bound, but the cloud caps it at
-// `sessionMarkerSchema.label.max(SESSION_TRACE_SOURCE_LIMITS.markerLabel)`. An
-// over-long label fails zod (`session_invalid`) and — since the batch is parsed
-// as one unit — rejects up to 200 sessions. Both the artifact-marker merge and
-// the trace-marker builder must clamp before the payload leaves the desktop.
-test("FEA-2986: oversized artifact- and trace-marker labels are clamped to the cloud cap", async () => {
+/* FEA-2986: marker `label` is free text (commit/PR titles, tool names, event
+   summaries) with no upstream bound, so the artifact-marker merge and the
+   trace-marker builder both clamp to `SESSION_TRACE_SOURCE_LIMITS.markerLabel`
+   before the payload leaves. ISS-8051 removed the cloud's mirroring `.max()`;
+   review of that change restored a cloud bound in the non-rejecting shape
+   (`truncatedMarkerLabelSchema` truncates to the same limit), so this clamp is
+   what keeps the two sides agreeing rather than the only bound that exists. The
+   cloud `markers` cap still bounds the COUNT only, and `aggregatePayloadBytes`
+   still covers only trace sources. */
+test("FEA-2986: oversized artifact- and trace-marker labels are clamped to the producer cap", async () => {
   await withTestDb(async (db) => {
     const longTitle = `x${"y".repeat(600)}`; // 601 chars, well past the 300 cap
     const longSummary = `error: ${"z".repeat(600)}`; // trace fail-marker label
@@ -913,7 +916,7 @@ test("FEA-3329: PR/commit markers use pull_requests.opened_at + committed_at, no
     const sharedIngestNow = "2026-06-22T10:09:00.000Z";
     await seedPullRequestArtifact(db, {
       id: "pr-early-artifact",
-      repoFullName: "closedloop-ai/example-repo",
+      repoFullName: "closedloop-ai/closedloop-ai",
       prNumber: 3329,
       title: "Early PR",
       observedAt: sharedIngestNow,
@@ -921,7 +924,7 @@ test("FEA-3329: PR/commit markers use pull_requests.opened_at + committed_at, no
     });
     await seedPullRequestArtifact(db, {
       id: "pr-late-artifact",
-      repoFullName: "closedloop-ai/example-repo",
+      repoFullName: "closedloop-ai/closedloop-ai",
       prNumber: 3330,
       title: "Late PR",
       observedAt: sharedIngestNow,
@@ -929,13 +932,13 @@ test("FEA-3329: PR/commit markers use pull_requests.opened_at + committed_at, no
     });
     await seedPullRequestLifecycle(db, {
       id: "pr-early-lifecycle",
-      repoFullName: "closedloop-ai/example-repo",
+      repoFullName: "closedloop-ai/closedloop-ai",
       prNumber: 3329,
       openedAt: "2026-06-22T10:02:00.000Z",
     });
     await seedPullRequestLifecycle(db, {
       id: "pr-late-lifecycle",
-      repoFullName: "closedloop-ai/example-repo",
+      repoFullName: "closedloop-ai/closedloop-ai",
       prNumber: 3330,
       openedAt: "2026-06-22T10:07:00.000Z",
     });
@@ -1015,7 +1018,7 @@ test("FEA-3329: an un-enriched PR (null opened_at) falls back to sessionEndMs", 
     await seedTimelineEvents(db, "unenriched-pr");
     await seedPullRequestArtifact(db, {
       id: "unenriched-pr-artifact",
-      repoFullName: "closedloop-ai/example-repo",
+      repoFullName: "closedloop-ai/closedloop-ai",
       prNumber: 3331,
       title: "Un-enriched PR",
       observedAt: "2026-06-22T10:03:00.000Z",
@@ -1024,7 +1027,7 @@ test("FEA-3329: an un-enriched PR (null opened_at) falls back to sessionEndMs", 
     // pull_requests row exists but opened_at is null (enrichment not yet run).
     await seedPullRequestLifecycle(db, {
       id: "unenriched-pr-lifecycle",
-      repoFullName: "closedloop-ai/example-repo",
+      repoFullName: "closedloop-ai/closedloop-ai",
       prNumber: 3331,
       openedAt: null,
     });
@@ -1177,9 +1180,9 @@ async function seedCommitArtifact(
   await db.run(
     `INSERT INTO artifacts
        (id, identity_key, kind, repo_full_name, sha, title, committed_at, observed_at, created_at, last_seen_at)
-     VALUES ($1, $2, 'commit', 'closedloop-ai/example-repo', $3, $4, $5, $6, $7, $8)`,
+     VALUES ($1, $2, 'commit', 'closedloop-ai/closedloop-ai', $3, $4, $5, $6, $7, $8)`,
     input.id,
-    `commit:closedloop-ai/example-repo:${input.sha}`,
+    `commit:closedloop-ai/closedloop-ai:${input.sha}`,
     input.sha,
     input.title,
     input.committedAt,
@@ -1216,8 +1219,8 @@ async function seedPullRequestArtifact(
   );
 }
 
-// FEA-3329: seed the `pull_requests` lifecycle row the enrichment runner writes,
-// carrying the AUTHORITATIVE `opened_at` the PR marker prefers. Distinct from the
+// FEA-3329: seed a `pull_requests` row carrying the `opened_at` the PR marker
+// prefers. Distinct from the
 // artifact row (kind='pull_request') seeded by seedPullRequestArtifact.
 async function seedPullRequestLifecycle(
   db: TestDb,
@@ -1230,8 +1233,8 @@ async function seedPullRequestLifecycle(
 ): Promise<void> {
   await db.run(
     `INSERT INTO pull_requests
-       (id, pr_url, pr_number, repo_full_name, state, opened_at, observed_at, created_at)
-     VALUES ($1, $2, $3, $4, 'OPEN', $5, $6, $6)`,
+       (id, pr_url, pr_number, repo_full_name, opened_at, observed_at, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $6)`,
     input.id,
     `https://github.com/${input.repoFullName}/pull/${input.prNumber}`,
     input.prNumber,
@@ -1319,7 +1322,7 @@ test("FEA-3594: un-enriched PR (null pr_opened_at) uses sessionEndMs, not link_o
     await seedTimelineEvents(db, "fea3594-unenriched-pr");
     await seedPullRequestArtifact(db, {
       id: "fea3594-pr-artifact",
-      repoFullName: "closedloop-ai/example-repo",
+      repoFullName: "closedloop-ai/closedloop-ai",
       prNumber: 3594,
       title: "Un-enriched PR",
       observedAt: "2026-06-22T10:03:00.000Z",

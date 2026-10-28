@@ -17,7 +17,7 @@ import {
  *
  * Returns the merged, newest-first, cursor-paginated timeline: persisted
  * `ArtifactActivityEvent` rows fused with on-read projections (versions,
- * PRODUCES derivations, loops, evaluations), each with a normalized actor.
+ * PRODUCES derivations, evaluations), each with a normalized actor.
  *
  * Org-scoped: the id is resolved within the caller's organization and the
  * artifact's existence is verified before any feed read, and every underlying

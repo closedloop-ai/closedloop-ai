@@ -1,12 +1,13 @@
 import { accessSync, constants as fsConstants, realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { resetMcpDetectionCache } from "../../server/operations/mcp-detection.js";
-import { resetResolvedClaudePath } from "../../server/operations/symphony-loop.js";
-import type {
-  BinaryPathPatch,
-  CliBinaryTool,
-} from "../ipc/binary-paths-ipc.js";
+import { resetResolvedClaudePath } from "../../server/operations/binary-path-overrides.js";
+import {
+  type CliBinaryTool,
+  CliBinaryToolKeyStatus,
+  classifyCliBinaryToolKey,
+} from "../../shared/cli-binary-tools.js";
+import type { BinaryPathPatch } from "../ipc/binary-paths-ipc.js";
 import type { SettingsStore } from "./settings-store.js";
 
 /** Leading `~` in a user-entered override path, expanded to the home directory. */
@@ -19,7 +20,7 @@ const LEADING_TILDE = /^~/;
  * Each non-null value is `~`-expanded, required to be absolute, resolved through
  * `realpath` to its canonical target, and checked for the execute bit BEFORE it
  * is persisted — so a later swap of an intermediate symlink cannot redirect
- * future spawns, and a compromised renderer cannot point claude/gh/codex at a
+ * future spawns, and a compromised renderer cannot point current tools at a
  * non-executable or unintended path. Throws (rejecting the whole patch) on the
  * first invalid entry.
  */
@@ -27,20 +28,29 @@ export function applyBinaryPathPatchAndInvalidateCaches(
   settingsStore: SettingsStore,
   patch: BinaryPathPatch
 ): Partial<Record<CliBinaryTool, string>> {
-  const expandedPatch: BinaryPathPatch = {};
+  const expandedPatch: Record<string, string | null> = {};
   for (const [key, value] of Object.entries(patch)) {
-    const typedKey = key as CliBinaryTool;
-    if (value === null || value === undefined) {
-      expandedPatch[typedKey] = value;
+    const keyStatus = classifyCliBinaryToolKey(key);
+    if (keyStatus === CliBinaryToolKeyStatus.Unknown) {
+      throw new Error(`Unknown binary path key: ${key}`);
+    }
+    if (keyStatus === CliBinaryToolKeyStatus.Legacy) {
+      if (value === null) {
+        expandedPatch[key] = null;
+      }
       continue;
     }
-    expandedPatch[typedKey] = resolveExecutableOverride(key, value);
+    if (value === undefined) {
+      continue;
+    }
+    if (value === null) {
+      expandedPatch[key] = value;
+      continue;
+    }
+    expandedPatch[key] = resolveExecutableOverride(key, value);
   }
-  const updated = settingsStore.patchBinaryPaths(
-    expandedPatch as Record<string, string | null>
-  );
+  const updated = settingsStore.patchBinaryPaths(expandedPatch);
   resetResolvedClaudePath();
-  resetMcpDetectionCache();
   return updated;
 }
 

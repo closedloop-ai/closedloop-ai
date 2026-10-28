@@ -53,9 +53,9 @@ function SidebarCollapsibleSectionDemo(
 }
 
 const meta = {
-  title: "Design System/Navigation & Shell/Sidebar Collapsible Section",
+  title: "Composites v1.0/Navigation/Sidebar Collapsible Section",
   component: SidebarCollapsibleSectionDemo,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: {
     layout: "centered",
   },

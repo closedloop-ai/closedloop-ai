@@ -16,7 +16,7 @@ type SubagentItem = Extract<TurnItem, { type: "subagent" }>;
  * event count; the underlying transcript stays behind the disclosure (`open`)
  * so the parent trace reads as a single line per sub-agent (Claude Code / Codex
  * style) until the user asks for detail. Extracted from session-trace.tsx to
- * shrink that grandfathered file (FEA-4172 code-review).
+ * shrink that file rather than grow it (FEA-4172 code-review).
  *
  * The meta row carries no `tokens` part: there is no per-sub-agent token source
  * (the cost points carry only `{tMs, costUsd}`, and `SyncedAgentSessionAgent`

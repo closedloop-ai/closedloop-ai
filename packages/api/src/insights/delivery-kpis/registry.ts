@@ -1,8 +1,8 @@
 // FEA-2952 / PLN-1323 — the declarative KPI registry (THE modifiability layer).
 //
 // Each delivery KPI is expressed as DATA, not code: which population it selects,
-// which per-row measure it takes, how it aggregates, an optional post-aggregate
-// transform, rounding, whether to restrict to enriched PRs, and its display
+// which per-row measure it takes, how it aggregates, rounding, whether to
+// restrict to enriched PRs, and its display
 // metadata (label / help / format). `computeDeliveryKpis` (compute.ts) walks this
 // registry uniformly, so changing a metric's DEFINITION never touches the engine
 // — it's a one-line data edit here.
@@ -14,7 +14,14 @@
 
 import type { KpiFormat as KpiFormatType } from "../../types/insights.ts";
 import { KpiFormat } from "../../types/insights.ts";
-import { LOC_PER_DOLLAR_LABEL } from "../../utils/loc-per-dollar.ts";
+import {
+  MERGED_LOC_LABEL,
+  TOKENS_PER_LOC_LABEL,
+} from "../../types/insights-loc-terminology-flag.ts";
+import {
+  LOC_METRIC_DEFINITION,
+  LocMetricDefinitionId,
+} from "../../types/loc-metric-definitions.ts";
 import type { AggregationKey } from "./aggregations.ts";
 import type {
   BranchMeasureKey,
@@ -31,10 +38,10 @@ import type {
 export const DeliveryKpiKey = {
   MergeRate: "mergeRate",
   PrSize: "prSize",
-  Kloc: "kloc",
+  Loc: "loc",
   Cost: "cost",
   CostPerMergedPr: "costPerMergedPr",
-  TokensPerKloc: "tokensPerKloc",
+  TokensPerLoc: "tokensPerLoc",
   TimeToMerge: "timeToMerge",
   ActivePrCount: "activePrCount",
   MergedLocPerDollar: "mergedLocPerDollar",
@@ -47,17 +54,6 @@ export const DeliveryKpiKey = {
 } as const;
 export type DeliveryKpiKey =
   (typeof DeliveryKpiKey)[keyof typeof DeliveryKpiKey];
-
-/**
- * Post-aggregate transforms, referenced by key from a KPI definition. Kept as a
- * small named set (rather than inline closures) so definitions stay pure data and
- * a transform's meaning is discoverable in one place.
- */
-export const KpiTransform = {
-  /** Divide the aggregate by 1000 (lines → KLOC). */
-  PerThousand: "perThousand",
-} as const;
-export type KpiTransform = (typeof KpiTransform)[keyof typeof KpiTransform];
 
 /**
  * A "derived" KPI is computed from OTHER already-computed KPI values rather than
@@ -78,7 +74,6 @@ type BaseKpiDefinition = {
   help: string;
   format: KpiFormatType;
   aggregate: AggregationKey;
-  transform?: KpiTransform;
   /** Decimal places for the final value. Omit for no rounding. */
   round?: number;
   /**
@@ -113,10 +108,7 @@ export type SessionKpiDefinition = BaseKpiDefinition & {
 };
 
 /** A KPI derived from other computed KPI values (a ratio of two of them). */
-export type DerivedKpiDefinition = Omit<
-  BaseKpiDefinition,
-  "aggregate" | "transform"
-> & {
+export type DerivedKpiDefinition = Omit<BaseKpiDefinition, "aggregate"> & {
   source: "derived";
   derived: DerivedSpec;
 };
@@ -126,15 +118,6 @@ export type DeliveryKpiDefinition =
   | BranchKpiDefinition
   | SessionKpiDefinition
   | DerivedKpiDefinition;
-
-/**
- * ISS-4667: multiplies a KLOC-denominated numerator back into raw LINES. Lets
- * `MergedLocPerDollar` reuse the registered `Kloc` base KPI (whose
- * `PerThousand` transform already divided lines by 1000) without adding a
- * duplicate lines-summing base entry — the derived ratio is then exactly
- * `gross merged lines ÷ cost`.
- */
-const LINES_PER_KLOC_SCALE = 1000;
 
 /**
  * THE registry — one entry per delivery KPI, each a Phase-0 canonical default.
@@ -251,33 +234,26 @@ export const DELIVERY_KPI_REGISTRY: readonly DeliveryKpiDefinition[] = [
     help: "Median PR-open → merge latency.",
     format: KpiFormat.Duration,
   },
-  // KLOC = SUM gross lines over MERGED PRs, divided by 1000, rounded to 1 dp.
+  // Merged LOC = SUM gross lines over MERGED PRs.
   //
-  // DECIDED (FEA-2952): intentionally NO onlyEnriched here (unlike PrSize above).
-  // KLOC is a SUM, so an un-enriched merged PR (null additions/deletions →
-  // linesGross 0) folds in as 0 rather than skewing the result — this matches the
-  // historical dashboard behavior (FEA-2159: un-enriched PRs count as 0 lines in
-  // the total). PrSize needs onlyEnriched because a MEDIAN can't 0-pad without
-  // being dragged down; a SUM can. Consequence to accept: while enrichment lags,
-  // KLOC (and tokensPerKloc, which divides by it) undercounts the true landed
-  // lines — a known, bounded understatement, not a bug. Revisit if the undercount
-  // ever needs an "enrichment N% complete" signal.
+  // The key is `loc`, not `kloc`: the wire key `kloc` means THOUSANDS of lines
+  // to the shipped producer and to every client already reading it, and this
+  // entry carries raw lines.
   //
-  // MODIFIABILITY (KLOC): the flagship example of the registry's whole point. To
+  // MODIFIABILITY: the flagship example of the registry's whole point. To
   // count all lines a session generated in its branch instead of only lines that
   // landed in merged PRs, change three fields on this one entry — no engine
   // change: `source: "branch"`, `population: "sessionBranches"`,
   // `measure: "branchLinesGross"`. (All three already exist as primitives.)
   {
-    key: DeliveryKpiKey.Kloc,
+    key: DeliveryKpiKey.Loc,
     source: "pr",
     population: "mergedPrs", // ← change to "sessionBranches" to count all lines generated in a branch from a session
     measure: "linesGross",
     aggregate: "sum",
-    transform: KpiTransform.PerThousand,
-    round: 1,
-    label: "KLOC merged",
-    help: "Thousands of gross lines landed in merged PRs.",
+    round: 0,
+    label: MERGED_LOC_LABEL,
+    help: "Gross lines landed in merged PRs.",
     format: KpiFormat.Number,
   },
   // --- Cost / usage totals ---
@@ -305,7 +281,7 @@ export const DELIVERY_KPI_REGISTRY: readonly DeliveryKpiDefinition[] = [
     format: KpiFormat.Currency,
   },
   // Session tokens total = SUM tokens over sessions. Internal — numerator for
-  // tokens-per-KLOC (tokens are surfaced elsewhere as their own tile).
+  // tokens-per-LOC (tokens are surfaced elsewhere as their own tile).
   {
     key: DeliveryKpiKey.SessionTokensTotal,
     source: "session",
@@ -357,44 +333,40 @@ export const DELIVERY_KPI_REGISTRY: readonly DeliveryKpiDefinition[] = [
   // Merged LOC per dollar = merged gross LINES ÷ Cost (ISS-4667).
   //
   // UNIT (ISS-4667): the metric is LOC/$ — raw lines per dollar, NO
-  // divide-by-1000 and never inverted. The KLOC unit floored a real session
-  // (4,004 lines / $4,574.72) to a misleading `0.00`. The numerator stays the
-  // registered `Kloc` base KPI (same population, same measure — nothing else in
-  // the registry needs a second lines-summing base entry) and the derived
-  // `scale: 1000` multiplies its thousands back into lines, so the ratio is
-  // exactly `gross merged lines ÷ cost`.
+  // divide-by-1000 and never inverted. The thousands unit floored a real session
+  // (4,004 lines / $4,574.72) to a misleading `0.00`. The numerator reuses the
+  // `Loc` base KPI rather than adding a second lines-summing entry.
   //
   // Derived (NOT computed from a display-rounded base): the engine divides the
-  // RAW, un-rounded base value, so a sub-100-line window (whose KLOC rounds to
-  // 0.0 for display) still divides honestly. Powers the Sessions "LOC / $"
-  // delivery card (apps/api/lib/agent-session-delivery-metrics.ts).
+  // RAW, un-rounded base value, so a window small enough to round to zero for
+  // display still divides honestly. Powers the Sessions "LOC / $" delivery card
+  // (apps/api/lib/agent-session-delivery-metrics.ts).
   {
     key: DeliveryKpiKey.MergedLocPerDollar,
     source: "derived",
     derived: {
-      numeratorKpi: DeliveryKpiKey.Kloc,
+      numeratorKpi: DeliveryKpiKey.Loc,
       denominatorKpi: DeliveryKpiKey.Cost,
-      scale: LINES_PER_KLOC_SCALE,
     },
-    label: LOC_PER_DOLLAR_LABEL,
+    label: LOC_METRIC_DEFINITION[LocMetricDefinitionId.SessionMergedLoc].label,
     help: "Gross lines landed in merged PRs per dollar of agent spend. Higher is better.",
     format: KpiFormat.Number,
   },
-  // Tokens per KLOC = (sum tokens) ÷ KLOC.
+  // Tokens per LOC = (sum tokens) ÷ merged lines.
   //
-  // DECIDED (FEA-2952): tokens-per-thousand-landed-lines — numerator is raw
-  // summed tokens, denominator is KLOC (already /1000). Revisit as needed (e.g.
-  // if tokens-per-merged-PR is ever wanted instead).
+  // DECIDED (FEA-2952), rescaled by ISS-8184 ruling 5: tokens per landed LINE —
+  // numerator is raw summed tokens, denominator the raw-line base. Revisit as
+  // needed (e.g. if tokens-per-merged-PR is ever wanted instead).
   {
-    key: DeliveryKpiKey.TokensPerKloc,
+    key: DeliveryKpiKey.TokensPerLoc,
     source: "derived",
     derived: {
       numeratorKpi: DeliveryKpiKey.SessionTokensTotal,
-      denominatorKpi: DeliveryKpiKey.Kloc,
+      denominatorKpi: DeliveryKpiKey.Loc,
     },
     round: 0,
-    label: "Tokens per KLOC",
-    help: "Total tokens divided by thousands of lines landed.",
+    label: TOKENS_PER_LOC_LABEL,
+    help: "Total tokens divided by gross lines landed.",
     format: KpiFormat.Number,
   },
 ];

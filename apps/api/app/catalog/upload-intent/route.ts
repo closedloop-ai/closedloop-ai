@@ -1,6 +1,6 @@
 import "server-only";
 
-import { isOrgAdmin } from "@/lib/auth/org-admin";
+import { requireOrgAdmin } from "@/lib/auth/org-admin";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
   errorResponse,
@@ -29,9 +29,9 @@ type UploadIntentResponse = { presignedUrl: string; s3Key: string };
 
 export const POST = withAnyAuth<UploadIntentResponse, "/catalog/upload-intent">(
   async ({ user, clerkOrgId, clerkUserId }, request) => {
-    const adminCheck = await isOrgAdmin(clerkOrgId, clerkUserId);
-    if (!adminCheck) {
-      return forbiddenResponse();
+    const denial = await requireOrgAdmin(clerkOrgId, clerkUserId);
+    if (denial) {
+      return denial;
     }
 
     const { body, errorResponse: parseError } = await parseBody(

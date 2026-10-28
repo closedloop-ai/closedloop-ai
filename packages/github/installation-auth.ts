@@ -3,6 +3,7 @@ import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
 import { boundedFetch } from "./bounded-fetch";
 import { keys } from "./keys";
+import type { UserTokenOctokitOptions } from "./user-token-auth";
 
 type InstallationTokenCacheEntry = {
   token: string;
@@ -21,13 +22,17 @@ let appAuth: ReturnType<typeof createAppAuth> | null = null;
 
 /**
  * Create an installation-authenticated Octokit for app-owned GitHub reads and
- * sync operations. User-authored comment mutations must keep using user-token
- * helpers from `comment-user-token`.
+ * sync operations. A user-authored write must use a user Octokit from
+ * `getUserTokenOctokit` (`./user-token-auth`), never this client.
  */
 export async function getInstallationOctokit(
-  installationId: string
+  installationId: string,
+  options?: UserTokenOctokitOptions
 ): Promise<Octokit> {
   const token = await createInstallationToken(installationId);
+  if (options?.fetch) {
+    return new Octokit({ auth: token, request: { fetch: options.fetch } });
+  }
   pruneInstallationOctokitCache(token);
   const cached = installationOctokitCache.get(installationId);
   if (cached?.token === token) {
@@ -41,15 +46,6 @@ export async function getInstallationOctokit(
   installationOctokitCache.set(installationId, { token, octokit });
   pruneOldestCacheEntries(installationOctokitCache);
   return octokit;
-}
-
-/**
- * Generate a short-lived installation token for app-owned GitHub operations.
- */
-export function getInstallationAccessToken(
-  installationId: string
-): Promise<string> {
-  return createInstallationToken(installationId);
 }
 
 async function createInstallationToken(

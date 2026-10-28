@@ -7,18 +7,28 @@
  * failed. Deriving both screens from this single fixture makes that structural
  * rather than a promise, and the prototypes' tests assert it.
  *
- * Field names and vocabulary mirror the real signals so the production build is
- * a straight port:
+ * Field names and vocabulary mirror the real signals where a real signal
+ * exists, and one of them no longer does:
  *   - `endsWithError` -> `AgentSession.endsWithError` (Boolean?, nullable)
- *   - `state`         -> `AgentSessionState` (FEA-4287 split Error/Abandoned
- *                        out of Blocked so terminal failure is distinguishable)
  *   - `throttleSource`-> `SessionTraceThrottleSourceType`
+ *   - `state`         -> NOTHING. Prototype-only, with no producer in the API.
+ *                        The lifecycle set is `active`/`inactive`/`error`
+ *                        (`packages/api/src/types/session-status.ts`) and has
+ *                        never had an `ABANDONED` member, and production's
+ *                        `behavioralCauseOf`
+ *                        (`apps/api/app/insights/session-analytics-classify.ts`)
+ *                        reads no terminal state at all. ISS-4654 retired the
+ *                        abandonment signal this field presumes, so the
+ *                        `Abandoned` slice these screens draw is NOT
+ *                        reproducible in the production port. Whether to
+ *                        constrain the fixture or restore a signal is a
+ *                        product/design call, not a documentation one.
  * The prototype sandbox cannot import `@repo/api` (dependency boundary), so the
  * const objects below are mirrors, not a second source of truth. The production
  * build imports the real ones from `packages/api/src/types/agent-session.ts`.
  */
 
-/** Mirror of `SessionTraceThrottleSourceType` (agent-session.ts:1366). */
+/** Mirror of `SessionTraceThrottleSourceType` (agent-session.ts). */
 export const ThrottleSource = {
   ProviderRateLimit: "provider_rate_limit",
   UsageLimit: "usage_limit",
@@ -27,7 +37,7 @@ export const ThrottleSource = {
 export type ThrottleSource =
   (typeof ThrottleSource)[keyof typeof ThrottleSource];
 
-/** Mirror of the terminal members of `AgentSessionState` (agent-session.ts:366). */
+/** Terminal-status vocabulary for these fixtures; no live production type mirrors it. */
 export const SessionState = {
   Completed: "COMPLETED",
   Error: "ERROR",
@@ -36,7 +46,7 @@ export const SessionState = {
 export type SessionState = (typeof SessionState)[keyof typeof SessionState];
 
 /**
- * Mirror of `SpendOutcome` (`@closedloop-ai/loops-api/insights`) and its labels, the
+ * Mirror of `SpendOutcome` (`@repo/loops-api/insights`) and its labels, the
  * vocabulary PR #4282 / ISS-4463 landed. Both prototypes key failure off this
  * and nothing else, so neither invents a second definition of "failed".
  *
@@ -99,9 +109,11 @@ export const THROTTLE_SOURCE_LABELS: Record<ThrottleSource, string> = {
 };
 
 /**
- * Behavioral causes. Not a new taxonomy over the wire: these are read off the
- * terminal `AgentSessionState` a session landed in when no throttle source was
- * recorded, so the production build derives them rather than storing them.
+ * Behavioral causes. Not a new taxonomy over the wire: both builds DERIVE them
+ * rather than storing them. They diverge on the input — this fixture reads its
+ * own `state` when no throttle source was recorded, while production has no
+ * such signal and so only ever reports `DeadEnded`. See the `state` note in the
+ * file header.
  */
 export const BehavioralCause = {
   Abandoned: "abandoned",
@@ -133,8 +145,16 @@ export type MockSession = {
   throttleSource: ThrottleSource | null;
   model: string;
   costUsd: number;
-  /** Total tokens billed for the session. */
+  /** Every token the provider billed for, all four classes. */
   tokens: number;
+  /**
+   * First-pass tokens: everything except replayed prompt-cache reads. Re-reading
+   * one cached prefix ten times is one job, not ten, so this is the basis a
+   * job-size number is taken over, and `tokens` is the basis a per-token RATE is
+   * taken over. Splitting them is what stops a cache-heavy harness from moving
+   * both halves of a right-sizing verdict at once (ISS-5189).
+   */
+  firstPassTokens: number;
 };
 
 export const ENGINEERS: readonly string[] = [
@@ -147,8 +167,8 @@ export const ENGINEERS: readonly string[] = [
 ];
 
 export const REPOS: readonly string[] = [
-  "example-repo",
-  "relay-host",
+  "closedloop-ai",
+  "collector-host",
   "closedloop-docs",
   "harness-cli",
 ];
@@ -266,7 +286,10 @@ function buildTrialModelSession(
     throttleSource: null,
     model: TRIAL_MODEL,
     costUsd: estimateCost(TRIAL_MODEL, wallClockMinutes, random),
-    tokens: Math.round(wallClockMinutes * (700 + random() * 900)),
+    ...tokenBases(
+      TRIAL_MODEL,
+      Math.round(wallClockMinutes * (700 + random() * 900))
+    ),
   };
 }
 
@@ -318,8 +341,9 @@ function buildSession(
     throttleSource,
     model,
     costUsd: estimateCost(model, wallClockMinutes, random),
-    tokens: Math.round(
-      wallClockMinutes * (900 + random() * 2600) * tokenScale(model)
+    ...tokenBases(
+      model,
+      Math.round(wallClockMinutes * (900 + random() * 2600) * tokenScale(model))
     ),
   };
 }
@@ -338,6 +362,38 @@ function tokenScale(model: string): number {
 const MODEL_TOKEN_SCALE: Record<string, number> = {
   "claude-opus-4.6": 0.42,
 };
+
+/**
+ * Share of a model's billed tokens that are REPLAYED prompt-cache reads, which
+ * is a property of the harness driving it rather than of the model. Claude Code
+ * resends the same prefix every turn, so nearly all of its volume lands there;
+ * the gpt harnesses replay far less.
+ *
+ * The fixture has to carry that spread or the two token bases are the same
+ * numbers twice and the right-sizing table demonstrates a metric the production
+ * screen no longer computes.
+ */
+const MODEL_CACHE_READ_SHARE: Record<string, number> = {
+  "claude-opus-4.6": 0.72,
+  "claude-sonnet-4.6": 0.64,
+  "claude-haiku-4.2": 0.58,
+  "gpt-5.4": 0.21,
+  "gpt-5.4-mini": 0.18,
+};
+const DEFAULT_CACHE_READ_SHARE = 0.3;
+
+/** Both bases for one session, so no construction site can set only one. */
+function tokenBases(
+  model: string,
+  billedTokens: number
+): Pick<MockSession, "firstPassTokens" | "tokens"> {
+  const cacheReadShare =
+    MODEL_CACHE_READ_SHARE[model] ?? DEFAULT_CACHE_READ_SHARE;
+  return {
+    firstPassTokens: Math.round(billedTokens * (1 - cacheReadShare)),
+    tokens: billedTokens,
+  };
+}
 
 function buildOrgLimitSession(
   index: number,
@@ -360,7 +416,10 @@ function buildOrgLimitSession(
     throttleSource: ThrottleSource.UsageLimit,
     model,
     costUsd: estimateCost(model, wallClockMinutes, random),
-    tokens: Math.round(wallClockMinutes * (1400 + random() * 1800)),
+    ...tokenBases(
+      model,
+      Math.round(wallClockMinutes * (1400 + random() * 1800))
+    ),
   };
 }
 

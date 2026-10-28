@@ -14,11 +14,12 @@ import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { afterAll, test } from "vitest";
 import { openMigrationDatabase } from "../src/main/database/migration/migration-executor.js";
 import {
   type EmbeddedMigration,
   type MigrationDb,
+  type MigrationStep,
   runDesktopMigrations,
 } from "../src/main/database/migration/migration-runner.js";
 import {
@@ -26,6 +27,7 @@ import {
   isDbAheadOfAppError,
   MigrationRefusalKind,
 } from "../src/main/lifecycle/migration-refusal.js";
+import { MigrationStepOutcome } from "../src/main/telemetry/telemetry-protocol.js";
 
 function migration(name: string, sql: string): EmbeddedMigration {
   return {
@@ -90,7 +92,7 @@ async function freshDb(): Promise<MigrationDb> {
   return db;
 }
 
-test.after(async () => {
+afterAll(async () => {
   await Promise.all(
     tempDirs.map((dir) => rm(dir, { recursive: true, force: true }))
   );
@@ -259,6 +261,60 @@ test("a failing migration rolls back wholesale, leaving the prior version intact
   // tracking row and no partial table.
   assert.deepEqual(await listApplied(db), [M1.name]);
   assert.equal(await tableExists(db, "temp_bad"), false);
+});
+
+test("a failing migration reports a `failed` step before it rethrows (ISS-6339)", async () => {
+  const db = await freshDb();
+  const bad = migration(
+    "0002_bad",
+    "CREATE TABLE temp_bad (id TEXT PRIMARY KEY);\nINSERT INTO does_not_exist (id) VALUES ('x');"
+  );
+  const steps: MigrationStep[] = [];
+
+  await assert.rejects(
+    runDesktopMigrations(db, {
+      migrations: [M1, bad],
+      baselineStatements: BASELINE_STATEMENTS,
+      baselineMigrations: BASELINE_NAMES,
+      legacySentinelTable: "widgets",
+      onStep: (step) => steps.push(step),
+    })
+  );
+
+  // This event is the ONLY record of which step aborted the boot and how long it
+  // ran before giving up — the runner rethrows and the boot path surfaces a
+  // generic Agent Monitor failure. A `failed` step reported for the migration
+  // that SUCCEEDED, or none at all, both leave that unanswerable.
+  assert.deepEqual(
+    steps.map((step) => [step.name, step.outcome]),
+    [
+      [M1.name, MigrationStepOutcome.Applied],
+      [bad.name, MigrationStepOutcome.Failed],
+    ]
+  );
+  for (const step of steps) {
+    assert.ok(Number.isInteger(step.durationMs) && step.durationMs >= 0);
+  }
+});
+
+test("a sink that throws cannot turn a committed migration into a refusal (ISS-6339)", async () => {
+  const db = await freshDb();
+
+  // The migration has already committed by the time the sink runs, so letting a
+  // telemetry failure escape would report a durable schema change as a boot
+  // refusal — worse than losing the event.
+  const outcome = await runDesktopMigrations(db, {
+    migrations: [M1],
+    baselineStatements: BASELINE_STATEMENTS,
+    baselineMigrations: BASELINE_NAMES,
+    legacySentinelTable: "widgets",
+    onStep: () => {
+      throw new Error("telemetry transport is down");
+    },
+  });
+
+  assert.deepEqual(outcome.applied, [M1.name]);
+  assert.deepEqual(await listApplied(db), [M1.name]);
 });
 
 test("refuses on checksum drift", async () => {

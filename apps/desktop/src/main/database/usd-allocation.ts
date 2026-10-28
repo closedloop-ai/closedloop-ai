@@ -11,6 +11,8 @@
  * same promise, so they all share this one routine.
  */
 
+import { nullableNumber, numberOrZero } from "./db-helpers.js";
+
 export function allocateRoundedUsdValues(
   values: Readonly<Record<string, number>>,
   targetTotal?: number
@@ -108,4 +110,40 @@ function compareUsdKeys(a: string, b: string): number {
 
 function normalizeUsdZero(value: number): number {
   return value === 0 ? 0 : value;
+}
+
+/** One raw model-spend row as the Insights breakdown query projects it. */
+export type ModelSpendRow = {
+  model: string;
+  value: number | bigint | string | null | undefined;
+  total: number | bigint | string | null | undefined;
+};
+
+/**
+ * ISS-7580: the model-spend breakdown's raw-row boundary — the one place the
+ * Insights model buckets are sanitized before allocation, so a single corrupt
+ * `cost_usd_estimated` cell cannot rewrite money that was never corrupt.
+ *
+ * The two arguments need DIFFERENT degradations, which is the whole reason this
+ * is a named boundary rather than two inline coercions. A bucket degrades to 0:
+ * a model whose spend we cannot read contributes nothing we can name. The
+ * TARGET TOTAL must not, because `targetTotal` is what the allocator conserves
+ * against — a 0 there sets `targetCents` to 0 and strips every good bucket of
+ * the cents it had actually earned, which is a worse lie than the one bad
+ * bucket. An unreadable total is UNKNOWN, so it degrades to `null` and the
+ * allocator falls back to summing the sanitized buckets.
+ *
+ * That case is reachable, and by the OTHER spelling of a bad cell. Measured
+ * against `node:sqlite`: `SUM` over a TEXT column applies numeric affinity, so
+ * `"n/a"`-shaped text sums to 0 and never reaches JS as a string at all, while
+ * one `"1e999"`-shaped cell makes BOTH its own bucket and the window total
+ * `Infinity`. Only a bare, non-aggregate TEXT read hands JS the literal `"n/a"`.
+ */
+export function allocateModelSpendBuckets(
+  rows: readonly ModelSpendRow[]
+): Record<string, number> {
+  return allocateRoundedUsdValues(
+    Object.fromEntries(rows.map((row) => [row.model, numberOrZero(row.value)])),
+    nullableNumber(rows[0]?.total) ?? undefined
+  );
 }

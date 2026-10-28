@@ -5,7 +5,7 @@
  * through, and that the exclusions matching the extractor's bare-slug pass hold.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { extractWorkItemOccurrences } from "../src/main/collectors/parsing/work-item-occurrences.js";
 import {
   createNormalizedSession,

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ArtifactType } from "./artifact";
+import { parseTypedArtifactSlug } from "./artifact-slug-parse";
 import type { Priority } from "./common";
 import {
   type ArtifactStatus,
@@ -76,8 +77,8 @@ export type SearchMode = (typeof SearchMode)[keyof typeof SearchMode];
 
 /**
  * One heterogeneous, ranked hit in the unified search response. Spans the whole
- * Phase-1 corpus (documents/projects/loops); the `entityType` discriminates and
- * `deepLink` is the in-app route to the entity.
+ * offered corpus; the `entityType` discriminates and `deepLink` is the in-app
+ * route to the entity.
  */
 export type SearchHit = {
   entityType: SearchEntityType;
@@ -93,7 +94,7 @@ export type SearchHit = {
    * Legacy UUID-only deep link (e.g. `/documents/<id>`). Kept for back-compat
    * with consumers that predate the route fields below; new surfaces prefer
    * {@link searchHitRoute}, which builds an actually-web-routable path from
-   * `slug`/`entitySubtype`/`teamId` and falls back to this only for loops.
+   * `slug`/`entitySubtype`/`teamId`.
    */
   deepLink: string;
   /**
@@ -101,18 +102,19 @@ export type SearchHit = {
    * API deploy that predates them still satisfies the contract, and a hit
    * missing the data it needs degrades to a non-link row:
    *   - `slug` — the entity's URL handle (the web app routes documents by slug,
-   *     not by UUID; projects carry a slug but route by id).
+   *     not by UUID; projects carry a slug but route by id). On a `comment`
+   *     hit anchored on a document, that document's slug.
    *   - `entitySubtype` — a document's `type` (PRD/IMPLEMENTATION_PLAN/FEATURE),
-   *     used to pick the route prefix. Absent for projects/loops.
+   *     used to pick the route prefix. Absent for projects.
    *   - `teamId` — a project's owning team, for the team-scoped project route.
-   *     Absent for documents/loops.
+   *     Absent for documents.
    *   - `anchorEntityId` — the id of a DIFFERENT entity this hit routes to when
    *     the hit is not itself the navigation target (FEA-3930 corpus slice). A
    *     `pull_request` hit routes to its owning branch (anchor = branch artifact
    *     id); a `comment` hit routes to the artifact it is anchored on (anchor =
    *     that artifact's id, with `entitySubtype` carrying the anchor artifact's
-   *     TYPE so the route helper can pick session vs branch). Absent for
-   *     documents/projects/loops/sessions/branches, which route off `entityId`.
+   *     TYPE so the route helper can pick session, branch or document). Absent for
+   *     documents/projects/sessions/branches, which route off `entityId`.
    */
   slug?: string;
   entitySubtype?: string;
@@ -209,11 +211,12 @@ export const unifiedSearchResponseSchema = z.object({
  * route segment so the query service and any consumer agree.
  *
  * ROUTABILITY (FEA-3863): built from the projection's `entityId` (a UUID) alone.
- * `/loops/<id>` resolves directly (the web loop route is id-keyed). Document and
- * project fragments are BEST-EFFORT locators, NOT guaranteed web-routable yet:
- * the web app routes documents by type-specific slug (`/prds|/features/<slug>`,
- * or the `/documents/<slug>` catch-all that resolves via `by-slug`) and projects
- * under their team (`/teams/<teamId>/projects/<id>`). The Phase-1 projection is
+ * The `loop` arm is kept only because `SearchEntityType` still has the member;
+ * no loop hit is returned since ISS-12435 and the web loop detail route is gone,
+ * so `/loops/<id>` no longer resolves. Document and project fragments are
+ * BEST-EFFORT locators, NOT guaranteed web-routable yet:
+ * the web app routes documents at `/documents/<slug>` (resolved by slug through
+ * `by-slug`) and projects under their team (`/teams/<teamId>/projects/<id>`). The Phase-1 projection is
  * metadata-first and carries neither the slug/type nor the team, so a fully
  * type-/team-aware link is deferred to the query-side slice that joins that
  * route data. Consumers must treat a returned fragment as a hint, not a promise
@@ -261,20 +264,22 @@ export function searchHitDeepLink(
  * (so the consumer renders a non-link row rather than a 404-bound link). Unlike
  * {@link searchHitDeepLink} — the UUID-only best-effort locator — this resolves
  * the real app route:
- *   - Document → `/<prefix>/<slug>` (`/prds|/implementation-plans|/features`),
+ *   - Document → `/documents/<slug>`,
  *     needing both `slug` and a routable `entitySubtype`.
  *   - Project  → `/teams/<teamId>/projects/<entityId>` (team-scoped), needing
  *     `teamId`.
- *   - Loop     → `/loops/<entityId>` (the loop route is id-keyed).
+ *   - Loop     → `/loops/<entityId>`. Kept only for the exhaustive switch: no
+ *     loop hit is returned since ISS-12435 and that route no longer resolves.
  *   - AgentSession → `/sessions/<entityId>` (session detail is id-keyed).
  *   - Branch   → `/branches/<entityId>` (branch detail is id-keyed on the
  *     branch's artifact id).
  *   - PullRequest → `/branches/<anchorEntityId>` (a PR is nested state on its
  *     owning branch; anchor = the branch artifact id), needing `anchorEntityId`.
- *   - Comment  → the artifact it is anchored on: `/sessions/<anchorEntityId>` or
- *     `/branches/<anchorEntityId>?tab=sessions-timeline`, chosen by the anchor
- *     artifact's TYPE in `entitySubtype`; needs both. Document-anchored (and
- *     unknown-type) comments are not routable here and degrade to a non-link.
+ *   - Comment  → the artifact it is anchored on: `/sessions/<anchorEntityId>`,
+ *     `/branches/<anchorEntityId>?tab=sessions-timeline`, or the anchor
+ *     document's own route from its `slug`, chosen by the anchor artifact's
+ *     TYPE in `entitySubtype`; needs both. A document-anchored comment without
+ *     the slug, or an unknown-type one, degrades to a non-link.
  *   - AgentComponent → `/agents/<slug>` (component detail is slug-keyed on the
  *     org-identity `${kind}::${normalizedKey}` handle), needing `slug`.
  *
@@ -284,16 +289,10 @@ export function searchHitDeepLink(
  */
 export function searchHitRoute(hit: SearchHit): string | null {
   switch (hit.entityType) {
-    case SearchEntityType.Document: {
-      const prefix =
-        hit.entitySubtype === undefined
-          ? null
-          : getRoutePrefixForType(hit.entitySubtype);
-      if (prefix === null || hit.slug === undefined) {
-        return null;
-      }
-      return `/${prefix}/${hit.slug}`;
-    }
+    case SearchEntityType.Document:
+      return hit.entitySubtype === undefined || hit.slug === undefined
+        ? null
+        : documentRoute(hit.entitySubtype, hit.slug);
     case SearchEntityType.Project:
       return hit.teamId === undefined
         ? null
@@ -302,7 +301,7 @@ export function searchHitRoute(hit: SearchHit): string | null {
       return `/loops/${hit.entityId}`;
     case SearchEntityType.AgentSession:
       // Session detail is id-keyed (the entityId is the session's artifactId),
-      // so — like loops — it needs no slug/team to build a routable path.
+      // so it needs no slug/team to build a routable path.
       return `/sessions/${hit.entityId}`;
     case SearchEntityType.Branch:
       // Branch detail is id-keyed on the branch's artifact id (entityId).
@@ -339,23 +338,45 @@ export function searchHitRoute(hit: SearchHit): string | null {
  * anchored on a SESSION routes to `/sessions/<anchor>`; one anchored on a BRANCH
  * routes to the branch detail with the trace-comments rail open
  * (`?tab=sessions-timeline`, where native trace comments live). A comment on a
- * DOCUMENT (or with an absent/unknown anchor) is not routable off the projection
- * alone — the document route needs the doc's slug+subtype, which the comment row
- * does not carry — so it degrades to a non-link row rather than a 404.
+ * DOCUMENT routes to that document by the document's `slug`, which the search
+ * service adds to the hit; without it, or with an absent/unknown anchor, the
+ * hit degrades to a non-link row rather than a 404.
  */
 function commentSearchHitRoute(hit: SearchHit): string | null {
-  if (hit.anchorEntityId === undefined) {
+  const anchorType = ARTIFACT_TYPE_VALUES.find(
+    (artifactType) => artifactType === hit.entitySubtype
+  );
+  if (hit.anchorEntityId === undefined || anchorType === undefined) {
     return null;
   }
-  switch (hit.entitySubtype) {
+  switch (anchorType) {
     case ArtifactType.Session:
       return `/sessions/${hit.anchorEntityId}`;
     case ArtifactType.Branch:
       return `/branches/${hit.anchorEntityId}?${BRANCH_DETAIL_TAB_PARAM}=${BranchDetailTabParam.SessionsTimeline}`;
-    default:
+    case ArtifactType.Document: {
+      const parsed = parseTypedArtifactSlug(hit.slug);
+      return parsed
+        ? documentRoute(parsed.documentType, parsed.canonicalSlug)
+        : null;
+    }
+    case ArtifactType.Deployment:
       return null;
+    default: {
+      const exhaustive: never = anchorType;
+      return exhaustive;
+    }
   }
 }
+
+/** A document's route from its type and slug, or null for a type with none. */
+function documentRoute(documentType: string, slug: string): string | null {
+  const prefix = getRoutePrefixForType(documentType);
+  return prefix === null ? null : `/${prefix}/${slug}`;
+}
+
+const ARTIFACT_TYPE_VALUES: readonly ArtifactType[] =
+  Object.values(ArtifactType);
 
 /**
  * Bound on a projected `search_document` title. The write-time index hooks and
@@ -366,7 +387,7 @@ export const MAX_SEARCH_TITLE_CHARS = 500;
 
 /**
  * Cap on the searchable `body` snippet. The Phase-1 corpus is METADATA-FIRST: a
- * loop's `prompt` or a long project description can be multiple KB, and the
+ * long project description can be multiple KB, and the
  * Postgres GENERATED `tsv` recomputes over `title || body` on every write — so an
  * unbounded body would bloat every row's vector and slow writes.
  */

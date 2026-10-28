@@ -1,3 +1,4 @@
+import { TeamRole } from "@repo/api/src/types/teams";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DELETE, PUT } from "@/app/teams/[teamId]/members/[userId]/route";
 import { teamsService } from "@/app/teams/service";
@@ -11,8 +12,10 @@ import {
 let mockAuthContext: AuthContext;
 
 vi.mock("@/lib/auth/with-auth", () => ({
-  withAuth: (handler: any) => async (request: any, context: any) =>
-    handler(mockAuthContext, request, context.params),
+  withAuth:
+    (handler: (...args: unknown[]) => Promise<Response>) =>
+    async (request: unknown, context: { params: Promise<unknown> }) =>
+      handler(mockAuthContext, request, context.params),
 }));
 vi.mock("@/app/teams/service");
 
@@ -20,24 +23,21 @@ describe("PUT /teams/:teamId/members/:userId", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAuthContext = createTestAuthContext({
-      user: { id: "user-1", organizationId: "org-1" } as any,
+      user: {
+        ...createTestAuthContext().user,
+        id: "user-1",
+        organizationId: "org-1",
+      },
     });
+    // `clearAllMocks` does not reset implementations, so this default must be
+    // set per-block rather than inherited from a sibling describe.
+    vi.mocked(teamsService.existsInOrganization).mockResolvedValue(true);
   });
 
   it("updates member role", async () => {
-    const mockTeam = { id: "team-1", organizationId: "org-1" };
-    const mockExistingMember = {
-      id: "member-1",
-      teamId: "team-1",
-      userId: "target-user",
-      role: "MEMBER",
-    };
-    const mockUpdatedMember = {
-      id: "member-1",
-      teamId: "team-1",
-      userId: "target-user",
-      role: "ADMIN",
-      createdAt: new Date(),
+    const mockExistingMember = makeMember({ role: TeamRole.Member });
+    const mockUpdatedMember = makeMember({
+      role: TeamRole.Admin,
       user: {
         id: "target-user",
         firstName: "Target",
@@ -45,15 +45,12 @@ describe("PUT /teams/:teamId/members/:userId", () => {
         email: "target@example.com",
         avatarUrl: null,
       },
-    };
+    });
 
-    vi.mocked(teamsService.findById).mockResolvedValue(mockTeam as any);
     vi.mocked(teamsService.hasRole).mockResolvedValue(true);
-    vi.mocked(teamsService.getMember).mockResolvedValue(
-      mockExistingMember as any
-    );
+    vi.mocked(teamsService.getMember).mockResolvedValue(mockExistingMember);
     vi.mocked(teamsService.updateMemberRole).mockResolvedValue(
-      mockUpdatedMember as any
+      mockUpdatedMember
     );
 
     const request = createMockRequest({
@@ -78,24 +75,13 @@ describe("PUT /teams/:teamId/members/:userId", () => {
   });
 
   it("promotes member to owner", async () => {
-    const mockTeam = { id: "team-1", organizationId: "org-1" };
-    const mockExistingMember = { id: "member-1", role: "MEMBER" };
-    const mockUpdatedMember = {
-      id: "member-1",
-      teamId: "team-1",
-      userId: "target-user",
-      role: "OWNER",
-      createdAt: new Date(),
-      user: { id: "target-user" },
-    };
+    const mockExistingMember = makeMember({ role: TeamRole.Member });
+    const mockUpdatedMember = makeMember({ role: TeamRole.Owner });
 
-    vi.mocked(teamsService.findById).mockResolvedValue(mockTeam as any);
     vi.mocked(teamsService.hasRole).mockResolvedValue(true);
-    vi.mocked(teamsService.getMember).mockResolvedValue(
-      mockExistingMember as any
-    );
+    vi.mocked(teamsService.getMember).mockResolvedValue(mockExistingMember);
     vi.mocked(teamsService.updateMemberRole).mockResolvedValue(
-      mockUpdatedMember as any
+      mockUpdatedMember
     );
 
     const request = createMockRequest({
@@ -116,8 +102,8 @@ describe("PUT /teams/:teamId/members/:userId", () => {
     });
   });
 
-  it("returns 404 when team not found", async () => {
-    vi.mocked(teamsService.findById).mockResolvedValue(null);
+  it("maps a team the caller cannot see to 404", async () => {
+    vi.mocked(teamsService.existsInOrganization).mockResolvedValue(false);
 
     const request = createMockRequest({
       method: "PUT",
@@ -136,9 +122,6 @@ describe("PUT /teams/:teamId/members/:userId", () => {
   });
 
   it("returns 403 when user is not admin/owner", async () => {
-    const mockTeam = { id: "team-1", organizationId: "org-1" };
-
-    vi.mocked(teamsService.findById).mockResolvedValue(mockTeam as any);
     vi.mocked(teamsService.hasRole).mockResolvedValue(false);
 
     const request = createMockRequest({
@@ -156,9 +139,6 @@ describe("PUT /teams/:teamId/members/:userId", () => {
   });
 
   it("returns 404 when member not found", async () => {
-    const mockTeam = { id: "team-1", organizationId: "org-1" };
-
-    vi.mocked(teamsService.findById).mockResolvedValue(mockTeam as any);
     vi.mocked(teamsService.hasRole).mockResolvedValue(true);
     vi.mocked(teamsService.getMember).mockResolvedValue(null);
 
@@ -179,12 +159,10 @@ describe("PUT /teams/:teamId/members/:userId", () => {
   });
 
   it("returns validation error for missing role", async () => {
-    const mockTeam = { id: "team-1", organizationId: "org-1" };
-    const mockMember = { id: "member-1", role: "MEMBER" };
+    const mockMember = makeMember({ role: TeamRole.Member });
 
-    vi.mocked(teamsService.findById).mockResolvedValue(mockTeam as any);
     vi.mocked(teamsService.hasRole).mockResolvedValue(true);
-    vi.mocked(teamsService.getMember).mockResolvedValue(mockMember as any);
+    vi.mocked(teamsService.getMember).mockResolvedValue(mockMember);
 
     const request = createMockRequest({
       method: "PUT",
@@ -201,12 +179,10 @@ describe("PUT /teams/:teamId/members/:userId", () => {
   });
 
   it("returns validation error for invalid role", async () => {
-    const mockTeam = { id: "team-1", organizationId: "org-1" };
-    const mockMember = { id: "member-1", role: "MEMBER" };
+    const mockMember = makeMember({ role: TeamRole.Member });
 
-    vi.mocked(teamsService.findById).mockResolvedValue(mockTeam as any);
     vi.mocked(teamsService.hasRole).mockResolvedValue(true);
-    vi.mocked(teamsService.getMember).mockResolvedValue(mockMember as any);
+    vi.mocked(teamsService.getMember).mockResolvedValue(mockMember);
 
     const request = createMockRequest({
       method: "PUT",
@@ -223,12 +199,10 @@ describe("PUT /teams/:teamId/members/:userId", () => {
   });
 
   it("returns 500 on service failure", async () => {
-    const mockTeam = { id: "team-1", organizationId: "org-1" };
-    const mockMember = { id: "member-1", role: "MEMBER" };
+    const mockMember = makeMember({ role: TeamRole.Member });
 
-    vi.mocked(teamsService.findById).mockResolvedValue(mockTeam as any);
     vi.mocked(teamsService.hasRole).mockResolvedValue(true);
-    vi.mocked(teamsService.getMember).mockResolvedValue(mockMember as any);
+    vi.mocked(teamsService.getMember).mockResolvedValue(mockMember);
     vi.mocked(teamsService.updateMemberRole).mockRejectedValue(
       new Error("Database error")
     );
@@ -253,18 +227,23 @@ describe("DELETE /teams/:teamId/members/:userId", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAuthContext = createTestAuthContext({
-      user: { id: "user-1", organizationId: "org-1" } as any,
+      user: {
+        ...createTestAuthContext().user,
+        id: "user-1",
+        organizationId: "org-1",
+      },
     });
+    // `clearAllMocks` does not reset implementations, so this default must be
+    // set per-block rather than inherited from a sibling describe.
+    vi.mocked(teamsService.existsInOrganization).mockResolvedValue(true);
   });
 
   it("removes member from team", async () => {
-    const mockTeam = { id: "team-1", organizationId: "org-1" };
-    const mockMember = { id: "member-1", role: "MEMBER" };
+    const mockMember = makeMember({ role: TeamRole.Member });
 
-    vi.mocked(teamsService.findById).mockResolvedValue(mockTeam as any);
     vi.mocked(teamsService.hasRole).mockResolvedValue(true);
-    vi.mocked(teamsService.getMember).mockResolvedValue(mockMember as any);
-    vi.mocked(teamsService.removeMember).mockResolvedValue(undefined as any);
+    vi.mocked(teamsService.getMember).mockResolvedValue(mockMember);
+    vi.mocked(teamsService.removeMember).mockResolvedValue(makeMember());
 
     const request = createMockRequest({ method: "DELETE" });
     const routeContext = createMockRouteContext({
@@ -284,13 +263,11 @@ describe("DELETE /teams/:teamId/members/:userId", () => {
   });
 
   it("removes admin from team", async () => {
-    const mockTeam = { id: "team-1", organizationId: "org-1" };
-    const mockMember = { id: "member-1", role: "ADMIN" };
+    const mockMember = makeMember({ role: TeamRole.Admin });
 
-    vi.mocked(teamsService.findById).mockResolvedValue(mockTeam as any);
     vi.mocked(teamsService.hasRole).mockResolvedValue(true);
-    vi.mocked(teamsService.getMember).mockResolvedValue(mockMember as any);
-    vi.mocked(teamsService.removeMember).mockResolvedValue(undefined as any);
+    vi.mocked(teamsService.getMember).mockResolvedValue(mockMember);
+    vi.mocked(teamsService.removeMember).mockResolvedValue(makeMember());
 
     const request = createMockRequest({ method: "DELETE" });
     const routeContext = createMockRouteContext({
@@ -306,8 +283,8 @@ describe("DELETE /teams/:teamId/members/:userId", () => {
     );
   });
 
-  it("returns 404 when team not found", async () => {
-    vi.mocked(teamsService.findById).mockResolvedValue(null);
+  it("maps a team the caller cannot see to 404", async () => {
+    vi.mocked(teamsService.existsInOrganization).mockResolvedValue(false);
 
     const request = createMockRequest({ method: "DELETE" });
     const routeContext = createMockRouteContext({
@@ -323,9 +300,6 @@ describe("DELETE /teams/:teamId/members/:userId", () => {
   });
 
   it("returns 403 when user is not admin/owner", async () => {
-    const mockTeam = { id: "team-1", organizationId: "org-1" };
-
-    vi.mocked(teamsService.findById).mockResolvedValue(mockTeam as any);
     vi.mocked(teamsService.hasRole).mockResolvedValue(false);
 
     const request = createMockRequest({ method: "DELETE" });
@@ -340,9 +314,6 @@ describe("DELETE /teams/:teamId/members/:userId", () => {
   });
 
   it("returns 404 when member not found", async () => {
-    const mockTeam = { id: "team-1", organizationId: "org-1" };
-
-    vi.mocked(teamsService.findById).mockResolvedValue(mockTeam as any);
     vi.mocked(teamsService.hasRole).mockResolvedValue(true);
     vi.mocked(teamsService.getMember).mockResolvedValue(null);
 
@@ -360,14 +331,12 @@ describe("DELETE /teams/:teamId/members/:userId", () => {
   });
 
   it("returns 400 when removing last owner", async () => {
-    const mockTeam = { id: "team-1", organizationId: "org-1" };
-    const mockOwnerMember = { id: "member-1", role: "OWNER" };
-    const mockAllMembers = [{ id: "member-1", role: "OWNER" }]; // Only one owner
+    const mockOwnerMember = makeMember({ role: TeamRole.Owner });
+    const mockAllMembers = [makeMember({ role: TeamRole.Owner })]; // Only one owner
 
-    vi.mocked(teamsService.findById).mockResolvedValue(mockTeam as any);
     vi.mocked(teamsService.hasRole).mockResolvedValue(true);
-    vi.mocked(teamsService.getMember).mockResolvedValue(mockOwnerMember as any);
-    vi.mocked(teamsService.getMembers).mockResolvedValue(mockAllMembers as any);
+    vi.mocked(teamsService.getMember).mockResolvedValue(mockOwnerMember);
+    vi.mocked(teamsService.getMembers).mockResolvedValue(mockAllMembers);
 
     const request = createMockRequest({ method: "DELETE" });
     const routeContext = createMockRouteContext({
@@ -383,18 +352,16 @@ describe("DELETE /teams/:teamId/members/:userId", () => {
   });
 
   it("allows removing owner when multiple owners exist", async () => {
-    const mockTeam = { id: "team-1", organizationId: "org-1" };
-    const mockOwnerMember = { id: "member-1", role: "OWNER" };
+    const mockOwnerMember = makeMember({ role: TeamRole.Owner });
     const mockAllMembers = [
-      { id: "member-1", role: "OWNER" },
-      { id: "member-2", role: "OWNER" }, // Another owner exists
+      makeMember({ role: TeamRole.Owner }),
+      makeMember({ id: "member-2", role: TeamRole.Owner }), // Another owner exists
     ];
 
-    vi.mocked(teamsService.findById).mockResolvedValue(mockTeam as any);
     vi.mocked(teamsService.hasRole).mockResolvedValue(true);
-    vi.mocked(teamsService.getMember).mockResolvedValue(mockOwnerMember as any);
-    vi.mocked(teamsService.getMembers).mockResolvedValue(mockAllMembers as any);
-    vi.mocked(teamsService.removeMember).mockResolvedValue(undefined as any);
+    vi.mocked(teamsService.getMember).mockResolvedValue(mockOwnerMember);
+    vi.mocked(teamsService.getMembers).mockResolvedValue(mockAllMembers);
+    vi.mocked(teamsService.removeMember).mockResolvedValue(makeMember());
 
     const request = createMockRequest({ method: "DELETE" });
     const routeContext = createMockRouteContext({
@@ -411,13 +378,11 @@ describe("DELETE /teams/:teamId/members/:userId", () => {
   });
 
   it("does not check owner count for non-owner members", async () => {
-    const mockTeam = { id: "team-1", organizationId: "org-1" };
-    const mockMember = { id: "member-1", role: "MEMBER" };
+    const mockMember = makeMember({ role: TeamRole.Member });
 
-    vi.mocked(teamsService.findById).mockResolvedValue(mockTeam as any);
     vi.mocked(teamsService.hasRole).mockResolvedValue(true);
-    vi.mocked(teamsService.getMember).mockResolvedValue(mockMember as any);
-    vi.mocked(teamsService.removeMember).mockResolvedValue(undefined as any);
+    vi.mocked(teamsService.getMember).mockResolvedValue(mockMember);
+    vi.mocked(teamsService.removeMember).mockResolvedValue(makeMember());
 
     const request = createMockRequest({ method: "DELETE" });
     const routeContext = createMockRouteContext({
@@ -432,12 +397,10 @@ describe("DELETE /teams/:teamId/members/:userId", () => {
   });
 
   it("returns 500 on service failure", async () => {
-    const mockTeam = { id: "team-1", organizationId: "org-1" };
-    const mockMember = { id: "member-1", role: "MEMBER" };
+    const mockMember = makeMember({ role: TeamRole.Member });
 
-    vi.mocked(teamsService.findById).mockResolvedValue(mockTeam as any);
     vi.mocked(teamsService.hasRole).mockResolvedValue(true);
-    vi.mocked(teamsService.getMember).mockResolvedValue(mockMember as any);
+    vi.mocked(teamsService.getMember).mockResolvedValue(mockMember);
     vi.mocked(teamsService.removeMember).mockRejectedValue(
       new Error("Database error")
     );
@@ -454,3 +417,25 @@ describe("DELETE /teams/:teamId/members/:userId", () => {
     expect(json.error).toBe("Failed to remove team member");
   });
 });
+
+type TeamMemberRow = NonNullable<
+  Awaited<ReturnType<typeof teamsService.getMember>>
+>;
+
+function makeMember(overrides: Partial<TeamMemberRow> = {}): TeamMemberRow {
+  return {
+    id: "member-1",
+    teamId: "team-1",
+    userId: "target-user",
+    role: TeamRole.Member,
+    createdAt: new Date(),
+    user: {
+      id: "target-user",
+      firstName: null,
+      lastName: null,
+      email: "target@example.com",
+      avatarUrl: null,
+    },
+    ...overrides,
+  };
+}

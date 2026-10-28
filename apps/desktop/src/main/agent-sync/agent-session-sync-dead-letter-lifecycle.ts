@@ -6,20 +6,29 @@
  * as `agent-session-sync-dispositions.ts` and `agent-session-sync-pass-pump.ts`.
  *
  * The five functions here are one mechanism, not five: an id enters via
- * `markDeadLettered`, the set is bounded by `enforceDeadLetterCap`, and it
- * leaves by exactly one of two disjoint doors —
+ * `markDeadLettered` and leaves by one of THREE doors —
  *
  * - `recoverExpiredDeadLetters` for TRANSIENT classes (ack timeout,
  *   rate_limited, ingestion_failed), which carry a FINITE FEA-3363 retry-after
- *   and come back on their own progressive-backoff schedule; and
+ *   and come back on their own progressive-backoff schedule;
  * - `promoteDeadLetterIfIdle` for PERMANENTLY-STUCK classes, which carry an
  *   INFINITE deadline and are revisited at most once per idle cycle, only after
- *   both queues have drained.
+ *   both queues have drained; and
+ * - `enforceDeadLetterCap`, which bounds the set and is NOT selective by class:
+ *   it evicts the oldest ids regardless of deadline.
  *
- * They are disjoint BY DEADLINE, which is what stops them fighting over the
- * same id, and that invariant is only legible with the two side by side.
- * `resetDeadLetterRevisitAfterDrainedAck` is the third door's re-arm: it clears
- * the once-per-idle-cycle guard after a promoted dead-letter actually drains.
+ * The first two are disjoint BY DEADLINE, which is what stops them fighting over
+ * the same id, and that invariant is only legible with the two side by side.
+ *
+ * ISS-7216: the cap was long described as merely "bounding" the set rather than
+ * as a door, and that framing is what hid a data-loss bug — it is the only exit
+ * that can remove an id the other two never got to, so it owes the same durable
+ * `recordOutboxReEnqueue` they perform. All three now hand the row back to the
+ * pending outbox before releasing it; see `enforceDeadLetterCap`.
+ *
+ * `resetDeadLetterRevisitAfterDrainedAck` is not a door — it is
+ * `promoteDeadLetterIfIdle`'s re-arm, clearing the once-per-idle-cycle guard
+ * after a promoted dead-letter actually drains.
  *
  * Behavior-preserving extraction: every deadline rule, counter, log string, and
  * ordering decision is carried over verbatim from the service.
@@ -62,9 +71,19 @@ export type DeadLetterLifecycleDeps = {
   recordOutboxDeadLetter: (
     id: string,
     reason: string,
-    attemptCount: number
+    attemptCount: number,
+    permanentAttemptCount: number | null,
+    deadLetterRecoveryCount: number | null
   ) => void;
-  recordOutboxReEnqueue: (id: string) => void;
+  /**
+   * The durable `dead_lettered` → `pending` flip every door performs on its way
+   * out. ISS-7216: it REPORTS whether the row is confirmed off `dead_lettered`
+   * (`false` when the write threw or left it there; it never rejects). The two
+   * recovery doors ignore that — they keep the id in `deadLetteredIds` either
+   * way — and `enforceDeadLetterCap` gates its release on it, because for the
+   * cap the durable row is the only record left.
+   */
+  recordOutboxReEnqueue: (id: string) => Promise<boolean>;
   logInfo: (message: string) => void;
   logWarn: (message: string) => void;
 };
@@ -95,6 +114,7 @@ export function markDeadLettered(
   recoverable: boolean,
   reason: string,
   attemptCount: number,
+  permanentAttemptCount: number | null,
   deps: DeadLetterLifecycleDeps
 ): void {
   // FEA-3795 (PRD-536 E2): progressive backoff. Bump the per-id dead-letter
@@ -137,7 +157,13 @@ export function markDeadLettered(
   // dead-lettering. (FEA-3795 keeps this semantics intact — the progressive
   // escalation position lives in the in-memory `deadLetterCountById`; the
   // outbox `attempt_count` continues to mean "burned transient budget".)
-  deps.recordOutboxDeadLetter(id, reason, attemptCount);
+  deps.recordOutboxDeadLetter(
+    id,
+    reason,
+    attemptCount,
+    permanentAttemptCount,
+    recoverable ? deadLetterCount : null
+  );
 }
 
 /**
@@ -146,30 +172,100 @@ export function markDeadLettered(
  * `dead_lettered_ids` JSON bounded at `MAX_DEAD_LETTERED_IDS`. Evicts the
  * OLDEST entries first (Map iteration is insertion order): a re-set id keeps
  * its original insertion position, so eviction targets the sessions
- * dead-lettered longest ago. Dropping an id only forgets that it was set
- * aside; the watermark already advanced past it, so nothing un-uploaded is
- * skipped, and a future cold-restart re-backfill re-walks it if it still
- * exists locally.
+ * dead-lettered longest ago.
+ *
+ * ISS-7216: eviction must HAND THE ROW BACK to the durable pending ledger, not
+ * merely forget it. This is the third door out of `deadLetteredIds`, and it was
+ * the only one that skipped `recordOutboxReEnqueue` — which is exactly the
+ * FEA-3697 durability step the other two perform for the reason stated at both
+ * of their call sites: a row left `dead_lettered` is invisible to
+ * `loadPendingOutboxIds`, to stranded-row adoption, and to the incremental scan
+ * (the watermark is already past it), so the in-memory Map is the ONLY thing
+ * that still remembers the session is owed. Dropping the id therefore closed
+ * every re-entry door at once.
+ *
+ * The docblock here used to claim that was harmless because "a future
+ * cold-restart re-backfill re-walks it if it still exists locally". It does not:
+ * `initializeBackfillQueueIfNeeded` early-returns the moment a cursor is
+ * resumed, so a device past its first backfill never re-walks the corpus. The
+ * evicted row sat in SQLite as `dead_lettered` forever — never sent, and never
+ * even purged, because `selectUndeliveredSessionIds` matches any status. Only a
+ * version-stamp bump (`sqliteRependDeadLetteredForFormulaRewalk`) or new local
+ * activity on that session could rescue it, and an ENDED session never gets
+ * new activity — which is precisely the population backfill exists to deliver.
+ *
+ * Re-pending is what satisfies `main/sync/AGENTS.md` invariant 10 — "Eviction
+ * must degrade to 're-discovered later', never to 'lost'." The cap bounds
+ * MEMORY; the durable outbox row owns DURABILITY. The verified-ack delete stays
+ * the only clear, so exactly-once still holds — a re-send of an already-applied
+ * payload is server-deduped.
+ *
+ * ISS-7216 (PR #5708 review, whitlockk): the hand-off is CONFIRMED, not merely
+ * attempted, and the two are not the same thing here. The sibling doors can
+ * re-pend fire-and-forget because they re-queue the id onto a live lane and it
+ * stays in `deadLetteredIds` either way, so a swallowed write failure costs only
+ * a hint. This door removes the id — that is its whole job — so a swallowed
+ * failure costs the SESSION. Both failure modes matter and only one of them
+ * throws: a rejected write (locked or closing DB, a db-host IPC fault), and a
+ * write that MATCHES ZERO ROWS while the row is still `dead_lettered`, which
+ * "succeeds" without touching anything and is indistinguishable from a real
+ * hand-off unless someone asks. So the id is released ONLY after
+ * `recordOutboxReEnqueue` resolves `true` — and that `true` is the source
+ * reading the row back, not the absence of a throw. On `false` the id stays in
+ * the Map with its deadline and escalation counters intact, and the next cap
+ * pass retries it.
+ *
+ * The cost of that ordering is that the bound is reached ASYNCHRONOUSLY: between
+ * the request and its confirmation the Map sits over the cap by the number of
+ * in-flight hand-offs, which is itself bounded by the overflow, and a persist in
+ * that window serializes a correspondingly longer array. Memory yields to
+ * durability, which is the order invariant 10 puts them in. In-flight ids are
+ * skipped by later passes (`evictionHandoffsInFlight`) so a stalled ledger
+ * cannot make the same id accumulate duplicate writes.
  */
 export function enforceDeadLetterCap(deps: DeadLetterLifecycleDeps): void {
   if (deps.deadLetteredIds.size <= MAX_DEAD_LETTERED_IDS) {
     return;
   }
-  const overflow = deps.deadLetteredIds.size - MAX_DEAD_LETTERED_IDS;
-  const iterator = deps.deadLetteredIds.keys();
-  for (let i = 0; i < overflow; i++) {
-    const oldest = iterator.next().value;
-    if (oldest === undefined) {
+  const inFlight = evictionHandoffsInFlight(deps);
+  // Ids already being handed off still count against the overflow — they are
+  // leaving, just not yet confirmed — so only the remainder starts a new write.
+  const starting =
+    deps.deadLetteredIds.size - MAX_DEAD_LETTERED_IDS - inFlight.size;
+  if (starting <= 0) {
+    return;
+  }
+  const evicting: string[] = [];
+  for (const oldest of deps.deadLetteredIds.keys()) {
+    if (evicting.length >= starting) {
       break;
     }
-    deps.deadLetteredIds.delete(oldest);
-    // FEA-3795: drop the escalation counter for the evicted id too, so
-    // `deadLetterCountById` stays bounded by the same cap (an evicted id is
-    // forgotten; if it re-dead-letters later it starts a fresh escalation).
-    deps.deadLetterCountById.delete(oldest);
-    deps.chunkValidationCycleById.delete(oldest);
-    deps.ackOmittedCycleById.delete(oldest);
+    if (!inFlight.has(oldest)) {
+      evicting.push(oldest);
+    }
   }
+  if (evicting.length === 0) {
+    return;
+  }
+  for (const id of evicting) {
+    inFlight.add(id);
+  }
+  logEvictionRequested(evicting, deps);
+  Promise.all(evicting.map((id) => releaseEvictedId(id, inFlight, deps)))
+    .then((released) => {
+      const stranded = released.filter((ok) => !ok).length;
+      if (stranded > 0) {
+        deps.logWarn(
+          `${stranded} of ${evicting.length} evicted dead-lettered agent session(s) could not be ` +
+            "handed back to the durable pending outbox; they stay in the in-memory dead-letter " +
+            "set (nothing dropped) and the next cap pass retries the hand-off"
+        );
+      }
+    })
+    .catch(() => {
+      // `releaseEvictedId` folds every failure into `false` and never rejects;
+      // this only exists because a floating promise is a lint error.
+    });
 }
 
 /**
@@ -209,7 +305,7 @@ export function recoverExpiredDeadLetters(
     // survives a crash/restart and the row follows the bounded retry policy
     // again. The verified-ack delete stays the only clear, so exactly-once
     // holds (a re-send of an already-applied payload is server-deduped).
-    deps.recordOutboxReEnqueue(id);
+    ignoreReEnqueueConfirmation(id, deps);
     // A dead-letter dequeued the id from both lanes, so it should not already
     // be queued; guard against a duplicate push regardless.
     reEnqueueOntoBackfill(id, deps);
@@ -282,7 +378,7 @@ export function promoteDeadLetterIfIdle(deps: DeadLetterLifecycleDeps): void {
   // re-syncs would drop it from `loadPendingOutboxIds` and it would only ever
   // return via the cursor's `deadLetteredIds` set-aside (never as live pending
   // work), risking a permanent strand if that set was also lost.
-  deps.recordOutboxReEnqueue(id);
+  ignoreReEnqueueConfirmation(id, deps);
   reEnqueueOntoBackfill(id, deps);
   deps.logInfo(
     "revisiting 1 set-aside dead-lettered agent session after backfill drained; " +
@@ -338,4 +434,115 @@ function reEnqueueOntoBackfill(
   }
   deps.backfillQueuedIds.add(id);
   deps.backfillQueue.push(id);
+}
+
+/**
+ * ISS-7216: how many evicted ids `enforceDeadLetterCap` names in its log line
+ * before truncating to a count. Enough to identify the affected sessions when a
+ * handful are evicted on a live tick, bounded so the legacy-cursor hydration
+ * path — which can evict thousands in one pass — cannot emit a multi-megabyte
+ * gateway log entry. The COUNT is always exact; only the id sample is capped.
+ */
+const EVICTION_LOG_ID_SAMPLE = 20;
+
+/**
+ * ISS-7216: the ids whose durable eviction hand-off has been requested but not
+ * yet confirmed, per lane.
+ *
+ * Keyed on the lane's own `deadLetteredIds` Map — the collection it guards, and
+ * the one piece of lifecycle state that is already passed by reference and lives
+ * exactly as long as the lane. That keeps this derived bookkeeping out of both
+ * the deps contract and the (grandfathered) sync service, and a `WeakMap` means
+ * a disposed lane's entry goes with it rather than accumulating; `deps` itself
+ * is rebuilt per call and so cannot be the key.
+ */
+const EVICTION_HANDOFFS_IN_FLIGHT = new WeakMap<
+  Map<string, number>,
+  Set<string>
+>();
+
+function evictionHandoffsInFlight(deps: DeadLetterLifecycleDeps): Set<string> {
+  const existing = EVICTION_HANDOFFS_IN_FLIGHT.get(deps.deadLetteredIds);
+  if (existing) {
+    return existing;
+  }
+  const created = new Set<string>();
+  EVICTION_HANDOFFS_IN_FLIGHT.set(deps.deadLetteredIds, created);
+  return created;
+}
+
+/**
+ * ISS-7216: request the durable hand-off for one evicted id and release the
+ * in-memory reference ONLY if it is confirmed. Resolves whether the id left.
+ *
+ * On `false` nothing is mutated: the entry keeps its retry-after deadline and
+ * its FEA-3795 escalation position, so a retried eviction neither restarts the
+ * progressive backoff nor loses the session. The counters are dropped with the
+ * id (never before it) so they stay bounded by the same cap.
+ */
+async function releaseEvictedId(
+  id: string,
+  inFlight: Set<string>,
+  deps: DeadLetterLifecycleDeps
+): Promise<boolean> {
+  let handedOff = false;
+  try {
+    handedOff = await deps.recordOutboxReEnqueue(id);
+  } catch {
+    handedOff = false;
+  } finally {
+    inFlight.delete(id);
+  }
+  if (!handedOff) {
+    return false;
+  }
+  deps.deadLetteredIds.delete(id);
+  // FEA-3795: drop the escalation counter for the evicted id too, so
+  // `deadLetterCountById` stays bounded by the same cap (an evicted id is
+  // forgotten; if it re-dead-letters later it starts a fresh escalation).
+  deps.deadLetterCountById.delete(id);
+  deps.chunkValidationCycleById.delete(id);
+  deps.ackOmittedCycleById.delete(id);
+  return true;
+}
+
+/**
+ * ISS-7216: the two RECOVERY doors deliberately discard the re-pend's
+ * confirmation. They keep the id in `deadLetteredIds` and re-queue it onto a
+ * live lane, so a failed write costs only this process's durable hint and the
+ * next persist still records the id — the fallback the cap does not have. The
+ * write never rejects (the writer folds failures into `false` and warn-logs
+ * them); the attached handler exists because a floating promise is a lint error
+ * and `noVoid` is enforced for this module.
+ */
+function ignoreReEnqueueConfirmation(
+  id: string,
+  deps: DeadLetterLifecycleDeps
+): void {
+  deps.recordOutboxReEnqueue(id).catch(() => {
+    // Unreachable: see above.
+  });
+}
+
+/**
+ * The eviction's summary log. States what was REQUESTED, not what landed: the
+ * hand-offs are still in flight here, and each id is dropped from the in-memory
+ * set only once its own write is confirmed (a failed batch warns separately).
+ *
+ * The id list is TRUNCATED, unlike the sibling doors' logs: those evict a
+ * handful, but the hydration call site caps a legacy over-cap cursor in one pass
+ * and can evict thousands at once.
+ */
+function logEvictionRequested(
+  evicting: string[],
+  deps: DeadLetterLifecycleDeps
+): void {
+  const shown = evicting.slice(0, EVICTION_LOG_ID_SAMPLE);
+  const omitted = evicting.length - shown.length;
+  deps.logWarn(
+    `dead-letter set exceeded ${MAX_DEAD_LETTERED_IDS}; requested a durable re-pend for the ` +
+      `${evicting.length} oldest dead-lettered agent session(s), each of which leaves the ` +
+      `in-memory set only once its re-pend is confirmed; ids: ${shown.join(", ")}` +
+      `${omitted > 0 ? ` (+${omitted} more)` : ""}`
+  );
 }

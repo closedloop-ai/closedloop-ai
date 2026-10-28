@@ -1,22 +1,19 @@
+import { DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  CATALOG_ASSET_MAX_BYTES,
-  CatalogAssetTooLargeError,
+  deleteArtifact,
   deleteObjects,
-  getCatalogAssetBytes,
-  getCatalogAssetUploadUrl,
   getSignedDownloadUrl,
   getSignedDownloadUrlWithDisposition,
-  getSignedTranscriptDownloadUrl,
   getSignedUploadUrl,
-  getTranscriptObjectBytesRange,
   headAttachmentObject,
   headAttachmentsBucket,
-  INTELLIGENT_TIERING_STORAGE_CLASS,
+  listCommonPrefixes,
   listObjects,
   putAttachmentObject,
 } from "./index";
+import { S3_BATCH_DELETE_MAX_KEYS } from "./s3-client";
 
 const { s3Send } = vi.hoisted(() => ({ s3Send: vi.fn() }));
 
@@ -30,7 +27,7 @@ vi.mock("@aws-sdk/client-s3", () => {
   }
 
   return {
-    DeleteObjectCommand: MockCommand,
+    DeleteObjectCommand: class DeleteObjectCommand extends MockCommand {},
     DeleteObjectsCommand: MockCommand,
     GetObjectCommand: MockCommand,
     HeadBucketCommand: MockCommand,
@@ -38,6 +35,7 @@ vi.mock("@aws-sdk/client-s3", () => {
     ListObjectsV2Command: MockCommand,
     PutObjectCommand: MockCommand,
     S3Client: class S3Client {
+      middlewareStack = { add: vi.fn() };
       send = s3Send;
     },
     StorageClass: { INTELLIGENT_TIERING: "INTELLIGENT_TIERING" },
@@ -86,6 +84,40 @@ describe("getSignedUploadUrl", () => {
     });
     expect(getSignedUrl).toHaveBeenCalledWith(expect.anything(), command, {
       expiresIn: 900,
+    });
+  });
+
+  it("signs Content-Type only when asked to bind it", async () => {
+    await getSignedUploadUrl(
+      "comment-attachments/org/comment/file",
+      "image/png",
+      900,
+      "attachment-bucket",
+      2048,
+      { bindContentType: true }
+    );
+
+    expect(getSignedUrl).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      { expiresIn: 900, signableHeaders: new Set(["content-type"]) }
+    );
+  });
+
+  it("defaults to octet-stream and leaves ContentLength unset when no length is given", async () => {
+    await getSignedUploadUrl("attachments/org/doc/file");
+
+    const command = vi.mocked(getSignedUrl).mock.calls[0][1] as {
+      input: Record<string, unknown>;
+    };
+    expect(command.input).toEqual({
+      Bucket: "test-bucket",
+      ContentType: "application/octet-stream",
+      Key: "attachments/org/doc/file",
+    });
+    expect(command.input).not.toHaveProperty("ContentLength");
+    expect(getSignedUrl).toHaveBeenCalledWith(expect.anything(), command, {
+      expiresIn: 3600,
     });
   });
 });
@@ -210,110 +242,6 @@ describe("getSignedDownloadUrl", () => {
   });
 });
 
-describe("getSignedTranscriptDownloadUrl", () => {
-  const SIGNING_INSTANT = new Date("2026-06-29T00:00:00.000Z");
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.useFakeTimers();
-    vi.setSystemTime(SIGNING_INSTANT);
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it("signs against the transcripts bucket and bounds the cache to the URL's own expiry", async () => {
-    await getSignedTranscriptDownloadUrl("org/ct/ext.jsonl", {
-      expiresIn: 300,
-      bucket: "transcripts-bucket",
-    });
-
-    const command = vi.mocked(getSignedUrl).mock.calls[0][1] as {
-      input: Record<string, unknown>;
-    };
-    expect(command.input).toMatchObject({
-      Bucket: "transcripts-bucket",
-      Key: "org/ct/ext.jsonl",
-      ResponseCacheControl: "private",
-      // Cache lapses with the 5-min signature, so a cached transcript copy can
-      // never outlive the authorization window.
-      ResponseExpires: new Date("2026-06-29T00:05:00.000Z"),
-    });
-    expect(getSignedUrl).toHaveBeenCalledWith(expect.anything(), command, {
-      expiresIn: 300,
-    });
-  });
-});
-
-describe("getTranscriptObjectBytesRange", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("issues a bounded ranged GET and returns only the requested prefix bytes", async () => {
-    const payload = new Uint8Array([1, 2, 3, 4]);
-    s3Send.mockResolvedValueOnce({
-      Body: { transformToByteArray: () => Promise.resolve(payload) },
-    });
-
-    const result = await getTranscriptObjectBytesRange(
-      "org/ct/ext/main.jsonl",
-      4,
-      "transcripts-bucket"
-    );
-
-    expect(Buffer.from(result as Buffer)).toEqual(Buffer.from(payload));
-    const command = s3Send.mock.calls[0][0] as {
-      input: Record<string, unknown>;
-    };
-    // Range is 0-based inclusive: bytes 0..(maxBytes-1).
-    expect(command.input).toMatchObject({
-      Bucket: "transcripts-bucket",
-      Key: "org/ct/ext/main.jsonl",
-      Range: "bytes=0-3",
-    });
-  });
-
-  it("floors the range at a single byte for a zero/negative cap", async () => {
-    s3Send.mockResolvedValueOnce({
-      Body: {
-        transformToByteArray: () => Promise.resolve(new Uint8Array([9])),
-      },
-    });
-
-    await getTranscriptObjectBytesRange("k", 0, "transcripts-bucket");
-
-    const command = s3Send.mock.calls[0][0] as {
-      input: Record<string, unknown>;
-    };
-    expect(command.input.Range).toBe("bytes=0-0");
-  });
-
-  it("returns null for a missing object (NoSuchKey) instead of throwing", async () => {
-    s3Send.mockRejectedValueOnce(
-      Object.assign(new Error("no such key"), { name: "NoSuchKey" })
-    );
-
-    const result = await getTranscriptObjectBytesRange(
-      "missing",
-      100,
-      "transcripts-bucket"
-    );
-    expect(result).toBeNull();
-  });
-
-  it("rethrows a non-404 S3 error", async () => {
-    s3Send.mockRejectedValueOnce(
-      Object.assign(new Error("access denied"), { name: "AccessDenied" })
-    );
-
-    await expect(
-      getTranscriptObjectBytesRange("k", 100, "transcripts-bucket")
-    ).rejects.toThrow("access denied");
-  });
-});
-
 describe("getSignedDownloadUrlWithDisposition", () => {
   // Pin the clock so the absolute `Expires` (now + TTL) is deterministic.
   const SIGNING_INSTANT = new Date("2026-06-29T00:00:00.000Z");
@@ -391,6 +319,18 @@ describe("listObjects", () => {
     expect(page.nextContinuationToken).toBe("next-token");
   });
 
+  it("returns an empty page against the configured bucket when S3 omits Contents", async () => {
+    s3Send.mockResolvedValueOnce({ IsTruncated: false });
+
+    const page = await listObjects();
+
+    const command = s3Send.mock.calls[0][0] as {
+      input: Record<string, unknown>;
+    };
+    expect(command.input.Bucket).toBe("test-bucket");
+    expect(page).toEqual({ objects: [], nextContinuationToken: undefined });
+  });
+
   it("omits the continuation token when the listing is exhausted", async () => {
     s3Send.mockResolvedValueOnce({
       Contents: [{ Key: "attachments/b" }],
@@ -404,6 +344,91 @@ describe("listObjects", () => {
       { key: "attachments/b", lastModified: undefined, size: undefined },
     ]);
     expect(page.nextContinuationToken).toBeUndefined();
+  });
+});
+
+describe("listCommonPrefixes", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("lists one level of prefixes under the given prefix in the given bucket", async () => {
+    s3Send.mockResolvedValueOnce({
+      CommonPrefixes: [
+        { Prefix: "vibe-environments/preview_a/" },
+        { Prefix: undefined },
+        { Prefix: "vibe-environments/preview_b/" },
+      ],
+      IsTruncated: true,
+      NextContinuationToken: "next-token",
+    });
+
+    const page = await listCommonPrefixes({
+      prefix: "vibe-environments/",
+      bucket: "transcripts-bucket",
+      continuationToken: "token-1",
+      maxKeys: 50,
+    });
+
+    const command = s3Send.mock.calls[0][0] as {
+      input: Record<string, unknown>;
+    };
+    expect(command.input).toEqual({
+      Bucket: "transcripts-bucket",
+      Prefix: "vibe-environments/",
+      Delimiter: "/",
+      ContinuationToken: "token-1",
+      MaxKeys: 50,
+    });
+    expect(page).toEqual({
+      prefixes: [
+        "vibe-environments/preview_a/",
+        "vibe-environments/preview_b/",
+      ],
+      nextContinuationToken: "next-token",
+    });
+  });
+
+  it("omits the continuation token when the listing is exhausted", async () => {
+    s3Send.mockResolvedValueOnce({
+      IsTruncated: false,
+      NextContinuationToken: "should-be-ignored",
+    });
+
+    const page = await listCommonPrefixes({
+      prefix: "vibe-environments/",
+      bucket: "transcripts-bucket",
+    });
+
+    expect(page).toEqual({ prefixes: [], nextContinuationToken: undefined });
+  });
+});
+
+describe("deleteArtifact", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("deletes the key from the configured bucket when no bucket is passed", async () => {
+    s3Send.mockResolvedValueOnce({});
+
+    await deleteArtifact("attachments/org/doc/file");
+
+    expect(s3Send).toHaveBeenCalledTimes(1);
+    const command = s3Send.mock.calls[0][0] as {
+      input: Record<string, unknown>;
+    };
+    expect(command).toBeInstanceOf(DeleteObjectCommand);
+    expect(command.input).toEqual({
+      Bucket: "test-bucket",
+      Key: "attachments/org/doc/file",
+    });
+  });
+
+  it("propagates an S3 failure", async () => {
+    s3Send.mockRejectedValueOnce(new Error("AccessDenied"));
+
+    await expect(deleteArtifact("k")).rejects.toThrow("AccessDenied");
   });
 });
 
@@ -448,109 +473,31 @@ describe("deleteObjects", () => {
     ).rejects.toThrow("AccessDenied");
   });
 
-  it("rejects more than 1000 keys in a single call", async () => {
-    const tooMany = Array.from({ length: 1001 }, (_, i) => `attachments/${i}`);
+  it("accepts exactly the batch cap in one request carrying every key", async () => {
+    s3Send.mockResolvedValueOnce({});
+    const keys = Array.from(
+      { length: S3_BATCH_DELETE_MAX_KEYS },
+      (_, i) => `attachments/${i}`
+    );
+
+    await deleteObjects(keys, "attachment-bucket");
+
+    expect(s3Send).toHaveBeenCalledTimes(1);
+    const command = s3Send.mock.calls[0][0] as {
+      input: { Delete: { Objects: { Key: string }[] } };
+    };
+    expect(command.input.Delete.Objects).toEqual(keys.map((Key) => ({ Key })));
+  });
+
+  it("rejects more than the batch cap in a single call", async () => {
+    const tooMany = Array.from(
+      { length: S3_BATCH_DELETE_MAX_KEYS + 1 },
+      (_, i) => `attachments/${i}`
+    );
     await expect(deleteObjects(tooMany, "attachment-bucket")).rejects.toThrow(
-      "at most 1000 keys"
+      `at most ${S3_BATCH_DELETE_MAX_KEYS} keys`
     );
     expect(s3Send).not.toHaveBeenCalled();
-  });
-});
-
-describe("getCatalogAssetUploadUrl", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("tiers zip bundles to INTELLIGENT_TIERING", async () => {
-    await getCatalogAssetUploadUrl({
-      orgId: "org",
-      itemId: "item",
-      kind: "zip",
-      contentType: "application/zip",
-      contentLength: 2048,
-      bucket: "plugin-store-bucket",
-    });
-
-    const command = vi.mocked(getSignedUrl).mock.calls[0][1] as {
-      input: Record<string, unknown>;
-    };
-    // StorageClass is hoisted into the signed query string by the presigner, so
-    // the uploader applies it with no header change.
-    expect(command.input).toMatchObject({
-      Bucket: "plugin-store-bucket",
-      ContentLength: 2048,
-      ContentType: "application/zip",
-      Key: "org/org/catalog/item/zip",
-      StorageClass: INTELLIGENT_TIERING_STORAGE_CLASS,
-    });
-  });
-
-  it("leaves logos on S3 Standard (no StorageClass set)", async () => {
-    await getCatalogAssetUploadUrl({
-      orgId: "org",
-      itemId: "item",
-      kind: "logo",
-      contentType: "image/png",
-      contentLength: 1024,
-      bucket: "plugin-store-bucket",
-    });
-
-    const command = vi.mocked(getSignedUrl).mock.calls[0][1] as {
-      input: Record<string, unknown>;
-    };
-    expect(command.input.StorageClass).toBeUndefined();
-    expect(command.input).toMatchObject({
-      Key: "org/org/catalog/item/logo",
-    });
-  });
-});
-
-describe("getCatalogAssetBytes", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  /** Build a GetObject response whose Body streams `bytes`. */
-  function s3ObjectResponse(bytes: Uint8Array, contentLength?: number) {
-    return {
-      ContentLength: contentLength,
-      Body: { transformToByteArray: () => Promise.resolve(bytes) },
-    };
-  }
-
-  it("returns the bytes for an in-cap asset", async () => {
-    const payload = new Uint8Array([1, 2, 3, 4]);
-    s3Send.mockResolvedValueOnce(s3ObjectResponse(payload, payload.length));
-
-    const result = await getCatalogAssetBytes("k", "plugin-store-bucket");
-
-    expect(Buffer.from(result)).toEqual(Buffer.from(payload));
-  });
-
-  it("rejects up front when ContentLength exceeds the cap (no full download)", async () => {
-    const transformToByteArray = vi.fn();
-    s3Send.mockResolvedValueOnce({
-      ContentLength: CATALOG_ASSET_MAX_BYTES + 1,
-      Body: { transformToByteArray },
-    });
-
-    await expect(
-      getCatalogAssetBytes("k", "plugin-store-bucket")
-    ).rejects.toBeInstanceOf(CatalogAssetTooLargeError);
-    // Guard tripped before the body was streamed into memory.
-    expect(transformToByteArray).not.toHaveBeenCalled();
-  });
-
-  it("rejects when the downloaded buffer exceeds the cap despite a small/absent ContentLength", async () => {
-    // ContentLength is omitted (or understated) — the post-download length check
-    // is the authoritative guard and must still reject.
-    const bytes = new Uint8Array(CATALOG_ASSET_MAX_BYTES + 1);
-    s3Send.mockResolvedValueOnce(s3ObjectResponse(bytes, undefined));
-
-    await expect(
-      getCatalogAssetBytes("k", "plugin-store-bucket")
-    ).rejects.toBeInstanceOf(CatalogAssetTooLargeError);
   });
 });
 

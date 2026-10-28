@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import { AgentComponentInvocationKind } from "@repo/api/src/types/agent-component-invocation";
 import type { NormalizedSession } from "@repo/lib/harness/types";
+import { describe, test } from "vitest";
 import { storedCommandCandidates } from "../src/main/database/component-invocation-stored-candidates.js";
 import { deriveAgentComponentInvocationCandidates } from "../src/main/database/component-invocations.js";
 import { makeSession } from "./normalized-session-test-utils.js";

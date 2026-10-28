@@ -24,6 +24,7 @@ import {
 } from "@repo/api/src/types/agent-component";
 import type { TransactionClient } from "@repo/database";
 import type { DesktopAgentComponentsPayload } from "@/lib/desktop-agent-sessions-schema";
+import { indexKeyLookupCandidates } from "@/lib/index-key-lookup";
 import { skillShadowBareName } from "@/lib/skill-shadow";
 
 type SyncedComponent = DesktopAgentComponentsPayload["components"][number];
@@ -107,18 +108,34 @@ async function resolvedSkillKeysForTarget(
       resolved.add(component.componentKey);
     }
   }
+  // ISS-8200: `componentKey` is stored PROJECTED (ISS-8069), so an equality `in`
+  // over the bare names misses a skill whose name was over the byte budget and
+  // the guard then lets that skill's phantom command row through. Probe every
+  // key the name could be stored under and map each hit back to the BARE name,
+  // because that is what the caller's shadow-candidate map is keyed on — a
+  // projected `componentKey` returned verbatim would match no candidate and the
+  // widened lookup would buy nothing.
+  const bareNameByStoredKey = new Map<string, string>();
+  for (const bareName of bareNames) {
+    for (const candidate of indexKeyLookupCandidates(bareName)) {
+      bareNameByStoredKey.set(candidate, bareName);
+    }
+  }
   const stored = await db.agentComponent.findMany({
     where: {
       computeTargetId,
       componentKind: AgentComponentKind.Skill,
       resolvedState: ComponentResolvedState.Resolved,
-      componentKey: { in: bareNames },
+      componentKey: { in: [...bareNameByStoredKey.keys()] },
     },
     select: { componentKey: true },
   });
   for (const row of stored) {
-    if (row.componentKey) {
-      resolved.add(row.componentKey);
+    const bareName = row.componentKey
+      ? bareNameByStoredKey.get(row.componentKey)
+      : undefined;
+    if (bareName) {
+      resolved.add(bareName);
     }
   }
   return resolved;

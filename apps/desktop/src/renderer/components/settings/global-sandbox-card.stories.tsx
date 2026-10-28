@@ -23,7 +23,8 @@ type SandboxApiScenario = {
 };
 
 const meta = {
-  title: "Desktop/Settings/Global Sandbox Section",
+  title: "Composites v1.0/Desktop Shell/Global Sandbox Card",
+  tags: ["deprecated"],
   component: GlobalSandboxSection,
   parameters: {
     layout: "centered",

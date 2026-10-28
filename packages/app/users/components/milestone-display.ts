@@ -1,5 +1,4 @@
 import { MilestoneKind, type UserMilestone } from "@repo/api/src/types/user";
-import { formatTokenCount } from "../../shared/lib/format-utils";
 
 // FEA-4108: canonical display map for lifetime milestones. Kept in a lightweight
 // module (no component runtime, no heavy parsers) so both the in-app Milestones
@@ -11,7 +10,6 @@ import { formatTokenCount } from "../../shared/lib/format-utils";
 export const MilestoneIcon = {
   GitMerge: "git-merge",
   FileText: "file-text",
-  Zap: "zap",
 } as const;
 export type MilestoneIcon = (typeof MilestoneIcon)[keyof typeof MilestoneIcon];
 
@@ -35,11 +33,6 @@ const MILESTONE_DISPLAY: Record<MilestoneKind, MilestoneDisplay> = {
     detail: "Lifetime documents created",
     formatTitle: (threshold) =>
       `${threshold.toLocaleString()} documents created`,
-  },
-  [MilestoneKind.TokensUsed]: {
-    icon: MilestoneIcon.Zap,
-    detail: "Lifetime tokens across all models",
-    formatTitle: (threshold) => `${formatTokenCount(threshold)} tokens`,
   },
 };
 

@@ -132,8 +132,8 @@ const bundle = {
 // literal.
 //
 // WHY (do not "simplify" this back to an inline object literal): the whole
-// snapshot is inlined into the main-process `startup` chunk, which electron-vite
-// runs through vite's `[vite:esbuild-transpile]` pass. esbuild's transform
+// snapshot is inlined into the main-process `startup` chunk, which the main
+// build runs through vite's `[vite:esbuild-transpile]` pass. esbuild's transform
 // mis-parses a code chunk once it crosses a size boundary (~2MB): it drops a
 // string terminator mid-object and reports a spurious "Unterminated string
 // literal" on a perfectly valid quote further down (FEA-3886). The failure is

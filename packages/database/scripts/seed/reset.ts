@@ -96,7 +96,6 @@ export async function resetOrgData(
   const strategy = getSeedTransactionStrategy(profile);
   const runReset = async (client: ResetClient) => {
     const scope = await collectResetScope(client, organizationId);
-    await clearPreservedIdentityScalars(client, organizationId);
     return deleteResettableRows(client, organizationId, scope);
   };
 
@@ -313,30 +312,6 @@ async function collectResetScope(
   };
 }
 
-async function clearPreservedIdentityScalars(
-  prisma: ResetClient,
-  organizationId: string
-): Promise<void> {
-  await prisma.user.updateMany({
-    where: { organizationId },
-    data: {
-      claudeApiKeyEncrypted: null,
-      claudeApiKeyLastFour: null,
-      claudeApiKeySetAt: null,
-      preferredComputeTargetId: null,
-    },
-  });
-  await prisma.organization.update({
-    where: { id: organizationId },
-    data: {
-      claudeApiKeyEncrypted: null,
-      claudeApiKeyLastFour: null,
-      claudeApiKeySetAt: null,
-    },
-    select: { id: true },
-  });
-}
-
 async function deleteResettableRows(
   prisma: ResetClient,
   organizationId: string,
@@ -382,9 +357,6 @@ async function deleteResettableRows(
     prisma.sessionDetail.deleteMany({
       where: { artifact: { is: { organizationId } } },
     })
-  );
-  await deleteAndRecord(counts, "ChatSession", () =>
-    prisma.chatSession.deleteMany({ where: { organizationId } })
   );
 
   await deleteAndRecord(counts, "ApiKey", () =>

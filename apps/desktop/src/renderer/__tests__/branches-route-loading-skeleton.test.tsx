@@ -10,24 +10,20 @@
  * real view replaces it.
  */
 
-import type { AgentSessionListResponse } from "@repo/api/src/types/agent-session";
-import { cleanup, render, screen } from "@testing-library/react";
+import { CardDensity } from "@closedloop-ai/design-system/components/ui/card-density";
 import {
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
-import { type Deferred, deferred } from "../../../test/deferred.js";
-import { DesktopNavigationApp } from "../App";
+  restoreTrackStub,
+  stubTrackGap,
+  stubTrackWidth,
+  type TrackStubDescriptors,
+} from "@repo/app/shared/components/__tests__/summary-card-track-stub";
+import { screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  createDesktopNavigation,
-  type DesktopNavigation,
-} from "../navigation/desktop-adapter";
-import { DesktopAppCoreProvider } from "../shared-agent-sessions/desktop-app-core-provider";
+  renderDesktopApp,
+  setupAppShellSuite,
+  TEST_TIMEOUT_MS,
+} from "./app-shell-harness";
 
 // Gate that keeps the mocked BranchesView suspended until the test releases it,
 // so the chunk-load fallback stays on screen long enough to assert against.
@@ -66,86 +62,84 @@ vi.mock("../components/UpdateBanner", () => ({
   UpdateBanner: () => null,
 }));
 
-const activeNavigations = new Set<DesktopNavigation>();
-
 describe("Branches route initial navigation", () => {
-  beforeAll(() => {
-    Object.defineProperty(window, "matchMedia", {
-      configurable: true,
-      value: vi.fn(() => ({
-        addEventListener: vi.fn(),
-        addListener: vi.fn(),
-        dispatchEvent: vi.fn(),
-        matches: false,
-        media: "",
-        onchange: null,
-        removeEventListener: vi.fn(),
-        removeListener: vi.fn(),
-      })),
-    });
-  });
+  // ISS-8118: adopt the shared harness for timeout budgets and lifecycle —
+  // asyncUtilTimeout (15 s) < testTimeout (30 s), matchMedia, ResizeObserver,
+  // localStorage, desktopApi, and afterEach cleanup. Replaces the bare 15_000
+  // per-test timeout with the harness's named TEST_TIMEOUT_MS so the pair of
+  // budgets stays decoupled and named.
+  setupAppShellSuite();
 
   beforeEach(() => {
     branchesGate.reset();
-    installDesktopApi(deferred<AgentSessionListResponse>());
+  });
+
+  it(
+    "shows the branches skeleton, not a blank Loading… canvas, while the chunk loads",
+    async () => {
+      renderDesktopApp("#/branches");
+
+      // Load window held open: the branches skeleton scaffold is on screen and
+      // the shared blank "Loading…" PageFallback is not.
+      expect(
+        await screen.findByTestId("branches-loading-skeleton")
+      ).toBeDefined();
+      expect(screen.queryByText("Loading...")).toBeNull();
+      expect(screen.queryByTestId("mock-branches-view")).toBeNull();
+
+      // Chunk resolves → the real view replaces the skeleton.
+      branchesGate.settled = true;
+      branchesGate.release();
+      expect(await screen.findByTestId("mock-branches-view")).toBeDefined();
+      expect(screen.queryByTestId("branches-loading-skeleton")).toBeNull();
+    },
+    TEST_TIMEOUT_MS
+  );
+});
+
+/**
+ * ISS-10540 (operator ruling, Tamsin, 2026-09-21): the desktop Branches
+ * skeleton row pins the Compact density tier, the same pin the live strip and
+ * the Sessions strip carry, so the swap from skeleton to cards does not change
+ * the strip's vertical rhythm.
+ *
+ * The pin is only observable where the MEASURED tier would resolve Comfortable.
+ * The shell harness reports `matchMedia` non-matching, which since ISS-5366 puts
+ * the tier in its below-`md` fixed-rank regime: a `wrapBelow` row pins two
+ * columns, so a 600px track pairs into (600 − 16) / 2 = 292px cells, over the
+ * 260px comfortable floor, and an un-pinned row would hand the roomy card back.
+ * An unmeasured jsdom row folds to Compact on its own and would pass with the
+ * prop deleted.
+ */
+describe("Branches route skeleton density (ISS-10540)", () => {
+  const ROOMY_PAIRED_TRACK_WIDTH = 600;
+  let trackStub: TrackStubDescriptors | undefined;
+
+  setupAppShellSuite();
+
+  beforeEach(() => {
+    branchesGate.reset();
+    trackStub = stubTrackGap();
+    stubTrackWidth(ROOMY_PAIRED_TRACK_WIDTH);
   });
 
   afterEach(() => {
-    for (const navigation of activeNavigations) {
-      navigation.dispose();
+    if (trackStub) {
+      restoreTrackStub(trackStub);
+      trackStub = undefined;
     }
-    activeNavigations.clear();
-    cleanup();
-    window.location.hash = "";
   });
 
-  it("shows the branches skeleton, not a blank Loading… canvas, while the chunk loads", async () => {
-    renderDesktopApp("#/branches");
+  it(
+    "pins the skeleton strip Compact at a track where the measurement resolves Comfortable",
+    async () => {
+      renderDesktopApp("#/branches");
 
-    // Load window held open: the branches skeleton scaffold is on screen and
-    // the shared blank "Loading…" PageFallback is not.
-    expect(
-      await screen.findByTestId("branches-loading-skeleton")
-    ).toBeDefined();
-    expect(screen.queryByText("Loading...")).toBeNull();
-    expect(screen.queryByTestId("mock-branches-view")).toBeNull();
-
-    // Chunk resolves → the real view replaces the skeleton.
-    branchesGate.settled = true;
-    branchesGate.release();
-    expect(await screen.findByTestId("mock-branches-view")).toBeDefined();
-    expect(screen.queryByTestId("branches-loading-skeleton")).toBeNull();
-  }, 15_000);
-});
-
-function renderDesktopApp(initialHash: string) {
-  window.location.hash = initialHash;
-  const navigation = createDesktopNavigation();
-  activeNavigations.add(navigation);
-  return render(
-    <DesktopAppCoreProvider>
-      <DesktopNavigationApp navigation={navigation} />
-    </DesktopAppCoreProvider>
-  );
-}
-
-function installDesktopApi(listDeferred: Deferred<AgentSessionListResponse>) {
-  Object.defineProperty(window, "desktopApi", {
-    configurable: true,
-    value: {
-      agentSessionsApi: {
-        analytics: vi.fn(),
-        detail: vi.fn(),
-        list: vi.fn(() => listDeferred.promise),
-        usage: vi.fn(),
-      },
-      db: {
-        getSubAgents: vi.fn(),
-        getTools: vi.fn(),
-        getWorkflowData: vi.fn(),
-      },
-      getRuntimeStatus: vi.fn(() => new Promise(() => {})),
-      getAllFlags: vi.fn(() => Promise.resolve({ flags: [] })),
+      const skeleton = await screen.findByTestId("branches-loading-skeleton");
+      const row = skeleton.querySelector<HTMLElement>("[data-density]");
+      expect(row).not.toBeNull();
+      expect(row?.dataset.density).toBe(CardDensity.Compact);
     },
-  });
-}
+    TEST_TIMEOUT_MS
+  );
+});

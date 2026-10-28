@@ -1,0 +1,50 @@
+/* Peer carets on the doc-sync editor (PLN-2189 T-2.6). `--doc-sync-peer-color`
+ * is set per caret from the local colour palette (`shared/user-colors.ts`).
+ *
+ * Liveblocks renders its carets with the same `collaboration-carets__*`
+ * classes, so every rule is scoped to `.doc-sync-caret`, the class only
+ * `renderPeerCaret` adds; Liveblocks carets keep Liveblocks' own styling
+ * (AC-012). The scoped label rule also outranks Liveblocks' unscoped one,
+ * which still matches these elements, so it states every box property. */
+.doc-sync-caret.collaboration-carets__caret {
+  position: relative;
+  margin-inline: -1px;
+  border-inline: 1px solid var(--doc-sync-peer-color);
+  word-break: normal;
+  pointer-events: none;
+}
+
+.doc-sync-caret .collaboration-carets__label {
+  position: absolute;
+  inset: auto auto 100% -1px;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing);
+  padding: calc(var(--spacing) * 0.5) var(--spacing);
+  border-radius: var(--radius-sm);
+  background: var(--doc-sync-peer-color);
+  /* Not a theme colour: a peer's tag reads the same in light and dark, as
+   * the Liveblocks label does. */
+  color: var(--color-white);
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* `flex: none` and `max-width: none` keep the preflight `img { max-width:
+ * 100% }` from collapsing the avatar to 0 inside the shrink-to-fit label. */
+.doc-sync-caret .collaboration-carets__avatar {
+  flex: none;
+  width: var(--text-xs);
+  max-width: none;
+  height: var(--text-xs);
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.doc-sync-caret-selection {
+  background: color-mix(in oklab, var(--doc-sync-peer-color) 25%, transparent);
+}

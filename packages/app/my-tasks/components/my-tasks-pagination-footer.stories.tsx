@@ -40,9 +40,9 @@ const PARTIAL_TOTAL = resolveMyTasksRangeReadout({
 });
 
 const meta = {
-  title: "App Core/My Tasks/Pagination Footer",
+  title: "Composites v1.0/My Tasks/My Tasks Pagination Footer",
   component: MyTasksPaginationFooter,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   args: {
     onPageChange: () => undefined,
@@ -64,8 +64,8 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 /**
- * A whole queue that fits on one page. `TablePagination` renders nothing at
- * `totalPages <= 1`, so the strip is the readout alone — which is the point of
+ * A whole queue that fits on one page. `TablePaginationFooter` mounts no pager
+ * at `totalPages <= 1`, so the strip is the readout alone — which is the point of
  * mounting this footer unconditionally rather than behind a `totalPages > 1`
  * guard: the reader still gets told what they are looking at.
  */

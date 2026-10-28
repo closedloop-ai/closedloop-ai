@@ -24,7 +24,7 @@ import {
  * the previous detail's name. Without the key check that stale name would flash
  * under the new list for one frame on a direct detail→detail navigation.
  */
-export type DetailKind = "session" | "branch";
+export type DetailKind = "session" | "branch" | "document";
 
 /** Stable key identifying which detail a published title belongs to. */
 export function detailTitleKey(kind: DetailKind, id: string): string {

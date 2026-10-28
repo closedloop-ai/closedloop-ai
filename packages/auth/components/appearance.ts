@@ -99,6 +99,17 @@ export const githubFirstAuthPageAppearance: Appearance = {
       backgroundImage: "none",
       borderColor: "transparent",
       height: "2.5rem",
+      // ISS-10969 (PRD-754 UAT): the demotion above is about the SIGN-UP card,
+      // where the email submit must not compete with GitHub. The
+      // choose-organization task inherits this appearance and has no competitor
+      // — its submit is the only action on the screen — so the secondary fill
+      // read as a pale, disabled-looking CTA against the approved prototype's
+      // blue primary. Scoped by ancestor, like `footerAction__signOut` below, so
+      // the sign-up card keeps its demotion.
+      ".cl-taskChooseOrganization-root:has(.cl-form) &": {
+        background: "var(--primary)",
+        color: "var(--primary-foreground)",
+      },
     },
     // (`formButtonPrimary__icon: display none` is inherited from the base
     // appearance spread above.)
@@ -107,6 +118,16 @@ export const githubFirstAuthPageAppearance: Appearance = {
     // de-emphasized alternatives bucket.
     dividerRow: { opacity: "0.85" },
     dividerText: { color: "var(--muted-foreground)", fontSize: "0.75rem" },
+
+    // ISS-10970 (PRD-754 UAT): the organization-creation screen of Clerk's
+    // choose-organization session task — "Setup your organization", reached
+    // right after sign-up — drops the "Signed in as … / Sign out" row, which the
+    // approved prototype's create step does not have. Scoped by ancestor so the
+    // row stays on that task's choose screen (it has no form) and on every
+    // other task that shares this element key.
+    footerAction__signOut: {
+      ".cl-taskChooseOrganization-root:has(.cl-form) &": { display: "none" },
+    },
   },
 };
 
@@ -133,9 +154,9 @@ export const githubFirstAuthPageAppearance: Appearance = {
  * supplied provider-side (`provider.tsx` `variables`), so this config only maps
  * the structural chrome and the inner navigation rail.
  *
- * Consumed by the `apps/app` Settings page only. The desktop renderer has its
- * own `SettingsPanel` / `DesktopAccountTab` and does not embed these Clerk
- * profile surfaces, so this appearance is web-scoped.
+ * Consumed by the `apps/app` Settings page only. The desktop renderer composes
+ * its own Settings v2 root and does not embed these Clerk profile surfaces, so
+ * this appearance is web-scoped.
  */
 export const embeddedProfileAppearance: Appearance = {
   elements: {
@@ -180,14 +201,19 @@ export const embeddedProfileAppearance: Appearance = {
     // `focus-visible` ring on `--ring`) so the embed's fields read identically
     // to the native DS Input that sits right beside them in the Organization
     // tab, including in dark mode.
+    //
+    // ISS-9063: the ring is painted at FULL `--ring`, which is what
+    // `focus-visible:ring-ring focus-visible:ring-[3px]` compiles to on the DS
+    // Input. The 50% mix this used to carry was 2.16:1 on light `--background`,
+    // under WCAG 1.4.11's 3:1 — no saturated token clears the floor at half
+    // strength, which is why the shared token stopped being composited at /50.
     formFieldInput: {
       background: "var(--input)",
       borderColor: "var(--input-border)",
       borderRadius: "var(--radius)",
       "&:focus": {
         borderColor: "var(--ring)",
-        boxShadow:
-          "0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent)",
+        boxShadow: "0 0 0 3px var(--ring)",
       },
     },
     // The one filled primary action inside the embed is Clerk's own form submit

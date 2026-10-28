@@ -43,7 +43,7 @@ describe("navigation port", () => {
     expect(result.current.search.get("tab")).toBe("active");
   });
 
-  it("navigate, replace, and back update the current location", () => {
+  it("navigate, replace, back, and forward update the current location", () => {
     const memory = createMemoryNavigation({ initialPath: "/start" });
     const { result } = renderHook(
       () => ({ actions: useNavigation(), path: usePath() }),
@@ -65,6 +65,11 @@ describe("navigation port", () => {
       result.current.actions.back();
     });
     expect(result.current.path).toBe("/start");
+
+    act(() => {
+      result.current.actions.forward();
+    });
+    expect(result.current.path).toBe("/second");
   });
 
   it("counts refresh calls", () => {
@@ -206,6 +211,27 @@ describe("navigation port", () => {
 
     // No "//users/123" — that would be a protocol-relative URL.
     expect(result.current("/users/123")).toBe("/users/123");
+  });
+
+  it("the handle's replace swaps the current entry without pushing one", () => {
+    const memory = createMemoryNavigation({ initialPath: "/a" });
+    const { result } = renderHook(
+      () => ({ actions: useNavigation(), path: usePath() }),
+      { wrapper: createWrapper(memory.adapter) }
+    );
+    act(() => {
+      memory.navigate("/b?hierarchyExpanded=x");
+    });
+    act(() => {
+      memory.replace("/");
+    });
+    expect(memory.getCurrentHref()).toBe("/");
+
+    // The replaced entry is gone from the stack: back lands on "/a".
+    act(() => {
+      result.current.actions.back();
+    });
+    expect(result.current.path).toBe("/a");
   });
 });
 

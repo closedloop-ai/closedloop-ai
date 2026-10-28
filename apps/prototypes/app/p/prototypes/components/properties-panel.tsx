@@ -3,6 +3,11 @@
 // DS-GAP: local stand-in for the same proposed <PropertiesPanel> primitive
 // used by the Branches and Sessions prototypes. Keep this implementation in
 // lockstep with those reference surfaces until the pattern is promoted.
+// Promotion goes through /componentize-prototype in promotion mode (or, as the
+// alternative, a standalone design-system PR: component + story +
+// catalog:sync); all four stand-ins then swap to the real import together and
+// these markers are deleted. See the DS-GAP note in
+// .claude/skills/prototype/SKILL.md ("When no catalog component fits").
 
 import { cn } from "@repo/design-system/lib/utils";
 import { ChevronRightIcon } from "lucide-react";

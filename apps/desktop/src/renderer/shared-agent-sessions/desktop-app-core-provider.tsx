@@ -1,5 +1,6 @@
 import type { AgentComponentsDataSource } from "@repo/app/agents/data-source/agent-components-data-source";
 import { createHttpAgentComponentsDataSource } from "@repo/app/agents/data-source/agent-components-data-source";
+import { AgentComponentsLiveBridge } from "@repo/app/agents/data-source/agent-components-live-bridge";
 import type { AgentSessionsDataSource } from "@repo/app/agents/data-source/agent-sessions-data-source";
 import { createHttpAgentSessionsDataSource } from "@repo/app/agents/data-source/agent-sessions-data-source";
 import { AgentSessionsLiveBridge } from "@repo/app/agents/data-source/agent-sessions-live-bridge";
@@ -10,14 +11,11 @@ import {
 import type { ApiAdapter } from "@repo/app/shared/api/api-adapter";
 import { ApiAdapterProvider } from "@repo/app/shared/api/provider";
 import { useApiClient } from "@repo/app/shared/api/use-api-client";
-import type { FeatureFlagAdapter } from "@repo/app/shared/feature-flags/feature-flag-adapter";
-import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
-import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
+import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { GRIDVIEW_ADOPTION_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { makeQueryClient } from "@repo/app/shared/query/query-client";
-import {
-  createHttpTraceCommentsDataSource,
-  type TraceCommentsDataSource,
-} from "@repo/app/shared/trace-comments/trace-comments-data-source";
+import { SettingsHostAdapterProvider } from "@repo/app/shared/settings-host/provider";
+import { createHttpTraceCommentsDataSource } from "@repo/app/shared/trace-comments/trace-comments-data-source";
 import { TraceCommentsDataSourceProvider } from "@repo/app/shared/trace-comments/trace-comments-provider";
 import { registerSurfaceRoutingAdapter } from "@repo/shared-platform/gateway-dispatch";
 import { installGatewayFetchShim } from "@repo/shared-platform/gateway-fetch-shim";
@@ -30,18 +28,26 @@ import {
   useMemo,
   useRef,
 } from "react";
+import { useSyncConsentRecord } from "../components/onboarding/use-sync-consent-record";
 import {
   createDesktopRoutingAdapter,
   ensureDesktopRoutingSelection,
 } from "../engineer/desktop-routing-adapter";
+import { DesktopFeatureFlagProvider } from "../feature-flags/desktop-feature-flag-provider";
+import { DesktopRealtimeProvider } from "../realtime/desktop-realtime-provider";
+import { useRendererExceptionReporter } from "../renderer-exception-reporter";
+import { createDesktopSettingsHostAdapter } from "../settings-host/desktop-settings-host-adapter";
 import { DesktopBranchesConsumptionProvider } from "../shared-branches/desktop-branches-consumption";
-import { createDesktopTraceCommentsDataSource } from "../shared-trace-comments/desktop-trace-comments-data-source";
+import { useAppCoreQueryIdentity } from "./app-core-query-identity";
 import { createDesktopCloudApiAdapter } from "./cloud-api-adapter";
+import { CloudSessionsSyncBridge } from "./cloud-sessions-sync-bridge";
+import { createDesktopCloudPrimaryAgentSessionsDataSource } from "./desktop-agent-sessions-data-source";
 import {
-  CloudReadCutoverBlocker,
-  type CloudReadCutoverDecision,
-  CloudReadCutoverLatch,
   DesktopAppCoreMode,
+  DesktopAppCoreModeContext,
+  DesktopLocalReadReason,
+  resolveDesktopAppCoreMode,
+  resolveDesktopLocalReadReason,
 } from "./desktop-app-core-mode";
 import { DesktopAuthProvider, useDesktopAuth } from "./desktop-auth-provider";
 import { DesktopParsingBugFlagProvider } from "./desktop-parsing-bug-flag-provider";
@@ -50,31 +56,16 @@ import { InsightsLiveBridge } from "./insights-live-bridge";
 import { createLocalAgentComponentsDataSource } from "./local-agent-components-data-source";
 import { createLocalAgentSessionsDataSource } from "./local-agent-sessions-data-source";
 import { applyDesktopSessionsListPollDefaults } from "./sessions-list-poll-defaults";
-import { useCloudReadCutover } from "./use-cloud-read-cutover";
 import { useOnlineStatus } from "./use-online-status";
 
-const DesktopAppCoreModeContext = createContext<DesktopAppCoreMode>(
-  DesktopAppCoreMode.Local
-);
-
 /**
- * The read-source decision outside a mounted provider: local, because nobody is
- * signed in. Matches {@link DesktopAppCoreModeContext}'s `Local` default so a
- * view rendered in a test/story wrapper sees one consistent story.
+ * Why a surface outside a mounted provider is local: nobody is signed in.
+ * Matches {@link DesktopAppCoreModeContext}'s `Local` default so a view rendered
+ * in a test/story wrapper sees one consistent story.
  */
-const UNMOUNTED_CLOUD_READ_CUTOVER: CloudReadCutoverDecision = {
-  mode: DesktopAppCoreMode.Local,
-  blocker: CloudReadCutoverBlocker.NotAuthenticated,
-  failedOpen: false,
-  latch: CloudReadCutoverLatch.None,
-  itemsRemaining: null,
-  deadLetteredCount: 0,
-  cloudHoldsHistory: false,
-};
-
-const DesktopCloudReadCutoverContext = createContext<CloudReadCutoverDecision>(
-  UNMOUNTED_CLOUD_READ_CUTOVER
-);
+const DesktopLocalReadReasonContext = createContext<
+  DesktopLocalReadReason | undefined
+>(DesktopLocalReadReason.SignedOut);
 
 /**
  * The active app-core mode (PLN-1138 D-E), for surfaces that select their own
@@ -88,16 +79,18 @@ export function useDesktopAppCoreMode(): DesktopAppCoreMode {
 }
 
 /**
- * ISS-5477: WHY the active read source is what it is — the backlog condition
- * still blocking the cutover, whether the bounded fail-open let the reader
- * through anyway, and how much work is still local or abandoned.
+ * WHY the active read source is local — signed out, offline, or sync off — or
+ * `undefined` when the reader is on the cloud.
  *
  * Surfaces that already tell the user which source they are reading (the
  * read-source badge) consume this to say why, rather than a parallel indicator
- * growing beside them.
+ * growing beside them. Derived beside the mode from the same input, so the badge
+ * and the source can never describe different situations.
  */
-export function useDesktopCloudReadCutover(): CloudReadCutoverDecision {
-  return useContext(DesktopCloudReadCutoverContext);
+export function useDesktopLocalReadReason():
+  | DesktopLocalReadReason
+  | undefined {
+  return useContext(DesktopLocalReadReasonContext);
 }
 
 /**
@@ -105,13 +98,12 @@ export function useDesktopCloudReadCutover(): CloudReadCutoverDecision {
  *
  * `DesktopAuthProvider` (FEA-2219) sits at the root — above the rest of the
  * stack — because the live auth state it mirrors from the main-process session
- * manager is (with connectivity and, since ISS-5477, sync readiness) what
- *selects* the stack (PLN-1138 D-E). See `resolveCloudReadCutover`: a renderer
- * runs the cloud stack once it is authenticated, online, AND the local→cloud
- * backlog has drained; every other state runs local. {@link DesktopAppCoreModeStack}
- * rebuilds the stack as one unit per mode, so the app never observes a
- * half-configured stack and login / logout / connectivity flip it at runtime
- * with no reload.
+ * manager is (with connectivity and sync consent) what *selects* the stack
+ * (PLN-1138 D-E). See `resolveDesktopAppCoreMode`: a renderer runs the cloud
+ * stack once it is authenticated, online, AND permitted to sync; every other
+ * state runs local. {@link DesktopAppCoreModeStack} rebuilds the stack as one
+ * unit per mode, so the app never observes a half-configured stack and login /
+ * logout / connectivity flip it at runtime with no reload.
  *
  * `ApiAdapterProvider` carries the cloud transport (PLN-1138 D-G Option B):
  * `createDesktopCloudApiAdapter` marshals cloud REST requests over IPC to the
@@ -120,30 +112,27 @@ export function useDesktopCloudReadCutover(): CloudReadCutoverDecision {
  * credential never enters renderer JS — the auth port surfaces only a sentinel.
  *
  * **Sessions source selection (Phase 2, this file's job):** the Sessions views
- * read the org cloud API (the shared HTTP source, scope `"http"`, over the D-G
- * bridge) when authenticated + online, and the local SQLite source (scope
- * `"local"`, over IPC) otherwise. The `scope`-keyed React Query keys plus the
- * per-mode QueryClient keep the two sets isolated — no row ever crosses modes
- * (AC-3.1). See {@link DesktopSessionsViewSource}.
+ * use a Desktop cloud-primary adapter when authenticated + online + permitted
+ * to sync. It reads the org cloud API first and can retain honest local or
+ * last-good evidence after that read fails. Other modes keep the local SQLite
+ * source (scope `"local"`, over IPC). The `scope`-keyed React Query keys plus
+ * the per-mode QueryClient keep the sets isolated. See
+ * {@link DesktopSessionsViewSource}.
  *
  * **Agent-components source selection (FEA-3459):** like Sessions, the
  * agent-components workspace reads the org cloud API (the shared HTTP source,
- * scope `"agent-components:http"`) when authenticated + online, and the local
- * SQLite source (scope `"agent-components:local"`) otherwise — so Cloud mode
- * shows the org-wide deduped inventory with owner/collaborators/cohort metrics/
- * branches/multi-device provenance populated, not just this machine's local
- * components. See {@link DesktopAgentComponentsViewSource}.
+ * scope `"agent-components:http"`) when authenticated + online + permitted to
+ * sync, and the local SQLite source (scope `"agent-components:local"`)
+ * otherwise — so Cloud mode shows the org-wide deduped inventory with
+ * owner/collaborators/cohort metrics/branches/multi-device provenance
+ * populated, not just this machine's local components. See
+ * {@link DesktopAgentComponentsViewSource}.
  *
- * **Trace comments source selection (FEA-3460 / FEA-3522):** like Sessions and
- * agent-components, in Cloud mode the trace-comment views read from — and now
- * write to — the org cloud API (the shared HTTP source, scope `"http"`, over the
- * D-G bridge). FEA-3460 could only route *reads* over the bridge because it was
- * GET-only; FEA-3522's authenticated write transport (`cloud-api-fetch-ipc.ts`,
- * `WRITE_ALLOWLIST`) lets create / reply / update / delete land on the org too,
- * so the former cloud-reads / local-writes composite is gone. Every other state
- * (signed out / offline) stays fully local (scope `"desktop-local"`), and the
- * local SQLite store keeps its own cloud-sync push, so no local comment is lost.
- * See {@link DesktopTraceCommentsViewSource}.
+ * **Comments read and write the cloud API in every mode (PLN-2162 M5.2):**
+ * desktop keeps no comment data locally (Kerensa, 2026-10-05), so the trace-comment
+ * views always use the shared HTTP source over the D-G bridge. Signed out or
+ * offline, that read fails and the views show their existing failed-load
+ * state. See {@link DesktopTraceCommentsSource}.
  *
  * **Still local in both modes (until later phases):** the
  * Dashboard insights aggregates. `InsightsLiveBridge` therefore stays mounted in
@@ -162,9 +151,7 @@ export function DesktopAppCoreProvider({
   // v1). Ref-counted shim + Set-backed registry + idempotent repair keep this
   // correct under React Strict Mode's mount → unmount → remount cycle.
   //
-  // Unlike the web bootstrap (which guards on `shim.isFirstInstall` because
-  // `installEngineerFetchInterceptor` is a global, multi-caller install keyed on
-  // window state), this is the single app-core mount: each effect run registers
+  // This is the single app-core mount: each effect run registers
   // exactly one adapter and the cleanup disposes that same instance, so an
   // unconditional register/dispose pair is the idiomatic, leak-free shape here.
   //
@@ -185,9 +172,11 @@ export function DesktopAppCoreProvider({
 
   return (
     <DesktopAuthProvider>
-      <DesktopTranscriptTransportProvider>
-        <DesktopAppCoreModeStack>{children}</DesktopAppCoreModeStack>
-      </DesktopTranscriptTransportProvider>
+      <DesktopFeatureFlagProvider>
+        <DesktopTranscriptTransportProvider>
+          <DesktopAppCoreModeStack>{children}</DesktopAppCoreModeStack>
+        </DesktopTranscriptTransportProvider>
+      </DesktopFeatureFlagProvider>
     </DesktopAuthProvider>
   );
 }
@@ -196,7 +185,6 @@ export function DesktopAppCoreProvider({
 type DesktopAppCoreStack = {
   mode: DesktopAppCoreMode;
   queryClient: QueryClient;
-  featureFlagAdapter: FeatureFlagAdapter;
   apiAdapter: ApiAdapter;
   /**
    * The local SQLite agent-components source (scope `"agent-components:local"`).
@@ -211,13 +199,6 @@ type DesktopAppCoreStack = {
    * overridden to the cloud HTTP source in cloud mode.
    */
   localAgentSessionsDataSource: AgentSessionsDataSource;
-  /**
-   * The local SQLite trace-comments source (scope `"desktop-local"`). Always
-   * built; the views are overridden to the cloud HTTP source in cloud mode
-   * (FEA-3460), while the local source stays the write target when signed out /
-   * offline.
-   */
-  localTraceCommentsDataSource: TraceCommentsDataSource;
 };
 
 /**
@@ -242,86 +223,145 @@ function DesktopAppCoreModeStack({
 }: Readonly<{ children: ReactNode }>) {
   const { state } = useDesktopAuth();
   const isOnline = useOnlineStatus();
-  // ISS-5477: authentication alone no longer moves the read source. The cutover
-  // additionally requires the parse/import backlog to be complete and every
-  // desktop→cloud sync lane to report `drained` — otherwise the cloud would be
-  // read before it has received anything and the user's history would appear to
-  // vanish at the moment they signed in.
+  // Still read HERE, and no longer read by the mode below: the Settings adapter
+  // needs `refresh` so a saved sync level is re-read. What left is the read
+  // SOURCE's dependency on it — consent governs what LEAVES this Mac, and the
+  // reader's workspace is theirs to read either way (operator ruling,
+  // 2026-09-25). The egress gate reads the record in main, not here; see
+  // `resolveDesktopAppCoreMode`.
   //
-  // ISS-5714 (review thread): the WHOLE auth identity goes in, not just the
-  // status. Token application can switch straight from authenticated org A to
-  // authenticated org B, and a status-only hook would hand B the drained latch A
-  // earned — see `cloudReadCutoverIdentityKey`.
-  const cutover = useCloudReadCutover({
-    isOnline,
-    organizationId: state.organizationId,
-    status: state.status,
-    userId: state.userId,
-  });
-  const mode = cutover.mode;
+  // Only `refresh` is wanted, and it is stable; the record subscription this
+  // call also opens is INCIDENTAL, and a re-render of this component on a
+  // consent change is harmless because the mode below does not read the record.
+  const consent = useSyncConsentRecord(state.userId);
+  const modeInput = useMemo(
+    () => ({
+      isOnline,
+      status: state.status,
+    }),
+    [isOnline, state.status]
+  );
+  const mode = resolveDesktopAppCoreMode(modeInput);
+  const localReadReason = resolveDesktopLocalReadReason(modeInput);
   const stack = useDesktopAppCoreStack(mode);
+  useAppCoreQueryIdentity(
+    stack.queryClient,
+    state.userId,
+    state.organizationId
+  );
+  const settingsHostAdapter = useMemo(
+    () =>
+      createDesktopSettingsHostAdapter(
+        window.desktopApi,
+        state.organizationId,
+        consent.refresh
+      ),
+    [consent.refresh, state.organizationId]
+  );
 
   return (
-    <DesktopCloudReadCutoverContext.Provider value={cutover}>
+    <DesktopLocalReadReasonContext.Provider value={localReadReason}>
       <DesktopAppCoreModeContext.Provider value={mode}>
-        {/* ISS-5714: the Branch-only consumption context is mounted INSIDE the
-            cutover context (it used to sit above this stack) so Branches reads
-            its cloud-eligibility from the SAME decision Sessions does, instead
-            of re-deriving one from auth state alone. Nothing between the old
-            and new position consumes it, and this component never remounts, so
-            the Branch QueryClient still survives every mode transition. */}
+        {/* ISS-5714 / ISS-6972: Branches reads the SAME mode Sessions does
+            rather than re-deriving one from auth state. This component never
+            remounts, so the Branch QueryClient still survives every mode
+            transition. */}
         <DesktopBranchesConsumptionProvider
-          cloudHoldsHistory={cutover.cloudHoldsHistory}
+          readsCloud={mode === DesktopAppCoreMode.Cloud}
         >
-          <QueryClientProvider client={stack.queryClient}>
-            <FeatureFlagAdapterProvider adapter={stack.featureFlagAdapter}>
-              <ApiAdapterProvider adapter={stack.apiAdapter}>
-                <DesktopAgentComponentsViewSource
-                  localSource={stack.localAgentComponentsDataSource}
-                  mode={stack.mode}
-                >
-                  <DesktopTraceCommentsViewSource
-                    localSource={stack.localTraceCommentsDataSource}
+          {/*
+            KEYED BY THE CLIENT'S OWN MODE, and the key is load-bearing
+            (ISS-11249). `useDesktopAppCoreStack` builds a NEW `QueryClient`
+            whenever the mode changes, and React Query binds an observer to the
+            client it saw on its FIRST render and never rebinds it when the
+            context value changes. Without a key the subtree keeps every
+            observer it already had, so after a mode flip those queries read a
+            cache nothing writes to any more: an imperative
+            `setQueryData`/`getQueryData` (which resolve the CURRENT client)
+            lands in the new cache while the mounted reader still renders the
+            discarded one's value, forever and silently.
+
+            That is what kept the resumed sync step off screen — the card's
+            transition wrote the advanced run, the server accepted it, and the
+            modal's own snapshot query was bound to the pre-flip client and
+            never saw it.
+
+            Remounting is the honest accompaniment to swapping the client: a new
+            client has an empty cache, so every read below refetches on a mode
+            flip either way.
+          */}
+          <QueryClientProvider client={stack.queryClient} key={stack.mode}>
+            <ApiAdapterProvider adapter={stack.apiAdapter}>
+              <DesktopRealtimeProvider
+                enabled={stack.mode === DesktopAppCoreMode.Cloud}
+              >
+                {/* ISS-8379: the Settings host port. Mounted above both the
+                    legacy and the v2 Settings trees so either can consume the
+                    same adapter during rollout; it renders nothing and reads no
+                    experience flag. */}
+                <SettingsHostAdapterProvider adapter={settingsHostAdapter}>
+                  <DesktopAgentComponentsViewSource
+                    localSource={stack.localAgentComponentsDataSource}
                     mode={stack.mode}
                   >
-                    <AgentSessionsDataSourceProvider
-                      dataSource={stack.localAgentSessionsDataSource}
-                    >
-                      {/* Insights stay local in both modes (Phase 3 migrates them);
-                    the outer local source above feeds their push stream. */}
-                      <InsightsLiveBridge />
-                      {/* Local push for the Sessions views, local mode only: in cloud
-                    mode the views read HTTP, so local DB changes are irrelevant
-                    to them. A `null` slot (not an absent child) keeps the source
-                    layer below at a stable position across mode swaps. */}
-                      {stack.mode === DesktopAppCoreMode.Local ? (
-                        <AgentSessionsLiveBridge />
-                      ) : null}
-                      <DesktopSessionsViewSource
-                        localSource={stack.localAgentSessionsDataSource}
-                        mode={stack.mode}
+                    {/* ISS-6882: the Agents workspace's only invalidation channel.
+                      The local QueryClient below runs staleTime: Infinity with
+                      focus/reconnect refetches off, so without this bridge an
+                      import/install/uninstall/rescan left the component list,
+                      summary, facets, and detail stale until a renderer restart.
+                      Mounted unconditionally rather than gated on mode: the view
+                      source above already swaps to the HTTP source in cloud mode,
+                      and that source exposes no `subscribe`, so the bridge is an
+                      inert no-op there. */}
+                    <AgentComponentsLiveBridge />
+                    <DesktopTraceCommentsSource>
+                      <AgentSessionsDataSourceProvider
+                        dataSource={stack.localAgentSessionsDataSource}
                       >
-                        <DesktopParsingBugFlagProvider>
-                          {children}
-                        </DesktopParsingBugFlagProvider>
-                      </DesktopSessionsViewSource>
-                    </AgentSessionsDataSourceProvider>
-                  </DesktopTraceCommentsViewSource>
-                </DesktopAgentComponentsViewSource>
-              </ApiAdapterProvider>
-            </FeatureFlagAdapterProvider>
+                        {/* Insights stay local in both modes (Phase 3 migrates them);
+                    the outer local source above feeds their push stream. */}
+                        <InsightsLiveBridge />
+                        {/* The Sessions views' refresh channel for this mode, one
+                    slot either way so the source layer below keeps a stable
+                    position across mode swaps. Local: the local DB's push
+                    stream. Cloud: the views read HTTP (local DB changes are
+                    irrelevant to them and the push bridge is inert), so the
+                    trigger is this machine's own upsync lane — the rows it is
+                    landing in the cloud are exactly what the list is missing. */}
+                        {stack.mode === DesktopAppCoreMode.Local ? (
+                          <AgentSessionsLiveBridge />
+                        ) : (
+                          <CloudSessionsSyncBridge />
+                        )}
+                        <DesktopSessionsViewSource
+                          localSource={stack.localAgentSessionsDataSource}
+                          mode={stack.mode}
+                          organizationId={state.organizationId}
+                          userId={state.userId}
+                        >
+                          <DesktopParsingBugFlagProvider>
+                            {children}
+                          </DesktopParsingBugFlagProvider>
+                        </DesktopSessionsViewSource>
+                      </AgentSessionsDataSourceProvider>
+                    </DesktopTraceCommentsSource>
+                  </DesktopAgentComponentsViewSource>
+                </SettingsHostAdapterProvider>
+              </DesktopRealtimeProvider>
+            </ApiAdapterProvider>
           </QueryClientProvider>
         </DesktopBranchesConsumptionProvider>
       </DesktopAppCoreModeContext.Provider>
-    </DesktopCloudReadCutoverContext.Provider>
+    </DesktopLocalReadReasonContext.Provider>
   );
 }
 
 /**
  * Selects the Sessions read source for the *views* (PLN-1138 D-E / Phase 2).
  *
- * - **Cloud mode:** the shared HTTP source (scope `"http"`) so the views read
- *   the org cloud API over the D-G bridge, server sorted + paginated.
+ * - **Cloud mode, rollout off:** the original HTTP source is returned intact.
+ * - **Cloud mode, rollout on:** the Desktop cloud-primary source reads HTTP
+ *   first, then local or last-good evidence on failure.
  * - **Local mode:** the local SQLite source (scope `"local"`) — the same
  *   instance the outer provider already holds; its `desktop:db:changed` push is
  *   driven by the `AgentSessionsLiveBridge` mounted above.
@@ -338,20 +378,44 @@ function DesktopAppCoreModeStack({
 function DesktopSessionsViewSource({
   mode,
   localSource,
+  organizationId,
+  userId,
   children,
 }: Readonly<{
   mode: DesktopAppCoreMode;
   localSource: AgentSessionsDataSource;
+  organizationId: string | null;
+  userId: string | null;
   children: ReactNode;
 }>) {
   const apiClient = useApiClient();
-  const source = useMemo(
-    () =>
-      mode === DesktopAppCoreMode.Cloud
-        ? createHttpAgentSessionsDataSource(apiClient)
-        : localSource,
-    [mode, apiClient, localSource]
+  const reportException = useRendererExceptionReporter();
+  const gridviewAdoptionEnabled = useFeatureFlagEnabledOptional(
+    GRIDVIEW_ADOPTION_FEATURE_FLAG_KEY
   );
+  const source = useMemo(() => {
+    if (mode !== DesktopAppCoreMode.Cloud) {
+      return localSource;
+    }
+    const cloudSource = createHttpAgentSessionsDataSource(apiClient);
+    if (!gridviewAdoptionEnabled) {
+      return cloudSource;
+    }
+    return createDesktopCloudPrimaryAgentSessionsDataSource({
+      cloudSource,
+      identity: { organizationId, userId },
+      localSource,
+      reportCloudReadFailure: reportException,
+    });
+  }, [
+    mode,
+    apiClient,
+    localSource,
+    organizationId,
+    reportException,
+    gridviewAdoptionEnabled,
+    userId,
+  ]);
   return (
     <AgentSessionsDataSourceProvider dataSource={source}>
       {children}
@@ -377,6 +441,10 @@ function DesktopSessionsViewSource({
  * across a mode flip, and the `scope`-keyed cache plus the per-mode QueryClient
  * isolate the two inventories. `useApiClient()` is called unconditionally (Rules
  * of Hooks); the HTTP source is only constructed when the mode selects it.
+ *
+ * ISS-6888: this provides the local source with its `honorsDateWindow: true`
+ * declaration INTACT. The capability's rollout gate remains in
+ * `DesktopAgentsDateWindowGate`; this provider does not decide it.
  */
 function DesktopAgentComponentsViewSource({
   mode,
@@ -402,47 +470,13 @@ function DesktopAgentComponentsViewSource({
   );
 }
 
-/**
- * Selects the trace-comments source for the *views* (FEA-3460 / FEA-3522),
- * mirroring {@link DesktopSessionsViewSource} and
- * {@link DesktopAgentComponentsViewSource}.
- *
- * - **Cloud mode:** the shared HTTP source (scope `"http"`) so comments are read
- *   from AND written to the org cloud API over the D-G bridge — the same routes
- *   the web shell uses. FEA-3460 could only route reads over the bridge (it was
- *   GET-only, so a write over HTTP would be a silent status-0 network error);
- *   FEA-3522's authenticated write transport carries create / reply / update /
- *   delete through the bridge's trace-comment allowlist, so a comment authored on
- *   desktop in Cloud mode lands on the org.
- * - **Local mode / signed out / offline:** the desktop IPC source (scope
- *   `"desktop-local"`) — the same instance the outer stack already holds — for
- *   both reads and writes. Its SQLite store keeps its own cloud-sync push, so no
- *   local comment is lost.
- *
- * Always an inner `TraceCommentsDataSourceProvider` with only its *value*
- * swapped, so the mounted views keep their position and local UI state across a
- * mode flip. The `scope`-keyed comment query keys (see `traceCommentKeys`) plus
- * the per-mode QueryClient keep the two comment caches isolated.
- *
- * `useApiClient()` is called unconditionally (Rules of Hooks); the HTTP source
- * is only constructed when the mode actually selects it.
- */
-function DesktopTraceCommentsViewSource({
-  mode,
-  localSource,
+function DesktopTraceCommentsSource({
   children,
-}: Readonly<{
-  mode: DesktopAppCoreMode;
-  localSource: TraceCommentsDataSource;
-  children: ReactNode;
-}>) {
+}: Readonly<{ children: ReactNode }>) {
   const apiClient = useApiClient();
   const source = useMemo(
-    () =>
-      mode === DesktopAppCoreMode.Cloud
-        ? createHttpTraceCommentsDataSource(apiClient)
-        : localSource,
-    [mode, apiClient, localSource]
+    () => createHttpTraceCommentsDataSource(apiClient),
+    [apiClient]
   );
   return (
     <TraceCommentsDataSourceProvider dataSource={source}>
@@ -476,18 +510,11 @@ function createDesktopAppCoreStack(
   return {
     mode,
     queryClient: createQueryClientForMode(mode),
-    // Static (all flags off) only for the slice of the tree above `App`, which
-    // mounts the real registry-backed `DesktopFeatureFlagProvider` for every
-    // view. Kept so this provider is self-sufficient as a test/story wrapper.
-    featureFlagAdapter: createStaticFeatureFlagAdapter(),
     apiAdapter: createDesktopCloudApiAdapter(window.desktopApi),
     localAgentComponentsDataSource: createLocalAgentComponentsDataSource(
       window.desktopApi
     ),
     localAgentSessionsDataSource: createLocalAgentSessionsDataSource(
-      window.desktopApi
-    ),
-    localTraceCommentsDataSource: createDesktopTraceCommentsDataSource(
       window.desktopApi
     ),
   };
@@ -544,6 +571,25 @@ function createQueryClientForMode(mode: DesktopAppCoreMode): QueryClient {
     // changed.
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
+    // Every local read AND WRITE on this client is SQLite over IPC, which needs
+    // no network, and going offline is the state that SENDS a surface here —
+    // since sync consent stopped gating reads it is the ONLY state that sends a
+    // SIGNED-IN reader here, so anything paused on connectivity is paused for
+    // every local reader that still exists. React Query's stock
+    // `networkMode: "online"` pauses a first fetch on an empty cache while the
+    // machine is offline, so without this a cold offline start leaves Sessions,
+    // components and insights on a skeleton that never resolves — and it pauses
+    // MUTATIONS the same way, which is worse than a skeleton: a control renders,
+    // takes the click, and silently does nothing until the machine is back
+    // online.
+    //
+    // Accepted cost: the cloud-only HTTP queries that also ride this client
+    // while signed out or offline (comments, GitHub integration status, admin
+    // pack views, the audit view's projects and org users) fail fast with a
+    // transport error instead of pausing, and no longer auto-resume on
+    // reconnect. An honest error beats an indefinite skeleton; for comments it
+    // is the failed-load state PLN-2162 decision 11 calls for.
+    networkMode: "always",
   });
   applyDesktopSessionsListPollDefaults(client);
   return client;

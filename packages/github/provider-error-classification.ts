@@ -1,10 +1,15 @@
 import { z } from "zod";
+// Explicit `.ts` (ISS-10452): `never-scheduled-runs.ts` now reaches this module,
+// and that one is executed directly by `node` from
+// `scripts/ci/ready-to-enqueue.ts`, which resolves ESM specifiers literally
+// rather than probing extensions the way a bundler does.
 import {
+  GitHubOperationProviderResultStatus,
   type GitHubProviderResult,
   GitHubProviderResultStatus,
   type GitHubUserTokenProviderResult,
   GitHubUserTokenProviderResultStatus,
-} from "./provider-result";
+} from "./provider-result.ts";
 
 /**
  * PLN-1525/PLN-1535: every provider-error classification the GitHub read layer
@@ -75,6 +80,104 @@ export function classifyGitHubProviderError(
     };
   }
   return { status: GitHubProviderResultStatus.ProviderUnavailable };
+}
+
+export type GitHubOperationProviderFailure =
+  | {
+      status: typeof GitHubProviderResultStatus.ProviderRateLimit;
+      retryAfterSeconds: number | null;
+    }
+  | { status: typeof GitHubProviderResultStatus.ProviderPermissionFiltered }
+  | { status: typeof GitHubProviderResultStatus.CredentialUnauthorized }
+  | { status: typeof GitHubOperationProviderResultStatus.InvalidResponse }
+  | { status: typeof GitHubProviderResultStatus.ProviderUnavailable };
+
+const RETRYABLE_GITHUB_HTTP_STATUSES = new Set([408, 500, 502, 503, 504]);
+
+/** Classify a same-client repository probe that disambiguates a 404. */
+export function classifyGitHubRepositoryAccessProbeError(
+  error: unknown,
+  nowMs = Date.now()
+):
+  | GitHubOperationProviderFailure
+  | { status: typeof GitHubProviderResultStatus.ProviderRepoNotFound } {
+  const status = getGitHubErrorStatus(error);
+  if (status === 404) {
+    return { status: GitHubProviderResultStatus.ProviderRepoNotFound };
+  }
+  if (status === 401) {
+    return { status: GitHubProviderResultStatus.CredentialUnauthorized };
+  }
+  return classifyStructuredGitHubOperationFailure(error, nowMs);
+}
+
+/** Classify GitHub App installation-token acquisition by its exact stage. */
+export function classifyGitHubInstallationClientAcquisitionError(
+  error: unknown,
+  nowMs = Date.now()
+):
+  | GitHubOperationProviderFailure
+  | { status: typeof GitHubProviderResultStatus.ProviderInstallationNotFound } {
+  const status = getGitHubErrorStatus(error);
+  if (status === 404) {
+    return { status: GitHubProviderResultStatus.ProviderInstallationNotFound };
+  }
+  if (status === 401) {
+    return { status: GitHubProviderResultStatus.CredentialUnauthorized };
+  }
+  return classifyStructuredGitHubOperationFailure(error, nowMs);
+}
+
+function classifyStructuredGitHubOperationFailure(
+  error: unknown,
+  nowMs: number
+): GitHubOperationProviderFailure {
+  const status = getGitHubErrorStatus(error);
+  const retryAfterSeconds = getGitHubRetryAfterSeconds(error, nowMs);
+  if (
+    status === 429 ||
+    retryAfterSeconds !== null ||
+    hasStructuredRateLimitEvidence(error)
+  ) {
+    return {
+      status: GitHubProviderResultStatus.ProviderRateLimit,
+      retryAfterSeconds,
+    };
+  }
+  if (status === 403) {
+    return {
+      status: GitHubProviderResultStatus.ProviderPermissionFiltered,
+    };
+  }
+  if (status === null) {
+    return {
+      status: hasMalformedStructuredStatus(error)
+        ? GitHubOperationProviderResultStatus.InvalidResponse
+        : GitHubProviderResultStatus.ProviderUnavailable,
+    };
+  }
+  if (RETRYABLE_GITHUB_HTTP_STATUSES.has(status)) {
+    return { status: GitHubProviderResultStatus.ProviderUnavailable };
+  }
+  return { status: GitHubOperationProviderResultStatus.InvalidResponse };
+}
+
+function hasMalformedStructuredStatus(error: unknown): boolean {
+  if (!(error && typeof error === "object")) {
+    return false;
+  }
+  if (Reflect.has(error, "status")) {
+    return typeof Reflect.get(error, "status") !== "number";
+  }
+  if (!Reflect.has(error, "response")) {
+    return false;
+  }
+  const response = Reflect.get(error, "response");
+  return !(
+    response &&
+    typeof response === "object" &&
+    typeof Reflect.get(response, "status") === "number"
+  );
 }
 
 /**
@@ -249,7 +352,14 @@ function pushStringProperty(
  * classifier is shared by REST readers where a 404 means a missing ref, PR, or
  * comment — not a missing repository — so repository meaning belongs at the
  * operation, the same way `SelectedPullRequestProviderOperation` keys its own
- * 404 handling. Only the bundled pull-request read calls this.
+ * 404 handling.
+ *
+ * Scope is REPO-SCOPED GRAPHQL ACCESS, not one reader. Both repo-scoped GraphQL
+ * reads call it: the paged bundled read and the by-number self-heal read
+ * (`pull-requests-by-number.ts`), which passes `pagesFetched: 0` because a
+ * single-shot query has no earlier page to have proved the repo reachable. A
+ * future repo-scoped GraphQL reader belongs here too — what qualifies a caller
+ * is that a denial means "cannot reach THIS repo", not which reader it is.
  *
  * A GraphQL denial never carries an HTTP status: the request itself returns
  * 200 and octokit throws once it sees `errors` in the body, so status-based
@@ -259,7 +369,7 @@ function pushStringProperty(
  * every guard holds, because a false positive records a 6h no-access verdict
  * against a healthy credential and drops the repo out of the sweep.
  */
-export function classifyBundledRepositoryAccessFailure(
+export function classifyRepositoryAccessFailure(
   error: unknown,
   pagesFetched: number
 ): GitHubBundledRepositoryAccessFailure | null {
@@ -389,3 +499,120 @@ const GRAPHQL_RATE_LIMITED_TYPE = "RATE_LIMITED";
 export type GitHubBundledRepositoryAccessFailure =
   | { status: typeof GitHubProviderResultStatus.ProviderRepoForbidden }
   | { status: typeof GitHubProviderResultStatus.ProviderRepoNotFound };
+
+/**
+ * The partial `data` GitHub still returned alongside a thrown GraphQL error,
+ * paired with the `errors` from the same wrapper — the first candidate whose
+ * data passes the caller's own shape guard, since only that guard can say
+ * which wrapper holds ITS response.
+ *
+ * GitHub answers an aliased or multi-selection query with HTTP 200, a populated
+ * `data`, AND an `errors[]` for the selections it could not resolve — and
+ * octokit throws on that. Discarding it would throw away the selections that DID
+ * resolve. The errors come back with the data because reading `error.errors`
+ * instead misses a nested `response.data.data` payload's errors (ISS-10489).
+ *
+ * A candidate with no errors of its own does not qualify (marisolashgrove on
+ * #7440): its errors live on another wrapper, so salvaging it would attribute
+ * nothing and report every unresolved selection as cleanly absent. Every
+ * salvage in this package, `recoverPartialOpenPullRequests` included, routes
+ * through here so that rule has one owner.
+ */
+export function recoverPartialGraphqlEnvelope<T>(
+  error: unknown,
+  isData: (value: unknown) => value is T
+): { data: T; errors: readonly unknown[] } | null {
+  for (const candidate of partialGraphqlEnvelopeCandidates(error)) {
+    if (candidate.errors.length > 0 && isData(candidate.data)) {
+      return { data: candidate.data, errors: candidate.errors };
+    }
+  }
+  return null;
+}
+
+/**
+ * One wrapper's partial `data` TOGETHER WITH the `errors` that came in the same
+ * envelope, so a caller can attribute the errors to the data it salvaged.
+ *
+ * Pairing them is the point (ISS-10452, raised by tamsinb on #7440). A caller
+ * that recovers `data` from `error.response.data.data` and then reads
+ * `error.errors` gets an empty array — that wrapper's errors live at
+ * `error.response.data.errors` — so every per-node attribution silently comes
+ * back "nothing refused" over an answer GitHub demonstrably refused part of.
+ */
+export type PartialGraphqlEnvelope = {
+  data: unknown;
+  errors: readonly unknown[];
+};
+
+/**
+ * The envelopes a thrown GraphQL error can carry, newest wrapper first.
+ *
+ * The three shapes are octokit's `GraphqlResponseError` (`data` + `errors` hung
+ * off the error), the raw response body, and the body's own `data`. Each pairs
+ * with the `errors` that belong to IT — see {@link PartialGraphqlEnvelope}.
+ */
+function partialGraphqlEnvelopeCandidates(
+  error: unknown
+): PartialGraphqlEnvelope[] {
+  const responseData = (error as { response?: { data?: unknown } } | null)
+    ?.response?.data;
+  return [
+    {
+      data: (error as { data?: unknown } | null)?.data,
+      errors: errorsOf(error),
+    },
+    { data: responseData, errors: errorsOf(responseData) },
+    {
+      data: (responseData as { data?: unknown } | null)?.data,
+      errors: errorsOf(responseData),
+    },
+  ];
+}
+
+function errorsOf(value: unknown): readonly unknown[] {
+  const errors = (value as { errors?: unknown } | null)?.errors;
+  return Array.isArray(errors) ? errors : [];
+}
+
+/**
+ * The error entries a thrown GraphQL error carries, from whichever wrapper has
+ * them — for a caller that wants the entries without caring which envelope the
+ * data came from, such as a failure detail on a read it could NOT salvage.
+ */
+export function graphqlErrorEntries(error: unknown): readonly unknown[] {
+  return (
+    partialGraphqlEnvelopeCandidates(error).find(
+      (candidate) => candidate.errors.length > 0
+    )?.errors ?? []
+  );
+}
+
+/**
+ * The first `limit` GraphQL error `path`s, dotted, for a failure detail.
+ *
+ * `path` is the only field that names WHICH selection GitHub refused, and
+ * `message` — the one thing callers used to keep — repeats verbatim across every
+ * entry (`Resource not accessible by integration`), so a detail built from the
+ * message alone says a node was unreadable without saying which. Bounded because
+ * one answer can carry hundreds of entries and this string is logged every tick.
+ *
+ * Takes the entries rather than the error, so the caller decides which
+ * envelope's errors these are — see {@link partialGraphqlEnvelopeCandidates}.
+ */
+export function graphqlErrorPaths(
+  errors: readonly unknown[],
+  limit: number
+): string[] {
+  const paths: string[] = [];
+  for (const entry of errors) {
+    if (paths.length >= limit) {
+      break;
+    }
+    const path = (entry as { path?: unknown } | null)?.path;
+    if (Array.isArray(path)) {
+      paths.push(path.join("."));
+    }
+  }
+  return paths;
+}

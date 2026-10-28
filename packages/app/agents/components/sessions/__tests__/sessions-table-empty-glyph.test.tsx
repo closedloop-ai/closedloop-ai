@@ -1,11 +1,12 @@
+import type { SessionTableRow } from "@repo/app/agents/lib/session-list-row";
 import { stubContainerWidthPx } from "@repo/app/test/mocks/container-width";
 import { tooltipMockModule } from "@repo/app/test/mocks/tooltip";
 import { GridEmptyValue } from "@repo/design-system/components/ui/grid-table";
 import { render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CostAvailability } from "../../../lib/cost-availability";
+import { SessionsTable } from "../session-detail-table";
 import { createSessionTableRowFixture } from "../session-list-fixtures";
-import { SessionsTable, type SessionTableRow } from "../sessions-table";
 
 vi.mock("@repo/design-system/components/ui/tooltip", () => tooltipMockModule);
 

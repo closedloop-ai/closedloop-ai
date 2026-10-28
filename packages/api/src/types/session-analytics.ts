@@ -50,9 +50,17 @@ export const LOSS_CLASS_ORDER: readonly LossClass[] = [
 ];
 
 /**
- * Behavioral causes, read off the terminal `AgentSessionState` a session landed
- * in when no throttle source was recorded. Derived, never stored as a second
- * taxonomy.
+ * Behavioral causes for a coachable (actionable) loss. Derived per read, never
+ * stored as a second taxonomy.
+ *
+ * ONLY `DeadEnded` IS REACHABLE. ISS-4654 retired the state that distinguished
+ * a swept-idle run from a dead-ended one, and no other recorded signal replaces
+ * it, so `behavioralCauseOf`
+ * (`apps/api/app/insights/session-analytics-classify.ts`) returns `DeadEnded`
+ * for every actionable loss and the "Abandoned mid-run" bucket is permanently
+ * empty. `Abandoned` is kept because retiring it spans this taxonomy, the
+ * loss-causes UI, and the prototypes' own copy; do not read this map as two
+ * derivable buckets.
  */
 export const BehavioralCause = {
   Abandoned: "abandoned",
@@ -146,8 +154,7 @@ export type LostWorkPersonRow = {
 /**
  * Display labels for the throttle sources that count as a platform-caused
  * failure. Lives here rather than beside the enum in `agent-session.ts` because
- * these are analytics presentation labels — and because that module is a
- * shrink-only grandfathered file.
+ * these are analytics presentation labels.
  *
  * `SessionTraceThrottleSourceType.TokenSnapshot` is intentionally absent: it is
  * a usage sample, never a cause of loss, and is filtered out before any rollup
@@ -244,7 +251,37 @@ export type ModelRightSizingRow = {
   usd: number;
   errorOutcomeUsd: number;
   sessions: number;
+  /**
+   * Median per-session BILLED tokens: all four classes, prompt-cache reads
+   * included. The original basis of this field, unchanged.
+   *
+   * SUPERSEDED by {@link ModelRightSizingRow.medianWorkTokens} and retired in a
+   * LATER release. It is kept, and kept on its original basis, only so an
+   * `apps/app` build that predates the new field goes on rendering exactly the
+   * number it has always rendered: `apps/api` and `apps/app` are separate
+   * Vercel deploy units on one push, so for a window one of them is old.
+   * Changing this field's basis in place is what would let that window render
+   * first-pass numbers under billed copy, or billed numbers under first-pass
+   * copy. Do not read it for a new consumer (ISS-5189).
+   */
   medianTokens: number;
+  /**
+   * Median per-session FIRST-PASS tokens: input, output, and cache writes.
+   * Prompt-cache READS are excluded, so this measures job size rather than how
+   * much a harness replays one cached prefix. It is the job-size half of the
+   * verdict only — the cost-per-token half divides spend by every billed token,
+   * a deliberately different basis (ISS-5189).
+   *
+   * ADDITIVE and OPTIONAL. OMITTED, never `null` and emphatically never `0`,
+   * when no median could be computed for this model: a real `0` is reachable on
+   * this narrowed basis (it needs only input, output and cache writes to be
+   * zero), so a fabricated one would be indistinguishable from a measurement —
+   * and it would satisfy the Over-powered verdict's small-jobs guard. A reader
+   * that does not find this key renders its unavailable treatment; it must NOT
+   * fall back to {@link ModelRightSizingRow.medianTokens}, whose billed basis
+   * the copy beside this column does not describe.
+   */
+  medianWorkTokens?: number;
   usdPerSession: number;
   verdict: ModelVerdict;
   /**

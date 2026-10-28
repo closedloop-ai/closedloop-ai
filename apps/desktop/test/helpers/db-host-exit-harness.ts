@@ -20,6 +20,7 @@ import {
   DbHostRequestKind,
   DbHostResponseKind,
 } from "../../src/main/database/db-host/db-host-protocol.js";
+import type { DbHostExitDiagnostics } from "../../src/main/telemetry/telemetry-protocol.js";
 import type {
   DbHostChildExitListener,
   DbHostChildListenerArgs,
@@ -53,8 +54,25 @@ export type DbHostExitHarness = {
   runRestartBackoff: () => void;
   /** How many restart timers were armed. */
   armedRestartCount: () => number;
+  /** How many times the client called `fork`, throws included. */
+  forkCount: () => number;
   /** Drain the microtask queue. */
   settle: () => Promise<void>;
+};
+
+export type DbHostExitHarnessOptions = {
+  /**
+   * ISS-9013 — make a fork THROW instead of returning a child. Called with the
+   * 1-based fork ordinal; return the error to throw, or `null` for a child.
+   *
+   * A synchronous fork throw is a different production path from a spawn that
+   * rejects — `spawn()` calls `fork` synchronously, so the throw escapes the
+   * ladder's backoff-timer callback rather than reaching its `.then` rejection
+   * arm. Fork 1 must return a child: the harness readies it before returning.
+   */
+  forkError?: (forkCount: number) => Error | null;
+  /** The ladder gave up; see `DbHostClient.onRestartExhausted`. */
+  onRestartExhausted?: (event: DbHostExitDiagnostics) => void;
 };
 
 /**
@@ -125,11 +143,14 @@ export async function drainMicrotasks(): Promise<void> {
  * Start a `DbHostClient` over fake children with an injected timer, and resolve
  * once the first child has reported Ready.
  */
-export async function startDbHostExitHarness(): Promise<DbHostExitHarness> {
+export async function startDbHostExitHarness(
+  options: DbHostExitHarnessOptions = {}
+): Promise<DbHostExitHarness> {
   const children: FakeDbHostChild[] = [];
   const logs: string[] = [];
   const armedTimers: (() => void)[] = [];
   let pendingTimer: (() => void) | null = null;
+  let forkCount = 0;
 
   const setTimeoutFn = ((callback: () => void) => {
     pendingTimer = callback;
@@ -149,9 +170,15 @@ export async function startDbHostExitHarness(): Promise<DbHostExitHarness> {
       // no-op
     },
     onLog: (message) => logs.push(message),
+    onRestartExhausted: options.onRestartExhausted,
     setTimeoutFn,
     clearTimeoutFn,
     fork: () => {
+      forkCount += 1;
+      const forkError = options.forkError?.(forkCount) ?? null;
+      if (forkError) {
+        throw forkError;
+      }
       const { child, api } = makeFakeChild();
       children.push(api);
       // The structural DbHostProcess shape is satisfied by the fake; the cast is
@@ -178,6 +205,7 @@ export async function startDbHostExitHarness(): Promise<DbHostExitHarness> {
       timer?.();
     },
     armedRestartCount: () => armedTimers.length,
+    forkCount: () => forkCount,
     settle: drainMicrotasks,
   };
 }

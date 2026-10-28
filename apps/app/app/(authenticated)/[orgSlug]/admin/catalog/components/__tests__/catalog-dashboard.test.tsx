@@ -10,9 +10,39 @@ import {
   API_TIMEOUT_ERROR_CODE,
   API_TIMEOUT_ERROR_MESSAGE,
 } from "@repo/app/shared/api/api-timeout";
+import { PACKS_DETAIL_ROUTE_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
+import { createMemoryNavigation } from "@repo/navigation/memory-adapter";
+import { NavigationProvider } from "@repo/navigation/provider";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const EDIT_BUTTON_NAME = "Edit";
+
+// ISS-6925: `CatalogDashboard` reads pack selection off the route through the
+// navigation port, which `apps/app/vitest.setup.ts` remaps onto
+// `next/navigation` — so this suite needs a route context to render at all.
+// `useParams` carries no `id`, so selection stays the component-state shape
+// these cases already exercise. Test mechanics only: no expectation changed.
+const routeState = vi.hoisted(() => ({
+  params: { orgSlug: "org-test" } as Record<string, string>,
+  pathname: "/org-test/packs",
+}));
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({
+    push: vi.fn(),
+    replace: vi.fn(),
+    back: vi.fn(),
+    forward: vi.fn(),
+    refresh: vi.fn(),
+    prefetch: vi.fn(),
+  }),
+  usePathname: () => routeState.pathname,
+  useParams: () => routeState.params,
+  useSearchParams: () => new URLSearchParams(),
+}));
+
 import { CatalogDashboard } from "../catalog-dashboard";
 
 /** The bare unstyled paragraph ISS-5002 replaced with the real skeleton. */
@@ -38,6 +68,7 @@ const mocks = vi.hoisted(() => ({
   useWithdrawDistribution: vi.fn(),
   useCurrentUser: vi.fn(),
   useFeatureFlagEnabled: vi.fn(),
+  useFeatureFlagGate: vi.fn(),
   useMemberTargetsInstall: vi.fn(),
   usePackAnalytics: vi.fn(),
   useComputeTargets: vi.fn(),
@@ -87,6 +118,7 @@ vi.mock("@repo/app/users/hooks/use-users", () => ({
 
 vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
   useFeatureFlagEnabled: mocks.useFeatureFlagEnabled,
+  useFeatureFlagGate: mocks.useFeatureFlagGate,
 }));
 
 vi.mock("@tanstack/react-query", () => ({
@@ -107,6 +139,7 @@ vi.mock("@repo/app/packs/components/packs-workspace", () => ({
     onManageDistribution,
     onSelectPack,
     packs,
+    selectedPackId,
     toolbarSlot,
   }: {
     detailContentsSlot?: ReactNode;
@@ -118,9 +151,14 @@ vi.mock("@repo/app/packs/components/packs-workspace", () => ({
     onManageDistribution?: (packId: string) => void;
     onSelectPack?: (packId: string | null) => void;
     packs: PackView[];
+    selectedPackId?: string | null;
     toolbarSlot?: ReactNode;
   }) => (
     <div>
+      <div
+        data-selected-pack={selectedPackId ?? "uncontrolled"}
+        data-testid="workspace-selection"
+      />
       <div
         data-member-targets-error={String(Boolean(memberTargetsError))}
         data-member-targets-install={
@@ -225,7 +263,26 @@ vi.mock("../create-distribution-modal", () => ({
 describe("CatalogDashboard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.useFeatureFlagEnabled.mockReturnValue(true);
+    // ISS-6925: every OTHER flag stays blanket-on as before. The addressable
+    // pack-detail route is held OFF here on purpose: these cases drive
+    // selection by clicking a card and then assert the detail's controls, which
+    // is the component-state shape they were written for. Routed selection
+    // navigates instead of setting state, so leaving it on would make them
+    // assert a detail that never opened. The routed shape has its own coverage
+    // (`packages/app/packs/components/__tests__/packs-workspace.test.tsx` and
+    // `packages/app/packs/hooks/__tests__/use-packs-route-selection.test.tsx`).
+    // ISS-6925: the gate mirrors the key-aware flag mock and reports RESOLVED,
+    // so these cases run on the settled answer rather than the pre-resolution one.
+    mocks.useFeatureFlagGate.mockImplementation((key: string) => ({
+      enabled: key !== PACKS_DETAIL_ROUTE_FEATURE_FLAG_KEY,
+      isReady: true,
+      isResolved: true,
+    }));
+    routeState.params = { orgSlug: "org-test" };
+    routeState.pathname = "/org-test/packs";
+    mocks.useFeatureFlagEnabled.mockImplementation(
+      (key: string) => key !== PACKS_DETAIL_ROUTE_FEATURE_FLAG_KEY
+    );
     mocks.useMemberTargetsInstall.mockReturnValue(null);
     mocks.useArchiveCatalogItem.mockReturnValue({
       isPending: false,
@@ -263,7 +320,9 @@ describe("CatalogDashboard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Select Custom Pack" }));
 
     const detail = screen.getByLabelText("detail");
-    expect(within(detail).getByRole("button", { name: "Edit" })).toBeDefined();
+    expect(
+      within(detail).getByRole("button", { name: EDIT_BUTTON_NAME })
+    ).toBeDefined();
     expect(
       within(detail).queryByRole("button", { name: "Archive" })
     ).toBeNull();
@@ -274,7 +333,9 @@ describe("CatalogDashboard", () => {
       within(detail).queryByRole("button", { name: "Add component" })
     ).toBeNull();
 
-    fireEvent.click(within(detail).getByRole("button", { name: "Edit" }));
+    fireEvent.click(
+      within(detail).getByRole("button", { name: EDIT_BUTTON_NAME })
+    );
     expect(screen.getByTestId("editor-dialog")).toHaveAttribute(
       "data-existing-id",
       pack.id
@@ -359,7 +420,7 @@ describe("CatalogDashboard", () => {
     render(<CatalogDashboard isAdmin={false} />);
     fireEvent.click(screen.getByRole("button", { name: "Select Custom Pack" }));
 
-    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(screen.queryByRole("button", { name: EDIT_BUTTON_NAME })).toBeNull();
     expect(screen.queryByTestId("editor-dialog")).toBeNull();
   });
 
@@ -392,7 +453,9 @@ describe("CatalogDashboard", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Select Custom Pack" }));
 
-    expect(screen.getByRole("button", { name: "Edit" })).toBeDefined();
+    expect(
+      screen.getByRole("button", { name: EDIT_BUTTON_NAME })
+    ).toBeDefined();
     expect(screen.getByRole("button", { name: "Archive" })).toBeDefined();
     expect(
       screen.getByRole("button", { name: "Manage distribution" })
@@ -432,7 +495,7 @@ describe("CatalogDashboard", () => {
     render(<CatalogDashboard isAdmin={false} />);
     fireEvent.click(screen.getByRole("button", { name: "Select Custom Pack" }));
 
-    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(screen.queryByRole("button", { name: EDIT_BUTTON_NAME })).toBeNull();
     expect(screen.queryByRole("button", { name: "Add component" })).toBeNull();
     expect(
       screen.getByRole("button", { name: "Edit Owned Agent" })
@@ -451,7 +514,7 @@ describe("CatalogDashboard", () => {
   it("hides child edit controls under an archived pack", () => {
     renderNonEditableParent({ archived: true });
 
-    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(screen.queryByRole("button", { name: EDIT_BUTTON_NAME })).toBeNull();
     expect(
       screen.queryByRole("button", { name: "Edit Owned Agent" })
     ).toBeNull();
@@ -464,7 +527,7 @@ describe("CatalogDashboard", () => {
       source: CatalogItemSource.Curated,
     });
 
-    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(screen.queryByRole("button", { name: EDIT_BUTTON_NAME })).toBeNull();
     expect(
       screen.queryByRole("button", { name: "Edit Owned Agent" })
     ).toBeNull();
@@ -536,6 +599,56 @@ describe("CatalogDashboard", () => {
 
     const state = screen.getByTestId("member-targets-state");
     expect(state.getAttribute("data-member-targets-loading")).toBe("true");
+  });
+
+  // `usePacksRouteSelection` reads the navigation ADAPTER directly so it can
+  // degrade instead of throwing under a provider-free mount (FEA-4159). This
+  // suite's global port-hook mocks therefore never reach it, so a routed case
+  // has to mount a real adapter carrying the URL under test.
+  const renderRouted = (packId: string) => {
+    const nav = createMemoryNavigation({
+      initialPath: `/org-test/packs/${packId}`,
+      orgSlug: "org-test",
+      routeParams: { orgSlug: "org-test", id: packId },
+    });
+    return render(
+      <NavigationProvider adapter={nav.adapter}>
+        <CatalogDashboard isAdmin={false} />
+      </NavigationProvider>
+    );
+  };
+
+  // ISS-6925 review (false-green): every other case here runs with the
+  // addressable-detail flag OFF, so deleting the host's `selectedPackId`
+  // wiring — the whole point of the ticket — left this suite green while
+  // `/{org}/packs/{id}` silently rendered the discovery grid. This case is the
+  // one that dies under that mutation.
+  it("hands the workspace the pack the route addresses when the flag is on", () => {
+    mocks.useFeatureFlagEnabled.mockReturnValue(true);
+    mocks.useFeatureFlagGate.mockReturnValue({
+      enabled: true,
+      isReady: true,
+      isResolved: true,
+    });
+    renderRouted("pack-1");
+
+    expect(
+      screen
+        .getByTestId("workspace-selection")
+        .getAttribute("data-selected-pack")
+    ).toBe("pack-1");
+  });
+
+  // The counterfactual: flag off, the host must hand over NOTHING, so the
+  // workspace keeps owning selection exactly as it ships today.
+  it("leaves the workspace uncontrolled while the flag is off", () => {
+    renderRouted("pack-1");
+
+    expect(
+      screen
+        .getByTestId("workspace-selection")
+        .getAttribute("data-selected-pack")
+    ).toBe("uncontrolled");
   });
 
   // ISS-5002: the surface used to render a bare unstyled "Loading Packs…"

@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
 import {
   type BranchSession,
   encodeBranchId,
@@ -30,6 +29,7 @@ import {
   paritySessionUsageSortKey,
 } from "@repo/lib/branches/__tests__/cross-surface-parity-fixture.js";
 import { rollupBranchActivity } from "@repo/lib/branches/activity-rollup.js";
+import { test, vi } from "vitest";
 import { getSharedBranchTrace } from "../src/main/branch/shared-branch-trace.js";
 import {
   type BranchSyncSource,
@@ -37,6 +37,14 @@ import {
   getSharedBranchUsage,
 } from "../src/main/branch/shared-branches-api.js";
 import { openTestDb } from "./agent-db-test-utils.js";
+
+vi.mock(
+  "../src/main/branch/shared-branches-default-eligibility.js",
+  async (importOriginal) =>
+    (
+      await import("./helpers/complete-eligibility-snapshot.js")
+    ).withCompleteEligibility(await importOriginal())
+);
 
 /**
  * PLN-1389 Phase 0 (PRD-522 R6) — DESKTOP-LOCAL side of the cross-surface branch-
@@ -87,8 +95,8 @@ async function seedScenario(
   for (const spec of CROSS_SURFACE_SESSIONS) {
     await db.run(
       `INSERT INTO sessions
-         (id, status, started_at, ended_at, billing_mode, user_id, model, cost_usd_estimated)
-       VALUES ($1, 'completed', $2, $3, 'metered_api', $4, $5, $6)`,
+         (id, status, started_at, ended_at, last_activity_at, billing_mode, user_id, model, cost_usd_estimated)
+       VALUES ($1, 'completed', $2, $3, $3, 'metered_api', $4, $5, $6)`,
       spec.externalSessionId,
       spec.startedAt,
       spec.endedAt,

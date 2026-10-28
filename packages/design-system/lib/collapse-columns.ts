@@ -10,7 +10,7 @@
  * A column is dropped when, across every visible row, its value is either:
  *  - **empty** on every row (nothing to show), or
  *  - **constant** on every row (the same value repeated down the column —
- *    "Manual" on every Loop, "Open" on every Branch, "Tool" on every Agent).
+ *    "Open" on every Branch, "Tool" on every Agent).
  *
  * Both rules read the value through the caller's extractor, so the helper never
  * knows about the domain — it only compares stable string keys (or the empty
@@ -22,7 +22,7 @@
  * rule must give every column an extractor entry.
  *
  * This is deliberately a pure function over generic columns and rows so it can
- * be shared by the `DataTable` (Loops) and `GridTable` (Branches, Agents)
+ * be shared by the `DataTable` and `GridTable` (Branches, Agents)
  * primitives without pulling any feature slice into the design system.
  */
 
@@ -96,7 +96,7 @@ export type CollapseColumnsOptions = {
    * count (default `true` — matches the My-Issues optional-column behavior).
    * Set `false` to collapse ONLY when a column is *constant* across two or more
    * rows, so a single filtered row never drops a column that merely lacks a
-   * value on that one row (the Loops/Branches/Agents data tables use this).
+   * value on that one row (the Branches/Agents data tables use this).
    */
   collapseEmptyColumns?: boolean;
 };

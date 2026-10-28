@@ -13,8 +13,7 @@ type DurationTimelineRow = {
 
 /**
  * FEA-4275: the wall / active / waiting-on-user duration projection for a
- * session's Duration row, extracted from `session-trace.ts` (a shrink-only
- * grandfathered file) into its own module.
+ * session's Duration row, extracted from `session-trace.ts` into its own module.
  *
  * Emits the three components as pre-formatted duration strings. `waitingUser`
  * (time the agent spent waiting on the person) is emitted as a CLEAN duration,

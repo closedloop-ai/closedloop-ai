@@ -1,11 +1,13 @@
 import { renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { WebFeatureFlagProvider } from "@/__tests__/helpers/web-feature-flag-provider";
 
 const mockStartSessionRecording = vi.fn();
 const mockStopSessionRecording = vi.fn();
 const mockSetConfig = vi.fn();
 const mockEnableDatadog = vi.fn();
 const mockDisableDatadog = vi.fn();
+const mockPostHogConfigured = vi.hoisted(() => ({ value: true }));
 
 type MockUser = {
   id: string;
@@ -18,8 +20,12 @@ const STAFF_USER: MockUser = {
 let mockUser: MockUser = STAFF_USER;
 let mockIsLoaded = true;
 let mockFlagEnabled = true;
+let mockFlagsSettledForUser = true;
 
 vi.mock("@repo/analytics/client", () => ({
+  get postHogFeatureFlagsEnabled() {
+    return mockPostHogConfigured.value;
+  },
   useAnalytics: () => ({
     identify: vi.fn(),
     capture: vi.fn(),
@@ -40,6 +46,10 @@ vi.mock("@repo/auth/client", () => ({
   useUser: () => ({ user: mockUser, isLoaded: mockIsLoaded }),
 }));
 
+vi.mock("@/components/feature-flags-settled", () => ({
+  useFeatureFlagsSettledForUser: () => mockFlagsSettledForUser,
+}));
+
 vi.mock("@/lib/datadog-rum/staff-capture", () => ({
   enableDatadogRumStaffCapture: mockEnableDatadog,
   disableDatadogRumStaffCapture: mockDisableDatadog,
@@ -54,6 +64,8 @@ beforeEach(() => {
   mockUser = STAFF_USER;
   mockIsLoaded = true;
   mockFlagEnabled = true;
+  mockFlagsSettledForUser = true;
+  mockPostHogConfigured.value = true;
 });
 
 afterEach(() => {
@@ -61,10 +73,12 @@ afterEach(() => {
 });
 
 describe("useFrontendCaptureGate", () => {
-  it("starts staff capture on both backends when the flag is enabled", async () => {
+  it("starts PostHog and Datadog capture for flagged staff users", async () => {
     const useFrontendCaptureGate = await loadHook();
 
-    renderHook(() => useFrontendCaptureGate());
+    renderHook(() => useFrontendCaptureGate(), {
+      wrapper: WebFeatureFlagProvider,
+    });
 
     expect(mockStartSessionRecording).toHaveBeenCalledTimes(1);
     expect(mockSetConfig).toHaveBeenCalledWith({ capture_dead_clicks: true });
@@ -75,16 +89,15 @@ describe("useFrontendCaptureGate", () => {
     mockFlagEnabled = false;
     const useFrontendCaptureGate = await loadHook();
 
-    renderHook(() => useFrontendCaptureGate());
+    renderHook(() => useFrontendCaptureGate(), {
+      wrapper: WebFeatureFlagProvider,
+    });
 
     expect(mockStartSessionRecording).not.toHaveBeenCalled();
     expect(mockEnableDatadog).not.toHaveBeenCalled();
   });
 
-  it("fails closed for a non-staff user even when the flag reads enabled", async () => {
-    // Simulates the QA fail-open (a tester set the blanket
-    // `closedloop:feature-flags-fail-open` key, so every flag reads enabled):
-    // the staff-email guard must still block capture.
+  it("starts PostHog but keeps Datadog staff-scoped for flagged customers", async () => {
     mockUser = {
       id: "user-999",
       primaryEmailAddress: { emailAddress: "customer@acme.com" },
@@ -92,7 +105,21 @@ describe("useFrontendCaptureGate", () => {
     mockFlagEnabled = true;
     const useFrontendCaptureGate = await loadHook();
 
-    renderHook(() => useFrontendCaptureGate());
+    renderHook(() => useFrontendCaptureGate(), {
+      wrapper: WebFeatureFlagProvider,
+    });
+
+    expect(mockStartSessionRecording).toHaveBeenCalledTimes(1);
+    expect(mockEnableDatadog).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when PostHog is unconfigured", async () => {
+    mockPostHogConfigured.value = false;
+    const useFrontendCaptureGate = await loadHook();
+
+    renderHook(() => useFrontendCaptureGate(), {
+      wrapper: WebFeatureFlagProvider,
+    });
 
     expect(mockStartSessionRecording).not.toHaveBeenCalled();
     expect(mockEnableDatadog).not.toHaveBeenCalled();
@@ -102,7 +129,28 @@ describe("useFrontendCaptureGate", () => {
     mockUser = null;
     const useFrontendCaptureGate = await loadHook();
 
-    renderHook(() => useFrontendCaptureGate());
+    renderHook(() => useFrontendCaptureGate(), {
+      wrapper: WebFeatureFlagProvider,
+    });
+
+    expect(mockStartSessionRecording).not.toHaveBeenCalled();
+    expect(mockEnableDatadog).not.toHaveBeenCalled();
+  });
+
+  it("does not record from an anonymous flag before the user's flags settle", async () => {
+    mockFlagsSettledForUser = false;
+    mockFlagEnabled = true;
+    const useFrontendCaptureGate = await loadHook();
+
+    const { rerender } = renderHook(() => useFrontendCaptureGate(), {
+      wrapper: WebFeatureFlagProvider,
+    });
+
+    expect(mockStartSessionRecording).not.toHaveBeenCalled();
+
+    mockFlagsSettledForUser = true;
+    mockFlagEnabled = false;
+    rerender();
 
     expect(mockStartSessionRecording).not.toHaveBeenCalled();
     expect(mockEnableDatadog).not.toHaveBeenCalled();
@@ -111,11 +159,29 @@ describe("useFrontendCaptureGate", () => {
   it("stops all added capture when unmounted", async () => {
     const useFrontendCaptureGate = await loadHook();
 
-    const { unmount } = renderHook(() => useFrontendCaptureGate());
+    const { unmount } = renderHook(() => useFrontendCaptureGate(), {
+      wrapper: WebFeatureFlagProvider,
+    });
     unmount();
 
     expect(mockStopSessionRecording).toHaveBeenCalledTimes(1);
     expect(mockSetConfig).toHaveBeenCalledWith({ capture_dead_clicks: false });
     expect(mockDisableDatadog).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not touch Datadog when a customer capture unmounts", async () => {
+    mockUser = {
+      id: "user-999",
+      primaryEmailAddress: { emailAddress: "customer@acme.com" },
+    };
+    const useFrontendCaptureGate = await loadHook();
+
+    const { unmount } = renderHook(() => useFrontendCaptureGate(), {
+      wrapper: WebFeatureFlagProvider,
+    });
+    unmount();
+
+    expect(mockStopSessionRecording).toHaveBeenCalledTimes(1);
+    expect(mockDisableDatadog).not.toHaveBeenCalled();
   });
 });

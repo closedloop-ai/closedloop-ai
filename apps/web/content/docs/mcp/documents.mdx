@@ -56,7 +56,7 @@ The response includes a paginated envelope:
       "dueDate": "2026-08-01",
       "sortOrder": 3,
       "assignee": { "id": "...", "email": "alice@example.com", ... },
-      "webUrl": "https://app.closedloop.ai/acme/features/FEA-1035",
+      "webUrl": "https://app.closedloop.ai/acme/documents/FEA-1035",
       "parentArtifact": { ... }
     }
   ]
@@ -64,6 +64,8 @@ The response includes a paginated envelope:
 ```
 
 `dueDate` is an ISO 8601 date string (or `null` when unset). `sortOrder` is the stack-rank position within the project — lower values sort first, `null` when the artifact is unranked.
+
+Every `webUrl` on this page is shown in its org-scoped form, which is the usual one. The org slug is omitted when the server cannot confirm it for the current session, leaving an org-less path such as `/documents/ISS-1035`. The browser resolves that URL against whichever org the reader is signed into — it is a redirect, not a tenant-bound link — so do not describe it as pointing at a specific organization, never read an org segment out of a `webUrl` as a tenant identifier, and never add a slug back to fix one.
 
 The `parentArtifact` field contains the direct parent from artifact-link lineage (e.g. the implementation plan that produced this feature). Set `includeParentArtifact: false` when you don't need it to skip the extra lookup.
 
@@ -102,15 +104,88 @@ Beyond the core `id`, `title`, `slug`, `type`, `status`, `projectId`, `priority`
 | `fileName` | `string \| null` | Original file name for uploaded documents; `null` for authored ones. |
 | `approverId` | `string \| null` | UUID of the assigned approver, or `null`. |
 | `approver` | `object \| null` | Resolved approver profile, or `null`. |
-| `repositorySnapshot` | `object \| null` | Immutable per-document repository record set at creation, or `null`. |
+| `repositorySnapshot` | `object \| null` | Server-owned per-document repository record, or `null`. Callers cannot edit it; the server corrects a guessed primary once a branch resolves the real repository, which stamps `source: "branch_link"`. |
+| `statusMutation` | `object \| null` | Server-computed status-write contract. `allowedStatuses` is the vocabulary valid for this artifact's type; `expectedStatusField` and `expectedStatusByIdField` name the optional stale-write guard fields; the optional `permissions` object answers `single` and `bulk` for the credential making this request. |
 | `latestVersion` | `number` | Version number of the most recent content version. |
 | `version` | `object` | The returned content version (its `id`, `version`, and — when `includeContent: true` — body). |
+
+`statusMutation.permissions` reports whether the credential making this request may perform each status write:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `single` | `boolean` | Whether this credential may set one artifact's status via `PUT /documents/{id}`. Requires an API key with `write` scope. |
+| `bulk` | `boolean` | Whether this credential may set a selection's status via `POST /documents/batch-update-status`. Requires an API key with `write` scope. |
+
+`permissions` is resolved only by the artifact detail reads, which hold your credential — `get-document` is one of them. Every other producer of this object omits it entirely, never as `null`. Absence therefore means "not resolved here", never "denied": a client that sees no `permissions` should attempt the write, which the route authorizes independently either way. A display affordance, never the security boundary.
+
+`version.contentLength` is always the source `version.content` length measured in JavaScript UTF-16 code units. When `includeContent: true`, the version object also returns:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `contentTruncated` | `boolean` | `true` exactly when the source body's UTF-16 length is greater than the resolved `contentMaxChars`. |
+| `returnedChars` | `number` | Source-body UTF-16 code units returned before the optional legacy marker: `min(contentLength, contentMaxChars)`. |
+
+When `contentTruncated` is true, the tool appends the literal `...[truncated]` after the returned source prefix. The marker is not included in `returnedChars`, so the serialized `content` string can be longer than `contentMaxChars`. When `includeContent` is not true, `content`, `contentTruncated`, and `returnedChars` are omitted. These completeness fields describe only source `version.content`; they do not measure the separately shaped `contentWithResolvedInlineImages` value.
+
+---
+
+## Retrieving Exact Document Content
+
+Use `get-document-content` when you must reconstruct a complete immutable document-version body. This is a model-invoked MCP tool, not an MCP resource, resource template, or download surface.
+
+**Tool**: `get-document-content`
+**Underlying API**: `GET /documents/:documentId` with optional `?version=N`
+
+```
+get-document-content(
+  documentId: string,       // PRD-*, PLN-*, ISS-/FEA-*, or UUID; required on every call
+  version?: number,         // Positive version for the initial call; omit for latest
+  cursor?: string,          // Unsigned cursor from a prior response; continuation calls only
+  chunkSizeBytes?: number   // 1-65536; default 65536
+)
+```
+
+### Initial and Continuation Calls
+
+For an initial call, provide `documentId` and optionally a positive `version`. Omit `version` to resolve the latest immutable version. Do not provide `cursor` on an initial call.
+
+For a continuation, provide `documentId` and the prior response's `nextCursor`; do not also provide `version`. The cursor pins the resolved version, and the tool re-fetches that exact `?version=N` before returning another chunk. A sequence may start with a slug and continue with that slug or the canonical UUID, but every response must resolve to the canonical document id stored in the cursor.
+
+The API response must carry a canonical document id, a version whose `documentId` matches that canonical id, a positive version matching the requested or cursor-pinned version, and string content. The tool rejects the response before hashing or slicing if any of those checks fails. API access continues through the session's read-scoped credential and organization-scoped document lookup.
+
+### Response Shape
+
+```
+{
+  "documentId": "canonical-document-uuid",
+  "resolvedVersion": 4,
+  "content": "one valid UTF-8 chunk",
+  "byteStart": 0,
+  "byteEndExclusive": 65534,
+  "returnedBytes": 65534,
+  "totalBytes": 121818,
+  "contentSha256": "64-lowercase-hex-characters",
+  "nextCursor": "unsigned-base64url-cursor-or-null"
+}
+```
+
+`content` is the UTF-8 text for the half-open source-body byte range `[byteStart, byteEndExclusive)`. `returnedBytes` always equals `byteEndExclusive - byteStart`, and each chunk is at most `chunkSizeBytes`. The tool moves a proposed end backward rather than split a UTF-8 scalar. If the requested byte budget cannot contain the next complete scalar, the call fails explicitly; retry with a larger valid budget. A terminal response always includes `nextCursor: null` and ends at `byteEndExclusive === totalBytes`.
+
+`contentSha256` is the SHA-256 of the entire immutable source body encoded as UTF-8, not only the returned chunk. The API-returned version bytes and this digest are authoritative; character counts and the historical incident's old 120,724-character observation are informational, not a permanent fixture.
+
+### Cursor Trust and Completeness
+
+The cursor is unpadded canonical base64url JSON, limited to 2,048 characters, with strict schema version 1. It carries the canonical document id, resolved version, next byte offset, and full-content SHA-256. It is unsigned, untrusted, stateless, and grants no authority.
+
+The tool rejects malformed or non-canonical encodings, unknown fields or schema versions, canonical document/version/digest disagreements with the freshly authorized immutable API response, offsets outside the body, and offsets inside a UTF-8 scalar. It does not claim to detect a caller changing the cursor to another valid in-range scalar boundary. Such a change can create a caller-selected gap or repeat inside the already authorized body.
+
+To prove a complete reconstruction, require every range to start at the preceding `byteEndExclusive`, require the terminal range to end at `totalBytes`, concatenate the chunks in that order, and verify the reconstructed UTF-8 bytes against `contentSha256`.
 
 ---
 
 ## Creating a Document
 
-Use `create-document` to create a new PRD, implementation plan, or feature/issue. Templates are not creatable through this tool.
+Use `create-document` to create a new PRD, implementation plan, feature/issue, or organization-level document (`DOC`). Templates are not creatable through this tool.
 
 **Tool**: `create-document`
 **Underlying API**: `POST /documents`
@@ -118,9 +193,9 @@ Use `create-document` to create a new PRD, implementation plan, or feature/issue
 ```
 create-document(
   title: string,
-  type: "PRD" | "IMPLEMENTATION_PLAN" | "FEATURE" | "ISSUE",  // "ISSUE" is an alias stored as "FEATURE" (TEMPLATE/DOC are not creatable here)
+  type: "PRD" | "IMPLEMENTATION_PLAN" | "FEATURE" | "DOC" | "ISSUE",  // "ISSUE" is an alias stored as "FEATURE" (TEMPLATE is not creatable here)
   content: string,          // Initial body content
-  projectId: string,        // Attach to a project (PRO-* slug or UUID)
+  projectId?: string,       // Attach to a project (PRO-* slug or UUID). Required for PRD, IMPLEMENTATION_PLAN, and FEATURE/ISSUE; optional for DOC
 
   // Optional — editable fields settable at creation time:
   assigneeId?: string | null,   // UUID to assign to (list-users), or null to leave unassigned
@@ -145,7 +220,7 @@ create-document(
 )
 ```
 
-The response includes the assigned slug and a `webUrl`. The slug prefix follows the resolved type — `PRD-*`, `PLN-*`, or `FEA-*` — except that `type: "ISSUE"` mints an `ISS-*` slug (it shares the `FEA` numbering series, so an `ISS-###` and `FEA-###` of the same number are the same document). Use the returned slug for all subsequent calls.
+The response includes the assigned slug and a `webUrl`. The slug prefix follows the resolved type — `PRD-*`, `PLN-*`, `ISS-*`, or `DOC-*`. Both `type: "FEATURE"` and its `"ISSUE"` alias mint an `ISS-*` slug (it shares the `FEA` numbering series, so an `ISS-###` and `FEA-###` of the same number are the same document). Use the returned slug for all subsequent calls.
 
 **Example workflow**:
 
@@ -157,7 +232,7 @@ The response includes the assigned slug and a `webUrl`. The slug prefix follows 
      content: "## Overview\n...",
      projectId: "PRO-25"
    )
-   → returns { slug: "FEA-1036", webUrl: "..." }
+   → returns { slug: "ISS-1036", webUrl: "..." }
 ```
 
 ### Inline Images at Creation
@@ -200,10 +275,12 @@ update-document(
   //   Documents (PRD, Plan): "DRAFT" | "IN_REVIEW" | "CHANGES_REQUESTED" | "APPROVED" | "EXECUTED" | "OBSOLETE"
   //   Features (FEA):         "TRIAGE" | "BACKLOG" | "TODO" | "IN_PROGRESS" | "IN_REVIEW" | "BLOCKED" | "DONE" | "CANCELED"
   status?: string,
-  projectId?: string,       // Move to a different project
+  expectedStatus?: string,  // Optional stale-write guard: the status value you previously read.
+  projectId?: string | null,  // Move to a different project, or null to clear the project
   assigneeId?: string | null,  // UUID, or null to unassign
   approverId?: string | null,  // UUID, or null to clear the approver
-  priority?: "LOW" | "MEDIUM" | "HIGH" | "URGENT",
+  priority?: "LOW" | "MEDIUM" | "HIGH" | "URGENT" | null,  // null to clear the priority
+  expectedPriority?: "LOW" | "MEDIUM" | "HIGH" | "URGENT" | null,  // Stale-write guard: the priority you previously read; null asserts none is set
   dueDate?: string | null,     // ISO 8601 date (YYYY-MM-DD) or timezone-qualified datetime; null to clear
   fileName?: string           // New file name for the document
 )
@@ -212,6 +289,10 @@ update-document(
 **Status lifecycle**:
 
 Documents and Features have **separate** status vocabularies — use the one that matches the artifact type. The server rejects a status that doesn't belong to the target artifact's vocabulary.
+
+When changing `status`, pass `expectedStatus` with the current value returned by `get-document` if you want the server to reject a stale write instead of overwriting a newer transition. A mismatch returns HTTP 409 with code `stale_status`. A `status` the document already holds is never refused, so retrying a write that already landed succeeds.
+
+`expectedPriority` is the same guard for `priority`, returning HTTP 409 with code `stale_priority`. Pass `null` to assert the artifact currently has no priority — that is the state an unprioritized artifact is in, so it is the guard an agent setting a first priority actually needs.
 
 Documents (PRD, Plan) — an authoring / approval lifecycle:
 

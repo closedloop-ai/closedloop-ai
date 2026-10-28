@@ -4,6 +4,7 @@ import type { BasicUser } from "@repo/api/src/types/user";
 import { z } from "zod";
 import { unwrapApiEnvelope } from "../util/api-response-utils.js";
 import { fetchJsonAndParse } from "../util/fetch-json-and-parse.js";
+import type { DesktopAccountAdmission } from "./desktop-account-admission.js";
 import { displayUserName } from "./user-display-name.js";
 
 /**
@@ -74,8 +75,14 @@ const orgUsersSchema = z.array(orgUserSchema);
 export type OrgDirectoryFetchOptions = {
   /** API origin, e.g. `https://api.closedloop.ai`. */
   getApiOrigin: () => string | null | undefined;
-  /** Managed `sk_live` key; `/users` accepts it via `withAnyAuth`. */
-  getApiKey: () => string | null | undefined;
+  /** Authenticated account-generation witness for production reads. */
+  getAccountAdmission?: () => DesktopAccountAdmission | null;
+  /** First-party session token for production reads. */
+  getAccessToken?: () => Promise<string | null>;
+  /** Distinguishes authoritative sign-out from the transient boot Loading state. */
+  isAuthoritativelySignedOut?: () => boolean;
+  /** Legacy/test fallback for callers without first-party session wiring. */
+  getApiKey?: () => string | null | undefined;
   /** Test seam. */
   fetchImpl?: typeof fetch;
 };
@@ -148,15 +155,15 @@ export function configureOrgDirectoryPersistence(
  * caller has already cleared a mismatched snapshot. Persistence errors are
  * swallowed: a missing/corrupt store simply leaves the cache empty.
  */
-function rehydrateFromPersistence(identityKey: string): void {
+function rehydrateFromPersistence(identity: OrgDirectoryIdentity): void {
   if (
     !persistence ||
     cachedSnapshot.size > 0 ||
-    rehydratedForIdentity === identityKey
+    rehydratedForIdentity === identity.runtimeKey
   ) {
     return;
   }
-  rehydratedForIdentity = identityKey;
+  rehydratedForIdentity = identity.runtimeKey;
   let record: { identityKey: string; users: BasicUser[] } | null = null;
   try {
     record = persistence.load();
@@ -168,27 +175,45 @@ function rehydrateFromPersistence(identityKey: string): void {
   // record from a different account produces a different digest and is ignored.
   if (
     !record ||
-    record.identityKey !== persistenceIdentityKeyOf(identityKey) ||
+    record.identityKey !== persistenceIdentityKeyOf(identity.durableKey) ||
     !record.users.length
   ) {
     return;
   }
   cachedSnapshot = new Map(record.users.map((user) => [user.id, user]));
-  cachedIdentityKey = identityKey;
+  cachedIdentityKey = identity.runtimeKey;
   // Treat a rehydrated snapshot as immediately usable but due for a refresh:
   // leave `lastFetchedAtMs` at 0 so the next read still kicks a background
   // `GET /users` to reconcile any membership changes since it was persisted.
 }
 
 /** Stable key for the account whose directory a snapshot represents. */
-function identityKeyOf(options: OrgDirectoryFetchOptions): string | null {
+function identityOf(
+  options: OrgDirectoryFetchOptions
+): OrgDirectoryIdentity | null {
   const apiOrigin = options.getApiOrigin();
-  const token = options.getApiKey();
+  const account = options.getAccountAdmission?.() ?? null;
+  if (options.getAccountAdmission) {
+    if (!(apiOrigin && account)) {
+      return null;
+    }
+    const durableKey = `${apiOrigin}\u0000${account.organizationId}\u0000${account.userId}`;
+    return {
+      durableKey,
+      runtimeKey: `${durableKey}\u0000${account.generation}`,
+    };
+  }
+  const token = options.getApiKey?.();
   if (!(apiOrigin && token)) {
     return null;
   }
-  return `${apiOrigin}\u0000${token}`;
+  return {
+    durableKey: `${apiOrigin}\u0000${token}`,
+    runtimeKey: `${apiOrigin}\u0000${token}`,
+  };
 }
+
+type OrgDirectoryIdentity = { durableKey: string; runtimeKey: string };
 
 /**
  * Non-secret, one-way fingerprint of an in-memory identity key, used as the
@@ -226,6 +251,12 @@ function clearSnapshot(): void {
   }
 }
 
+/** Synchronously clears account-scoped memory, durable state, and in-flight ownership. */
+export function clearOrgDirectoryCache(): void {
+  clearSnapshot();
+  inFlight = null;
+}
+
 /** Current resolved directory. Empty until the first successful fetch. */
 export function getOrgDirectorySnapshot(): OrgDirectorySnapshot {
   return cachedSnapshot;
@@ -255,20 +286,23 @@ export async function ensureOrgDirectory(
   options: OrgDirectoryFetchOptions,
   nowMs: number = Date.now()
 ): Promise<void> {
-  const identityKey = identityKeyOf(options);
-  if (!identityKey) {
-    // Signed out / no managed key — cannot attribute owners; forget the
-    // previous account's directory rather than keep serving it.
-    clearSnapshot();
+  const identity = identityOf(options);
+  if (!identity) {
+    if (
+      !options.getAccountAdmission ||
+      options.isAuthoritativelySignedOut?.() !== false
+    ) {
+      clearSnapshot();
+    }
     return;
   }
-  if (cachedIdentityKey !== null && cachedIdentityKey !== identityKey) {
+  if (cachedIdentityKey !== null && cachedIdentityKey !== identity.runtimeKey) {
     clearSnapshot();
   }
   // FEA-3457: on a cold in-memory cache, rehydrate the last-known directory from
   // disk (identity-scoped) so owners resolve at boot / offline before any live
   // fetch. A rehydrated snapshot is still refreshed in the background below.
-  rehydrateFromPersistence(identityKey);
+  rehydrateFromPersistence(identity);
   const isEmpty = cachedSnapshot.size === 0;
   const isStale = nowMs - lastFetchedAtMs >= ORG_DIRECTORY_TTL_MS;
   // A recent *completed* attempt (success or failure/empty) that left the cache
@@ -297,8 +331,10 @@ export async function ensureOrgDirectory(
   // refresh started under a previous account would otherwise repopulate the
   // snapshot with the wrong org's users.
   const reusable =
-    inFlight && inFlight.identityKey === identityKey ? inFlight.promise : null;
-  const refresh = reusable ?? startRefresh(options, nowMs, identityKey);
+    inFlight && inFlight.identityKey === identity.runtimeKey
+      ? inFlight.promise
+      : null;
+  const refresh = reusable ?? startRefresh(options, nowMs, identity);
   // Await only a genuinely-cold cache with no recent attempt, so the first render
   // can resolve owners; otherwise refresh in the background and return.
   if (isEmpty && !attemptedRecently) {
@@ -309,14 +345,14 @@ export async function ensureOrgDirectory(
 function startRefresh(
   options: OrgDirectoryFetchOptions,
   nowMs: number,
-  identityKey: string
+  identity: OrgDirectoryIdentity
 ): Promise<void> {
   const run = (async () => {
-    const users = await fetchOrgUsers(options);
+    const users = await fetchOrgUsers(options, identity.runtimeKey);
     // Only commit if the identity is still current: an account switch during the
     // fetch must not repopulate the snapshot with the previous org's users (nor
     // let a stale attempt's timestamps gate the new account's first read).
-    if (identityKeyOf(options) !== identityKey) {
+    if (identityOf(options)?.runtimeKey !== identity.runtimeKey) {
       return;
     }
     // Record the attempt time even on a failed/empty fetch so the failure backoff
@@ -325,7 +361,7 @@ function startRefresh(
     if (users && users.length > 0) {
       cachedSnapshot = new Map(users.map((user) => [user.id, user]));
       lastFetchedAtMs = nowMs;
-      cachedIdentityKey = identityKey;
+      cachedIdentityKey = identity.runtimeKey;
       // Persist the fresh directory (FEA-3457) so the next cold start resolves
       // owners immediately. Identity-scoped by a one-way FINGERPRINT (never the
       // raw sk_live key — the on-disk store is unencrypted). Write failures are
@@ -333,7 +369,7 @@ function startRefresh(
       if (persistence) {
         try {
           persistence.save({
-            identityKey: persistenceIdentityKeyOf(identityKey),
+            identityKey: persistenceIdentityKeyOf(identity.durableKey),
             users,
           });
         } catch {
@@ -343,20 +379,26 @@ function startRefresh(
       }
     }
   })().finally(() => {
-    if (inFlight?.identityKey === identityKey) {
+    if (inFlight?.identityKey === identity.runtimeKey) {
       inFlight = null;
     }
   });
-  inFlight = { identityKey, promise: run };
+  inFlight = { identityKey: identity.runtimeKey, promise: run };
   return run;
 }
 
 async function fetchOrgUsers(
-  options: OrgDirectoryFetchOptions
+  options: OrgDirectoryFetchOptions,
+  expectedRuntimeKey: string
 ): Promise<BasicUser[] | null> {
   const apiOrigin = options.getApiOrigin();
-  const token = options.getApiKey();
-  if (!(apiOrigin && token)) {
+  const token = options.getAccessToken
+    ? await options.getAccessToken()
+    : options.getApiKey?.();
+  if (
+    !(apiOrigin && token) ||
+    identityOf(options)?.runtimeKey !== expectedRuntimeKey
+  ) {
     return null;
   }
   const result = await fetchJsonAndParse("/users", orgUsersSchema, {
@@ -411,36 +453,11 @@ export function buildByUserRollup(
   entries: readonly { userId: string | null; totals: OwnerTokenTotals }[],
   snapshot: OrgDirectorySnapshot
 ): AgentSessionUsageByUser[] {
-  const byUser = new Map<string, AgentSessionUsageByUser>();
+  const accumulator = createOwnerTotalsAccumulator();
   for (const { userId, totals } of entries) {
-    const user = resolveOwner(userId, snapshot);
-    if (!(userId && user)) {
-      continue;
-    }
-    const existing = byUser.get(userId);
-    if (existing) {
-      existing.sessionCount += 1;
-      existing.inputTokens += totals.inputTokens;
-      existing.outputTokens += totals.outputTokens;
-      existing.cacheReadTokens += totals.cacheReadTokens;
-      existing.cacheWriteTokens += totals.cacheWriteTokens;
-      existing.estimatedCost += totals.estimatedCost;
-    } else {
-      byUser.set(userId, {
-        userId,
-        userName: ownerDisplayName(user),
-        userEmail: user.email,
-        userAvatarUrl: user.avatarUrl,
-        sessionCount: 1,
-        inputTokens: totals.inputTokens,
-        outputTokens: totals.outputTokens,
-        cacheReadTokens: totals.cacheReadTokens,
-        cacheWriteTokens: totals.cacheWriteTokens,
-        estimatedCost: totals.estimatedCost,
-      });
-    }
+    accumulateOwnerTotals(accumulator, userId, totals);
   }
-  return [...byUser.values()].sort((a, b) => b.sessionCount - a.sessionCount);
+  return buildByUserRollupFromTotals(accumulator, snapshot);
 }
 
 /**
@@ -473,5 +490,96 @@ export function buildByUserFromCounts(
       estimatedCost: 0,
     });
   }
-  return result.sort((a, b) => b.sessionCount - a.sessionCount);
+  return result.sort(compareByUserRow);
+}
+
+/**
+ * ISS-6895: the running per-owner state behind {@link buildByUserRollup}, keyed
+ * by `userId`. Bounded by the number of DISTINCT owners rather than by the
+ * number of sessions, so a windowed fold can cover a corpus of any size without
+ * retaining a per-session entry for every row it has already folded.
+ */
+export type OwnerTotalsAccumulator = Map<
+  string,
+  { sessionCount: number } & OwnerTokenTotals
+>;
+
+export function createOwnerTotalsAccumulator(): OwnerTotalsAccumulator {
+  return new Map();
+}
+
+/**
+ * Fold one session's `(userId, totals)` into the accumulator. An owner-less
+ * session carries no attributable owner and is dropped here, exactly as the
+ * former per-entry loop dropped it.
+ */
+export function accumulateOwnerTotals(
+  accumulator: OwnerTotalsAccumulator,
+  userId: string | null,
+  totals: OwnerTokenTotals
+): void {
+  if (!userId) {
+    return;
+  }
+  const existing = accumulator.get(userId);
+  if (!existing) {
+    accumulator.set(userId, { sessionCount: 1, ...totals });
+    return;
+  }
+  existing.sessionCount += 1;
+  existing.inputTokens += totals.inputTokens;
+  existing.outputTokens += totals.outputTokens;
+  existing.cacheReadTokens += totals.cacheReadTokens;
+  existing.cacheWriteTokens += totals.cacheWriteTokens;
+  existing.estimatedCost += totals.estimatedCost;
+}
+
+/**
+ * Resolve the accumulated per-owner totals against the directory snapshot.
+ * Owners the directory cannot resolve are dropped (the web aggregate groups on a
+ * resolvable user), and the result is ordered by session count desc.
+ */
+export function buildByUserRollupFromTotals(
+  accumulator: OwnerTotalsAccumulator,
+  snapshot: OrgDirectorySnapshot
+): AgentSessionUsageByUser[] {
+  const rollup: AgentSessionUsageByUser[] = [];
+  for (const [userId, totals] of accumulator) {
+    const user = resolveOwner(userId, snapshot);
+    if (!user) {
+      continue;
+    }
+    rollup.push({
+      userId,
+      userName: ownerDisplayName(user),
+      userEmail: user.email,
+      userAvatarUrl: user.avatarUrl,
+      sessionCount: totals.sessionCount,
+      inputTokens: totals.inputTokens,
+      outputTokens: totals.outputTokens,
+      cacheReadTokens: totals.cacheReadTokens,
+      cacheWriteTokens: totals.cacheWriteTokens,
+      estimatedCost: totals.estimatedCost,
+    });
+  }
+  return rollup.sort(compareByUserRow);
+}
+
+/**
+ * Session count desc, then `userId` asc — the SAME comparator cloud's
+ * `buildUsageByUser` uses (ISS-10851). FEA-3452 made session-count desc the one
+ * portable key across the two surfaces precisely because a different sort listed
+ * owners differently on cloud vs desktop; leaving the tie unbroken here would
+ * have relocated that divergence rather than closed it, since a tie then follows
+ * each surface's own input order. `userName` is not a safe key on either side —
+ * display names collide.
+ */
+function compareByUserRow(
+  left: AgentSessionUsageByUser,
+  right: AgentSessionUsageByUser
+): number {
+  return (
+    right.sessionCount - left.sessionCount ||
+    left.userId.localeCompare(right.userId)
+  );
 }

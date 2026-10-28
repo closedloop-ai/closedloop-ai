@@ -9,6 +9,12 @@ import {
   normalizeBranchActivityAtom,
 } from "@repo/api/src/types/branch-activity";
 import { type TransactionClient, withDb } from "@repo/database";
+import { z } from "zod";
+import { isStorableInt4Count } from "@/lib/int4-column-bounds";
+import { isWithinTrustedFutureBoundary } from "@/lib/trusted-timestamp";
+import { recomputeBranchActivityAggregatesInTransaction } from "./branch-activity-aggregate";
+import { canonicalBranchActivitySources } from "./branch-activity-canonical-read";
+import { lockPullRequestBranchAttributionsInTransaction } from "./pull-request-branch-relink";
 
 /** Stable outcomes returned by the Branch activity persistence boundary. */
 export const BranchActivityPersistStatus = {
@@ -18,6 +24,7 @@ export const BranchActivityPersistStatus = {
   Invalid: "invalid",
   NotFound: "not_found",
   InvalidAttribution: "invalid_attribution",
+  FutureTimestamp: "future_timestamp",
 } as const;
 export type BranchActivityPersistStatus =
   (typeof BranchActivityPersistStatus)[keyof typeof BranchActivityPersistStatus];
@@ -31,14 +38,16 @@ export type PersistedBranchActivityAtom = {
   source: string;
   sourceEventId: string;
   occurredAt: Date;
+  activityKind?: string | null;
   attributionKind: string;
   pullRequestDetailId: string | null;
   completeness: string;
+  createdAt?: Date;
 };
 
 type BranchActivityPersistenceClient = Pick<
   TransactionClient,
-  "branchActivityAtom" | "branchDetail" | "pullRequestDetail"
+  "$executeRaw" | "$queryRaw" | "branchActivityAtom" | "branchDetail"
 >;
 
 /**
@@ -50,8 +59,12 @@ export function persistBranchActivityAtom(input: {
   organizationId: string;
   branchArtifactId: string;
   atom: unknown;
+  pushEvidence?: BranchActivityPushEvidence;
 }): Promise<BranchActivityPersistResult> {
-  return withDb.tx((tx) => persistBranchActivityAtomInTransaction(tx, input));
+  const receivedAt = new Date();
+  return withDb.tx((tx) =>
+    persistBranchActivityAtomInTransaction(tx, { ...input, receivedAt })
+  );
 }
 
 /**
@@ -68,6 +81,8 @@ export async function persistBranchActivityAtomInTransaction(
     organizationId: string;
     branchArtifactId: string;
     atom: unknown;
+    pushEvidence?: BranchActivityPushEvidence;
+    receivedAt?: Date;
   }
 ): Promise<BranchActivityPersistResult> {
   const parsed = branchActivityAtomProducerValidator.safeParse(input.atom);
@@ -94,6 +109,10 @@ export async function persistBranchActivityAtomInTransaction(
   }
 
   const occurredAt = new Date(atom.occurredAt);
+  const receivedAt = input.receivedAt ?? new Date();
+  if (!isWithinTrustedFutureBoundary(occurredAt, receivedAt)) {
+    return { status: BranchActivityPersistStatus.FutureTimestamp };
+  }
   const persisted = {
     version: atom.version,
     organizationId: input.organizationId,
@@ -101,17 +120,26 @@ export async function persistBranchActivityAtomInTransaction(
     source: atom.source,
     sourceEventId: atom.sourceEventId,
     occurredAt,
+    activityKind: atom.kind ?? null,
     attributionKind: atom.attribution.kind,
     pullRequestDetailId,
     completeness: atom.completeness,
+    createdAt: receivedAt,
   };
+  // Bound only for a push atom. Every other lane keeps the bind set it had, so
+  // its writes survive the stage window in which the new bundle already names
+  // these columns and the migration has not landed yet (packages/database
+  // AGENTS.md — an added column cannot be split across merges).
   const inserted = await tx.branchActivityAtom.createMany({
-    data: [persisted],
+    data: [
+      input.pushEvidence
+        ? { ...persisted, ...pushEvidenceColumns(input.pushEvidence) }
+        : persisted,
+    ],
     skipDuplicates: true,
   });
   let status: BranchActivityPersistStatus =
     BranchActivityPersistStatus.Inserted;
-  let accepted: PersistedBranchActivityAtom = persisted;
   if (inserted.count === 0) {
     const stored = await tx.branchActivityAtom.findUnique({
       where: {
@@ -127,29 +155,30 @@ export async function persistBranchActivityAtomInTransaction(
         source: true,
         sourceEventId: true,
         occurredAt: true,
+        activityKind: true,
         attributionKind: true,
         pullRequestDetailId: true,
         completeness: true,
+        createdAt: true,
       },
     });
     if (!(stored && persistedAtomsReplayCompatible(stored, persisted))) {
       return { status: BranchActivityPersistStatus.Conflict };
     }
     status = BranchActivityPersistStatus.Replayed;
-    accepted = stored;
   }
 
-  await tx.branchDetail.updateMany({
-    where: {
-      artifactId: input.branchArtifactId,
+  // The recompute derives Last-active from canonical atoms only, so a
+  // non-canonical lane cannot change its answer — it would take the branch row's
+  // NO KEY UPDATE lock and re-scan for a value it cannot move. Push is the
+  // highest-volume delivery and wrote nothing on this path until ISS-10009, so
+  // skipping it here keeps the cost exactly where it already was.
+  if (canonicalBranchActivitySources.some((source) => source === atom.source)) {
+    await recomputeBranchActivityAggregatesInTransaction(tx, {
       organizationId: input.organizationId,
-      OR: [
-        { lastActivityAt: null },
-        { lastActivityAt: { lt: accepted.occurredAt } },
-      ],
-    },
-    data: { lastActivityAt: accepted.occurredAt },
-  });
+      branchArtifactIds: [input.branchArtifactId],
+    });
+  }
   return { status };
 }
 
@@ -168,6 +197,7 @@ export function projectCanonicalBranchActivityEvidence(
     source: persisted.source,
     sourceEventId: persisted.sourceEventId,
     occurredAt: persisted.occurredAt.toISOString(),
+    ...(persisted.activityKind ? { kind: persisted.activityKind } : {}),
     attribution:
       persisted.attributionKind === BranchActivityAttributionKind.PullRequest &&
       persisted.pullRequestDetailId
@@ -184,9 +214,10 @@ export function projectCanonicalBranchActivityEvidence(
       reason: BranchActivityEvidenceReason.MalformedEvidence,
     };
   }
+  const { kind: _internalKind, ...publicAtom } = atom;
   return {
     completeness: BranchActivityEvidenceCompleteness.Partial,
-    latestAtom: atom,
+    latestAtom: publicAtom,
     reason:
       atom.source === BranchActivitySource.Unknown
         ? BranchActivityEvidenceReason.UnknownSource
@@ -195,7 +226,7 @@ export function projectCanonicalBranchActivityEvidence(
 }
 
 async function hasValidAttribution(
-  tx: Pick<TransactionClient, "pullRequestDetail">,
+  tx: Pick<TransactionClient, "$executeRaw" | "$queryRaw">,
   input: { organizationId: string; branchArtifactId: string },
   atom: BranchActivityAtom,
   pullRequestDetailId: string | null
@@ -206,14 +237,13 @@ async function hasValidAttribution(
   if (!pullRequestDetailId) {
     return false;
   }
-  const pullRequest = await tx.pullRequestDetail.findUnique({
-    where: { id: pullRequestDetailId },
-    select: { branchArtifactId: true, id: true, organizationId: true },
-  });
+  const branchByPullRequest =
+    await lockPullRequestBranchAttributionsInTransaction(tx, {
+      organizationId: input.organizationId,
+      pullRequestDetailIds: [pullRequestDetailId],
+    });
   return (
-    pullRequest?.id === pullRequestDetailId &&
-    pullRequest.organizationId === input.organizationId &&
-    pullRequest.branchArtifactId === input.branchArtifactId
+    branchByPullRequest.get(pullRequestDetailId) === input.branchArtifactId
   );
 }
 
@@ -221,6 +251,15 @@ function pullRequestId(atom: BranchActivityAtom): string | null {
   return atom.attribution.kind === BranchActivityAttributionKind.PullRequest
     ? atom.attribution.pullRequestId
     : null;
+}
+
+/** Build the durable identity key for a persisted Branch activity atom. */
+export function persistedAtomIdentity(
+  atom: Pick<PersistedBranchActivityAtom, "source" | "sourceEventId"> & {
+    branchArtifactId: string;
+  }
+): string {
+  return `${atom.branchArtifactId}\u0000${atom.source}\u0000${atom.sourceEventId}`;
 }
 
 /**
@@ -237,10 +276,97 @@ export function persistedAtomsReplayCompatible(
     left.source === right.source &&
     left.sourceEventId === right.sourceEventId &&
     left.occurredAt.getTime() === right.occurredAt.getTime() &&
+    (left.activityKind ?? null) === (right.activityKind ?? null) &&
     left.attributionKind === right.attributionKind &&
     left.pullRequestDetailId === right.pullRequestDetailId &&
     (left.completeness === right.completeness ||
       (left.source === BranchActivitySource.MonitoredSession &&
         right.source === BranchActivitySource.MonitoredSession))
   );
+}
+
+/**
+ * Bind parameters one `BranchActivityAtom` row costs in a `createMany`: every
+ * column in `model BranchActivityAtom`, the client-generated `id` and
+ * `createdAt` defaults included. Sized against the schema, not the row literal a
+ * writer happens to spell out, because Prisma binds the defaults it fills in too.
+ */
+export const BRANCH_ACTIVITY_ATOM_COLUMN_COUNT = 17;
+
+/**
+ * Per-push evidence written beside a push atom (ISS-10009 part 1).
+ *
+ * `lineDelta` is null whenever the provider compare was capped, truncated, or
+ * failed — null means UNKNOWN. A short sum reads as a confident measurement,
+ * which is worse than no number, so both counts travel together or neither does.
+ */
+export type BranchActivityPushEvidence = {
+  beforeSha: string;
+  afterSha: string;
+  lineDelta: { linesAdded: number; linesRemoved: number } | null;
+};
+
+/**
+ * Lowercase-only and full-length, deliberately stricter than the
+ * case-insensitive siblings in `branch-publication-loc-projection.ts` and
+ * `branch-selected-pull-request-files.ts` and than the exported 7-40
+ * `COMMIT_SHA_PATTERN`: these two shas come straight off a GitHub push payload,
+ * which always spells them this way, and part 2 keys a range identity on them —
+ * a stored pair guaranteed canonical is worth more than one accepting a
+ * spelling no producer emits.
+ */
+const GIT_OBJECT_SHA_PATTERN = /^[0-9a-f]{40}$/;
+
+/** The range a push delta describes. Both shas or no evidence at all. */
+const pushShaRangeValidator = z.object({
+  beforeSha: z.string().regex(GIT_OBJECT_SHA_PATTERN),
+  afterSha: z.string().regex(GIT_OBJECT_SHA_PATTERN),
+});
+
+/**
+ * A fractional, negative, non-finite, or out-of-range count is not a small line
+ * count — it is a corrupt one, and storing it would render as a measurement.
+ * The ceiling is the `int4` column's, via the predicate that already owns that
+ * bound for every other counter here: past it Postgres raises a numeric
+ * overflow rather than storing anything, which loses the whole atom.
+ */
+const pushLineDeltaValidator = z
+  .object({
+    linesAdded: z.number().refine(isStorableInt4Count),
+    linesRemoved: z.number().refine(isStorableInt4Count),
+  })
+  .strict();
+
+/**
+ * Build push evidence from raw webhook and provider values, or `undefined` when
+ * the push range is unusable — a push with no valid `before`/`after` pair is not
+ * evidence about any range, and part 2 reconciles push rows BY that range.
+ *
+ * This is the only validation boundary for these columns: everything past it is
+ * typed, so the persistence writer trusts the type rather than re-parsing it.
+ */
+export function branchActivityPushEvidence(input: {
+  beforeSha: unknown;
+  afterSha: unknown;
+  lineDelta: unknown;
+}): BranchActivityPushEvidence | undefined {
+  const range = pushShaRangeValidator.safeParse(input);
+  if (!range.success) {
+    return undefined;
+  }
+  const lineDelta = pushLineDeltaValidator.safeParse(input.lineDelta);
+  return {
+    beforeSha: range.data.beforeSha,
+    afterSha: range.data.afterSha,
+    lineDelta: lineDelta.success ? lineDelta.data : null,
+  };
+}
+
+function pushEvidenceColumns(evidence: BranchActivityPushEvidence) {
+  return {
+    beforeSha: evidence.beforeSha,
+    afterSha: evidence.afterSha,
+    linesAdded: evidence.lineDelta?.linesAdded ?? null,
+    linesRemoved: evidence.lineDelta?.linesRemoved ?? null,
+  };
 }

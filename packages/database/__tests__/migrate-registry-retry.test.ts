@@ -605,9 +605,12 @@ describe("isTransientMigrateDeployError", () => {
     ["P3009", "Error: P3009: migrate found failed migrations"],
     ["P3018", "Error: P3018: a migration failed to apply"],
     ["P0001", "Error: P0001: user-defined invariant failed"],
-  ])("migration-state %s → NOT transient (routes to recovery)", (_code, stderr) => {
-    expect(isTransientMigrateDeployError(deployError(stderr))).toBe(false);
-  });
+  ])(
+    "migration-state %s → NOT transient (routes to recovery)",
+    (_code, stderr) => {
+      expect(isTransientMigrateDeployError(deployError(stderr))).toBe(false);
+    }
+  );
 
   it("P1000 auth failure → NOT transient", () => {
     const err = deployError("Error: P1000: Authentication failed");

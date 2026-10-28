@@ -1,0 +1,29 @@
+-- ISS-9884 (PLN-1986 §7): the durable record of WHY a transcript row died.
+--
+-- A dead-lettered row keeps zero evidence of its cause today. The settle path
+-- (`transcript-sync-settle.ts`) NULLs `lane_stalled_since` at exactly the
+-- moment a row goes terminal — correctly, the stall run is over — and
+-- `last_error` holds the raw client message, which ISS-9002 rightly refuses to
+-- parse as a predicate. So the desktop's own Sessions list could only map
+-- `dead` to `failedPermanent` unconditionally, and said "permanently failed"
+-- about a transcript the cloud (which DOES get the reason, on the skip
+-- request) reports as merely paused. This column is what closes that
+-- cross-surface divergence, and it is also the durable marker ISS-9002 asked
+-- for.
+--
+-- It holds the same `TranscriptSkipReason` vocabulary the wire carries
+-- (`packages/api/src/types/transcript-skip-reason-constants.ts`) as free text:
+-- no CHECK constraint, deliberately, for the same grow-only reason the cloud's
+-- `SessionTranscript.permanentFailureReason` has none — the enum gains members
+-- and a constraint would have to be migrated in lockstep on every install. The
+-- read side narrows it with `toKnownTranscriptSkipReason` and degrades an
+-- unrecognized label to NULL.
+--
+-- NULL means "not terminal, or terminal before this migration". Both read as
+-- the pre-ISS-9884 behaviour (a hard `failedPermanent` local verdict), so an
+-- install that upgrades mid-outage loses nothing and gains the honest verdict
+-- from its next dead-letter onward. Purely additive: one new nullable column,
+-- no existing row rewritten, no existing column changed.
+
+-- AlterTable
+ALTER TABLE "transcript_sync_state" ADD COLUMN "terminal_skip_reason" TEXT;

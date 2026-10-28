@@ -111,20 +111,16 @@
   }
 }
 
-/* First-launch dashboard reveal + guided-tour primitives: `ob-rise` (cards
-   rising in as the scan reaches them) and a soft `ob-pulse` (the live scan
-   dot / indeterminate progress bar / tour-hint ring). Kept renderer-local
-   since they are specific to the desktop onboarding surface. */
-@keyframes ob-rise {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
+/* A soft `ob-pulse` (the live scan dot / indeterminate progress bar / tour-hint
+   ring). This is a second declaration: FEA-3179 promoted the same keyframe to
+   `packages/app/branches/branch-timeline.css` for a shared consumer and left
+   this copy behind.
+
+   ISS-8351: its sibling `ob-rise` (cards rising in as the scan reaches them,
+   and the tour callout's entrance) is no longer declared here. The shared
+   dashboard tour sets it and now mounts on web too, so it moved to
+   `packages/app/onboarding/onboarding.css` — pulled in by this file's first
+   `@import` — and is declared exactly once. */
 @keyframes ob-pulse {
   0%,
   100% {

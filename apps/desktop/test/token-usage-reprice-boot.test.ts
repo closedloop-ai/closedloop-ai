@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
 import {
   TokenCostBasis,
   TokenCostCompleteness,
@@ -10,6 +9,7 @@ import {
   TokenSourceIdentityAvailability,
   TokenSourceIdentityUnavailableReason,
 } from "@repo/api/src/types/token-cost-provenance";
+import { test } from "vitest";
 import { Harness } from "../src/main/collectors/types.js";
 import { upsertSessionAnalyticsRollup } from "../src/main/database/session-analytics-rollup.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
@@ -175,10 +175,18 @@ test("boot re-pricing prices newly-priceable rows and heals both cost snapshots"
         upsertSessionAnalyticsRollup(tx, "sess-mixed", NOW, ROLLUP_OPTS)
       )
     );
-    // The analytics rollup sees only the one priced row (the dashboard KPI the
-    // bug undercounts). `sessions.cost_usd_estimated` is computed by a separate
-    // ingest-time pass this raw-seed test bypasses, so it starts NULL.
-    assert.equal(await analyticsCost(db, "sess-mixed"), PREPRICED_COST);
+    // Neither snapshot reports a figure, and for the same reason: two of these
+    // three rows are unpriced, so a SUM over them is the priced SUBSET's total
+    // and not the session's. `sessions.cost_usd_estimated` starts NULL (the
+    // ingest-time pass that writes it is bypassed by this raw seed) and
+    // ISS-7776's rollup-side refresh declines to fill it.
+    //
+    // ISS-7820: `est_cost` used to report PREPRICED_COST here — literally "the
+    // dashboard KPI the bug undercounts", as the seed comment above says. The
+    // column is nullable now and says unknown instead, which is the expectation
+    // this ticket changed on purpose; the repriced assertions below are what
+    // prove the real number still arrives once every row is priceable.
+    assert.equal(await analyticsCost(db, "sess-mixed"), null);
     assert.equal(await sessionCost(db, "sess-mixed"), null);
 
     const logs: string[] = [];
@@ -528,6 +536,11 @@ test("FEA-3232: repriceUnpricedTokenUsage for tiered model applies conservation,
     assert.ok(storedCost !== null, "cost must be set after reprice");
     assert.equal(
       storedCost,
+      3 * perEventCostUsd,
+      `repriced cost (${storedCost}) must equal 3× pricing-table per-event cost (${3 * perEventCostUsd})`
+    );
+    assert.equal(
+      storedCost,
       dbEventSum,
       `repriced cost (${storedCost}) must equal event sum (${dbEventSum}), not aggregate (${aggregateCostUsd})`
     );
@@ -680,6 +693,16 @@ test("FEA-3232: pricing-table upgrade reprices NULL event rows so conservation a
     const sessionId = "sess-table-upgrade";
     const model = "gpt-5.4";
 
+    const perEventPrice = estimateTokenCost({
+      model,
+      inputTokens: 100_000,
+      outputTokens: 100,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    });
+    assert.ok(perEventPrice, "per-event pricing-table lookup must succeed");
+    const expectedConservedCostUsd = 3 * perEventPrice.costUsd;
+
     // Three 100K-input events: each below the 272K per-request threshold, the
     // 300K aggregate above it — the shape where aggregate-only pricing
     // overcharges. Import prices everything; NULLing every cost column
@@ -722,7 +745,11 @@ test("FEA-3232: pricing-table upgrade reprices NULL event rows so conservation a
     await db.importer.importSession(session, Harness.Claude);
 
     const conservedCost = await tokenEventSum(db, sessionId);
-    assert.ok(conservedCost > 0, "import must price the event series");
+    assert.equal(
+      conservedCost,
+      expectedConservedCostUsd,
+      "import must price each event from the pricing table"
+    );
 
     await db.prisma.write((client) =>
       client.$executeRawUnsafe(
@@ -752,6 +779,11 @@ test("FEA-3232: pricing-table upgrade reprices NULL event rows so conservation a
     const eventSumAfter = await tokenEventSum(db, sessionId);
     assert.equal(
       eventSumAfter,
+      expectedConservedCostUsd,
+      "reprice must restore the pricing-table per-request event total"
+    );
+    assert.equal(
+      eventSumAfter,
       conservedCost,
       "reprice must restore the per-request event prices"
     );
@@ -773,8 +805,8 @@ test("FEA-3232: pricing-table upgrade reprices NULL event rows so conservation a
     assert.ok(aggregate, "aggregate must price");
     assert.equal(
       await tokenCost(db, sessionId, model),
-      conservedCost,
-      "usage row must conserve to the event sum"
+      expectedConservedCostUsd,
+      "usage row must conserve to the pricing-table event total"
     );
     assert.ok(
       conservedCost < aggregate.costUsd,

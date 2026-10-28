@@ -3,6 +3,7 @@ import {
   ArtifactType,
   LinkType,
 } from "@repo/api/src/types/artifact";
+import { BranchProductEligibility } from "@repo/api/src/types/branch-product-eligibility";
 import { createMemoryNavigation } from "@repo/navigation/memory-adapter";
 import { NavigationProvider } from "@repo/navigation/provider";
 import { render, screen } from "@testing-library/react";
@@ -53,6 +54,7 @@ function makePrArtifactLink(overrides?: {
       status: "ACTIVE",
       priority: null,
       assigneeId: null,
+      assignee: null,
       createdById: "user-1",
       updatedAt: new Date("2024-01-01"),
       dueDate: null,
@@ -72,27 +74,55 @@ function makePrArtifactLink(overrides?: {
       status: "ACTIVE",
       priority: null,
       assigneeId: null,
+      assignee: null,
       createdById: "user-1",
       updatedAt: new Date("2024-01-01"),
       dueDate: null,
       sortOrder: null,
       createdAt: new Date("2024-01-01"),
+      hasCompatibilityProviderFallback: true,
+      productEligibility: BranchProductEligibility.Eligible,
     },
   };
 }
 
 describe("BranchRow", () => {
-  it("renders the PR name as a link to /build/:id", () => {
+  it("renders an eligible PR on the compatibility route while rollout is off", () => {
     renderWithNav(
       <BranchRow
         link={makePrArtifactLink({ name: "feat: add new feature" })}
         onUnlink={vi.fn()}
+        rolloutEnabled={false}
       />
     );
 
     expect(screen.getByText("feat: add new feature")).toBeDefined();
     const link = screen.getByRole("link");
     expect(link.getAttribute("href")).toBe("/test-org/build/ext-1");
+  });
+
+  it("renders an eligible PR on canonical Branch Details when rollout is enabled", () => {
+    renderWithNav(
+      <BranchRow
+        link={makePrArtifactLink()}
+        onUnlink={vi.fn()}
+        rolloutEnabled
+      />
+    );
+
+    expect(screen.getByRole("link")).toHaveAttribute(
+      "href",
+      "/test-org/branches/ext-1"
+    );
+  });
+
+  it("renders an ineligible PR as a non-link", () => {
+    const link = makePrArtifactLink();
+    link.target.productEligibility = BranchProductEligibility.Ineligible;
+    renderWithNav(<BranchRow link={link} onUnlink={vi.fn()} rolloutEnabled />);
+
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    expect(screen.getByText("My pull request")).toBeInTheDocument();
   });
 
   it("renders null when the target endpoint is not a pull request", () => {
@@ -110,6 +140,7 @@ describe("BranchRow", () => {
         status: "ACTIVE",
         priority: null,
         assigneeId: null,
+        assignee: null,
         createdById: "user-1",
         updatedAt: new Date("2024-01-01"),
         dueDate: null,
@@ -119,7 +150,7 @@ describe("BranchRow", () => {
     };
 
     const { container } = renderWithNav(
-      <BranchRow link={link} onUnlink={vi.fn()} />
+      <BranchRow link={link} onUnlink={vi.fn()} rolloutEnabled />
     );
     expect(container.firstChild).toBeNull();
   });

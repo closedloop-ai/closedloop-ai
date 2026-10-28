@@ -1,11 +1,8 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import { BranchActivityEvidenceCompleteness } from "@repo/api/src/types/branch-activity";
 import { ArtifactRefTargetKind } from "@repo/api/src/types/session-artifact-link";
-import {
-  MAX_SYNCED_MONITORED_SESSION_ACTIVITY_EVENTS,
-  MonitoredSessionActivityEventKind,
-} from "@repo/api/src/types/session-monitored-activity";
+import { MonitoredSessionActivityEventKind } from "@repo/api/src/types/session-monitored-activity";
+import { describe, test } from "vitest";
 import { extractArtifactRefs } from "../src/main/collectors/parsing/artifact-ref-extractor.js";
 import {
   MONITORED_ACTIVITY_TEST_ACTION_AT as ACTION_AT,
@@ -16,6 +13,9 @@ import {
   MONITORED_ACTIVITY_TEST_REPOSITORY as REPOSITORY,
   monitoredActivityRefFor as refFor,
 } from "./support/monitored-session-activity-fixtures.js";
+
+/** ISS-9860 retired the per-target carrier cap; the case below exceeds it. */
+const RETIRED_TARGET_EVENT_CAP = 50;
 
 describe("ISS-6060 monitored Session activity extraction", () => {
   test("retains exact user PR references with their own source timestamp", () => {
@@ -364,8 +364,8 @@ describe("ISS-6060 monitored Session activity extraction", () => {
     );
   });
 
-  test("caps target evidence latest-first and marks every retained event partial", () => {
-    const eventCount = MAX_SYNCED_MONITORED_SESSION_ACTIVITY_EVENTS + 1;
+  test("ISS-9860: keeps every event past the retired per-target cap, newest first, Complete", () => {
+    const eventCount = RETIRED_TARGET_EVENT_CAP + 1;
     const refs = extractArtifactRefs(
       makeSession({
         messages: Array.from({ length: eventCount }, (_, index) => ({
@@ -381,21 +381,108 @@ describe("ISS-6060 monitored Session activity extraction", () => {
 
     assert.equal(
       carrier.completeness,
-      BranchActivityEvidenceCompleteness.Partial
+      BranchActivityEvidenceCompleteness.Complete
     );
-    assert.equal(
-      carrier.events.length,
-      MAX_SYNCED_MONITORED_SESSION_ACTIVITY_EVENTS
-    );
-    assert.equal(
-      carrier.events[0].occurredAt,
-      new Date(Date.parse(READ_AT) + (eventCount - 1) * 1000).toISOString()
+    assert.equal(carrier.events.length, eventCount);
+    assert.deepEqual(
+      carrier.events.map((event) => event.occurredAt),
+      Array.from({ length: eventCount }, (_, index) =>
+        new Date(
+          Date.parse(READ_AT) + (eventCount - 1 - index) * 1000
+        ).toISOString()
+      )
     );
     assert.ok(
       carrier.events.every(
         (event) =>
-          event.completeness === BranchActivityEvidenceCompleteness.Partial
+          event.completeness === BranchActivityEvidenceCompleteness.Complete
       )
+    );
+  });
+
+  test("ISS-9860: a proven action with no timestamp still degrades the carrier to Partial", () => {
+    const refs = extractArtifactRefs(
+      makeSession({
+        toolUses: [
+          {
+            id: "no-ts-push",
+            name: "Bash",
+            timestamp: null,
+            input: { command: `git push origin ${BRANCH}` },
+            output: `* [new branch] ${BRANCH} -> ${BRANCH}`,
+          },
+          {
+            id: "clean-push",
+            name: "Bash",
+            timestamp: ACTION_AT,
+            input: { command: `git push origin ${BRANCH}` },
+            output: `* [new branch] ${BRANCH} -> ${BRANCH}`,
+          },
+        ],
+      })
+    );
+    const carrier = carrierFor(
+      refFor(refs, ArtifactRefTargetKind.Branch, BRANCH)
+    );
+
+    assert.equal(
+      carrier.completeness,
+      BranchActivityEvidenceCompleteness.Partial
+    );
+    assert.deepEqual(
+      carrier.events.map(({ occurredAt, completeness }) => ({
+        occurredAt,
+        completeness,
+      })),
+      [
+        {
+          occurredAt: ACTION_AT,
+          completeness: BranchActivityEvidenceCompleteness.Partial,
+        },
+      ]
+    );
+  });
+
+  test("ISS-9860: a conflicting source identity still degrades the carrier to Partial", () => {
+    const refs = extractArtifactRefs(
+      makeSession({
+        toolUses: [
+          {
+            id: "dup-push",
+            name: "Bash",
+            timestamp: READ_AT,
+            input: { command: `git push origin ${BRANCH}` },
+            output: `* [new branch] ${BRANCH} -> ${BRANCH}`,
+          },
+          {
+            id: "dup-push",
+            name: "Bash",
+            timestamp: ACTION_AT,
+            input: { command: `git push origin ${BRANCH}` },
+            output: `* [new branch] ${BRANCH} -> ${BRANCH}`,
+          },
+          {
+            id: "clean-push",
+            name: "Bash",
+            timestamp: ACTION_AT,
+            input: { command: `git push origin ${BRANCH}` },
+            output: `* [new branch] ${BRANCH} -> ${BRANCH}`,
+          },
+        ],
+      })
+    );
+    const carrier = carrierFor(
+      refFor(refs, ArtifactRefTargetKind.Branch, BRANCH)
+    );
+
+    assert.equal(
+      carrier.completeness,
+      BranchActivityEvidenceCompleteness.Partial
+    );
+    assert.equal(carrier.events.length, 1);
+    assert.equal(
+      carrier.events[0].completeness,
+      BranchActivityEvidenceCompleteness.Partial
     );
   });
 });

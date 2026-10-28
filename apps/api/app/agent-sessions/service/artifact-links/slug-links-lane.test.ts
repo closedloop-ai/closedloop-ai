@@ -1,19 +1,3 @@
-/**
- * Direct unit coverage for the closedloop-slug artifact-link lane.
- *
- * The sibling `slug-links.test.ts` drives the whole `agentSessionsService` to
- * assert ONE thing — the `deleteMany` guard shape that spares the session_pr and
- * session_branch lanes. That case stays where it is; everything else in this
- * module (role derivation, same-slug merge precedence, slug batch resolution,
- * self-link skip, unresolved-slug accumulation, the P2002 race swallow) had no
- * coverage at all.
- *
- * `persistArtifactLinks` and `resolveArtifactSlugMap` take `tx` as an explicit
- * parameter, so they are driven with a hand-rolled fake rather than the service
- * harness — no `@repo/database` mock is needed, since this module's imports are
- * type-only or zod.
- */
-
 import type { SyncedAgentSession } from "@repo/api/src/types/agent-session";
 import { LinkType } from "@repo/api/src/types/artifact";
 import {
@@ -21,6 +5,7 @@ import {
   roleFromMethod,
   type SyncedArtifactRef,
 } from "@repo/api/src/types/session-artifact-link";
+import { SessionArtifactLinkKind } from "@repo/api/src/types/session-pr-link-metadata";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentSessionUpsertTx } from "../records";
 import {
@@ -31,6 +16,8 @@ import {
 
 const ORG = "org-1";
 const SESSION_ARTIFACT = "session-artifact-1";
+const OBSERVED_AT = new Date("2026-08-22T17:00:00.000Z");
+const SESSION_CONTRIBUTED_AT = new Date("2026-08-22T09:15:00.000Z");
 
 function slugRef(overrides: Record<string, unknown> = {}): SyncedArtifactRef {
   return {
@@ -43,20 +30,17 @@ function slugRef(overrides: Record<string, unknown> = {}): SyncedArtifactRef {
 }
 
 type FakeTxParts = {
-  existingLink?: { id: string } | null;
   storedMetadata?: unknown;
-  createRejectsWith?: unknown;
+  upsertRejectsWith?: unknown;
   artifacts?: Array<{ id: string; slug: string | null }>;
 };
 
 function fakeTx(parts: FakeTxParts = {}) {
   const artifactLinkDeleteMany = vi.fn().mockResolvedValue({ count: 0 });
-  const artifactLinkFindFirst = vi
-    .fn()
-    .mockResolvedValue(parts.existingLink ?? null);
-  const artifactLinkCreate = parts.createRejectsWith
-    ? vi.fn().mockRejectedValue(parts.createRejectsWith)
-    : vi.fn().mockResolvedValue({});
+  const artifactLinkCreateMany = parts.upsertRejectsWith
+    ? vi.fn().mockRejectedValue(parts.upsertRejectsWith)
+    : vi.fn().mockResolvedValue({ id: "link-1" });
+  const executeRaw = vi.fn().mockResolvedValue({ count: 1 });
   const artifactFindMany = vi.fn().mockResolvedValue(parts.artifacts ?? []);
   const sessionDetailFindUnique = vi
     .fn()
@@ -64,11 +48,11 @@ function fakeTx(parts: FakeTxParts = {}) {
   const sessionDetailUpdate = vi.fn().mockResolvedValue({});
 
   const tx = {
+    $executeRaw: executeRaw,
     artifact: { findMany: artifactFindMany },
     artifactLink: {
       deleteMany: artifactLinkDeleteMany,
-      findFirst: artifactLinkFindFirst,
-      create: artifactLinkCreate,
+      createMany: artifactLinkCreateMany,
     },
     sessionDetail: {
       findUnique: sessionDetailFindUnique,
@@ -79,8 +63,8 @@ function fakeTx(parts: FakeTxParts = {}) {
   return {
     tx,
     artifactLinkDeleteMany,
-    artifactLinkFindFirst,
-    artifactLinkCreate,
+    artifactLinkCreateMany,
+    executeRaw,
     artifactFindMany,
     sessionDetailFindUnique,
     sessionDetailUpdate,
@@ -104,8 +88,6 @@ describe("roleFromMethod", () => {
   });
 
   it("falls back to referenced for an unknown method", () => {
-    // Forward compatibility: a method a newer desktop emits must not crash or
-    // silently classify as explicit intent.
     expect(roleFromMethod("some_future_method", false)).toBe("referenced");
   });
 });
@@ -126,8 +108,6 @@ describe("mergeArtifactRefsBySlug", () => {
   });
 
   it("lets the higher-precedence role win and carries its method with it", () => {
-    // workspace arrives first, then input — input must win, and the recorded
-    // method must be the winner's, not the loser's.
     const merged = mergeArtifactRefsBySlug([
       slugRef({ method: "slug_in_branch" }),
       slugRef({ method: "mcp_tool_call" }),
@@ -228,8 +208,6 @@ describe("resolveArtifactSlugMap", () => {
 
 describe("persistArtifactLinks", () => {
   it("leaves existing links untouched when refs are undefined", async () => {
-    // undefined means the client sent nothing (older desktop, chunked payload) —
-    // distinct from [] which means "references nothing" and must clear.
     const f = fakeTx();
 
     await persistArtifactLinks(
@@ -237,21 +215,28 @@ describe("persistArtifactLinks", () => {
       ORG,
       SESSION_ARTIFACT,
       undefined,
-      new Map()
+      new Map(),
+      OBSERVED_AT
     );
 
     expect(f.artifactLinkDeleteMany).not.toHaveBeenCalled();
-    expect(f.artifactLinkCreate).not.toHaveBeenCalled();
+    expect(f.artifactLinkCreateMany).not.toHaveBeenCalled();
   });
 
   it("clears every slug link when an explicit empty array is sent", async () => {
     const f = fakeTx();
 
-    await persistArtifactLinks(f.tx, ORG, SESSION_ARTIFACT, [], new Map());
+    await persistArtifactLinks(
+      f.tx,
+      ORG,
+      SESSION_ARTIFACT,
+      [],
+      new Map(),
+      OBSERVED_AT
+    );
 
     expect(f.artifactLinkDeleteMany).toHaveBeenCalledTimes(1);
     const where = f.artifactLinkDeleteMany.mock.calls[0][0].where;
-    // With nothing resolved there is no targetId exclusion — the delete is total.
     expect(where.targetId).toBeUndefined();
     expect(where.sourceId).toBe(SESSION_ARTIFACT);
     expect(where.linkType).toBe(LinkType.RelatesTo);
@@ -265,7 +250,8 @@ describe("persistArtifactLinks", () => {
       ORG,
       SESSION_ARTIFACT,
       [slugRef()],
-      new Map([["ISS-100", "artifact-1"]])
+      new Map([["ISS-100", "artifact-1"]]),
+      OBSERVED_AT
     );
 
     const where = f.artifactLinkDeleteMany.mock.calls[0][0].where;
@@ -286,11 +272,12 @@ describe("persistArtifactLinks", () => {
           relation: "created",
         }),
       ],
-      new Map([["ISS-100", "artifact-1"]])
+      new Map([["ISS-100", "artifact-1"]]),
+      OBSERVED_AT
     );
 
-    expect(f.artifactLinkCreate).toHaveBeenCalledTimes(1);
-    expect(f.artifactLinkCreate.mock.calls[0][0].data).toMatchObject({
+    expect(f.artifactLinkCreateMany).toHaveBeenCalledTimes(1);
+    expect(f.artifactLinkCreateMany.mock.calls[0][0].data[0]).toMatchObject({
       organizationId: ORG,
       sourceId: SESSION_ARTIFACT,
       targetId: "artifact-1",
@@ -312,11 +299,12 @@ describe("persistArtifactLinks", () => {
       ORG,
       SESSION_ARTIFACT,
       [slugRef()],
-      new Map([["ISS-100", "artifact-1"]])
+      new Map([["ISS-100", "artifact-1"]]),
+      OBSERVED_AT
     );
 
     expect(
-      "relation" in f.artifactLinkCreate.mock.calls[0][0].data.metadata
+      "relation" in f.artifactLinkCreateMany.mock.calls[0][0].data[0].metadata
     ).toBe(false);
   });
 
@@ -328,47 +316,43 @@ describe("persistArtifactLinks", () => {
       ORG,
       SESSION_ARTIFACT,
       [slugRef()],
-      new Map([["ISS-100", SESSION_ARTIFACT]])
+      new Map([["ISS-100", SESSION_ARTIFACT]]),
+      OBSERVED_AT
     );
 
-    expect(f.artifactLinkCreate).not.toHaveBeenCalled();
-    // A self-target is not "still referenced" either — it never enters the set.
+    expect(f.artifactLinkCreateMany).not.toHaveBeenCalled();
     expect(
       f.artifactLinkDeleteMany.mock.calls[0][0].where.targetId
     ).toBeUndefined();
   });
 
-  it("does not re-create a link that already exists", async () => {
-    const f = fakeTx({ existingLink: { id: "link-1" } });
+  it("keys the write on the (source, target, linkType) unique constraint", async () => {
+    const f = fakeTx();
 
     await persistArtifactLinks(
       f.tx,
       ORG,
       SESSION_ARTIFACT,
       [slugRef()],
-      new Map([["ISS-100", "artifact-1"]])
+      new Map([["ISS-100", "artifact-1"]]),
+      OBSERVED_AT
     );
 
-    expect(f.artifactLinkCreate).not.toHaveBeenCalled();
+    expect(f.artifactLinkCreateMany.mock.calls[0][0]).toMatchObject({
+      skipDuplicates: true,
+      data: [
+        {
+          sourceId: SESSION_ARTIFACT,
+          targetId: "artifact-1",
+          linkType: LinkType.RelatesTo,
+        },
+      ],
+    });
   });
 
-  it("swallows a P2002 from a concurrent sync creating the same link", async () => {
-    const f = fakeTx({ createRejectsWith: { code: "P2002" } });
-
-    await expect(
-      persistArtifactLinks(
-        f.tx,
-        ORG,
-        SESSION_ARTIFACT,
-        [slugRef()],
-        new Map([["ISS-100", "artifact-1"]])
-      )
-    ).resolves.toBeUndefined();
-  });
-
-  it("rethrows a non-P2002 create failure", async () => {
+  it("rethrows a write failure rather than swallowing it", async () => {
     const boom = new Error("connection lost");
-    const f = fakeTx({ createRejectsWith: boom });
+    const f = fakeTx({ upsertRejectsWith: boom });
 
     await expect(
       persistArtifactLinks(
@@ -376,7 +360,8 @@ describe("persistArtifactLinks", () => {
         ORG,
         SESSION_ARTIFACT,
         [slugRef()],
-        new Map([["ISS-100", "artifact-1"]])
+        new Map([["ISS-100", "artifact-1"]]),
+        OBSERVED_AT
       )
     ).rejects.toBe(boom);
   });
@@ -389,7 +374,8 @@ describe("persistArtifactLinks", () => {
       ORG,
       SESSION_ARTIFACT,
       [slugRef({ slug: "ISS-999" })],
-      new Map()
+      new Map(),
+      OBSERVED_AT
     );
 
     expect(f.sessionDetailUpdate).toHaveBeenCalledTimes(1);
@@ -412,7 +398,8 @@ describe("persistArtifactLinks", () => {
       ORG,
       SESSION_ARTIFACT,
       [slugRef({ slug: "ISS-999" }), slugRef({ slug: "ISS-777" })],
-      new Map()
+      new Map(),
+      OBSERVED_AT
     );
 
     const metadata = f.sessionDetailUpdate.mock.calls[0][0].data.metadata;
@@ -424,6 +411,29 @@ describe("persistArtifactLinks", () => {
     expect(metadata.keepMe).toBe("yes");
   });
 
+  it("keeps an own __proto__ metadata key while merging unresolved slugs", async () => {
+    const f = fakeTx({
+      storedMetadata: JSON.parse('{"keepMe":"yes","__proto__":{"deep":1}}'),
+    });
+
+    await persistArtifactLinks(
+      f.tx,
+      ORG,
+      SESSION_ARTIFACT,
+      [slugRef({ slug: "ISS-777" })],
+      new Map(),
+      OBSERVED_AT
+    );
+
+    const metadata = f.sessionDetailUpdate.mock.calls[0][0].data.metadata;
+    expect(Object.hasOwn(metadata, "__proto__")).toBe(true);
+    expect(
+      Object.getOwnPropertyDescriptor(metadata, "__proto__")?.value
+    ).toEqual({ deep: 1 });
+    expect(metadata.keepMe).toBe("yes");
+    expect(metadata._unresolvedArtifactRefs).toEqual(["ISS-777"]);
+  });
+
   it("does not touch session metadata when every slug resolved", async () => {
     const f = fakeTx();
 
@@ -432,10 +442,215 @@ describe("persistArtifactLinks", () => {
       ORG,
       SESSION_ARTIFACT,
       [slugRef()],
-      new Map([["ISS-100", "artifact-1"]])
+      new Map([["ISS-100", "artifact-1"]]),
+      OBSERVED_AT
     );
 
     expect(f.sessionDetailFindUnique).not.toHaveBeenCalled();
     expect(f.sessionDetailUpdate).not.toHaveBeenCalled();
+  });
+});
+
+describe("persistArtifactLinks — last-contributed timestamp (ISS-7669)", () => {
+  it("stamps the ref's own observed instant, not the session fallback", async () => {
+    const f = fakeTx();
+
+    await persistArtifactLinks(
+      f.tx,
+      ORG,
+      SESSION_ARTIFACT,
+      [slugRef({ observedAt: "2026-08-22T13:30:00.000Z" })],
+      new Map([["ISS-100", "artifact-1"]]),
+      SESSION_CONTRIBUTED_AT
+    );
+
+    const call = f.artifactLinkCreateMany.mock.calls[0][0];
+    expect(call.data[0].lastContributedAt).toEqual(
+      new Date("2026-08-22T13:30:00.000Z")
+    );
+    expect(f.executeRaw.mock.calls[0]).toContainEqual([
+      "2026-08-22T13:30:00.000Z",
+    ]);
+    expect(call.data[0].lastContributedAt).not.toEqual(SESSION_CONTRIBUTED_AT);
+  });
+
+  it("advances an existing link through a guard that only ever moves it forward", async () => {
+    const f = fakeTx();
+
+    await persistArtifactLinks(
+      f.tx,
+      ORG,
+      SESSION_ARTIFACT,
+      [slugRef({ observedAt: "2026-08-22T17:00:00.000Z" })],
+      new Map([["ISS-100", "artifact-1"]]),
+      SESSION_CONTRIBUTED_AT
+    );
+
+    expect(f.artifactLinkCreateMany).toHaveBeenCalledTimes(1);
+    expect(f.executeRaw).toHaveBeenCalledTimes(1);
+    const advance = f.executeRaw.mock.calls[0];
+    expect(advance.slice(1)).toEqual(
+      expect.arrayContaining([
+        ["artifact-1"],
+        ["2026-08-22T17:00:00.000Z"],
+        ORG,
+        SESSION_ARTIFACT,
+        LinkType.RelatesTo,
+      ])
+    );
+    expect(advance[0].join("?")).toContain(
+      "link.last_contributed_at < incoming.contributed_at"
+    );
+  });
+
+  it("leaves an existing link's metadata untouched", async () => {
+    const f = fakeTx();
+
+    await persistArtifactLinks(
+      f.tx,
+      ORG,
+      SESSION_ARTIFACT,
+      [slugRef({ method: "mcp_tool_call", isPrimary: true })],
+      new Map([["ISS-100", "artifact-1"]]),
+      SESSION_CONTRIBUTED_AT
+    );
+
+    const call = f.artifactLinkCreateMany.mock.calls[0][0];
+    expect(call.skipDuplicates).toBe(true);
+    // ISS-12552: the only metadata change is scoped to evidence-lane rows;
+    // every other row keeps the metadata it has.
+    const update = f.executeRaw.mock.calls[0];
+    expect(update[0].join("?")).toContain(
+      "WHEN link.metadata ->> 'linkKind' = ?\n            THEN link.metadata || incoming.metadata\n            ELSE link.metadata"
+    );
+    expect(update).toContain(SessionArtifactLinkKind.SessionEvidence);
+    expect(call.data[0].metadata).toMatchObject({ role: "input" });
+  });
+
+  it("does not advance the stamp when the same payload is synced twice", async () => {
+    const refs = [slugRef({ observedAt: "2026-08-22T13:30:00.000Z" })];
+    const first = fakeTx();
+    const second = fakeTx();
+
+    await persistArtifactLinks(
+      first.tx,
+      ORG,
+      SESSION_ARTIFACT,
+      refs,
+      new Map([["ISS-100", "artifact-1"]]),
+      new Date("2026-08-22T14:00:00.000Z")
+    );
+    await persistArtifactLinks(
+      second.tx,
+      ORG,
+      SESSION_ARTIFACT,
+      refs,
+      new Map([["ISS-100", "artifact-1"]]),
+      new Date("2026-08-29T09:00:00.000Z")
+    );
+
+    expect(second.executeRaw.mock.calls[0][2]).toEqual(
+      first.executeRaw.mock.calls[0][2]
+    );
+  });
+
+  it("falls back to the session instant when the ref states none", async () => {
+    const f = fakeTx();
+
+    await persistArtifactLinks(
+      f.tx,
+      ORG,
+      SESSION_ARTIFACT,
+      [slugRef()],
+      new Map([["ISS-100", "artifact-1"]]),
+      SESSION_CONTRIBUTED_AT
+    );
+
+    expect(
+      f.artifactLinkCreateMany.mock.calls[0][0].data[0].lastContributedAt
+    ).toEqual(new Date("2026-08-22T09:15:00.000Z"));
+  });
+
+  it("falls back to the session instant when the ref states an unparseable one", async () => {
+    const f = fakeTx();
+
+    await persistArtifactLinks(
+      f.tx,
+      ORG,
+      SESSION_ARTIFACT,
+      [slugRef({ observedAt: "not-a-timestamp" })],
+      new Map([["ISS-100", "artifact-1"]]),
+      SESSION_CONTRIBUTED_AT
+    );
+
+    const stamped =
+      f.artifactLinkCreateMany.mock.calls[0][0].data[0].lastContributedAt;
+    expect(Number.isNaN(stamped.getTime())).toBe(false);
+    expect(stamped).toEqual(new Date("2026-08-22T09:15:00.000Z"));
+  });
+
+  it("writes nothing when the client sent no refs at all", async () => {
+    const f = fakeTx();
+
+    await persistArtifactLinks(
+      f.tx,
+      ORG,
+      SESSION_ARTIFACT,
+      undefined,
+      new Map([["ISS-100", "artifact-1"]]),
+      SESSION_CONTRIBUTED_AT
+    );
+
+    expect(f.artifactLinkCreateMany).not.toHaveBeenCalled();
+  });
+
+  it("does not stamp a self-link the session resolved to its own artifact", async () => {
+    const f = fakeTx();
+
+    await persistArtifactLinks(
+      f.tx,
+      ORG,
+      SESSION_ARTIFACT,
+      [slugRef({ observedAt: "2026-08-22T13:30:00.000Z" })],
+      new Map([["ISS-100", SESSION_ARTIFACT]]),
+      SESSION_CONTRIBUTED_AT
+    );
+
+    expect(f.artifactLinkCreateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("mergeArtifactRefsBySlug — observedAt recency (ISS-7669)", () => {
+  it("keeps the LATEST observed instant across refs naming one slug", () => {
+    const merged = mergeArtifactRefsBySlug([
+      slugRef({ observedAt: "2026-08-22T10:00:00.000Z" }),
+      slugRef({ observedAt: "2026-08-22T18:45:00.000Z" }),
+      slugRef({ observedAt: "2026-08-22T12:00:00.000Z" }),
+    ]);
+
+    expect(merged.get("ISS-100")?.observedAt).toBe("2026-08-22T18:45:00.000Z");
+  });
+
+  it("takes a later instant from a ref that loses the role precedence", () => {
+    const merged = mergeArtifactRefsBySlug([
+      slugRef({
+        method: "mcp_tool_call",
+        observedAt: "2026-08-22T10:00:00.000Z",
+      }),
+      slugRef({
+        method: "slug_in_branch",
+        observedAt: "2026-08-22T18:45:00.000Z",
+      }),
+    ]);
+
+    const entry = merged.get("ISS-100");
+    expect(entry?.role).toBe("input");
+    expect(entry?.observedAt).toBe("2026-08-22T18:45:00.000Z");
+  });
+
+  it("leaves observedAt absent when no ref stated one", () => {
+    const merged = mergeArtifactRefsBySlug([slugRef(), slugRef()]);
+
+    expect("observedAt" in (merged.get("ISS-100") ?? {})).toBe(false);
   });
 });

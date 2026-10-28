@@ -2,6 +2,10 @@ import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 import { SHARED_DASHBOARD_FIXTURE } from "../../lib/__tests__/fixtures";
 import {
+  decodeSharedDashboard,
+  encodeSharedDashboard,
+} from "../../lib/share-dashboard";
+import {
   DEFAULT_DASHBOARD_TILE_IDS,
   REMOVED_DASHBOARD_TILE_IDS,
 } from "../../lib/tile-catalog";
@@ -94,6 +98,119 @@ describe("useDashboardPins", () => {
     localStorage.setItem(KEY, JSON.stringify({ version: 999, junk: true }));
     const { result } = renderHook(() => useDashboardPins("org-a"));
     expect(result.current.tiles).toEqual(DEFAULT_DASHBOARD_TILE_IDS);
+  });
+
+  it("drops only the corrupt tile position from a stored v7 layout", () => {
+    // ISS-8738: one h:0 entry used to fail the whole envelope and reset the
+    // dashboard to defaults. Only that tile's saved position may go.
+    localStorage.setItem(
+      KEY,
+      JSON.stringify({
+        version: 7,
+        tiles: ["kpi:merged", "chart:prTrend"],
+        layout: {
+          "kpi:merged": { x: 0, y: 0, w: 12, h: 0 },
+          "chart:prTrend": { x: 3, y: 0, w: 6, h: 4 },
+        },
+        settings: { "chart:prTrend": { comparisonOverlay: true } },
+      })
+    );
+
+    const { result } = renderHook(() => useDashboardPins("org-a"));
+
+    expect(result.current.tiles).toEqual(["kpi:merged", "chart:prTrend"]);
+    expect(result.current.layout).toEqual({
+      "chart:prTrend": { x: 3, y: 0, w: 6, h: 4 },
+    });
+    expect(result.current.getTileSettings("chart:prTrend")).toEqual({
+      comparisonOverlay: true,
+    });
+  });
+
+  it("migrates a v6 layout with one corrupt entry instead of resetting it", () => {
+    localStorage.setItem(
+      KEY,
+      JSON.stringify({
+        version: 6,
+        tiles: ["kpi:input-tokens", "kpi:output-tokens", "chart:prTrend"],
+        layout: {
+          "kpi:input-tokens": { x: 0, y: 0, w: 3, h: 2 },
+          "kpi:output-tokens": { x: 3, y: 0, w: 3, h: -3 },
+          "chart:prTrend": { x: 6, y: 0, w: 6, h: 4 },
+        },
+        settings: {},
+      })
+    );
+
+    const { result } = renderHook(() => useDashboardPins("org-a"));
+
+    // Surviving tiles sit at varying x, so the single-column-stack reset does
+    // not fire and the customized multi-column layout carries forward.
+    expect(result.current.tiles).toEqual([
+      "kpi:input-tokens",
+      "kpi:output-tokens",
+      "chart:prTrend",
+    ]);
+    expect(result.current.layout).toEqual({
+      "kpi:input-tokens": { x: 0, y: 0, w: 3, h: 2 },
+      "chart:prTrend": { x: 6, y: 0, w: 6, h: 4 },
+    });
+
+    act(() => result.current.togglePin("kpi:input-tokens"));
+    expect(localStorage.getItem(KEY)).toContain('"version":7');
+  });
+
+  it("classifies a v6 single-column stack on the raw layout, not the sanitized one", () => {
+    // The only non-zero-x entry is the corrupt one. Dropping it first would
+    // leave two x:0 entries, read as the pre-fix stack, and reset the layout.
+    localStorage.setItem(
+      KEY,
+      JSON.stringify({
+        version: 6,
+        tiles: ["kpi:input-tokens", "kpi:output-tokens", "chart:prTrend"],
+        layout: {
+          "kpi:input-tokens": { x: 0, y: 0, w: 3, h: 2 },
+          "kpi:output-tokens": { x: 0, y: 2, w: 3, h: 2 },
+          "chart:prTrend": { x: 6, y: 0, w: 6, h: 0 },
+        },
+        settings: {},
+      })
+    );
+
+    const { result } = renderHook(() => useDashboardPins("org-a"));
+
+    expect(result.current.layout).toEqual({
+      "kpi:input-tokens": { x: 0, y: 0, w: 3, h: 2 },
+      "kpi:output-tokens": { x: 0, y: 2, w: 3, h: 2 },
+    });
+  });
+
+  it("resets a v6 single-column stack whose third entry is unreadable", () => {
+    // marisolashgrove (#6698): an entry no column can be read from used to veto
+    // the whole classification, so one junk entry beside two x:0 tiles carried
+    // the pre-fix stack forward instead of resetting it.
+    localStorage.setItem(
+      KEY,
+      JSON.stringify({
+        version: 6,
+        tiles: ["kpi:input-tokens", "kpi:output-tokens", "chart:prTrend"],
+        layout: {
+          "kpi:input-tokens": { x: 0, y: 0, w: 3, h: 2 },
+          "kpi:output-tokens": { x: 0, y: 2, w: 3, h: 2 },
+          "chart:prTrend": "corrupt",
+        },
+        settings: {},
+      })
+    );
+
+    const { result } = renderHook(() => useDashboardPins("org-a"));
+
+    expect(result.current.layout).toEqual({});
+    expect(result.current.tiles).toEqual([
+      "kpi:input-tokens",
+      "kpi:output-tokens",
+      "chart:prTrend",
+    ]);
   });
 
   it("adds analytics pie widgets and clears layout when migrating stored v3 dashboards", () => {
@@ -323,6 +440,27 @@ describe("useDashboardPins", () => {
       expect(result.current.layout).toEqual(OVERRIDE.layout);
       expect(result.current.getTileSettings("chart:prTrend")).toEqual({
         comparisonOverlay: true,
+      });
+    });
+
+    it("keeps the sibling positions of a shared link carrying one corrupt entry", () => {
+      const override = decodeSharedDashboard(
+        encodeSharedDashboard({
+          tiles: ["kpi:merged", "chart:prTrend"],
+          layout: {
+            "kpi:merged": { x: 0, y: 0, w: 12, h: 0 },
+            "chart:prTrend": { x: 3, y: 0, w: 6, h: 4 },
+          },
+          settings: {},
+        })
+      );
+      expect(override).not.toBeNull();
+
+      const { result } = renderHook(() => useDashboardPins("org-a", override));
+
+      expect(result.current.tiles).toEqual(["kpi:merged", "chart:prTrend"]);
+      expect(result.current.layout).toEqual({
+        "chart:prTrend": { x: 3, y: 0, w: 6, h: 4 },
       });
     });
 

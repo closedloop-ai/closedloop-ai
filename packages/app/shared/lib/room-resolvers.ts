@@ -6,8 +6,8 @@ import { parseDocumentRoomId } from "@repo/collaboration/shared/room-utils";
  * Only resolves rooms belonging to the given organization.
  *
  * Calls the server-side /api/collaboration/rooms/resolve endpoint which reads
- * Liveblocks room metadata (documentType) to build correct type-specific URLs
- * (e.g., /prds/slug, /issues/slug). Falls back to slug-based names on error.
+ * Liveblocks room metadata (documentType) to build correct document URLs
+ * (e.g., /documents/slug). Falls back to slug-based names on error.
  */
 export function createResolveRoomsInfo(organizationId: string) {
   return async ({

@@ -12,11 +12,11 @@ const SCROLL_HIGHLIGHT_ATTR = "data-scroll-highlight";
  * triggered by `data-scroll-highlight="true"`.
  *
  * No-op when the mark is not in the DOM (editor not yet mounted, thread
- * not currently anchored, etc.) — logs a warning instead of throwing.
+ * not currently anchored, etc.) — returns silently, without throwing.
  *
  * Callers are responsible for gating on whether the thread is anchored.
  * Floating and artifact-level threads have no live decoration to scroll
- * to, so calling this for them would just log a warning.
+ * to, so calling this for them does nothing.
  *
  * Forward-looking note: collapsible-section auto-expansion (PRD AC-US7.4)
  * is out of scope for FEA-1122. The current Tiptap schema has no

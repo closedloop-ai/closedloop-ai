@@ -13,8 +13,8 @@ import { normalizeRepoFullName } from "@repo/api/src/types/branch";
 import { GitHubPRState } from "@repo/api/src/types/github-status";
 import { GitHubInstallationStatus, withDb } from "@repo/database";
 import { describe, expect, it } from "vitest";
-import { adoptRepolessPullRequestByRepoIdentity } from "@/app/branches/github-projection-writer";
-import { autoRollbackTransaction } from "../utils/db-helpers";
+import { reconcilePullRequestProviderIdentityInTransaction } from "@/app/branches/pull-request-provider-identity";
+import { joinAmbientTransactionForSessionSyncWrites } from "../utils/db-helpers";
 import {
   baseFixture,
   branchRef,
@@ -31,7 +31,7 @@ const REPO = "acme/widgets";
 
 describeIfDb("desktop PR sync cross-branch identity (FEA-3917)", () => {
   it("App repo: syncing the same PR under a second branch artifact reconciles onto the one row instead of colliding", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const fx = await baseFixture();
       const normalized = normalizeRepoFullName(REPO);
       const seeded = await seedRepo(fx.organizationId, REPO);
@@ -97,7 +97,7 @@ describeIfDb("desktop PR sync cross-branch identity (FEA-3917)", () => {
   });
 
   it("repo-less: syncing the same PR under a second branch artifact reconciles onto the one row instead of colliding on the partial unique index", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const fx = await baseFixture();
       const normalized = normalizeRepoFullName(REPO);
 
@@ -150,8 +150,8 @@ describeIfDb("desktop PR sync cross-branch identity (FEA-3917)", () => {
     });
   });
 
-  it("cross-branch reconciliation is dedup-only: a later merged sync under branch B does not freshen branch A's row into a terminal-but-unadvanced state (read-repair guard)", async () => {
-    await autoRollbackTransaction(async () => {
+  it("cross-branch reconciliation is dedup-only: a later merged sync under branch B does not freshen branch A's row into a terminal-but-unadvanced state (lifecycle-consistency guard)", async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const fx = await baseFixture();
       const normalized = normalizeRepoFullName(REPO);
 
@@ -185,8 +185,8 @@ describeIfDb("desktop PR sync cross-branch identity (FEA-3917)", () => {
       // strictly NEWER observation so the monotonic guard would not skip it) under
       // a DIFFERENT branch artifact B. The identity lookup finds A's row, but a
       // cross-branch sync must NOT overwrite its facts: doing so would set
-      // prState=MERGED + a fresh read-repair clock while leaving branch A's
-      // Artifact.status OPEN, permanently silencing pr-read-repair for branch A.
+      // prState=MERGED + newer freshness stamps while leaving branch A's
+      // Artifact.status OPEN, a terminal-but-unadvanced branch A.
       await syncSession({
         ...fx,
         externalSessionId: "sess-b",
@@ -219,7 +219,7 @@ describeIfDb("desktop PR sync cross-branch identity (FEA-3917)", () => {
         before?.fetchObservedAt?.toISOString()
       );
       // Branch A stays OPEN — PR row and branch status remain consistent (no
-      // terminal-but-unadvanced divergence that would strand pr-read-repair).
+      // terminal-but-unadvanced divergence).
       const artifactA = await withDb((db) =>
         db.artifact.findUnique({
           where: { id: branchA?.artifactId },
@@ -231,7 +231,7 @@ describeIfDb("desktop PR sync cross-branch identity (FEA-3917)", () => {
   });
 
   it("adoption + cross-branch re-sync converges on the adopted row (AC5, repo-less -> adopted across two branch artifacts)", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const fx = await baseFixture();
       const normalized = normalizeRepoFullName(REPO);
 
@@ -253,7 +253,7 @@ describeIfDb("desktop PR sync cross-branch identity (FEA-3917)", () => {
       // repositoryId + githubId), moving it under (repositoryId, number).
       const seeded = await seedRepo(fx.organizationId, REPO);
       await withDb((db) =>
-        adoptRepolessPullRequestByRepoIdentity(db, {
+        reconcilePullRequestProviderIdentityInTransaction(db, {
           organizationId: fx.organizationId,
           repositoryFullName: normalized,
           number: 88,
@@ -294,7 +294,7 @@ describeIfDb("desktop PR sync cross-branch identity (FEA-3917)", () => {
   });
 
   it("adoption skew: an adopted row is reconciled (not duplicated) when a later sync cannot resolve the repositoryId", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const fx = await baseFixture();
       const normalized = normalizeRepoFullName(REPO);
 
@@ -314,7 +314,7 @@ describeIfDb("desktop PR sync cross-branch identity (FEA-3917)", () => {
       });
       const seeded = await seedRepo(fx.organizationId, REPO);
       await withDb((db) =>
-        adoptRepolessPullRequestByRepoIdentity(db, {
+        reconcilePullRequestProviderIdentityInTransaction(db, {
           organizationId: fx.organizationId,
           repositoryFullName: normalized,
           number: 55,
@@ -323,7 +323,7 @@ describeIfDb("desktop PR sync cross-branch identity (FEA-3917)", () => {
         })
       );
 
-      // The App install goes non-ACTIVE, so resolveBranchRepoMap can no longer
+      // The App install goes non-ACTIVE, so resolveSessionRepositoryIdentity can no longer
       // resolve the repositoryId — the later sync arrives with repositoryId=null
       // even though the stored row is already adopted (repositoryId set). A lookup
       // gated on `repositoryId: null` would miss it and create a second repo-less

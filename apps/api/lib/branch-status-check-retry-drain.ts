@@ -14,7 +14,7 @@ import {
 } from "@/lib/branch-status-check-retry";
 import { persistBranchStatusChecksFromRollup } from "@/lib/branch-status-checks";
 import { readWithInstallationClient } from "@/lib/github/installation-client";
-import { githubAppGraphqlFetchProvenance } from "@/lib/github-fetch-provenance";
+import { graphqlFetchProvenance } from "@/lib/github-fetch-provenance";
 
 export type CheckRunRetryDrainSummary = {
   claimed: number;
@@ -23,6 +23,8 @@ export type CheckRunRetryDrainSummary = {
   deadLettered: number;
   discarded: number;
   missing: number;
+  /** Every rescheduled or dead-lettered claim, bounded by the claim batch limit. */
+  failures: CheckRunRetryDrainFailure[];
 };
 
 /**
@@ -94,7 +96,7 @@ async function settleSuccessfulProviderResult(
       organizationId: claim.organizationId,
       headSha: claim.headSha,
       rollup,
-      fetchProvenance: githubAppGraphqlFetchProvenance({
+      fetchProvenance: graphqlFetchProvenance({
         trigger: GitHubFetchTrigger.Webhook,
       }),
     });
@@ -125,13 +127,22 @@ async function settleFailedProviderResult(
       retryAfterSeconds
     )
   );
-  if (result === "retry_scheduled") {
-    summary.rescheduled++;
-  } else if (result === "dead_letter") {
+  if (result === "skipped_stale_branch") {
+    summary.missing++;
+    return;
+  }
+  const deadLettered = result === "dead_letter";
+  if (deadLettered) {
     summary.deadLettered++;
   } else {
-    summary.missing++;
+    summary.rescheduled++;
   }
+  summary.failures.push({
+    branchArtifactId: claim.branchArtifactId,
+    organizationId: claim.organizationId,
+    reason,
+    deadLettered,
+  });
 }
 
 async function countClearResult(
@@ -166,5 +177,14 @@ function emptyDrainSummary(claimed: number): CheckRunRetryDrainSummary {
     deadLettered: 0,
     discarded: 0,
     missing: 0,
+    failures: [],
   };
 }
+
+/** One claim whose provider read failed this run. */
+export type CheckRunRetryDrainFailure = {
+  branchArtifactId: string;
+  organizationId: string;
+  reason: StatusCheckRollupFailureReason;
+  deadLettered: boolean;
+};

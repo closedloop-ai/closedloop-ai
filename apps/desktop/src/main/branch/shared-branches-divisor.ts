@@ -6,8 +6,9 @@ import { readSessionBranchCounts } from "../database/branch-reads";
  * DISTINCT branches each of their sessions touched, GLOBALLY.
  *
  * The values come from {@link readSessionBranchCounts}, restricted by the
- * pre-publication denominator-authority population. Product-visible rows use a
- * separate key set, so publication eligibility cannot shrink this divisor.
+ * publication-gated denominator-authority population (ISS-8148, PRD-683 D7:
+ * the divisor shares the Product publication gate, so the wire even-split
+ * matches the cloud's `cloudBranchMetricDenominatorEligibilitySql`).
  *
  * Keys are scoped to the sessions the CALLER's items actually reference, so a
  * paginated or id-narrowed response carries a page-sized map rather than a

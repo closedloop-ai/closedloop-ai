@@ -20,7 +20,8 @@
  *    took every tick. An actively-used install never empties that lane, so the
  *    historical backfill was never selected at all: the reported machine held
  *    646 backfill rows motionless for two days, and the durable cursor — which
- *    only persists once BOTH queues drain — sat 29 h stale behind them. After
+ *    then persisted only once BOTH queues drained, before ISS-8041 moved it to
+ *    the acked-contiguous prefix — sat 29 h stale behind them. After
  *    `MAX_CONSECUTIVE_INCREMENTAL_PASSES` consecutive incremental wins the next
  *    tick is RESERVED for backfill.
  *

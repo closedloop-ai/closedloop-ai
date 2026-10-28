@@ -5,6 +5,7 @@ import {
   Harness,
   SourceType,
 } from "@repo/api/src/types/agent-component";
+import { AgentSessionViewerScope } from "@repo/api/src/types/agent-session";
 import { createAgentSessionListItemFixture } from "@repo/app/agents/components/sessions/session-list-fixtures";
 import { ApiError } from "@repo/app/shared/api/api-error";
 import { AppCoreStoryProviders } from "@repo/app/shared/storybook/decorators";
@@ -13,13 +14,12 @@ import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentDetailWithPromote } from "../agent-detail-with-promote";
 
-// --- Clerk org mock: drives the admin gate on the Promote action. ---
+// Clerk org mock: drives the admin gate on the Promote action.
 const mockUseOrganization = vi.fn();
 vi.mock("@repo/auth/client", () => ({
   useOrganization: () => mockUseOrganization(),
 }));
 
-// --- Navigation mock (FEA-3557) ---
 // AgentDetail's invocations tabs adopted `useTabParam`, which reads the
 // navigation-port hooks (useNavigation/usePath/useSearchParamsValue). In
 // `apps/app` tests those ports are shimmed to `next/navigation` by
@@ -27,6 +27,7 @@ vi.mock("@repo/auth/client", () => ({
 // <NavigationProvider> — this suite must supply a `next/navigation` factory
 // instead. Provide inert router/pathname/search-params so the detail header
 // (and its tabs) render without a live App Router context.
+let detailSearchParams = "";
 vi.mock("next/navigation", () => ({
   usePathname: () => "/agents/skill::rtk",
   useParams: () => ({ orgSlug: "org-test" }),
@@ -36,10 +37,10 @@ vi.mock("next/navigation", () => ({
     back: vi.fn(),
     refresh: vi.fn(),
   }),
-  useSearchParams: () => new URLSearchParams(),
+  useSearchParams: () => new URLSearchParams(detailSearchParams),
 }));
 
-// --- Shared detail hook: return a fixed component so the header renders. ---
+// Shared detail hook: return a fixed component so the header renders.
 const detail: AgentComponentDetail = {
   id: "uuid-1",
   slug: "skill::rtk-optimizer",
@@ -101,58 +102,47 @@ vi.mock("@repo/app/agents/hooks/use-agent-component-token-trend", () => ({
   }),
 }));
 
-// --- Compute-targets hook (FEA-4017): drives the Install modal's target list.
-// Captures the options arg so the `enabled: open` gating can be asserted. ---
-const mockUseComputeTargets = vi.fn();
-const computeTargetsOptions: Array<{ enabled?: boolean } | undefined> = [];
-vi.mock("@/hooks/queries/use-compute-targets", () => ({
-  useComputeTargets: (options?: { enabled?: boolean }) => {
-    computeTargetsOptions.push(options);
-    return mockUseComputeTargets();
-  },
-}));
-
 const RE_PROMOTE = /promote/i;
-const RE_PROMOTE_EXACT = /^promote$/i;
-const RE_INSTALL = /^install$/i;
-const RE_GO_TO_SETTINGS = /go to settings/i;
 const RE_DIALOG_TITLE = /promote to catalog/i;
-const RE_TOKEN_TREND = /^usage over time$/i;
-const RE_TARGETS_LOAD_ERROR = /couldn't load your compute targets/i;
-const RE_SELECT_TARGET_CONTROL = /select .* compute target/i;
-const RE_DARWIN_ONLINE = /darwin · Online/i;
+const RE_TOKEN_TREND = /^token trend$/i;
 const RE_NOT_FOUND = /component not found/i;
 const RE_BACK_TO_AGENTS = /back to agents/i;
 
-function onlineTargetFixture(overrides: Record<string, unknown> = {}) {
-  return {
-    id: "ct-1",
-    machineName: "My MacBook",
-    isOnline: true,
-    platform: "darwin",
-    ownerName: null,
-    ...overrides,
-  };
-}
-
 function Wrapper({ children }: { children: ReactNode }) {
-  return <AppCoreStoryProviders>{children}</AppCoreStoryProviders>;
+  return (
+    <AppCoreStoryProviders
+      apiRoutes={[
+        {
+          method: "GET",
+          path: "/agent-sessions",
+          respond: () => ({
+            componentScope: detail.slug,
+            items: detail.sessionsTab,
+            total: detail.sessions,
+            viewerScope: AgentSessionViewerScope.Organization,
+          }),
+        },
+        {
+          method: "GET",
+          path: "/agent-sessions/usage",
+          respond: () => ({
+            componentScope: detail.slug,
+            totalSessions: detail.sessions,
+          }),
+        },
+        { method: "GET", path: "/artifacts/favorites", respond: () => [] },
+      ]}
+    >
+      {children}
+    </AppCoreStoryProviders>
+  );
 }
 
 beforeEach(() => {
+  detailSearchParams = "";
   vi.clearAllMocks();
-  computeTargetsOptions.length = 0;
   // Default: a settled successful read. Not-found tests opt into the error branch.
   detailResult = { data: detail, isLoading: false, isError: false };
-  // Default: one own online local target.
-  mockUseComputeTargets.mockReturnValue({
-    data: [onlineTargetFixture()],
-    isLoading: false,
-    isError: false,
-  });
-  // Default fixture is repo-sourced (not installable); installable tests opt in.
-  detail.sourceType = SourceType.Repo;
-  detail.source = "acme/repo";
 });
 
 describe("AgentDetailWithPromote", () => {
@@ -212,7 +202,8 @@ describe("AgentDetailWithPromote", () => {
     ).toHaveAttribute("href", "/org-test/agents");
   });
 
-  it("renders the web-only 'Usage over time' analytics section", async () => {
+  it("preserves the web-only 'Token trend' analytics section", async () => {
+    detailSearchParams = "tab=details";
     // Non-admin so only the analytics slot (not the Promote action) is asserted;
     // the section proves the shared AgentDetail `analytics` slot is wired on web.
     mockUseOrganization.mockReturnValue({
@@ -225,7 +216,16 @@ describe("AgentDetailWithPromote", () => {
       </Wrapper>
     );
 
-    expect(await screen.findByText(RE_TOKEN_TREND)).toBeInTheDocument();
+    // ISS-5540 item 6: asserted as a level-2 HEADING, not as text. This section
+    // is web-only, so it is the one part of the detail outline the shared
+    // `AgentDetail` suite cannot see — and it shipped as an `h3` directly under
+    // the page `h1`, skipping a level. WCAG 2.2 SC 1.3.1.
+    expect(
+      await screen.findByRole("heading", { level: 2, name: RE_TOKEN_TREND })
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { level: 3, name: RE_TOKEN_TREND })
+    ).toBeNull();
   });
 
   it("does NOT render the Promote action for a non-admin member", async () => {
@@ -240,7 +240,9 @@ describe("AgentDetailWithPromote", () => {
     );
 
     // Component still renders (name visible) but no Promote button.
-    expect(await screen.findByText("RTK Optimizer")).toBeInTheDocument();
+    expect(
+      await screen.findByText("RTK Optimizer", { selector: "p" })
+    ).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: RE_PROMOTE })
     ).not.toBeInTheDocument();
@@ -301,213 +303,11 @@ describe("AgentDetailWithPromote", () => {
     );
 
     expect(
-      await screen.findByText("Showing 1 of 1,218 sessions")
+      await screen.findByText("Showing 1-1 of 1,218 sessions")
     ).toBeInTheDocument();
 
     detail.sessions = 3;
     detail.sessionsTab = [];
     detail.sessionsTabTruncated = false;
-  });
-
-  // ---- FEA-4017: Install Locally (any member) --------------------------------
-
-  it("shows an enabled Install action to a non-admin member for a pack-sourced component", async () => {
-    mockUseOrganization.mockReturnValue({
-      membership: { role: "org:member" },
-    });
-    detail.sourceType = SourceType.Pack;
-    detail.source = "rtk";
-
-    render(
-      <Wrapper>
-        <AgentDetailWithPromote orgSlug="org-test" slug="skill::rtk" />
-      </Wrapper>
-    );
-
-    const installButton = await screen.findByRole("button", {
-      name: RE_INSTALL,
-    });
-    expect(installButton).toBeInTheDocument();
-    expect(installButton).toBeEnabled();
-    // Non-admin still gets NO Promote action.
-    expect(
-      screen.queryByRole("button", { name: RE_PROMOTE_EXACT })
-    ).not.toBeInTheDocument();
-  });
-
-  it("gates the compute-targets query on the modal being open (enabled: open)", async () => {
-    mockUseOrganization.mockReturnValue({
-      membership: { role: "org:member" },
-    });
-    detail.sourceType = SourceType.Pack;
-    detail.source = "rtk";
-
-    render(
-      <Wrapper>
-        <AgentDetailWithPromote orgSlug="org-test" slug="skill::rtk" />
-      </Wrapper>
-    );
-
-    await screen.findByRole("button", { name: RE_INSTALL });
-    // Closed: every call so far passed enabled:false (the query stays idle).
-    expect(computeTargetsOptions.length).toBeGreaterThan(0);
-    expect(computeTargetsOptions.every((o) => o?.enabled === false)).toBe(true);
-
-    fireEvent.click(screen.getByRole("button", { name: RE_INSTALL }));
-
-    // Opening flips the gate on.
-    await waitFor(() => {
-      expect(computeTargetsOptions.at(-1)?.enabled).toBe(true);
-    });
-  });
-
-  it("lists the member's own online target read-only with platform + status when Install is clicked", async () => {
-    mockUseOrganization.mockReturnValue({
-      membership: { role: "org:member" },
-    });
-    detail.sourceType = SourceType.Pack;
-    detail.source = "rtk";
-
-    render(
-      <Wrapper>
-        <AgentDetailWithPromote orgSlug="org-test" slug="skill::rtk" />
-      </Wrapper>
-    );
-
-    fireEvent.click(await screen.findByRole("button", { name: RE_INSTALL }));
-
-    expect(await screen.findByRole("dialog")).toBeInTheDocument();
-    expect(screen.getByText("My MacBook")).toBeInTheDocument();
-    expect(screen.getByText(RE_DARWIN_ONLINE)).toBeInTheDocument();
-    // The list is informational, not a picker — no per-target control.
-    expect(
-      screen.queryByRole("button", { name: RE_SELECT_TARGET_CONTROL })
-    ).not.toBeInTheDocument();
-  });
-
-  it("hides teammate-owned org-shared targets (only the member's own machines)", async () => {
-    mockUseOrganization.mockReturnValue({
-      membership: { role: "org:member" },
-    });
-    mockUseComputeTargets.mockReturnValue({
-      data: [
-        onlineTargetFixture(),
-        onlineTargetFixture({
-          id: "ct-2",
-          machineName: "Teammate Box",
-          ownerName: "Bob",
-        }),
-      ],
-      isLoading: false,
-      isError: false,
-    });
-    detail.sourceType = SourceType.Pack;
-    detail.source = "rtk";
-
-    render(
-      <Wrapper>
-        <AgentDetailWithPromote orgSlug="org-test" slug="skill::rtk" />
-      </Wrapper>
-    );
-
-    fireEvent.click(await screen.findByRole("button", { name: RE_INSTALL }));
-
-    expect(await screen.findByText("My MacBook")).toBeInTheDocument();
-    expect(screen.queryByText("Teammate Box")).not.toBeInTheDocument();
-  });
-
-  it("surfaces an error state (not an empty list) when the targets query fails", async () => {
-    mockUseOrganization.mockReturnValue({
-      membership: { role: "org:member" },
-    });
-    mockUseComputeTargets.mockReturnValue({
-      data: undefined,
-      isLoading: false,
-      isError: true,
-    });
-    detail.sourceType = SourceType.Pack;
-    detail.source = "rtk";
-
-    render(
-      <Wrapper>
-        <AgentDetailWithPromote orgSlug="org-test" slug="skill::rtk" />
-      </Wrapper>
-    );
-
-    fireEvent.click(await screen.findByRole("button", { name: RE_INSTALL }));
-
-    expect(await screen.findByText(RE_TARGETS_LOAD_ERROR)).toBeInTheDocument();
-    // Must NOT fall through to the "no target registered" empty state.
-    expect(
-      screen.queryByRole("link", { name: RE_GO_TO_SETTINGS })
-    ).not.toBeInTheDocument();
-  });
-
-  it("shows a Settings empty state when the member has no local target", async () => {
-    mockUseOrganization.mockReturnValue({
-      membership: { role: "org:member" },
-    });
-    mockUseComputeTargets.mockReturnValue({
-      data: [],
-      isLoading: false,
-      isError: false,
-    });
-    detail.sourceType = SourceType.Pack;
-    detail.source = "rtk";
-
-    render(
-      <Wrapper>
-        <AgentDetailWithPromote orgSlug="org-test" slug="skill::rtk" />
-      </Wrapper>
-    );
-
-    fireEvent.click(await screen.findByRole("button", { name: RE_INSTALL }));
-
-    const settingsLink = await screen.findByRole("link", {
-      name: RE_GO_TO_SETTINGS,
-    });
-    expect(settingsLink).toHaveAttribute(
-      "href",
-      "/org-test/settings?tab=integrations"
-    );
-  });
-
-  it("does NOT show Install for a non-pack (non-installable) source", async () => {
-    mockUseOrganization.mockReturnValue({
-      membership: { role: "org:member" },
-    });
-    detail.sourceType = SourceType.Repo;
-
-    render(
-      <Wrapper>
-        <AgentDetailWithPromote orgSlug="org-test" slug="skill::rtk" />
-      </Wrapper>
-    );
-
-    expect(await screen.findByText("RTK Optimizer")).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: RE_INSTALL })
-    ).not.toBeInTheDocument();
-  });
-
-  it("shows both Install and Promote to an admin for a pack-sourced promotable component", async () => {
-    mockUseOrganization.mockReturnValue({
-      membership: { role: "org:admin" },
-    });
-    detail.sourceType = SourceType.Pack;
-    detail.source = "rtk";
-
-    render(
-      <Wrapper>
-        <AgentDetailWithPromote orgSlug="org-test" slug="skill::rtk" />
-      </Wrapper>
-    );
-
-    expect(
-      await screen.findByRole("button", { name: RE_INSTALL })
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: RE_PROMOTE_EXACT })
-    ).toBeInTheDocument();
   });
 });

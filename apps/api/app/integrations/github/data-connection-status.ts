@@ -4,6 +4,7 @@ import {
   GitHubOAuthRequiredReason,
 } from "@repo/api/src/types/github";
 import { GitHubInstallationStatus } from "@repo/database";
+import { GITHUB_REPO_SCOPE } from "@/lib/github/github-connection-credential";
 
 type GitHubDataConnectionDb = {
   gitHubInstallation: {
@@ -25,7 +26,7 @@ type GitHubDataConnectionDb = {
       };
       select: {
         revokedAt: true;
-        tokenExpiresAt: true;
+        scopes: true;
       };
     }) => Promise<GitHubDataConnectionUserGrant | null>;
   };
@@ -33,25 +34,24 @@ type GitHubDataConnectionDb = {
 
 type GitHubDataConnectionUserGrant = {
   revokedAt: Date | null;
-  tokenExpiresAt: Date | null;
+  scopes: string[];
 };
 
 type ResolveGitHubDataConnectionInput = {
   hasActiveInstallation?: boolean;
   organizationId: string;
   userId: string | null | undefined;
-  now?: Date;
 };
 
 type UserGrantState =
   | typeof UserOAuthGrantState.Active
+  | typeof UserOAuthGrantState.InsufficientScope
   | typeof UserOAuthGrantState.Missing
-  | typeof UserOAuthGrantState.Revoked
-  | typeof UserOAuthGrantState.Expired;
+  | typeof UserOAuthGrantState.Revoked;
 
 const UserOAuthGrantState = {
   Active: "active",
-  Expired: "expired",
+  InsufficientScope: "insufficient_scope",
   Missing: "missing",
   Revoked: "revoked",
 } as const;
@@ -85,7 +85,7 @@ export async function resolveGitHubDataConnectionStatus(
           },
           select: {
             revokedAt: true,
-            tokenExpiresAt: true,
+            scopes: true,
           },
         })
       : Promise.resolve(null),
@@ -94,21 +94,18 @@ export async function resolveGitHubDataConnectionStatus(
   return buildGitHubDataConnectionStatus({
     hasActiveInstallation:
       input.hasActiveInstallation ?? activeInstallation !== null,
-    now: input.now ?? new Date(),
     userGrant,
   });
 }
 
 function buildGitHubDataConnectionStatus({
   hasActiveInstallation,
-  now,
   userGrant,
 }: {
   hasActiveInstallation: boolean;
-  now: Date;
   userGrant: GitHubDataConnectionUserGrant | null;
 }): GitHubDataConnectionStatus {
-  const userGrantState = resolveUserGrantState(userGrant, now);
+  const userGrantState = resolveUserGrantState(userGrant);
   const sources: GitHubDataConnectionStatus["sources"] = [];
   if (hasActiveInstallation) {
     sources.push(GitHubDataConnectionSource.GitHubApp);
@@ -133,9 +130,24 @@ function buildGitHubDataConnectionStatus({
   };
 }
 
+/**
+ * ISS-7404: the floor the actual read enforces, applied to the status that
+ * advertises the capability. A grant is a usable `user_oauth` source only when
+ * its mirrored scopes carry `repo` — otherwise the endpoint asserts reach that
+ * no read can honor.
+ *
+ * This is deliberately STRICTER than the shared `meetsGitHubRepoScopeFloor`,
+ * which passes an empty scope set as an App-family carve-out. That carve-out
+ * does not survive here: the only credential this status describes is the
+ * Clerk-held one, and `clerk-github-credential.ts` rejects any scope set
+ * without `repo`, empty included. The registry mirrors Clerk's live scopes
+ * unconditionally (`github-clerk-registry.ts`), so an empty array means Clerk
+ * reported none — a row that cannot produce a working token. Reporting it
+ * connected is the exact lie this issue is about. The shared predicate keeps
+ * its carve-out for the pool and resolver lanes, which is not ours to change.
+ */
 function resolveUserGrantState(
-  userGrant: GitHubDataConnectionUserGrant | null,
-  now: Date
+  userGrant: GitHubDataConnectionUserGrant | null
 ): UserGrantState {
   if (!userGrant) {
     return UserOAuthGrantState.Missing;
@@ -143,11 +155,8 @@ function resolveUserGrantState(
   if (userGrant.revokedAt !== null) {
     return UserOAuthGrantState.Revoked;
   }
-  if (
-    userGrant.tokenExpiresAt &&
-    userGrant.tokenExpiresAt.getTime() <= now.getTime()
-  ) {
-    return UserOAuthGrantState.Expired;
+  if (!userGrant.scopes.includes(GITHUB_REPO_SCOPE)) {
+    return UserOAuthGrantState.InsufficientScope;
   }
   return UserOAuthGrantState.Active;
 }
@@ -160,8 +169,8 @@ function oauthReasonsForUserGrantState(
       return [GitHubOAuthRequiredReason.NoUserGrant];
     case UserOAuthGrantState.Revoked:
       return [GitHubOAuthRequiredReason.CredentialRevoked];
-    case UserOAuthGrantState.Expired:
-      return [GitHubOAuthRequiredReason.CredentialExpired];
+    case UserOAuthGrantState.InsufficientScope:
+      return [GitHubOAuthRequiredReason.CredentialInsufficientScope];
     case UserOAuthGrantState.Active:
       return [];
     default:

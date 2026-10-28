@@ -1,9 +1,9 @@
 import {
   type ActivityBucket,
   type AgentSessionDetail,
-  AgentSessionState,
   SessionTraceThrottleSourceType,
 } from "@repo/api/src/types/agent-session";
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import { TranscriptDisposition } from "@repo/api/src/types/transcript-disposition-constants";
 import { restoreTimeZone } from "@repo/app/shared/test-fixtures/tz-utils";
 import { toast } from "@repo/design-system/components/ui/sonner";
@@ -17,6 +17,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getBucketKey } from "../activity-bucket-rendering";
+import { AGENT_ANALYTICS_TITLE } from "../agent-session-detail-analytics-tabs";
 import {
   createAgentSessionDetailFixture,
   createTurnItemsSpanning,
@@ -31,11 +32,12 @@ import {
   type AgentSessionDetailContent,
   buildSessionDetailContent,
 } from "../detail-content";
+import { SESSION_TIMELINE_SECTION_TITLE } from "../session-detail-panels";
 import {
   COMMENT_BUTTON_NAME_RE,
+  findTooltipLabel,
   INLINE_TRACE_COMMENT_PLACEHOLDER,
   resetTraceComments,
-  SHOW_COMMENTS_BUTTON_NAME,
   seedSessionTraceComment,
   selectRenderedText,
   withProviders,
@@ -81,14 +83,17 @@ const LONG_REPOSITORY_NAME =
   "closedloop-ai/repository-with-a-very-long-name-for-responsive-session-panels";
 const LIMIT_EVENT_TIME = "2026-06-10T12:10:00.000Z";
 const LIMIT_EVENT_ROW = 7;
+const CACHE_WRITE_LABEL = "Cache Write";
 const ORIGINAL_CLIPBOARD_DESCRIPTOR = Object.getOwnPropertyDescriptor(
   globalThis.navigator,
   "clipboard"
 );
-// `info` alongside `success`/`error`: ISS-6006 made the Session Timeline's jump
-// reporting unconditional, so a click on a bar or dot that cannot land now calls
-// `toast.info` in every harness that mounts this view — an incomplete mock
-// crashes the click handler instead of exercising it.
+/*
+ * `info` alongside `success`/`error`: ISS-6006 made the Session Timeline's jump
+ * reporting unconditional, so a click on a bar or dot that cannot land now calls
+ * `toast.info` in every harness that mounts this view — an incomplete mock
+ * crashes the click handler instead of exercising it.
+ */
 vi.mock("@repo/design-system/components/ui/sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
@@ -173,7 +178,7 @@ describe("AgentSessionDetailView", () => {
       screen.getByText("Desktop implementation session")
     ).toBeInTheDocument();
     expect(
-      screen.getAllByText("closedloop-ai/example-repo").length
+      screen.getAllByText("closedloop-ai/closedloop-ai").length
     ).toBeGreaterThan(0);
     expect(screen.getByText("Session Trace")).toBeInTheDocument();
     expect(
@@ -194,8 +199,8 @@ describe("AgentSessionDetailView", () => {
     expect(document.querySelectorAll(".sd3-props-preview")).toHaveLength(1);
     expect(document.querySelector(".sd3-statstrip")).not.toBeInTheDocument();
     expect(screen.queryByText("Phase Glance")).not.toBeInTheDocument();
-    expect(bodyText()).not.toContain("Agent Analytics");
-    expect(bodyText()).not.toContain("Event timeline");
+    expect(bodyText()).not.toContain(AGENT_ANALYTICS_TITLE);
+    expect(bodyText()).not.toContain(SESSION_TIMELINE_SECTION_TITLE);
     expect(bodyText()).not.toContain("Invalid Date");
     expect(bodyText()).not.toContain("undefined");
     expect(bodyText()).not.toContain("NaN");
@@ -205,26 +210,36 @@ describe("AgentSessionDetailView", () => {
    * FEA-3428 / FEA-4287, retargeted by ISS-5999 from the collapsed Properties
    * preview to the EXPANDED `Status` row.
    *
-   * ISS-5818 removed status from the collapsed strip — the title already carries
-   * a chip off the SESSION_STATUS lifecycle axis, and restating
-   * `AgentSessionState` 24px below it could put two legitimately-different words
-   * in one viewport — and ISS-5999 retired the gate that made the removal
-   * conditional. So the coloured dot and its hover title have no surviving
-   * placement on this page; what survives, and is the part FEA-4287 was actually
-   * about, is the LABEL each state maps to. `Error` must read "Failed" (the word
-   * the Sessions LIST badge uses for the `error` status), never "Blocked".
+   * ISS-5818 removed status from the collapsed strip, and ISS-5999 retired the
+   * gate that made the removal conditional. So the coloured dot and its hover
+   * title have no surviving placement on this page; what survives, and is the
+   * part FEA-4287 was actually about, is the LABEL each value maps to.
+   *
+   * ISS-7019 retargeted this from the deleted `AgentSessionState` onto the
+   * displayed status the row now renders. `error` must still read "Failed" —
+   * the word the Sessions LIST badge uses — and the two derivations must read
+   * as themselves rather than borrowing a liveness word, which is the whole
+   * reason the second axis went.
    */
-  it("FEA-4287: names each session state on the expanded Status row", () => {
-    for (const [state, label] of [
-      [AgentSessionState.Completed, "Completed"],
-      [AgentSessionState.Blocked, "Blocked"],
-      [AgentSessionState.Error, "Failed"],
+  it("names each session status on the expanded Status row", () => {
+    for (const [status, label] of [
+      [SESSION_STATUS.INACTIVE, "Inactive"],
+      [SESSION_STATUS.ERROR, "Failed"],
+      /*
+       * ISS-10364: an old or corrupt payload can still carry the literal in the
+       * free-form `status` column, and it now folds to Active like any other
+       * non-terminal display-only spelling. Written as a LITERAL, not
+       * `DISPLAYED_SESSION_STATUS.STALE`, which this stack deleted, and the
+       * skewed rows outlive it — binding the case to the constant would have
+       * retired the coverage along with the vocabulary it exists to survive.
+       */
+      ["stale", "Active"],
     ] as const) {
       const { unmount } = renderDetail(
         <AgentSessionDetailView
           backHref="/sessions"
           isLoading={false}
-          session={createAgentSessionDetailFixture({ state })}
+          session={createAgentSessionDetailFixture({ status })}
         />
       );
 
@@ -232,15 +247,15 @@ describe("AgentSessionDetailView", () => {
       const row = screen
         .getByText("Status")
         .closest(".prd-prop") as HTMLElement | null;
-      expect(row, `${state} must render a Status row`).not.toBeNull();
+      expect(row, `${status} must render a Status row`).not.toBeNull();
       expect(row).toHaveTextContent(label);
       unmount();
     }
   });
 
-  // ISS-4654: the FEA-4287 abandoned-dot test stood here. `AgentSessionState
-  // .Abandoned` is retired — ISS-4586 supersedes FEA-4287's abandonment half —
-  // so there is no longer a distinct Abandoned rendering to assert. The Error
+  // ISS-4654: the FEA-4287 abandoned-dot test stood here. That state was
+  // retired — ISS-4586 supersedes FEA-4287's abandonment half — so there is no
+  // longer a distinct Abandoned rendering to assert. The Error
   // case above still pins the other half of FEA-4287 (a terminal failure does
   // not collapse to Blocked), which is the part that survives.
 
@@ -268,7 +283,7 @@ describe("AgentSessionDetailView", () => {
     for (const expectedText of [
       "Desktop implementation session",
       "ext-session-1",
-      "closedloop-ai/example-repo",
+      "closedloop-ai/closedloop-ai",
       "fea-1707",
       "$4.82",
       // ISS-5131 retired the Duration decomposition, so the row prints the ONE
@@ -304,7 +319,7 @@ describe("AgentSessionDetailView", () => {
       "Files changed",
       "Ada's MacBook",
       "Desktop MLP",
-      "worktrees/example-repo-fea-1707",
+      "worktrees/closedloop-ai-fea-1707",
       "loop-1",
     ]) {
       expect(renderedText).not.toContain(disallowedText);
@@ -458,8 +473,7 @@ describe("AgentSessionDetailView", () => {
             lastActivityAt: new Date(lastActivityAt),
             updatedAt: new Date("2026-06-10T21:00:00.000Z"),
             endedAt: null,
-            state: AgentSessionState.Running,
-            status: "running",
+            status: SESSION_STATUS.ACTIVE,
             turnItems: createTurnItemsSpanning(startedAt, lastActivityAt),
           })}
         />
@@ -780,7 +794,7 @@ describe("AgentSessionDetailView", () => {
     const redDot = getOnlyRedTimelineDot();
 
     await user.hover(redDot);
-    expect(await screen.findByText("Failures & limits")).toBeInTheDocument();
+    expect(await findTooltipLabel("Failures & limits")).toBeInTheDocument();
     // FEA-3642: the surviving dot is derived from the structured `usage_limit`
     // event type (formatted "Usage Limit"), not the removed free-text timeline
     // title scan. The indicator still appears at the recorded position.
@@ -876,7 +890,6 @@ describe("AgentSessionDetailView", () => {
             },
           ],
           markers: [],
-          timeline: [],
           turnItems: [],
         })}
       />
@@ -907,7 +920,6 @@ describe("AgentSessionDetailView", () => {
               statusCode: 429,
             },
           ],
-          timeline: [],
         })}
       />
     );
@@ -970,7 +982,6 @@ describe("AgentSessionDetailView", () => {
         session={createLimitDotSession({
           events: [],
           markers: [],
-          timeline: [],
         })}
       />
     );
@@ -990,7 +1001,6 @@ describe("AgentSessionDetailView", () => {
         isLoading={false}
         session={createLimitDotSession({
           events: [],
-          timeline: [],
           turnItems: createRateLimitProseTurnItems(),
         })}
       />
@@ -1016,7 +1026,6 @@ describe("AgentSessionDetailView", () => {
               summary: "Reviewed PR #1429 before continuing.",
             },
           ],
-          timeline: [],
           turnItems: createNeutralLimitTargetTurnItems(),
         })}
       />
@@ -1047,7 +1056,6 @@ describe("AgentSessionDetailView", () => {
                 "GitHub API returned a secondary rate limit; retried the call.",
             },
           ],
-          timeline: [],
           turnItems: createNeutralLimitTargetTurnItems(),
         })}
       />
@@ -1068,37 +1076,7 @@ describe("AgentSessionDetailView", () => {
         isLoading={false}
         session={createLimitDotSession({
           events: [],
-          timeline: [],
           turnItems: createThrottleMentionFailureTurnItems(),
-        })}
-      />
-    );
-
-    expect(document.querySelectorAll(".sd3-drail .sd3-dot.d-r")).toHaveLength(
-      0
-    );
-  });
-
-  // FEA-3642: a free-text timeline title/detail that mentions rate limiting is no
-  // longer scanned at all — the timeline carries no structured limit signal.
-  it("does not render a limit dot for a timeline event whose title mentions rate limits", () => {
-    renderDetail(
-      <AgentSessionDetailView
-        backHref="/sessions"
-        isLoading={false}
-        session={createLimitDotSession({
-          events: [],
-          timeline: [
-            {
-              detail: "Provider responded 429; will slow down.",
-              kind: "result",
-              t: LIMIT_EVENT_TIME,
-              tMs: Date.parse(LIMIT_EVENT_TIME),
-              title: "Discussed the rate limit in the tool output",
-              tl: LIMIT_EVENT_ROW,
-            },
-          ],
-          turnItems: createNeutralLimitTargetTurnItems(),
         })}
       />
     );
@@ -1128,7 +1106,6 @@ describe("AgentSessionDetailView", () => {
               x0: 50,
             },
           ],
-          timeline: [],
           turnItems: createNeutralLimitTargetTurnItems(),
         })}
       />
@@ -1159,7 +1136,6 @@ describe("AgentSessionDetailView", () => {
         isLoading={false}
         session={createLimitDotSession({
           events: [],
-          timeline: [],
           turnItems: createSameTimestampLimitTurnItems(),
         })}
       />
@@ -1189,7 +1165,6 @@ describe("AgentSessionDetailView", () => {
               summary: "Request failed.",
             },
           ],
-          timeline: [],
           turnItems: createNeutralLimitTargetTurnItems(),
         })}
       />
@@ -1432,79 +1407,6 @@ describe("AgentSessionDetailView", () => {
     expect(screen.getByText("Keep this comment")).toBeInTheDocument();
   });
 
-  it("shows the new session's persisted trace comments when the mounted detail changes sessions", async () => {
-    const user = userEvent.setup();
-    const firstSession = createAgentSessionDetailFixture({
-      id: "session-one",
-      externalSessionId: "session-one",
-      name: "Session One",
-    });
-    const secondSession = createAgentSessionDetailFixture({
-      id: "session-two",
-      externalSessionId: "session-two",
-      name: "Session Two",
-      turnItems: [
-        {
-          type: "say",
-          _row: 0,
-          t: "2026-06-10T12:30:00.000Z",
-          tMs: Date.parse("2026-06-10T12:30:00.000Z"),
-          cum: 0,
-          actor: {
-            color: "var(--primary)",
-            harness: "codex",
-            human: null,
-            name: "gpt-5.5",
-            sessionId: "session-two",
-          },
-          text: "Second session trace row.",
-        },
-      ],
-    });
-    const { rerender } = renderDetail(
-      <AgentSessionDetailView
-        backHref="/sessions"
-        isLoading={false}
-        session={firstSession}
-      />
-    );
-
-    selectRenderedText(document.body, "shared session detail screen");
-    fireEvent.mouseUp(document.querySelector(".st") as HTMLElement);
-    await user.click(
-      screen.getByRole("button", { name: COMMENT_BUTTON_NAME_RE })
-    );
-    await user.type(
-      screen.getByPlaceholderText(INLINE_TRACE_COMMENT_PLACEHOLDER),
-      "First session note"
-    );
-    await user.click(screen.getByRole("button", { name: "Comment" }));
-    expect(screen.getByText("First session note")).toBeInTheDocument();
-
-    rerender(
-      withProviders(
-        <AgentSessionDetailView
-          backHref="/sessions"
-          isLoading={false}
-          session={secondSession}
-        />
-      )
-    );
-
-    expect(screen.getByText("Second session trace row.")).toBeInTheDocument();
-    // FEA-4233: the second session has zero trace comments, so once its comments
-    // read settles empty the rail collapses to the slim handle rather than an
-    // open panel reading "No trace comments yet". The first session's note is
-    // gone regardless of collapse.
-    await waitFor(() => {
-      expect(screen.queryByText("First session note")).not.toBeInTheDocument();
-      expect(
-        screen.getByRole("button", { name: SHOW_COMMENTS_BUTTON_NAME })
-      ).toBeInTheDocument();
-    });
-    expect(screen.queryByText("No trace comments yet")).not.toBeInTheDocument();
-  });
-
   // FEA-3929: the web session-detail surface must wire `onReply`
   // (`replyToTraceComment`) through to the rail so the Reply affordance renders
   // and opens the inline composer. (jsdom does not apply styles.css, so the
@@ -1561,7 +1463,7 @@ describe("AgentSessionDetailView", () => {
     const prLink = screen.getByRole("link", { name: PR_1634_OPEN_LINK_NAME });
     expect(prLink).toHaveAttribute(
       "href",
-      "https://github.com/closedloop-ai/example-repo/pull/1634"
+      "https://github.com/closedloop-ai/closedloop-ai/pull/1634"
     );
     expect(prLink).not.toHaveAttribute("href", "/pulls/1634");
     expect(prLink).toHaveAttribute("target", "_blank");
@@ -1575,8 +1477,8 @@ describe("AgentSessionDetailView", () => {
       "open"
     );
     const diff = document.querySelector(".sd3-out-diff");
-    expect(diff?.querySelector(".add")).toBeInTheDocument();
-    expect(diff?.querySelector(".del")).toBeInTheDocument();
+    expect(diff?.querySelector(".total")).toHaveTextContent("120");
+    expect(diff).toHaveTextContent("in merged PRs");
   });
 
   // FEA-3635: a session whose transcript referenced/created a FEAT surfaces a
@@ -1989,7 +1891,7 @@ describe("green timeline dot tooltip stability (FEA-3414 / FEA-3428)", () => {
     // Same interaction the red-dot suites use — the green dot must resolve its
     // label ("Commits & PRs") and event detail identically.
     await user.hover(greenDot);
-    expect(await screen.findByText("Commits & PRs")).toBeInTheDocument();
+    expect(await findTooltipLabel("Commits & PRs")).toBeInTheDocument();
     expect(screen.getByText("Checkpoint commit")).toBeInTheDocument();
   });
 
@@ -2004,7 +1906,7 @@ describe("green timeline dot tooltip stability (FEA-3414 / FEA-3428)", () => {
     );
 
     await user.hover(getOnlyGreenTimelineDot());
-    const label = await screen.findByText("Commits & PRs");
+    const label = await findTooltipLabel("Commits & PRs");
     const labelGroup = label.closest(".sd3-tip-mklabel");
 
     expect(labelGroup).toBeInTheDocument();
@@ -2081,7 +1983,7 @@ describe("green timeline dot tooltip stability (FEA-3414 / FEA-3428)", () => {
     // Hovering mounts the tooltip and forces the re-render that used to remount
     // the colliding cells. With stable keys the exact same node survives.
     await user.hover(greenDotBefore);
-    await screen.findByText("Commits & PRs");
+    await findTooltipLabel("Commits & PRs");
     expect(getOnlyGreenTimelineDot()).toBe(greenDotBefore);
   });
 });
@@ -2135,22 +2037,13 @@ function createKeylessBucketGreenDotSession(): AgentSessionDetail {
     startedAt: new Date("2026-06-10T12:00:00.000Z"),
     throttles: [],
     throttleSources: [],
-    timeline: [],
     turnItems: createLimitTurnItems(),
     updatedAt: new Date("2026-06-10T12:20:00.000Z"),
   });
 }
 
 function getOnlyGreenTimelineDot(): HTMLElement {
-  const greenDots = document.querySelectorAll<HTMLElement>(
-    ".sd3-drail .sd3-dot.d-g"
-  );
-  if (greenDots.length !== 1) {
-    throw new Error(
-      `Expected one green timeline dot, found ${greenDots.length}`
-    );
-  }
-  return greenDots[0]!;
+  return getOnlyTimelineDot("g");
 }
 
 function getOnlyTimelineDot(color: "b" | "g" | "r"): HTMLElement {
@@ -2203,15 +2096,6 @@ function createLimitDotSession(
     name: "Limit marker session",
     startedAt: new Date("2026-06-10T12:00:00.000Z"),
     throttles: [],
-    timeline: [
-      {
-        kind: "event",
-        t: LIMIT_EVENT_TIME,
-        tMs: Date.parse(LIMIT_EVENT_TIME),
-        title: SessionTraceThrottleSourceType.UsageLimit,
-        tl: LIMIT_EVENT_ROW,
-      },
-    ],
     turnItems: createLimitTurnItems(),
     updatedAt: new Date("2026-06-10T12:20:00.000Z"),
     ...overrides,
@@ -2466,9 +2350,9 @@ describe("FEA-3419 cache-write TTL breakdown row", () => {
 
     await openProperties();
 
-    const label = screen.getByText("Cache Write");
+    const label = screen.getByText(CACHE_WRITE_LABEL);
     expect(label.closest(".prd-prop")).toHaveTextContent(
-      "Cache Write4,096 (5m TTL) | 512 (1h TTL)"
+      `${CACHE_WRITE_LABEL}4,096 (5m TTL) | 512 (1h TTL)`
     );
   });
 
@@ -2485,7 +2369,7 @@ describe("FEA-3419 cache-write TTL breakdown row", () => {
 
     await openProperties();
 
-    expect(screen.queryByText("Cache Write")).not.toBeInTheDocument();
+    expect(screen.queryByText(CACHE_WRITE_LABEL)).not.toBeInTheDocument();
   });
 });
 

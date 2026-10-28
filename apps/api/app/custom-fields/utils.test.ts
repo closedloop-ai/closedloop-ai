@@ -1,10 +1,15 @@
 /**
  * Coverage for the custom-field display and validation helpers.
  *
- * `computeDisplayValue` accepts pre-loaded `options` and `people`, so every
- * formatting branch is reachable without a database — the only DB path is the
- * PEOPLE fallback that resolves names itself, which is deliberately not
- * exercised here (it belongs to a DB-backed suite).
+ * `computeDisplayValue` accepts pre-loaded `options`, so every ENUM/MULTI_ENUM
+ * formatting branch is reachable without a database.
+ *
+ * PEOPLE name formatting is NOT here: ISS-7215 moved the derivation to
+ * `formatPeopleDisplayValue` in `display-value.ts` and replaced this function's
+ * ordered `people` array with a keyed `peopleById` map, so those cases moved to
+ * `__tests__/display-value.test.ts` with the function they describe. What
+ * remains PEOPLE-shaped in this file is `validateValueType`, which is unrelated
+ * to formatting.
  */
 
 import type {
@@ -20,6 +25,7 @@ import {
 import { describe, expect, it } from "vitest";
 import {
   computeDisplayValue,
+  InvalidFieldValueError,
   MAX_TEXT_VALUE_LENGTH,
   ReservedNameError,
   validateFieldNameNotReserved,
@@ -32,6 +38,7 @@ const NUMBER_ERROR = /NUMBER/;
 const NOT_A_NUMBER_ERROR = /not a valid number/;
 const MULTI_ENUM_ERROR = /MULTI_ENUM/;
 const PEOPLE_ERROR = /PEOPLE/;
+const ENUM_ERROR = /ENUM field: expected a string option ID/;
 const RESERVED_PRIORITY_ERROR = /"priority" is a built-in property of Project/;
 
 function field(
@@ -276,49 +283,16 @@ describe("computeDisplayValue — ENUM and MULTI_ENUM", () => {
   });
 });
 
-describe("computeDisplayValue — PEOPLE name formatting", () => {
-  const peopleField = field({ fieldType: CustomFieldType.People });
-
-  it("formats as 'First L.' and joins multiple people", async () => {
-    expect(
-      await computeDisplayValue(peopleField, ["u1", "u2"], undefined, [
-        { firstName: "Ada", lastName: "Lovelace" },
-        { firstName: "Alan", lastName: "Turing" },
-      ])
-    ).toBe("Ada L., Alan T.");
-  });
-
-  it("uses the first name alone when there is no last name", async () => {
-    expect(
-      await computeDisplayValue(peopleField, ["u1"], undefined, [
-        { firstName: "Ada", lastName: null },
-      ])
-    ).toBe("Ada");
-  });
-
-  it("falls back to a last initial when there is no first name", async () => {
-    expect(
-      await computeDisplayValue(peopleField, ["u1"], undefined, [
-        { firstName: null, lastName: "Lovelace" },
-      ])
-    ).toBe("L.");
-  });
-
-  it("drops a person with neither name rather than rendering a stray comma", async () => {
-    expect(
-      await computeDisplayValue(peopleField, ["u1", "u2"], undefined, [
-        { firstName: null, lastName: null },
-        { firstName: "Ada", lastName: "Lovelace" },
-      ])
-    ).toBe("Ada L.");
-  });
-
-  it("treats a whitespace-only first name as absent", async () => {
-    expect(
-      await computeDisplayValue(peopleField, ["u1"], undefined, [
-        { firstName: "   ", lastName: "Lovelace" },
-      ])
-    ).toBe("L.");
+describe("computeDisplayValue — DATE read path (ISS-8884)", () => {
+  it("still renders a stored year-10000 date; the ceiling is write-only", async () => {
+    // Local-zone rendering may land on Dec 31, 9999 or Jan 1, 10000; what
+    // matters is that the read path still produces a display string.
+    const rendered = await computeDisplayValue(
+      field({ fieldType: CustomFieldType.Date }),
+      "+010000-01-01T00:00:00.000Z"
+    );
+    expect(rendered).not.toBe("");
+    expect(rendered).not.toBe("+010000-01-01T00:00:00.000Z");
   });
 });
 
@@ -349,19 +323,52 @@ describe("validateValueType", () => {
     ).not.toThrow();
   });
 
+  it.each([
+    ["a date-only string", "2026-08-07"],
+    ["the first day of year 1", "0001-01-01"],
+    ["the last day of year 9999", "9999-12-31"],
+    ["a timestamp with an offset", "2026-08-07T12:00:00-05:00"],
+  ])("accepts a DATE value that is %s", (_label, value) => {
+    expect(() => validateValueType(CustomFieldType.Date, value)).not.toThrow();
+  });
+
+  it.each([
+    ["year 10000", "10000-01-01"],
+    ["year 0", "0000-12-31"],
+    ["an offset that lands in UTC year 10000", "9999-12-31T23:00:00-05:00"],
+    ["an offset that lands in UTC year 0", "0001-01-01T00:00:00+05:00"],
+  ])("rejects a DATE value in %s (ISS-8884)", (_label, value) => {
+    expect(() => validateValueType(CustomFieldType.Date, value)).toThrow(
+      InvalidFieldValueError
+    );
+    expect(() => validateValueType(CustomFieldType.Date, value)).toThrow(
+      "UTC years 0001 to 9999"
+    );
+  });
+
+  it("still rejects a DATE value that is not a date at all", () => {
+    expect(() => validateValueType(CustomFieldType.Date, "not-a-date")).toThrow(
+      InvalidFieldValueError
+    );
+  });
+
   it("rejects a non-string TEXT value", () => {
+    expect(() => validateValueType(CustomFieldType.Text, 5)).toThrow(
+      InvalidFieldValueError
+    );
     expect(() => validateValueType(CustomFieldType.Text, 5)).toThrow(
       TEXT_ERROR
     );
   });
 
   it("rejects a TEXT value over the length cap", () => {
-    expect(() =>
-      validateValueType(
-        CustomFieldType.Text,
-        "x".repeat(MAX_TEXT_VALUE_LENGTH + 1)
-      )
-    ).toThrow(MAX_LENGTH_ERROR);
+    const overCap = "x".repeat(MAX_TEXT_VALUE_LENGTH + 1);
+    expect(() => validateValueType(CustomFieldType.Text, overCap)).toThrow(
+      InvalidFieldValueError
+    );
+    expect(() => validateValueType(CustomFieldType.Text, overCap)).toThrow(
+      MAX_LENGTH_ERROR
+    );
   });
 
   it("accepts a TEXT value exactly at the cap", () => {
@@ -372,16 +379,54 @@ describe("validateValueType", () => {
 
   it("rejects a NUMBER value that is an array or not numeric", () => {
     expect(() => validateValueType(CustomFieldType.Number, ["1"])).toThrow(
+      InvalidFieldValueError
+    );
+    expect(() => validateValueType(CustomFieldType.Number, ["1"])).toThrow(
       NUMBER_ERROR
+    );
+    expect(() => validateValueType(CustomFieldType.Number, "abc")).toThrow(
+      InvalidFieldValueError
     );
     expect(() => validateValueType(CustomFieldType.Number, "abc")).toThrow(
       NOT_A_NUMBER_ERROR
     );
   });
 
+  it.each([
+    ["1e400"],
+    ["-1e400"],
+    ["Infinity"],
+    ["-Infinity"],
+    [""],
+    ["  "],
+    [Number.POSITIVE_INFINITY],
+  ] as [string | number][])(
+    "rejects a NUMBER value that is not finite: %p",
+    (value) => {
+      expect(() => validateValueType(CustomFieldType.Number, value)).toThrow(
+        NOT_A_NUMBER_ERROR
+      );
+    }
+  );
+
+  it.each([["1.5"], ["0"], ["-3"], [42.5]] as [string | number][])(
+    "accepts a finite NUMBER value: %p",
+    (value) => {
+      expect(() =>
+        validateValueType(CustomFieldType.Number, value)
+      ).not.toThrow();
+    }
+  );
+
   it("rejects a non-array MULTI_ENUM or PEOPLE value", () => {
     expect(() => validateValueType(CustomFieldType.MultiEnum, "a")).toThrow(
+      InvalidFieldValueError
+    );
+    expect(() => validateValueType(CustomFieldType.MultiEnum, "a")).toThrow(
       MULTI_ENUM_ERROR
+    );
+    expect(() => validateValueType(CustomFieldType.People, "u1")).toThrow(
+      InvalidFieldValueError
     );
     expect(() => validateValueType(CustomFieldType.People, "u1")).toThrow(
       PEOPLE_ERROR
@@ -389,7 +434,12 @@ describe("validateValueType", () => {
   });
 
   it("rejects a non-string ENUM value", () => {
-    expect(() => validateValueType(CustomFieldType.Enum, 1)).toThrow();
+    expect(() => validateValueType(CustomFieldType.Enum, 1)).toThrow(
+      InvalidFieldValueError
+    );
+    expect(() => validateValueType(CustomFieldType.Enum, 1)).toThrow(
+      ENUM_ERROR
+    );
   });
 
   it("rejects an unparseable DATE value", () => {

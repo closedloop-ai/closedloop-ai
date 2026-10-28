@@ -2,6 +2,7 @@ import { InsightsPeriod, InsightsScope } from "@repo/api/src/types/insights";
 import { describe, expect, it, vi } from "vitest";
 import {
   createHttpInsightsReads,
+  createHttpSessionMeshInsightsRead,
   insightsPath,
 } from "../http-insights-data-source";
 
@@ -34,6 +35,32 @@ describe("insightsPath", () => {
     const path = insightsPath("agents", InsightsPeriod.Week, InsightsScope.Org);
 
     expect(path).not.toContain("teamId");
+  });
+});
+
+describe("createHttpSessionMeshInsightsRead", () => {
+  it("uses the selected personal scope, period, and optional user identity", async () => {
+    const get = vi.fn().mockResolvedValue({});
+    await createHttpSessionMeshInsightsRead({ get }).getSessionMeshInsights(
+      "me",
+      "30",
+      "user-1"
+    );
+    expect(get).toHaveBeenCalledWith(
+      "/session-mesh/insights?period=30&scope=me&userId=user-1"
+    );
+  });
+
+  it("uses organization scope without leaking a personal user id", async () => {
+    const get = vi.fn().mockResolvedValue({});
+    await createHttpSessionMeshInsightsRead({ get }).getSessionMeshInsights(
+      "org",
+      "90",
+      "user-1"
+    );
+    expect(get).toHaveBeenCalledWith(
+      "/session-mesh/insights?period=90&scope=org"
+    );
   });
 });
 

@@ -16,7 +16,7 @@
  * the reader pointed at (or its closest neighbor) and the "you are here" marker
  * stays on it.
  *
- * Extracted from `agent-session-detail-view.tsx` (a grandfathered oversize file)
+ * Extracted from `agent-session-detail-view.tsx`
  * so the coordination lives in one small, unit-tested place.
  */
 

@@ -6,6 +6,7 @@ import { useEffect } from "react";
 import { describe, expect, it } from "vitest";
 
 import { CommentPermalinkProvider } from "../comment-permalink-context";
+import { eraseFeedSource } from "../erase-feed-source";
 import { FeedComposerSlot } from "../feed-composer-slot";
 import {
   ACTIVE_KIND_ALL,
@@ -13,6 +14,7 @@ import {
   FeedFilterProvider,
   useFeedFilter,
 } from "../feed-filter-context";
+import type { FeedItem } from "../feed-item";
 import { FeedItemKind } from "../feed-item";
 import type { AnyFeedSource } from "../feed-source";
 import { FeedSourcesProvider } from "../feed-sources-context";
@@ -22,7 +24,7 @@ function makeSource(
   kind: FeedItemKind,
   Composer?: () => ReactNode
 ): AnyFeedSource {
-  return {
+  return eraseFeedSource<FeedItem, Record<string, never>>({
     id,
     kind,
     label: id,
@@ -33,7 +35,7 @@ function makeSource(
     isFiltered: () => false,
     Composer,
     renderItem: () => null,
-  };
+  });
 }
 
 function ForceActiveKind({ activeKind }: Readonly<{ activeKind: ActiveKind }>) {

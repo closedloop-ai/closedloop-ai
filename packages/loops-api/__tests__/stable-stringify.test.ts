@@ -4,7 +4,7 @@ import { stableStringify } from "../src/stable-stringify";
 
 /**
  * `stableStringify` is the canonical serializer behind desktop command
- * signatures (`apps/app/lib/desktop-command-signing/command-signer.ts` hashes
+ * signatures (`packages/app/compute/lib/command-signing/command-signer.ts` hashes
  * its output; `apps/desktop` verifies against the same bytes) and behind
  * token-event identity hashes. Byte-identical output across browser, Electron
  * main, and API is the contract — a divergence silently invalidates every

@@ -48,11 +48,6 @@ export const TOOLING_PARTITION = "tooling";
 /** @type {readonly ToolingReachLedgerEntry[]} */
 export const TOOLING_REACH_LEDGER = [
   {
-    path: "scripts/run-coverage-lanes.mjs",
-    reason:
-      "The coverage lane runner itself. It spawns `pnpm test:node:coverage` (the c8-wrapped lane) and then the reporter; running it from inside that lane would recurse into a second full coverage run. Its one piece of extractable logic, the lane table, already lives in scripts/coverage-lane-heap.mjs and is tested.",
-  },
-  {
     path: "scripts/run-typecheck-passes.mjs",
     reason:
       "Runs all five Desktop TypeScript projects at module scope and deliberately has no dry-run or main-module guard, so importing it from the node coverage lane would launch a full concurrent Desktop typecheck. test/run-typecheck-passes.test.ts instead subprocess-drives a byte-for-byte copy against throwaway projects and separately exercises the real inventory through the injectable typecheck-runner.mjs seam; the copied command proves its exit contract without crediting this live entrypoint path.",
@@ -60,27 +55,12 @@ export const TOOLING_REACH_LEDGER = [
   {
     path: "scripts/build-main-dev.mjs",
     reason:
-      "An electron-vite build invocation. Every statement is a call into the bundler with fixed arguments; executing it from a test would run a real main-process build for no assertion.",
-  },
-  {
-    path: "scripts/dev-launch.mjs",
-    reason:
-      "Launches the Electron dev app and supervises the child process. It cannot run headless in the node lane, and its one testable decision — the DB-host bounce exit classification — is already extracted to scripts/dev-launch-exit.mjs and covered by test/db-host-bounce-containment.test.ts.",
+      "A `build:main` invocation. Every statement is a call into the bundler with fixed arguments; executing it from a test would run a real main-process build for no assertion.",
   },
   {
     path: "scripts/rehearsal-verify.ts",
     reason:
       "The rehearsal entrypoint: reads a live rehearsal store and shells out. Its check logic is already extracted to scripts/rehearsal-verify-checks.ts and covered by test/rehearsal-verify-checks.test.ts; what remains is store I/O and process exit.",
-  },
-  {
-    path: "scripts/regen-golden-sync-payloads.ts",
-    reason:
-      "Regenerates frozen golden sync-payload fixtures. Writes to packages/golden-sessions/**, which is governed by packages/golden-sessions/AGENTS.md and requires explicit human-directed authorization per change. ISS-5303 is a coverage ticket and is not that authorization, so this script is deliberately left alone rather than driven by a test.",
-  },
-  {
-    path: "scripts/dependency-cruiser.config.cjs",
-    reason:
-      "A declarative dependency-cruiser rule set consumed by the depcruise CLI. It has no branches: a test asserting its keys exist would restate the config and measure nothing, which is the coverage-farming PRD-618 rule 1 bans. Exercising the rules for real means running depcruise against fixture modules, which is `pnpm assert:design-system-boundary`'s job, not this partition's.",
   },
   {
     path: "scripts/assert-e2e-results.mjs",
@@ -106,9 +86,9 @@ export const TOOLING_REACH_LEDGER = [
       "Downloads and unpacks a ~100 MB Electron archive at module scope, with no CLI seam to stop short of the download, so neither importing nor subprocess-driving it is acceptable in a test. Its platform table, Rosetta probe and arch resolution are extracted to scripts/ensure-electron-binary-lib.mjs, executed and covered by test/ensure-electron-binary-lib.test.ts; the import wiring is pinned by AST assertion.",
   },
   {
-    path: "scripts/fea3597-identity-probe.mts",
+    path: "scripts/generate-auth-handoff-assets.mjs",
     reason:
-      "Two independent reasons. It runs a module-scope `for await` over the frozen golden corpus and calls process.exit(1), so it cannot be imported. It is also a `.mts` file, and the c8 node lane does not instrument `.mts` at all — this run's map contains .ts, .mjs and .cjs tooling entries and zero .mts — so it could not be credited even if it were driven. Its helpers (oldRule, rulingFlag) live in scripts/fea3597-identity-probe-lib.ts, deliberately renamed from .mts to .ts so that it IS instrumented, and are covered by test/fea3597-identity-probe-lib.test.ts.",
+      "Writes src/shared/auth-handoff-assets.generated.ts at module scope with no dry-run or output-path seam. src/main/auth/desktop-handoff-page.ts imports that generated file, so rewriting it while the node lane runs would race the suites that load it. Theme extraction, the missing-theme throw, data-URL encoding and module rendering are extracted to scripts/generate-auth-handoff-assets-lib.mjs and executed by test/generate-auth-handoff-assets-lib.test.ts; that suite also subprocess-drives a byte-copy of this entrypoint inside a temp tree, which credits the copy, not this path.",
   },
   {
     path: "scripts/generate-docs-bundle-manifest.mjs",
@@ -121,6 +101,11 @@ export const TOOLING_REACH_LEDGER = [
       "Reads the tray SVG and rasterizes PNG icon assets through `sharp` at module scope, writing into resources/; there is no CLI seam that stops before the write. The pure SVG builder and path extraction are in scripts/generate-icons-lib.cjs, executed and covered by test/generate-icons-lib.test.ts against the real tray SVG at every size the entrypoint uses.",
   },
   {
+    path: "scripts/measure-claude-code-candidate-scan.mts",
+    reason:
+      "A `.mts` file, and c8 cannot credit `.mts`: its default `extension` list (@istanbuljs/schema default-extension) is .js, .cjs, .mjs, .ts, .tsx and .jsx, and test:node:coverage sets no override, so even a test that ran this file would leave it unreached. It also ends in an unguarded module-level `await main()` that builds the full ISS-7352-scale fixture (32,930 cost-event rows plus 45,000 tool-result rows) and times it, so importing it runs the whole measurement. It is ISS-11323's hand-run evidence harness. The query it times, loadClaudeCodeTelemetryCandidates, lives in src/main/otel/claude-code-telemetry-candidates.ts and is covered there.",
+  },
+  {
     path: "scripts/reset-dashboard-db.mjs",
     reason:
       "Destructively deletes the local Agent Dashboard database at module scope; its only guard is a refusal when the app is running. Driving it from a test would delete the operator's real store, so it is deliberately never executed. Path selection and removal are extracted to scripts/reset-dashboard-db-lib.mjs, executed and covered against mkdtemp fixtures, with the import wiring pinned by AST assertion.",
@@ -128,12 +113,17 @@ export const TOOLING_REACH_LEDGER = [
   {
     path: "scripts/run-electron-builder.mjs",
     reason:
-      "Spawns a full electron-builder packaging run at module scope. The fail-closed macOS signing-secret classification is extracted to scripts/run-electron-builder-lib.mjs and executed, covered exhaustively over all 32 subsets of the five signing variables so that a partially-configured environment can never classify as signable.",
+      "Spawns a full electron-builder packaging run at module scope. The fail-closed macOS signing-secret classification and the ISS-10381 transient-signing-failure allowlist are both extracted to scripts/run-electron-builder-lib.mjs and executed — the first exhaustively over all 32 subsets of the five signing variables so that a partially-configured environment can never classify as signable, the second over the retryable and non-retryable failure rows. test/run-electron-builder-lib.test.ts additionally subprocess-drives a byte-for-byte copy of this entrypoint with electron-builder stubbed to pin the one-retry bound and its gate; that credits the copy, not this path.",
   },
   {
     path: "scripts/stage-packaging-app.mjs",
     reason:
       "Spawns `pnpm pack` and `tar` at module scope to materialize the packaging stage tree, so it cannot be imported or safely driven. Its four pure helpers, including the assertNoUnresolvedWorkspaceSpecs packaging safety guard, are extracted to scripts/stage-packaging-deps-lib.mjs and executed; an AST wiring assertion pins the single classification call site and its third argument, derived from the DESKTOP_RUNTIME_CLOSURE single source of truth.",
+  },
+  {
+    path: "scripts/vibe-profile/safe-storage-encrypt.mjs",
+    reason:
+      "An Electron main-process entry, launched only by scripts/vibe-profile/sign-in.ts through the Electron binary. It calls `app.setName` and `app.whenReady` at module scope, and under plain Node the `electron` import resolves to the binary's path string, so importing it from the node lane throws before any line runs. Driving it for real needs an Electron process with a working OS keyring for safeStorage, which the c8 node lane does not instrument.",
   },
 ];
 

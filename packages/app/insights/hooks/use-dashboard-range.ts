@@ -2,23 +2,28 @@
 
 import type { InsightsPeriod } from "@repo/api/src/types/insights";
 import { useSharedDateRange } from "../../shared/hooks/use-shared-date-range";
-import type { DateRange } from "../../shared/lib/format-utils";
 import {
+  DASHBOARD_DATE_RANGES,
+  type DashboardDateRange,
   dashboardPeriodLabel,
   GROWTH_LABEL,
   RANGE_TO_PERIOD,
 } from "../lib/dashboard-range";
 
 export type DashboardRangeState = {
-  dateRange: DateRange;
-  setDateRange: (range: DateRange) => void;
+  dateRange: DashboardDateRange;
+  setDateRange: (range: DashboardDateRange) => void;
   period: InsightsPeriod;
   periodLabel: string;
   deltaLabel: string;
 };
 
 export function useDashboardRange(surface: string): DashboardRangeState {
-  const { dateRange, setDateRange } = useSharedDateRange(surface);
+  const { dateRange, setDateRange } = useSharedDateRange(
+    surface,
+    undefined,
+    DASHBOARD_DATE_RANGES
+  );
   return {
     dateRange,
     setDateRange,

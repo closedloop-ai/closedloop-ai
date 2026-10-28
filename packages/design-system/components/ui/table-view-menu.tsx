@@ -18,7 +18,7 @@ import {
   RotateCcwIcon,
   Settings2Icon,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import { type ReactNode, useId } from "react";
 
 export type TableViewMode = "list" | "card";
 
@@ -60,9 +60,12 @@ export type TableViewMenuProps = Readonly<{
 const RESET_ROW_CLASS =
   "flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-2 text-left font-medium text-muted-foreground text-sm transition-colors hover:bg-muted hover:text-foreground [&_svg]:size-4 [&_svg]:shrink-0";
 
-function SectionLabel({ children }: Readonly<{ children: ReactNode }>) {
+function SectionLabel({
+  children,
+  id,
+}: Readonly<{ children: ReactNode; id?: string }>) {
   return (
-    <p className="mb-2 px-1 font-medium text-muted-foreground text-xs">
+    <p className="mb-2 px-1 font-medium text-muted-foreground text-xs" id={id}>
       {children}
     </p>
   );
@@ -77,10 +80,14 @@ function GroupBySegmented({
   options: TableViewMenuGroupOption[];
   onChange: (value: string) => void;
 }>) {
+  // "Group by" is on screen already; a `radiogroup` needs it as a real
+  // accessible name, not just an adjacent paragraph (WCAG 2.2 SC 1.3.1).
+  const labelId = useId();
   return (
     <div className="px-1 pt-1 pb-4">
-      <SectionLabel>Group by</SectionLabel>
+      <SectionLabel id={labelId}>Group by</SectionLabel>
       <ToggleGroup
+        aria-labelledby={labelId}
         className="w-full"
         onValueChange={(next) => {
           if (next) {
@@ -108,10 +115,12 @@ function ViewModeToggle({
   view: TableViewMode;
   onChangeView: (view: TableViewMode) => void;
 }>) {
+  const labelId = useId();
   return (
     <div className="px-1 pt-1 pb-2">
-      <SectionLabel>View</SectionLabel>
+      <SectionLabel id={labelId}>View</SectionLabel>
       <ToggleGroup
+        aria-labelledby={labelId}
         className="w-full"
         onValueChange={(value) => {
           if (value === "list" || value === "card") {

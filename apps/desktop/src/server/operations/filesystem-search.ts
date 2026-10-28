@@ -6,7 +6,11 @@ import {
   pathsEqualIgnoreCase,
   TCC_PROTECTED_HOME_SUBDIRS,
 } from "../../shared/sandbox-policy.js";
-import type { OperationDispatcher } from "../operation-dispatcher.js";
+import type {
+  OperationDispatcher,
+  OperationRequestContext,
+} from "../operation-dispatcher.js";
+import { isUnderDir } from "../path-containment.js";
 import { assertPathAllowed, DirectoryNotAllowedError } from "../security.js";
 import { json } from "./response-utils.js";
 import { assertRepoAllowed, resolveWorktreeDir } from "./symphony-utils.js";
@@ -63,12 +67,13 @@ export function registerFilesystemSearchRoutes(
       const useBase = context.query.get("base") === "true";
 
       if (!repoPath) {
-        json(context, 400, { error: "repo query parameter is required" });
+        searchError(context, 400, "repo query parameter is required");
         return;
       }
 
-      if (!(useBase || ticketId)) {
-        json(context, 400, { error: "ticket query parameter is required" });
+      const requestError = findRequestError({ ticketId, query, useBase });
+      if (requestError) {
+        searchError(context, 400, requestError);
         return;
       }
 
@@ -77,7 +82,7 @@ export function registerFilesystemSearchRoutes(
         expandedRepoPath = assertRepoAllowed(repoPath, getAllowedDirectories());
       } catch (error) {
         if (error instanceof DirectoryNotAllowedError) {
-          json(context, 403, { error: "directory not allowed" });
+          searchError(context, 403, "directory not allowed");
           return;
         }
         throw error;
@@ -91,7 +96,7 @@ export function registerFilesystemSearchRoutes(
         assertPathAllowed(searchDir, getAllowedDirectories());
       } catch (error) {
         if (error instanceof DirectoryNotAllowedError) {
-          json(context, 403, { error: "directory not allowed" });
+          searchError(context, 403, "directory not allowed");
           return;
         }
         throw error;
@@ -107,14 +112,18 @@ export function registerFilesystemSearchRoutes(
       }
 
       const pattern = query ? `**/*${query}*` : "**/*";
-      const files = await glob(pattern, {
+      const matches = await glob(pattern, {
         cwd: searchDir,
         nodir: true,
         ignore: excludePatternsForSearchRoot(searchDir),
         dot: true,
         nocase: true,
         maxDepth: 10,
+        // A `{a,b}` run in the query expands into 2^n patterns synchronously on
+        // the Electron main thread. The search box offers substring match only.
+        nobrace: true,
       });
+      const files = containedResults(searchDir, matches);
 
       const sortedFiles = [...files].sort((a, b) =>
         sortByRelevance(a, b, query)
@@ -126,7 +135,7 @@ export function registerFilesystemSearchRoutes(
       json(context, 200, { files: limitedFiles, truncated });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
-      json(context, 500, { error: `Failed to search files: ${message}` });
+      searchError(context, 500, `Failed to search files: ${message}`);
     }
   });
 }
@@ -166,4 +175,68 @@ function sortByRelevance(a: string, b: string, query: string): number {
   }
 
   return a.localeCompare(b);
+}
+
+const PATH_SEGMENT_SEPARATOR = /[\\/]/;
+
+function findRequestError(input: {
+  ticketId: string | null;
+  query: string;
+  useBase: boolean;
+}): string | null {
+  if (!(input.useBase || input.ticketId)) {
+    return "ticket query parameter is required";
+  }
+  if (isEscapingQuery(input.query)) {
+    return "invalid query";
+  }
+  return null;
+}
+
+/**
+ * A `<segment>/..` collapse is what walks a relative glob above `cwd`; `..` and
+ * `/` are not glob metacharacters, so `escape()` cannot stop it. NUL is refused
+ * because no filesystem name can contain it.
+ */
+function isEscapingQuery(query: string): boolean {
+  if (query.includes("\0")) {
+    return true;
+  }
+  return query
+    .split(PATH_SEGMENT_SEPARATOR)
+    .some((segment) => segment === "..");
+}
+
+/**
+ * Postcondition on the glob output, independent of the pattern check above: a
+ * brace alternation such as `{..,y}` expands to a `..` segment only inside
+ * glob, so the query check never sees it. The route's `nobrace` stops that
+ * expansion; this is the layer behind it. Escaped matches come back as
+ * relative `../…` paths, which resolve outside the search root.
+ */
+export function containedResults(
+  searchDir: string,
+  matches: string[]
+): string[] {
+  const searchRoot = path.resolve(searchDir);
+  return matches.filter((match) =>
+    isUnderDir(path.resolve(searchRoot, match), searchRoot)
+  );
+}
+
+/**
+ * Every response from this route carries the full `{ files, truncated }` shape,
+ * both non-optional. The web client (removed by ISS-12435, still live in older
+ * bundles) pipes `response.json()` straight into that type without checking
+ * `response.ok`, so a bare `{ error }` body would reach a consumer as a resolved
+ * value whose `files` is `undefined`.
+ * A `..` typed into a file-search box now reaches the 400, so that shape is
+ * user-reachable rather than only a malformed-client case.
+ */
+function searchError(
+  context: OperationRequestContext,
+  status: number,
+  error: string
+): void {
+  json(context, status, { files: [], truncated: false, error });
 }

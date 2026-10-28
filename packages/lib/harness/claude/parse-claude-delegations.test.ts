@@ -12,7 +12,7 @@
  */
 import { describe, expect, it } from "vitest";
 import type { NormalizedSubagent } from "../types";
-import { parseClaudeTranscript } from "./parse-claude-core";
+import { parseClaudeTranscript } from "./parse-claude";
 import {
   applyDelegationToSubagent,
   boundedDelegationType,

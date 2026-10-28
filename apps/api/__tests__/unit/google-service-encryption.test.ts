@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
-import { mockWithDbCall } from "../utils/db-helpers";
+import { mockWithDbAll, mockWithDbCall } from "../utils/db-helpers";
 
 vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
@@ -28,8 +28,9 @@ vi.mock("@repo/google", () => ({
 vi.mock("@/lib/integration-encryption", () => ({
   encryptIntegrationToken: vi.fn(),
   decryptIntegrationToken: vi.fn(),
-  resolveIntegrationToken: vi.fn(),
+  resolveEncryptedIntegrationToken: vi.fn(),
   encryptTokenPair: vi.fn(),
+  buildIntegrationTokenColumns: vi.fn(),
 }));
 
 // Mock transitive service dependencies pulled in by the google service
@@ -56,10 +57,11 @@ import {
   googleService,
 } from "@/app/integrations/google/service";
 import {
+  buildIntegrationTokenColumns,
   decryptIntegrationToken,
   encryptIntegrationToken,
   encryptTokenPair,
-  resolveIntegrationToken,
+  resolveEncryptedIntegrationToken,
 } from "@/lib/integration-encryption";
 
 const mockExchangeCodeForTokens = exchangeCodeForTokens as Mock;
@@ -68,8 +70,25 @@ const mockRefreshAccessToken = refreshAccessToken as Mock;
 const mockRevokeToken = revokeToken as Mock;
 const _mockEncryptIntegrationToken = encryptIntegrationToken as Mock;
 const _mockDecryptIntegrationToken = decryptIntegrationToken as Mock;
-const mockResolveIntegrationToken = resolveIntegrationToken as Mock;
-const mockEncryptTokenPair = encryptTokenPair as Mock;
+const mockResolveEncryptedToken = resolveEncryptedIntegrationToken as Mock;
+const _mockEncryptTokenPair = encryptTokenPair as Mock;
+const mockBuildTokenColumns = buildIntegrationTokenColumns as Mock;
+
+/** What the shared builder hands the service on its normal path: ciphertext only. */
+function encryptedColumns(
+  accessTokenEncrypted: string,
+  refreshTokenEncrypted: string | null
+) {
+  return { accessTokenEncrypted, refreshTokenEncrypted };
+}
+/**
+ * ISS-7781: what the builder returns when the provider issued NO refresh token
+ * — the refresh key ABSENT, so Prisma leaves the stored one alone. Writing
+ * `null` there would delete the org's only means of refreshing.
+ */
+function accessOnlyColumns(accessTokenEncrypted: string) {
+  return { accessTokenEncrypted };
+}
 
 const ORG_ID = "org-test-123";
 
@@ -81,8 +100,6 @@ function makeIntegration(
     organizationId: ORG_ID,
     googleUserId: "user@example.com",
     googleEmail: "user@example.com",
-    accessToken: "plaintext-access-token",
-    refreshToken: "plaintext-refresh-token",
     accessTokenEncrypted: null,
     refreshTokenEncrypted: null,
     tokenExpiresAt: null,
@@ -113,10 +130,9 @@ describe("Google service encryption paths", () => {
         email: "user@example.com",
         sub: "google-uid-1",
       });
-      mockEncryptTokenPair.mockResolvedValueOnce({
-        encryptedAccessToken: "encrypted-access-token",
-        encryptedRefreshToken: "encrypted-refresh-token",
-      });
+      mockBuildTokenColumns.mockResolvedValueOnce(
+        encryptedColumns("encrypted-access-token", "encrypted-refresh-token")
+      );
 
       const mockDb = {
         googleIntegration: {
@@ -134,8 +150,9 @@ describe("Google service encryption paths", () => {
 
       expect(result).toEqual({ success: true });
 
-      // encryptTokenPair must be called with both tokens
-      expect(mockEncryptTokenPair).toHaveBeenCalledWith(
+      // The connect path routes through the ONE shared builder, tagged so the
+      // monitored plaintext-write event can name which write produced a row.
+      expect(mockBuildTokenColumns).toHaveBeenCalledWith(
         "raw-access-token",
         "raw-refresh-token"
       );
@@ -154,6 +171,51 @@ describe("Google service encryption paths", () => {
       expect(upsertCall.update.refreshTokenEncrypted).toBe(
         "encrypted-refresh-token"
       );
+
+      // ISS-11096: neither upsert branch writes the legacy plaintext columns.
+      for (const branch of [upsertCall.create, upsertCall.update]) {
+        expect(branch).not.toHaveProperty("accessToken");
+        expect(branch).not.toHaveProperty("refreshToken");
+      }
+    });
+
+    /**
+     * ISS-5081: a failed encrypt fails the connect and writes nothing. Before,
+     * the builder handed back plaintext columns and the upsert stored them.
+     */
+    it("fails the connect and writes nothing when encryption throws", async () => {
+      mockExchangeCodeForTokens.mockResolvedValue({
+        accessToken: "raw-access-token",
+        refreshToken: "raw-refresh-token",
+        expiresIn: 3600,
+      });
+      mockGetUserInfo.mockResolvedValue({
+        email: "user@example.com",
+        sub: "google-uid-1",
+      });
+      mockBuildTokenColumns.mockRejectedValueOnce(new Error("kms unavailable"));
+
+      const mockDb = {
+        googleIntegration: {
+          upsert: vi.fn().mockResolvedValue({}),
+          findUnique: vi.fn().mockResolvedValue(null),
+        },
+      };
+      mockWithDbCall(mockDb);
+
+      const result = await googleService.completeOAuthCallback(
+        "auth-code",
+        "code-verifier",
+        "https://app.example.com/callback",
+        ORG_ID
+      );
+
+      expect(result).toEqual({
+        success: false,
+        error: "Failed to complete Google Drive connection",
+      });
+      expect(mockBuildTokenColumns).toHaveBeenCalled();
+      expect(mockDb.googleIntegration.upsert).not.toHaveBeenCalled();
     });
 
     it("stores encrypted tokens in the update path of upsert", async () => {
@@ -166,10 +228,9 @@ describe("Google service encryption paths", () => {
         email: "user@example.com",
         sub: "google-uid-1",
       });
-      mockEncryptTokenPair.mockResolvedValueOnce({
-        encryptedAccessToken: "encrypted-access-token",
-        encryptedRefreshToken: null,
-      });
+      mockBuildTokenColumns.mockResolvedValueOnce(
+        accessOnlyColumns("encrypted-access-token")
+      );
 
       const mockDb = {
         googleIntegration: {
@@ -189,8 +250,11 @@ describe("Google service encryption paths", () => {
       expect(upsertCall.update.accessTokenEncrypted).toBe(
         "encrypted-access-token"
       );
-      // null from encryptTokenPair → ?? undefined → stored as undefined
-      expect(upsertCall.update.refreshTokenEncrypted).toBeUndefined();
+      // ISS-7781: Google issued no refresh token, so the builder omits BOTH
+      // refresh keys and Prisma leaves the stored ones untouched. `null` here
+      // would delete the org's only means of refreshing.
+      expect(upsertCall.update).not.toHaveProperty("refreshTokenEncrypted");
+      expect(upsertCall.update).not.toHaveProperty("refreshToken");
     });
 
     it("stores null for refreshTokenEncrypted when no refresh token is returned", async () => {
@@ -203,10 +267,9 @@ describe("Google service encryption paths", () => {
         email: "user@example.com",
         sub: "google-uid-1",
       });
-      mockEncryptTokenPair.mockResolvedValueOnce({
-        encryptedAccessToken: "encrypted-access-token",
-        encryptedRefreshToken: null,
-      });
+      mockBuildTokenColumns.mockResolvedValueOnce(
+        accessOnlyColumns("encrypted-access-token")
+      );
 
       const mockDb = {
         googleIntegration: {
@@ -224,8 +287,7 @@ describe("Google service encryption paths", () => {
 
       expect(result).toEqual({ success: true });
 
-      // encryptTokenPair called with undefined refresh token
-      expect(mockEncryptTokenPair).toHaveBeenCalledWith(
+      expect(mockBuildTokenColumns).toHaveBeenCalledWith(
         "raw-access-token",
         undefined
       );
@@ -234,8 +296,46 @@ describe("Google service encryption paths", () => {
       expect(upsertCall.create.accessTokenEncrypted).toBe(
         "encrypted-access-token"
       );
-      // null from encryptTokenPair → ?? undefined → stored as undefined
-      expect(upsertCall.create.refreshTokenEncrypted).toBeUndefined();
+      // Same on the create branch: absent, not null.
+      expect(upsertCall.create).not.toHaveProperty("refreshTokenEncrypted");
+    });
+
+    /**
+     * ISS-11096: a reconnect with no reissued refresh token no longer reads the
+     * stored row to rescue a legacy plaintext refresh token; the builder omits
+     * the refresh column and the stored ciphertext stays.
+     */
+    it("does not read the stored row on a reconnect that reissues no refresh token", async () => {
+      mockExchangeCodeForTokens.mockResolvedValue({
+        accessToken: "raw-access-token",
+        refreshToken: undefined,
+        expiresIn: 3600,
+      });
+      mockGetUserInfo.mockResolvedValue({
+        email: "user@example.com",
+        sub: "google-uid-1",
+      });
+      mockBuildTokenColumns.mockResolvedValueOnce(
+        accessOnlyColumns("encrypted-access-token")
+      );
+
+      const mockDb = {
+        googleIntegration: {
+          upsert: vi.fn().mockResolvedValue({}),
+          findUnique: vi.fn(),
+        },
+      };
+      mockWithDbCall(mockDb);
+
+      await googleService.completeOAuthCallback(
+        "auth-code",
+        "code-verifier",
+        "https://app.example.com/callback",
+        ORG_ID
+      );
+
+      expect(mockDb.googleIntegration.upsert).toHaveBeenCalledTimes(1);
+      expect(mockDb.googleIntegration.findUnique).not.toHaveBeenCalled();
     });
 
     it("returns error result when token exchange fails", async () => {
@@ -254,7 +354,7 @@ describe("Google service encryption paths", () => {
         success: false,
         error: "Failed to complete Google Drive connection",
       });
-      expect(mockEncryptTokenPair).not.toHaveBeenCalled();
+      expect(mockBuildTokenColumns).not.toHaveBeenCalled();
     });
   });
 
@@ -265,7 +365,7 @@ describe("Google service encryption paths", () => {
   describe("ensureValidAccessToken", () => {
     describe("token read path — no refresh needed", () => {
       it("decrypts accessTokenEncrypted when present and token is not expired", async () => {
-        mockResolveIntegrationToken.mockResolvedValue("decrypted-access-token");
+        mockResolveEncryptedToken.mockResolvedValue("decrypted-access-token");
 
         const integration = makeIntegration({
           accessTokenEncrypted: "encrypted-access-token",
@@ -278,38 +378,55 @@ describe("Google service encryption paths", () => {
           success: true,
           accessToken: "decrypted-access-token",
         });
-        expect(mockResolveIntegrationToken).toHaveBeenCalledWith(
-          "encrypted-access-token",
-          "plaintext-access-token"
+        expect(mockResolveEncryptedToken).toHaveBeenCalledWith(
+          "encrypted-access-token"
         );
       });
 
-      it("falls back to plaintext accessToken when accessTokenEncrypted is null", async () => {
-        mockResolveIntegrationToken.mockResolvedValue("plaintext-access-token");
+      /**
+       * ISS-11096: a row with no access-token ciphertext (a legacy
+       * plaintext-only row included) fails the read and asks for a reconnect.
+       */
+      it("fails the read when the row has no access-token ciphertext", async () => {
+        mockResolveEncryptedToken.mockResolvedValue(null);
 
-        const integration = makeIntegration({
-          accessToken: "plaintext-access-token",
-          accessTokenEncrypted: null,
-          // tokenExpiresAt null → treated as valid (no refresh)
-        });
-
-        const result = await ensureValidAccessToken(integration, ORG_ID);
+        const result = await ensureValidAccessToken(
+          makeIntegration({ accessTokenEncrypted: null }),
+          ORG_ID
+        );
 
         expect(result).toEqual({
-          success: true,
-          accessToken: "plaintext-access-token",
+          success: false,
+          error:
+            "Google access token is unavailable. Please reconnect Google Drive.",
         });
-        // resolveIntegrationToken handles the null-encrypted case — called once for access token
-        expect(mockResolveIntegrationToken).toHaveBeenCalledWith(
-          null,
-          "plaintext-access-token"
+        expect(mockResolveEncryptedToken).toHaveBeenCalledWith(null);
+      });
+      /**
+       * ISS-5081: a decrypt failure no longer falls back to the plaintext
+       * column beside the ciphertext; the read fails and asks for a reconnect.
+       */
+      it("fails the read instead of using plaintext when decryption throws", async () => {
+        mockResolveEncryptedToken.mockRejectedValueOnce(
+          new Error("kms unavailable")
         );
+
+        const result = await ensureValidAccessToken(
+          makeIntegration({ accessTokenEncrypted: "encrypted-access-token" }),
+          ORG_ID
+        );
+
+        expect(result).toEqual({
+          success: false,
+          error:
+            "Google access token is unavailable. Please reconnect Google Drive.",
+        });
       });
     });
 
     describe("token refresh path", () => {
       it("decrypts refreshTokenEncrypted before calling refreshAccessToken", async () => {
-        mockResolveIntegrationToken.mockResolvedValueOnce(
+        mockResolveEncryptedToken.mockResolvedValueOnce(
           "decrypted-refresh-token"
         ); // refreshToken — accessToken decrypt skipped when needsRefresh
         mockRefreshAccessToken.mockResolvedValue({
@@ -317,10 +434,12 @@ describe("Google service encryption paths", () => {
           refreshToken: "new-refresh-token",
           expiresIn: 3600,
         });
-        mockEncryptTokenPair.mockResolvedValueOnce({
-          encryptedAccessToken: "new-encrypted-access-token",
-          encryptedRefreshToken: "new-encrypted-refresh-token",
-        });
+        mockBuildTokenColumns.mockResolvedValueOnce(
+          encryptedColumns(
+            "new-encrypted-access-token",
+            "new-encrypted-refresh-token"
+          )
+        );
 
         const mockDb = {
           googleIntegration: {
@@ -342,17 +461,16 @@ describe("Google service encryption paths", () => {
           accessToken: "new-access-token",
         });
 
-        // resolveIntegrationToken called for refresh token with encrypted field
-        expect(mockResolveIntegrationToken).toHaveBeenCalledWith(
-          "old-encrypted-refresh-token",
-          "plaintext-refresh-token"
+        // resolveEncryptedIntegrationToken called for refresh token with encrypted field
+        expect(mockResolveEncryptedToken).toHaveBeenCalledWith(
+          "old-encrypted-refresh-token"
         );
         expect(mockRefreshAccessToken).toHaveBeenCalledWith(
           "decrypted-refresh-token"
         );
 
-        // New tokens are encrypted together via encryptTokenPair
-        expect(mockEncryptTokenPair).toHaveBeenCalledWith(
+        // The refresh path routes through the same shared builder
+        expect(mockBuildTokenColumns).toHaveBeenCalledWith(
           "new-access-token",
           "new-refresh-token"
         );
@@ -365,63 +483,45 @@ describe("Google service encryption paths", () => {
         expect(updateCall.data.refreshTokenEncrypted).toBe(
           "new-encrypted-refresh-token"
         );
+
+        // ISS-11096: the refresh write does not touch the plaintext columns.
+        expect(updateCall.data).not.toHaveProperty("accessToken");
+        expect(updateCall.data).not.toHaveProperty("refreshToken");
       });
 
-      it("falls back to plaintext refreshToken when refreshTokenEncrypted is null", async () => {
-        mockResolveIntegrationToken.mockResolvedValueOnce(
-          "plaintext-refresh-token"
-        ); // fallback for null encrypted refresh — accessToken decrypt skipped when needsRefresh
-        mockRefreshAccessToken.mockResolvedValue({
-          accessToken: "new-access-token",
-          refreshToken: null,
-          expiresIn: 3600,
-        });
-        mockEncryptTokenPair.mockResolvedValueOnce({
-          encryptedAccessToken: "new-encrypted-access-token",
-          encryptedRefreshToken: null,
-        });
+      /**
+       * ISS-11096: only a refresh-token CIPHERTEXT makes an expired row
+       * refreshable. Without one the read fails with the reconnect error: it
+       * neither serves the expired access token nor spends a legacy plaintext
+       * refresh token.
+       */
+      it("fails an expired row that has no refresh-token ciphertext", async () => {
+        mockResolveEncryptedToken.mockImplementation((encrypted) =>
+          Promise.resolve(encrypted ? "decrypted-access-token" : null)
+        );
 
-        const mockDb = {
-          googleIntegration: {
-            update: vi.fn().mockResolvedValue({}),
-          },
-        };
-        mockWithDbCall(mockDb);
-
-        const integration = makeIntegration({
-          accessToken: "old-access-token",
-          accessTokenEncrypted: "old-encrypted-access-token",
-          refreshToken: "plaintext-refresh-token",
-          refreshTokenEncrypted: null,
-          tokenExpiresAt: new Date(Date.now() - 3_600_000), // expired
-        });
-
-        const result = await ensureValidAccessToken(integration, ORG_ID);
+        const result = await ensureValidAccessToken(
+          makeIntegration({
+            accessTokenEncrypted: "old-encrypted-access-token",
+            refreshTokenEncrypted: null,
+            tokenExpiresAt: new Date(Date.now() - 3_600_000), // expired
+          }),
+          ORG_ID
+        );
 
         expect(result).toEqual({
-          success: true,
-          accessToken: "new-access-token",
+          success: false,
+          error:
+            "Google refresh token is unavailable. Please reconnect Google Drive.",
         });
-
-        // resolveIntegrationToken called for refresh with null encrypted field →
-        // returns plaintext directly without KMS
-        expect(mockResolveIntegrationToken).toHaveBeenCalledWith(
-          null,
-          "plaintext-refresh-token"
+        expect(mockResolveEncryptedToken).not.toHaveBeenCalledWith(
+          "old-encrypted-access-token"
         );
-        expect(mockRefreshAccessToken).toHaveBeenCalledWith(
-          "plaintext-refresh-token"
-        );
-
-        // encryptTokenPair called with null new refresh token
-        expect(mockEncryptTokenPair).toHaveBeenCalledWith(
-          "new-access-token",
-          null
-        );
+        expect(mockRefreshAccessToken).not.toHaveBeenCalled();
       });
 
       it("returns error when token refresh API call fails", async () => {
-        mockResolveIntegrationToken.mockResolvedValue("decrypted-token");
+        mockResolveEncryptedToken.mockResolvedValue("decrypted-token");
         mockRefreshAccessToken.mockRejectedValue(new Error("401 Unauthorized"));
 
         const integration = makeIntegration({
@@ -436,7 +536,7 @@ describe("Google service encryption paths", () => {
           success: false,
           error: "Google token expired. Please reconnect Google Drive.",
         });
-        expect(mockEncryptTokenPair).not.toHaveBeenCalled();
+        expect(mockBuildTokenColumns).not.toHaveBeenCalled();
       });
     });
   });
@@ -447,7 +547,7 @@ describe("Google service encryption paths", () => {
 
   describe("disconnect", () => {
     it("decrypts accessTokenEncrypted before revoking when encrypted token is present", async () => {
-      mockResolveIntegrationToken.mockResolvedValue("decrypted-access-token");
+      mockResolveEncryptedToken.mockResolvedValue("decrypted-access-token");
       mockRevokeToken.mockResolvedValue(undefined);
 
       const storedIntegration = {
@@ -455,8 +555,6 @@ describe("Google service encryption paths", () => {
         organizationId: ORG_ID,
         googleUserId: "user@example.com",
         googleEmail: "user@example.com",
-        accessToken: "plaintext-access-token",
-        refreshToken: null,
         accessTokenEncrypted: "encrypted-access-token",
         refreshTokenEncrypted: null,
         tokenExpiresAt: null,
@@ -471,29 +569,67 @@ describe("Google service encryption paths", () => {
           delete: vi.fn().mockResolvedValue(storedIntegration),
         },
       };
-      mockWithDbCall(mockDb);
+      mockWithDbAll(mockDb);
 
       const result = await googleService.disconnect(ORG_ID);
 
       expect(result).toEqual({ success: true });
-      expect(mockResolveIntegrationToken).toHaveBeenCalledWith(
-        "encrypted-access-token",
-        "plaintext-access-token"
+      expect(mockResolveEncryptedToken).toHaveBeenCalledWith(
+        "encrypted-access-token"
       );
       expect(mockRevokeToken).toHaveBeenCalledWith("decrypted-access-token");
     });
 
-    it("falls back to plaintext accessToken when accessTokenEncrypted is null", async () => {
-      mockResolveIntegrationToken.mockResolvedValue("plaintext-access-token");
-      mockRevokeToken.mockResolvedValue(undefined);
+    it("still deletes integration record when revokeToken throws", async () => {
+      mockResolveEncryptedToken.mockResolvedValue("decrypted-access-token");
+      mockRevokeToken.mockRejectedValue(new Error("Token already revoked"));
 
       const storedIntegration = {
         id: "integ-1",
         organizationId: ORG_ID,
         googleUserId: "user@example.com",
         googleEmail: "user@example.com",
-        accessToken: "plaintext-access-token",
-        refreshToken: null,
+        accessTokenEncrypted: "encrypted-access-token",
+        refreshTokenEncrypted: null,
+        tokenExpiresAt: null,
+        lastUsedAt: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      const mockDb = {
+        googleIntegration: {
+          findUnique: vi.fn().mockResolvedValue(storedIntegration),
+          delete: vi.fn().mockResolvedValue(storedIntegration),
+        },
+      };
+      mockWithDbAll(mockDb);
+
+      const result = await googleService.disconnect(ORG_ID);
+
+      // Should still succeed even if revoke failed
+      expect(result).toEqual({ success: true });
+      expect(mockRevokeToken).toHaveBeenCalled();
+      expect(mockDb.googleIntegration.delete).toHaveBeenCalledWith({
+        where: { organizationId: ORG_ID },
+      });
+    });
+
+    /**
+     * A row with no ciphertext resolves no token. `revokeToken(null)` would no-op
+     * and leave a live OAuth grant standing after the local row is deleted, so
+     * the revoke is skipped explicitly rather than cast through. The sibling
+     * case above is the positive control: with a token present, revoke IS
+     * called, so this assertion is not vacuous.
+     */
+    it("skips the revoke when no token can be resolved, and still deletes", async () => {
+      mockResolveEncryptedToken.mockResolvedValue(null);
+
+      const storedIntegration = {
+        id: "integ-1",
+        organizationId: ORG_ID,
+        googleUserId: "user@example.com",
+        googleEmail: "user@example.com",
         accessTokenEncrypted: null,
         refreshTokenEncrypted: null,
         tokenExpiresAt: null,
@@ -508,51 +644,12 @@ describe("Google service encryption paths", () => {
           delete: vi.fn().mockResolvedValue(storedIntegration),
         },
       };
-      mockWithDbCall(mockDb);
+      mockWithDbAll(mockDb);
 
       const result = await googleService.disconnect(ORG_ID);
 
       expect(result).toEqual({ success: true });
-      // resolveIntegrationToken handles the null-encrypted fallback internally
-      expect(mockResolveIntegrationToken).toHaveBeenCalledWith(
-        null,
-        "plaintext-access-token"
-      );
-      expect(mockRevokeToken).toHaveBeenCalledWith("plaintext-access-token");
-    });
-
-    it("still deletes integration record when revokeToken throws", async () => {
-      mockResolveIntegrationToken.mockResolvedValue("decrypted-access-token");
-      mockRevokeToken.mockRejectedValue(new Error("Token already revoked"));
-
-      const storedIntegration = {
-        id: "integ-1",
-        organizationId: ORG_ID,
-        googleUserId: "user@example.com",
-        googleEmail: "user@example.com",
-        accessToken: "plaintext-access-token",
-        refreshToken: null,
-        accessTokenEncrypted: "encrypted-access-token",
-        refreshTokenEncrypted: null,
-        tokenExpiresAt: null,
-        lastUsedAt: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
-
-      const mockDb = {
-        googleIntegration: {
-          findUnique: vi.fn().mockResolvedValue(storedIntegration),
-          delete: vi.fn().mockResolvedValue(storedIntegration),
-        },
-      };
-      mockWithDbCall(mockDb);
-
-      const result = await googleService.disconnect(ORG_ID);
-
-      // Should still succeed even if revoke failed
-      expect(result).toEqual({ success: true });
-      expect(mockRevokeToken).toHaveBeenCalled();
+      expect(mockRevokeToken).not.toHaveBeenCalled();
       expect(mockDb.googleIntegration.delete).toHaveBeenCalledWith({
         where: { organizationId: ORG_ID },
       });
@@ -565,12 +662,12 @@ describe("Google service encryption paths", () => {
           delete: vi.fn(),
         },
       };
-      mockWithDbCall(mockDb);
+      mockWithDbAll(mockDb);
 
       const result = await googleService.disconnect(ORG_ID);
 
       expect(result).toEqual({ success: true });
-      expect(mockResolveIntegrationToken).not.toHaveBeenCalled();
+      expect(mockResolveEncryptedToken).not.toHaveBeenCalled();
       expect(mockRevokeToken).not.toHaveBeenCalled();
       expect(mockDb.googleIntegration.delete).not.toHaveBeenCalled();
     });
@@ -603,10 +700,9 @@ describe("Google service discarded-write narrowing", () => {
       email: "user@example.com",
       sub: "google-uid-1",
     });
-    mockEncryptTokenPair.mockResolvedValueOnce({
-      encryptedAccessToken: "encrypted-access-token",
-      encryptedRefreshToken: "encrypted-refresh-token",
-    });
+    mockBuildTokenColumns.mockResolvedValueOnce(
+      encryptedColumns("encrypted-access-token", "encrypted-refresh-token")
+    );
 
     const mockDb = {
       googleIntegration: {
@@ -629,18 +725,18 @@ describe("Google service discarded-write narrowing", () => {
   });
 
   it("RETURNINGs only the id from the token-refresh update", async () => {
-    mockResolveIntegrationToken.mockResolvedValueOnce(
-      "decrypted-refresh-token"
-    );
+    mockResolveEncryptedToken.mockResolvedValueOnce("decrypted-refresh-token");
     mockRefreshAccessToken.mockResolvedValue({
       accessToken: "new-access-token",
       refreshToken: "new-refresh-token",
       expiresIn: 3600,
     });
-    mockEncryptTokenPair.mockResolvedValueOnce({
-      encryptedAccessToken: "new-encrypted-access-token",
-      encryptedRefreshToken: "new-encrypted-refresh-token",
-    });
+    mockBuildTokenColumns.mockResolvedValueOnce(
+      encryptedColumns(
+        "new-encrypted-access-token",
+        "new-encrypted-refresh-token"
+      )
+    );
 
     const mockDb = {
       googleIntegration: {

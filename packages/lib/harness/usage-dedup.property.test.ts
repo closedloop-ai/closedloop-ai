@@ -16,7 +16,6 @@
  */
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { isoTs } from "./claude/parse-claude";
 import { toIso } from "./parser-utils";
 import { validateCacheWriteTtl } from "./usage-dedup";
 
@@ -139,95 +138,59 @@ describe("validateCacheWriteTtl — properties", () => {
 /** The ECMAScript time-value limit: `Date` represents ±8.64e15 ms, no more. */
 const MAX_DATE_MS = 8_640_000_000_000_000;
 
-/** Every epoch a `Date` can hold — `isoTs` passes its number straight through. */
-const dateRepresentableEpoch = fc.integer({
+/**
+ * Every epoch `toIso` can represent. Negative and large positive values pass
+ * to `Date` as milliseconds; only positive sub-1e12 values are scaled (×1000)
+ * — and those stay well within the time-value limit. So the full `Date` range
+ * is representable.
+ */
+const representableEpoch = fc.integer({
   min: -MAX_DATE_MS,
   max: MAX_DATE_MS,
 });
 
-/**
- * `toIso`'s narrower domain. It reads anything below 1e12 as seconds and
- * multiplies by 1000, and every negative epoch is below 1e12, so the negative
- * floor is the time-value limit over 1000. The ceiling is the full limit,
- * reached unscaled once the value is read as milliseconds.
- */
-const toIsoRepresentableEpoch = fc.integer({
-  min: -MAX_DATE_MS / 1000,
-  max: MAX_DATE_MS,
-});
-
-/** Each normalizer paired with the epoch domain it can actually represent. */
-const epochNormalizers = [
-  [isoTs, dateRepresentableEpoch],
-  [toIso, toIsoRepresentableEpoch],
-] as const;
-
-describe("isoTs / toIso — properties", () => {
-  it("are total — no input throws, on either normalizer", () => {
-    // The failure this prevents is documented and real: one unrepresentable
-    // stamp used to abort a whole scan, which desktop retried every pass and the
-    // cloud rendered as a blank transcript.
+describe("toIso — properties", () => {
+  it("is total — no input throws", () => {
     fc.assert(
       fc.property(fc.anything(), (value) => {
-        expect(() => isoTs(value)).not.toThrow();
         expect(() => toIso(value)).not.toThrow();
       })
     );
   });
 
-  it("return a string or null, never undefined", () => {
+  it("returns a string or null, never undefined", () => {
     // Callers distinguish "no stamp" (null) from a stamp. A third answer would
     // make every `?? fallback` and `|| fallback` disagree, which is the defect
     // the empty-string case was fixed for.
     fc.assert(
       fc.property(fc.anything(), (value) => {
-        for (const result of [isoTs(value), toIso(value)]) {
-          expect(result === null || typeof result === "string").toBe(true);
-        }
+        const result = toIso(value);
+        expect(result === null || typeof result === "string").toBe(true);
       })
     );
   });
 
-  it("isoTs never emits an empty string as a timestamp", () => {
+  it("never emits an empty string as a timestamp", () => {
     // An empty stamp sorts before every real one, and `??` keeps it while `||`
     // replaces it — so the same absent value behaves differently depending on
     // which operator a caller reached for. `null` is the one answer for absence.
-    //
-    // Deliberately NOT asserted for `toIso`, which fails it: `toIso("")` returns
-    // `""` today, because `new Date("")` is invalid and the string branch falls
-    // back to the raw text. `isoTs` was fixed for exactly this and `toIso` never
-    // was — the same split ISS-6738 records for the epoch and non-ISO-string
-    // rules. Fixing it changes parser output, so it belongs in that ticket's
-    // decision rather than being smuggled in here.
     fc.assert(
       fc.property(fc.anything(), (value) => {
-        expect(isoTs(value)).not.toBe("");
+        expect(toIso(value)).not.toBe("");
       })
     );
   });
 
-  it("normalise every representable epoch to a parseable ISO stamp", () => {
+  it("normalises every representable epoch to a parseable ISO stamp", () => {
     // Whatever the seconds-vs-milliseconds question is decided to be (ISS-6738),
     // the answer has to BE a timestamp. This holds that without asserting which
     // of the two readings is correct.
-    //
-    // Each normalizer is quantified over the epochs IT can represent, which are
-    // not the same range — and that difference is the seconds-vs-milliseconds
-    // split itself, not a gap in the property. `isoTs` passes the number to
-    // `Date` untouched, so it spans the full time-value limit both ways.
-    // `toIso` reads anything below 1e12 as SECONDS and multiplies by 1000, so
-    // every negative epoch is scaled and its floor is the limit over 1000;
-    // above 1e12 it reads milliseconds and reaches the limit unscaled. Pinning
-    // one shared range would either understate `isoTs` or assert a `null` out
-    // of `toIso`.
-    for (const [normalise, representableEpoch] of epochNormalizers) {
-      fc.assert(
-        fc.property(representableEpoch, (epoch) => {
-          const result = normalise(epoch);
-          expect(result).not.toBeNull();
-          expect(Number.isNaN(Date.parse(result ?? ""))).toBe(false);
-        })
-      );
-    }
+    fc.assert(
+      fc.property(representableEpoch, (epoch) => {
+        const result = toIso(epoch);
+        expect(result).not.toBeNull();
+        expect(Number.isNaN(Date.parse(result ?? ""))).toBe(false);
+      })
+    );
   });
 });

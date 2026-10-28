@@ -10,8 +10,8 @@
  */
 
 import assert from "node:assert/strict";
-import test from "node:test";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
+import { test } from "vitest";
 import {
   DESKTOP_AGENT_STATUS,
   EVENT_INSERT_PARAM_CAP,

@@ -54,10 +54,10 @@ export function DocumentTableSkeleton({
   const showCard = containerWidth < CARD_FALLBACK_BREAKPOINT;
   const rows = Array.from({ length: rowCount }, (_, index) => index);
 
+  // Full-width observed wrapper so the ResizeObserver reports the real
+  // available width rather than the grid's overflowed intrinsic width — the
+  // same pattern the real `DocumentRow` uses to decide the card fallback.
   return (
-    // Full-width observed wrapper so the ResizeObserver reports the real
-    // available width rather than the grid's overflowed intrinsic width — the
-    // same pattern the real `DocumentRow` uses to decide the card fallback.
     <div
       aria-busy="true"
       aria-live="polite"

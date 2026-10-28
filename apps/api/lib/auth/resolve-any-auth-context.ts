@@ -1,12 +1,17 @@
-import type { ApiKeyScope } from "@repo/api/src/types/api-key";
+import { ApiKeyScope } from "@repo/api/src/types/api-key";
 import { isDesktopSessionToken } from "@repo/auth/desktop-session-jwt";
 import { auth, getAuth, verifyToken } from "@repo/auth/server";
 import { ApiKeySource } from "@repo/database";
+import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
 import { apiKeysService } from "@/app/api-keys/service";
 import { organizationsService } from "@/app/organizations/service";
 import { usersService } from "@/app/users/service";
 import type { VerifiedApiKeyContextWithMetadata } from "./api-key-context";
+import {
+  copyRequiredApiKeyScopes,
+  type RequiredApiKeyScopes,
+} from "./api-key-scopes";
 import {
   type AnyAuthContextResult,
   AuthContextFailure,
@@ -35,7 +40,7 @@ import { resolveOrgHeader } from "./resolve-org-header";
  */
 export async function resolveAnyAuthContext(
   request: Request,
-  options?: { requiredScopes?: ApiKeyScope[] }
+  options?: { requiredScopes?: RequiredApiKeyScopes }
 ): Promise<AnyAuthContextResult> {
   const authHeader = request.headers.get("authorization");
   const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
@@ -44,7 +49,7 @@ export async function resolveAnyAuthContext(
     return toResult(
       await resolveApiKeyTokenContext(token, {
         request,
-        requiredScopes: options?.requiredScopes ?? ["read"],
+        requiredScopes: options?.requiredScopes ?? [ApiKeyScope.Read],
       })
     );
   }
@@ -90,16 +95,25 @@ export async function resolveAnyAuthContext(
 export async function resolveApiKeyTokenContext(
   token: string,
   options:
-    | ApiKeyScope[]
+    | RequiredApiKeyScopes
     | {
         request?: Request;
-        requiredScopes?: ApiKeyScope[];
+        requiredScopes?: RequiredApiKeyScopes;
       } = {}
 ): Promise<ResolvedAuthContext | null> {
   const resolvedOptions = Array.isArray(options)
     ? { requiredScopes: options }
     : options;
-  const requiredScopes = resolvedOptions.requiredScopes ?? ["read"];
+  // ISS-11792: `every` over an empty list is true, so an untyped caller asking
+  // for no scopes would admit a key holding any scope. Fail closed instead, and
+  // check a copy taken before the first await so the caller cannot empty it.
+  const requiredScopes = copyRequiredApiKeyScopes(
+    resolvedOptions.requiredScopes ?? [ApiKeyScope.Read]
+  );
+  if (!requiredScopes) {
+    log.error("resolveApiKeyTokenContext: requiredScopes must not be empty");
+    return null;
+  }
   const keyContext = await apiKeysService.verifyKeyWithMetadata(token, {
     updateLastUsedAt: false,
   });
@@ -205,18 +219,20 @@ async function resolveClerkBearerTokenContext(
     return UNAUTHENTICATED;
   }
 
+  let claims: Awaited<ReturnType<typeof verifyToken>>;
   try {
-    const claims = await verifyToken(token, { secretKey });
-    const clerkUserId = typeof claims.sub === "string" ? claims.sub : null;
-    const clerkOrgId = typeof claims.org_id === "string" ? claims.org_id : null;
-
-    if (!(clerkUserId && clerkOrgId)) {
-      return UNAUTHENTICATED;
-    }
-    return await resolveClerkIdentityContext(clerkUserId, clerkOrgId, request);
+    claims = await verifyToken(token, { secretKey });
   } catch {
     return UNAUTHENTICATED;
   }
+  const clerkUserId = typeof claims.sub === "string" ? claims.sub : null;
+  const clerkOrgId = typeof claims.org_id === "string" ? claims.org_id : null;
+  if (!(clerkUserId && clerkOrgId)) {
+    return UNAUTHENTICATED;
+  }
+  // A verified token's DB lookup failing is an outage, not bad credentials.
+  // Match desktop-session-auth: only verification belongs in the catch.
+  return resolveClerkIdentityContext(clerkUserId, clerkOrgId, request);
 }
 
 async function resolveClerkContext(

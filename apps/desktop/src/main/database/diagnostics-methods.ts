@@ -1,8 +1,7 @@
 /**
  * @file diagnostics-methods.ts
  * @description ISS-5266 — the DIAGNOSTICS slice of the desktop agent-database
- * surface, lifted out of the `sqlite.ts` monolith (a file on the shrink-only
- * `noExcessiveLinesPerFile` grandfather list).
+ * surface, lifted out of the `sqlite.ts` monolith.
  *
  * Same shape and same reason as its `store-health-methods.ts` sibling: these
  * methods share one contract — clone-safe args and results, so the db-host
@@ -12,7 +11,10 @@
  * the next diagnostics read makes `sqlite.ts` smaller rather than larger.
  */
 
-import type { DiagnosticsData } from "../../shared/diagnostics-contract.js";
+import type {
+  DiagnosticsData,
+  DiagnosticsRequest,
+} from "../../shared/diagnostics-contract.js";
 import type { OpencodeWithheldSubagentReport } from "../collectors/opencode/opencode-withheld-subagents.js";
 import { getDiagnosticsData } from "./diagnostics-store.js";
 import {
@@ -23,7 +25,8 @@ import type { DesktopPrisma } from "./prisma-client.js";
 
 export type DiagnosticsMethods = {
   diagnostics: {
-    getData(): Promise<DiagnosticsData>;
+    /** `request` is a plain object, so it forwards through the db-host proxy. */
+    getData(request?: DiagnosticsRequest): Promise<DiagnosticsData>;
     /**
      * ISS-5266: replace one OpenCode store's WITHHELD-subagent set with what the
      * current batch load observed. Reconciles rather than appends — see
@@ -48,11 +51,12 @@ export type DiagnosticsMethods = {
 };
 
 export function createDiagnosticsMethods(
-  prisma: DesktopPrisma
+  prisma: DesktopPrisma,
+  log: (message: string) => void
 ): DiagnosticsMethods {
   return {
     diagnostics: {
-      getData: () => getDiagnosticsData(prisma),
+      getData: (request) => getDiagnosticsData(prisma, request, log),
       recordOpencodeWithheld: (report, observedAt) =>
         recordOpencodeWithheldSubagents(prisma, report, observedAt),
       listOpencodeWithheldScanPaths: async () => {

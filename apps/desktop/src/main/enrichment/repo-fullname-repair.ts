@@ -7,13 +7,13 @@ import type { DesktopPrisma } from "../database/prisma-client.js";
  *
  * The parser derived a session's "repository" from the cwd's last path component
  * (extractRepoFromCwd), so worktree dirs (`agent-<hash>`), temp dirs (`nrev-*`),
- * and plain repo folders (`example-repo`) were persisted as bogus repositories
+ * and plain repo folders (`closedloop-ai`) were persisted as bogus repositories
  * that then polluted every repo breakdown. The write path is now hardened
  * (prepareArtifactRefRow drops unvalidated bare names), but rows imported before
  * the fix are still polluted — this one-time sweep cleans them.
  *
  * For each distinct bare value it runs the SAME `repos`-table resolver the write
- * path uses: when it resolves (e.g. `example-repo` → `closedloop-ai/example-repo`,
+ * path uses: when it resolves (e.g. `closedloop-ai` → `closedloop-ai/closedloop-ai`,
  * or a worktree dir → its primary repo) the row is upgraded to the validated
  * `owner/repo` AND its resolved `git_dir` is backfilled (only when currently NULL,
  * matching the write path's `COALESCE(git_dir, EXCLUDED.git_dir)` — first non-null

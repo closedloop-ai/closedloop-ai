@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { CodexRateLimitWindowView } from "../../components/detail/detail-content";
+import type { CodexRateLimitWindowView } from "../../components/detail/codex-runtime-metadata";
 import {
   formatCodexRateLimitWindow,
   formatCodexRateLimitWindowLabel,
@@ -32,12 +32,12 @@ describe("formatMinutesSpan", () => {
     { minutes: 1440, expected: "1d" },
     { minutes: 1501, expected: "1d 1h" },
     { minutes: 10_080, expected: "7d" },
-  ])("formats $minutes minutes as $expected at minute/hour/day/week boundaries", ({
-    minutes,
-    expected,
-  }) => {
-    expect(formatMinutesSpan(minutes)).toBe(expected);
-  });
+  ])(
+    "formats $minutes minutes as $expected at minute/hour/day/week boundaries",
+    ({ minutes, expected }) => {
+      expect(formatMinutesSpan(minutes)).toBe(expected);
+    }
+  );
 });
 
 describe("formatCodexRateLimitWindowLabel", () => {
@@ -89,20 +89,20 @@ describe("formatCodexRateLimitWindow", () => {
     { secondsUntilReset: 59, expected: "resets now" },
     { secondsUntilReset: 60, expected: "resets in 1m" },
     { secondsUntilReset: 25 * 60 * 60, expected: "resets in 1d 1h" },
-  ])("formats a reset $secondsUntilReset seconds away as $expected", ({
-    secondsUntilReset,
-    expected,
-  }) => {
-    expect(
-      formatCodexRateLimitWindow(
-        windowFixture({
-          usedPercent: null,
-          resetsAtEpochSeconds: NOW_EPOCH_SECONDS + secondsUntilReset,
-        }),
-        NOW_EPOCH_SECONDS
-      )
-    ).toBe(expected);
-  });
+  ])(
+    "formats a reset $secondsUntilReset seconds away as $expected",
+    ({ secondsUntilReset, expected }) => {
+      expect(
+        formatCodexRateLimitWindow(
+          windowFixture({
+            usedPercent: null,
+            resetsAtEpochSeconds: NOW_EPOCH_SECONDS + secondsUntilReset,
+          }),
+          NOW_EPOCH_SECONDS
+        )
+      ).toBe(expected);
+    }
+  );
 
   it("uses the injected clock instead of the ambient clock", () => {
     vi.useFakeTimers();

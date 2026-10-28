@@ -26,11 +26,24 @@ import { z } from "zod";
 // `scripts/ci/ready-to-enqueue.ts`, which resolves ESM specifiers literally
 // rather than probing extensions the way a bundler does.
 import {
+  integrationSuiteFields,
+  resolveCheckSuiteIntegrations,
+} from "./check-suite-integrations.ts";
+import {
   issueSummary,
   LenientRollupContextNodeSchema,
   ROLLUP_CONTEXT_FIELDS,
   type RollupContextNode,
+  SUITE_ID_ROLLUP_CONTEXT_FIELDS,
 } from "./merge-queue.ts";
+import {
+  graphqlFailureDetail,
+  mergePartialRead,
+  NOTHING_REFUSED,
+  type OpenPullRequestsPartialRead,
+  recoverPartialOpenPullRequests,
+  refusedPullRequestNodes,
+} from "./open-pull-requests-partial-read.ts";
 
 /**
  * REST page maximum. Runs come back newest-first, so a repository that has
@@ -41,8 +54,51 @@ import {
  */
 const RUNS_PAGE_SIZE = 100;
 
-/** GraphQL connection maximum for both the PR page and each head's rollup. */
-const OPEN_PR_PAGE_SIZE = 100;
+/**
+ * How many open PRs one GraphQL page asks for — 25, NOT the connection maximum.
+ *
+ * At 100 this query is too expensive for GitHub to answer: with a
+ * `ROLLUP_PAGE_SIZE` rollup nested under every node, the server gives up and
+ * returns its own "We couldn't respond to your request in time" body. Measured
+ * against `closedloop-ai/closedloop-ai` on 2026-09-15 at 93 open PRs:
+ *
+ *     first=100 rollupFirst=100   SERVER TIMEOUT at ~11.5s  (3/3, shipped value)
+ *     first=100 rollupFirst=50    SERVER TIMEOUT at ~11.5s
+ *     first=50  rollupFirst=100   10.3s for one page, 2 pages -> ~21s
+ *     first=30  rollupFirst=100    4 pages -> 16.2s / 17.9s
+ *     first=25  rollupFirst=100    4 pages -> 14.4s / 14.2s
+ *     first=20  rollupFirst=100    5 pages -> 14.4s / 14.9s
+ *
+ * 25 is the largest page that stays well inside GitHub's own abort while
+ * finishing the walk in the fewest round trips. This is not a latency
+ * preference: at 100 the read could not succeed at all once the repository
+ * passed roughly 50 open PRs, and a failed read costs both callers their whole
+ * answer — the stall cron omits `symphony.ci.workflow_run.never_scheduled`
+ * entirely, and `scripts/ci/ready-to-enqueue.ts` writes an empty plan.
+ *
+ * That cost is why the page size came down, and it is HISTORY rather than the
+ * current diagnosis: the 10s-budget timeout kept the gauge dark from 2026-08-12
+ * to 2026-09-15 (200 of 200 sampled ticks reporting "open-pull-requests read
+ * failed: GitHub read exceeded 10000ms"), ISS-6012 fixed exactly that, and no
+ * `30000ms` message has appeared since. The gauge went dark again the next day
+ * for an unrelated reason — one node GitHub refused took the other 1,395 down
+ * with it — which is what the salvage in `listOpenPullRequestHeads` answers
+ * (ISS-10452). A timeout message in the logs is now the old failure; a
+ * permission message is the new one.
+ *
+ * The walk is bounded by `MAX_OPEN_PR_PAGES` and by the caller's deadline; the
+ * cron's is `OPEN_PR_READ_BUDGET_MS`, sized against the figures above.
+ */
+const OPEN_PR_PAGE_SIZE = 25;
+/**
+ * GraphQL connection maximum, and it cannot come down to buy latency. The
+ * rollup returns one node per re-run ATTEMPT and `rollupTruncated` compares the
+ * server's `totalCount` against the readable nodes, so a page smaller than a
+ * PR's real context count marks that PR truncated and its verdict Unknown.
+ * Measured over the 25 most-recently-updated open PRs on 2026-09-15: 50 min,
+ * 54 median, 66 max contexts per PR — so a 20- or 50-node rollup page would
+ * report 100% of PRs truncated and leave the gauge as dark as the timeout did.
+ */
 const ROLLUP_PAGE_SIZE = 100;
 
 /**
@@ -85,7 +141,7 @@ const COMMENT_PAGE_SIZE = 30;
  * blocks, but human- or config-owned ones with an operator already in the loop,
  * which is a different failure with a different remedy.
  */
-const QUEUED_RUN_STATUS = "queued";
+export const QUEUED_RUN_STATUS = "queued";
 
 /** Wire shape — snake_case keys are GitHub's, normalized to camelCase below. */
 const WorkflowRunSchema = z.object({
@@ -103,6 +159,12 @@ const WorkflowRunSchema = z.object({
    * than as young — see `derive-never-scheduled.ts`.
    */
   run_started_at: z.string().nullable(),
+  /**
+   * Optional in GitHub's own schema, so a run without it still reads rather
+   * than failing the page. Only the probe ORDER uses it (ISS-11040): the
+   * recovery re-reads the attempt on the run itself before it writes anything.
+   */
+  run_attempt: z.number().int().positive().optional(),
 });
 
 /**
@@ -127,6 +189,8 @@ export type QueuedWorkflowRun = {
   headSha: string;
   headBranch: string | null;
   runStartedAt: string | null;
+  /** 1 for the original attempt, or NULL when GitHub omitted it. */
+  runAttempt: number | null;
 };
 
 export const QueuedRunsReadStatus = {
@@ -156,7 +220,7 @@ export type QueuedRunsReadResult =
       detail: string;
     };
 
-const UNNAMED_WORKFLOW = "(unnamed workflow)";
+export const UNNAMED_WORKFLOW = "(unnamed workflow)";
 
 /**
  * Lists the repository's currently-queued workflow runs.
@@ -202,6 +266,7 @@ export async function listQueuedWorkflowRuns(
     headSha: run.head_sha,
     headBranch: run.head_branch,
     runStartedAt: run.run_started_at,
+    runAttempt: run.run_attempt ?? null,
   }));
 
   return {
@@ -226,9 +291,13 @@ export async function listQueuedWorkflowRuns(
  * page to `Unknown` regardless; this makes the page that IS read the useful one.
  *
  * The rollup selection set is imported rather than restated so it cannot drift
- * from the one `deriveFailedGroups` matches required rules against.
+ * from the one `deriveFailedGroups` matches required rules against. Given
+ * `integrationIds`, it names each check run's integration through its suite
+ * rather than `CheckSuite.app` — see `check-suite-integrations.ts`.
  */
-const OPEN_PULL_REQUESTS_QUERY = `
+function openPullRequestsQuery(integrationIds?: readonly number[]): string {
+  const bySuite = integrationIds !== undefined;
+  return `
   query($owner: String!, $name: String!, $first: Int!, $after: String, $rollupFirst: Int!, $commentLimit: Int!, $withComments: Boolean!) {
     repository(owner: $owner, name: $name) {
       pullRequests(states: OPEN, first: $first, after: $after, orderBy: {field: UPDATED_AT, direction: DESC}) {
@@ -247,9 +316,10 @@ const OPEN_PULL_REQUESTS_QUERY = `
                 statusCheckRollup {
                   contexts(first: $rollupFirst) {
                     totalCount
-                    nodes { ${ROLLUP_CONTEXT_FIELDS} }
+                    nodes { ${bySuite ? SUITE_ID_ROLLUP_CONTEXT_FIELDS : ROLLUP_CONTEXT_FIELDS} }
                   }
                 }
+                ${bySuite ? integrationSuiteFields(integrationIds) : ""}
               }
             }
           }
@@ -262,6 +332,7 @@ const OPEN_PULL_REQUESTS_QUERY = `
     }
   }
 `;
+}
 
 const PullRequestRollupSchema = z.object({
   contexts: z
@@ -408,9 +479,10 @@ const OpenPullRequestSchema = z.object({
   commits: z.object({
     nodes: z.array(
       z.object({
-        commit: z.object({
-          statusCheckRollup: TolerantPullRequestRollupSchema,
-        }),
+        commit: z.preprocess(
+          resolveCheckSuiteIntegrations,
+          z.object({ statusCheckRollup: TolerantPullRequestRollupSchema })
+        ),
       })
     ),
   }),
@@ -425,7 +497,24 @@ const OpenPullRequestsConnectionSchema = z
       hasNextPage: z.boolean(),
       endCursor: z.string().nullable(),
     }),
-    nodes: z.array(OpenPullRequestSchema),
+    /**
+     * NULLABLE per element, and only for a literal `null` (ISS-10452, raised by
+     * tamsinb on #7440). `PullRequestConnection.nodes` is `[PullRequest]` in
+     * GitHub's schema, so a refusal on a WHOLE node nulls the element — and a
+     * strict array rejected the entire page over it, which is the same outage
+     * this change exists to fix, one level up.
+     *
+     * A null is DROPPED, never mapped to a placeholder head: an invented head
+     * would be matched against by SHA and could demote a stuck run to debris.
+     * Dropping it leaves `totalCount` above the collected count, so the walk
+     * reports `truncated` and the cron answers Unknown rather than a confident
+     * "nothing is blocked" over a head it never read.
+     *
+     * `.nullable()` and not `.catch(null)`: a node that is PRESENT but malformed
+     * is a different fact — this reader still fails the page on it, exactly as
+     * it did before.
+     */
+    nodes: z.array(OpenPullRequestSchema.nullable()),
   })
   // `totalCount` is the population and `nodes` the page drawn from it, so the
   // page can never be larger. Accepting the inverted shape would compute
@@ -497,6 +586,12 @@ export type OpenPullRequestsReadResult =
       pullRequests: OpenPullRequestHead[];
       /** More open PRs exist than the page returned. */
       truncated: boolean;
+      /**
+       * Null when every page came back clean. Non-null means the walk salvaged
+       * at least one partial page, so some nodes were never read — see
+       * {@link OpenPullRequestsPartialRead}.
+       */
+      partial: OpenPullRequestsPartialRead | null;
     }
   | {
       status: Exclude<
@@ -518,28 +613,56 @@ export async function listOpenPullRequestHeads(
   octokit: Octokit,
   owner: string,
   repo: string,
-  options: { withComments?: boolean } = {}
+  options: {
+    withComments?: boolean;
+    /**
+     * The required rules' integration ids. Given, the read never selects
+     * `CheckSuite.app`, which GitHub refuses to `GITHUB_TOKEN` for a private
+     * app (ISS-11906); every rollup node still arrives in the `app` shape.
+     */
+    integrationIds?: readonly number[];
+  } = {}
 ): Promise<OpenPullRequestsReadResult> {
   const pullRequests: OpenPullRequestHead[] = [];
   let cursor: string | null = null;
+  let partial: OpenPullRequestsPartialRead | null = null;
 
   for (let page = 0; page < MAX_OPEN_PR_PAGES; page++) {
     let raw: unknown;
+    let wasRefused = NOTHING_REFUSED;
     try {
-      raw = await octokit.graphql(OPEN_PULL_REQUESTS_QUERY, {
-        owner,
-        name: repo,
-        first: OPEN_PR_PAGE_SIZE,
-        after: cursor,
-        rollupFirst: ROLLUP_PAGE_SIZE,
-        commentLimit: COMMENT_PAGE_SIZE,
-        withComments: options.withComments ?? false,
-      });
+      raw = await octokit.graphql(
+        openPullRequestsQuery(options.integrationIds),
+        {
+          owner,
+          name: repo,
+          first: OPEN_PR_PAGE_SIZE,
+          after: cursor,
+          rollupFirst: ROLLUP_PAGE_SIZE,
+          commentLimit: COMMENT_PAGE_SIZE,
+          withComments: options.withComments ?? false,
+        }
+      );
     } catch (error) {
-      return {
-        status: OpenPullRequestsReadStatus.Failed,
-        detail: error instanceof Error ? error.message : String(error),
-      };
+      const salvaged = recoverPartialOpenPullRequests(error);
+      if (salvaged === null) {
+        return {
+          status: OpenPullRequestsReadStatus.Failed,
+          // The page number is what makes the error's `path` name a PR at all
+          // (ISS-10438, raised by tamsinb on #7409). GraphQL indexes `nodes`
+          // within the ANSWER, so `nodes.3` means a different PR on every page,
+          // and this walk pages at `OPEN_PR_PAGE_SIZE` — 93 open PRs is 4 pages.
+          // Without the page the reader cannot get from the detail back to the
+          // node, which is the whole point of carrying the path.
+          detail: `page ${page}: ${graphqlFailureDetail(error)}`,
+        };
+      }
+      // Both read the SALVAGED envelope's own errors, never the outer error's —
+      // a nested payload keeps them in a different place, and reading the wrong
+      // one attributes nothing.
+      partial = mergePartialRead(partial, salvaged.errors);
+      wasRefused = refusedPullRequestNodes(salvaged.errors);
+      raw = salvaged.data;
     }
 
     const parsed = OpenPullRequestsResponseSchema.safeParse(raw);
@@ -558,7 +681,15 @@ export async function listOpenPullRequestHeads(
       };
     }
 
-    pullRequests.push(...connection.nodes.map(toOpenPullRequestHead));
+    // Indexes are PER PAGE, so the marking is applied here rather than over the
+    // accumulated list — and it is read off the ORIGINAL position, before the
+    // refused nulls are dropped, or every path after the first hole points at
+    // the wrong head.
+    for (const [index, node] of connection.nodes.entries()) {
+      if (node !== null) {
+        pullRequests.push(toOpenPullRequestHead(node, wasRefused(index)));
+      }
+    }
     if (!connection.pageInfo.hasNextPage) {
       return {
         status: OpenPullRequestsReadStatus.Ok,
@@ -569,6 +700,7 @@ export async function listOpenPullRequestHeads(
         // connection early, and this signal's failure direction is a confident
         // "nothing is blocked" over heads that were never read.
         truncated: connection.totalCount > pullRequests.length,
+        partial,
       };
     }
     cursor = connection.pageInfo.endCursor;
@@ -585,20 +717,48 @@ export async function listOpenPullRequestHeads(
     // Only reachable now by exhausting the page cap: the loop above follows the
     // connection to its end in every ordinary case.
     truncated: true,
+    partial,
   };
 }
 
 /**
  * How many PR pages one sweep will walk.
  *
- * A bound, not a page size. `OPEN_PR_PAGE_SIZE` is GraphQL's maximum, so this
- * covers 1,000 open PRs — an order of magnitude above anything observed here —
- * and exists so a pathological repository cannot spin a five-minute tick.
+ * A backstop, not the binding bound. It exists only so a connection that keeps
+ * claiming another page cannot spin a five-minute tick, so it is stated in OPEN
+ * PRs rather than in pages: 40 pages of `OPEN_PR_PAGE_SIZE` is the same 1,000-PR
+ * ceiling this covered when the page was 100, and quartering the page must not
+ * quarter the ceiling. The two callers hit that ceiling differently — the cron
+ * degrades a truncated read to Unknown and omits the gauge, but
+ * `scripts/ci/ready-to-enqueue.ts` carries NO deadline and writes the partial
+ * sweep, so a low cap there silently stops refreshing every PR past it.
+ *
+ * For the cron the deadline binds first and by a wide margin: at the ~4.1s per
+ * page measured on 2026-09-15, `OPEN_PR_READ_BUDGET_MS` is spent after roughly
+ * 7 pages, i.e. near 175 open PRs against the 93 observed that day. That is
+ * under 2x on a count that trends up, and it is not the number to raise when
+ * the repository outgrows it — raise the budget, or split the rollup out of
+ * the page. What makes the margin acceptable rather than alarming is that
+ * going dark is no longer silent: `ci-workflow-run-never-scheduled.tf` sets
+ * `notify_no_data = true`, so the next outage pages in ~2h instead of being
+ * found 34 days later.
  */
-const MAX_OPEN_PR_PAGES = 10;
+const MAX_OPEN_PR_PAGES = 40;
 
+/**
+ * `rollupRefused` is the FOURTH input to `rollupTruncated`, and the only one the
+ * payload cannot show (ISS-10452).
+ *
+ * A refusal at `…commit.statusCheckRollup` nulls a NULLABLE field, so it arrives
+ * as the identical `null` that means "no check has reported yet" — the one
+ * reading below that is NOT truncated. Deriving from it would answer a PR whose
+ * checks may all be green with a confident "still waiting on every required
+ * context". Only the error's `path` can tell the two apart, so the caller
+ * carries that attribution down here.
+ */
 function toOpenPullRequestHead(
-  node: z.infer<typeof OpenPullRequestSchema>
+  node: z.infer<typeof OpenPullRequestSchema>,
+  rollupRefused: boolean
 ): OpenPullRequestHead {
   const rollup = node.commits.nodes.at(0)?.commit.statusCheckRollup;
   const nodes = rollup?.contexts.nodes ?? [];
@@ -614,8 +774,8 @@ function toOpenPullRequestHead(
     isDraft: node.isDraft,
     mergeable: node.mergeable,
     rollupContexts: nodes,
-    // Three inputs reach this line and only two of them are the same fact, so
-    // read it as a three-way rather than as a null-coalesce:
+    // Four inputs reach this line and only two of them are the same fact, so
+    // read it as a four-way rather than as a null-coalesce:
     //   - `null` — GraphQL's own answer, meaning no check has reported on this
     //     commit yet. `0 > 0` is false, so NOT truncated: the rollup is
     //     genuinely empty and every required rule is legitimately pending.
@@ -623,9 +783,13 @@ function toOpenPullRequestHead(
     //     Its synthetic `totalCount: 1` over zero readable nodes makes `1 > 0`
     //     true, so it lands as truncated and the consumer answers Unknown. This
     //     is the case that must NOT collapse into the one above.
+    //   - `rollupRefused` — GitHub answered the page but refused something under
+    //     THIS node, which nulls the rollup into the first reading above and is
+    //     invisible in the payload. Only the error path distinguishes them.
     //   - a real rollup — the server's own count against the nodes that
     //     survived the boundary schema.
-    rollupTruncated: (rollup?.contexts.totalCount ?? 0) > readable,
+    rollupTruncated:
+      rollupRefused || (rollup?.contexts.totalCount ?? 0) > readable,
     comments: node.comments?.nodes ?? [],
     commentsCursor: nextCommentCursor(node.comments),
   };

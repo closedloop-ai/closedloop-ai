@@ -50,6 +50,28 @@ describe("migrationsToPrestampForPreview", () => {
     ).toEqual([]);
   });
 
+  it("prestamps the session PR read index on a fresh preview", () => {
+    expect(
+      migrationsToPrestampForPreview("preview_iss9278", { freshSchema: true })
+    ).toContain("20260918175023_iss9278_pr_identity_read_index");
+  });
+
+  it("prestamps the Session Mesh reporting indexes on a fresh preview", () => {
+    expect(
+      migrationsToPrestampForPreview("preview_session_mesh", {
+        freshSchema: true,
+      })
+    ).toContain("20260926150100_add_session_mesh_reporting_indexes");
+  });
+
+  it("prestamps the relationship-rank performance index on a fresh preview", () => {
+    expect(
+      migrationsToPrestampForPreview("preview_iss12650", {
+        freshSchema: true,
+      })
+    ).toContain("20261021150200_iss12650_artifact_link_child_order_index");
+  });
+
   it("returns nothing for the public (non-preview) schema", () => {
     expect(migrationsToPrestampForPreview("public")).toEqual([]);
   });
@@ -68,11 +90,12 @@ describe("PREVIEW_SKIPPABLE_CONCURRENT_INDEX_MIGRATIONS", () => {
   // rename/typo fails CI instead of silently skipping nothing (or skipping the
   // wrong migration). Reads directory NAMES only — a declarative-artifact check,
   // not a source-text assertion over implementation .ts.
-  it.each(
-    PREVIEW_SKIPPABLE_CONCURRENT_INDEX_MIGRATIONS
-  )("%s names an existing migration directory", (migrationName) => {
-    expect(existsSync(join(MIGRATIONS_DIR, migrationName))).toBe(true);
-  });
+  it.each(PREVIEW_SKIPPABLE_CONCURRENT_INDEX_MIGRATIONS)(
+    "%s names an existing migration directory",
+    (migrationName) => {
+      expect(existsSync(join(MIGRATIONS_DIR, migrationName))).toBe(true);
+    }
+  );
 
   it("has no duplicate entries", () => {
     const unique = new Set(PREVIEW_SKIPPABLE_CONCURRENT_INDEX_MIGRATIONS);
@@ -142,11 +165,12 @@ DROP INDEX IF EXISTS "t_org_idx";`;
 });
 
 describe("PREVIEW_PLAIN_BUILD_CONCURRENT_INDEX_MIGRATIONS", () => {
-  it.each(
-    PREVIEW_PLAIN_BUILD_CONCURRENT_INDEX_MIGRATIONS
-  )("%s names an existing migration directory", (migrationName) => {
-    expect(existsSync(join(MIGRATIONS_DIR, migrationName))).toBe(true);
-  });
+  it.each(PREVIEW_PLAIN_BUILD_CONCURRENT_INDEX_MIGRATIONS)(
+    "%s names an existing migration directory",
+    (migrationName) => {
+      expect(existsSync(join(MIGRATIONS_DIR, migrationName))).toBe(true);
+    }
+  );
 
   it("has no duplicate entries", () => {
     const unique = new Set(PREVIEW_PLAIN_BUILD_CONCURRENT_INDEX_MIGRATIONS);
@@ -212,22 +236,23 @@ describe("preview CONCURRENTLY universe drift guard (ISS-4437)", () => {
     expect(concurrentIndexMigrations.length).toBeGreaterThan(0);
   });
 
-  it.each(
-    concurrentIndexMigrations
-  )("%s is perf-skipped or plain-built on preview (no opt-out escape)", (name) => {
-    // ISS-4437 requires ZERO CONCURRENTLY builds on any preview schema, so the
-    // `preview-skip: no` opt-out is NOT a valid pass here — it would leave the
-    // migration to run CREATE INDEX CONCURRENTLY on every preview, re-arming the
-    // storm. Every match MUST be perf-skipped (skipped) or plain-built (rebuilt
-    // plain). (davetho)
-    const perfSkipped = PREVIEW_SKIPPABLE_CONCURRENT_INDEX_MIGRATIONS.some(
-      (m) => m === name
-    );
-    const plainBuilt = PREVIEW_PLAIN_BUILD_CONCURRENT_INDEX_MIGRATIONS.some(
-      (m) => m === name
-    );
-    expect(perfSkipped || plainBuilt).toBe(true);
-  });
+  it.each(concurrentIndexMigrations)(
+    "%s is perf-skipped or plain-built on preview (no opt-out escape)",
+    (name) => {
+      // ISS-4437 requires ZERO CONCURRENTLY builds on any preview schema, so the
+      // `preview-skip: no` opt-out is NOT a valid pass here — it would leave the
+      // migration to run CREATE INDEX CONCURRENTLY on every preview, re-arming the
+      // storm. Every match MUST be perf-skipped (skipped) or plain-built (rebuilt
+      // plain). (davetho)
+      const perfSkipped = PREVIEW_SKIPPABLE_CONCURRENT_INDEX_MIGRATIONS.some(
+        (m) => m === name
+      );
+      const plainBuilt = PREVIEW_PLAIN_BUILD_CONCURRENT_INDEX_MIGRATIONS.some(
+        (m) => m === name
+      );
+      expect(perfSkipped || plainBuilt).toBe(true);
+    }
+  );
 
   it("classifies the FEA-3857 mixed bundle as plain-build (not perf-skip)", () => {
     const fea3857: string =
@@ -257,14 +282,15 @@ describe("preview CONCURRENTLY skip-list drift guard", () => {
     expect(skippableByShape.length).toBeGreaterThan(0);
   });
 
-  it.each(
-    skippableByShape
-  )("%s (pure non-unique CREATE INDEX CONCURRENTLY) is pre-stamped on preview", (name) => {
-    const listed = PREVIEW_SKIPPABLE_CONCURRENT_INDEX_MIGRATIONS.some(
-      (m) => m === name
-    );
-    expect(listed).toBe(true);
-  });
+  it.each(skippableByShape)(
+    "%s (pure non-unique CREATE INDEX CONCURRENTLY) is pre-stamped on preview",
+    (name) => {
+      const listed = PREVIEW_SKIPPABLE_CONCURRENT_INDEX_MIGRATIONS.some(
+        (m) => m === name
+      );
+      expect(listed).toBe(true);
+    }
+  );
 });
 
 describe("preview plain-build index lifecycle guard (ISS-4437)", () => {
@@ -288,22 +314,20 @@ describe("preview plain-build index lifecycle guard (ISS-4437)", () => {
     expect(cases.length).toBeGreaterThan(0);
   });
 
-  it.each(
-    cases
-  )("$migrationName index $indexName is not DROP/ALTERed by any later migration", ({
-    migrationName,
-    indexName,
-  }) => {
-    const offenders = MIGRATION_SQL_BY_DIR.filter(
-      ([name]) => name > migrationName
-    )
-      .filter(([, sql]) => {
-        const code = sql
-          .replace(SQL_BLOCK_COMMENT_G, " ")
-          .replace(SQL_LINE_COMMENT_G, " ");
-        return DROP_OR_ALTER_INDEX_RE.test(code) && code.includes(indexName);
-      })
-      .map(([name]) => name);
-    expect(offenders).toEqual([]);
-  });
+  it.each(cases)(
+    "$migrationName index $indexName is not DROP/ALTERed by any later migration",
+    ({ migrationName, indexName }) => {
+      const offenders = MIGRATION_SQL_BY_DIR.filter(
+        ([name]) => name > migrationName
+      )
+        .filter(([, sql]) => {
+          const code = sql
+            .replace(SQL_BLOCK_COMMENT_G, " ")
+            .replace(SQL_LINE_COMMENT_G, " ");
+          return DROP_OR_ALTER_INDEX_RE.test(code) && code.includes(indexName);
+        })
+        .map(([name]) => name);
+      expect(offenders).toEqual([]);
+    }
+  );
 });

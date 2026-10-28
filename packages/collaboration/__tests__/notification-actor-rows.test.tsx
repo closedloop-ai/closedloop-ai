@@ -1,55 +1,16 @@
 // @vitest-environment jsdom
 import { render, screen } from "@testing-library/react";
-import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   NOTIFICATION_ACTOR_NAME_PLACEHOLDER_CLASS_NAME,
   NOTIFICATION_ACTOR_ROW_CLASS_NAME,
 } from "../client/notification-actor";
 
-// Stub `InboxNotification.Custom` / `.Avatar` so the domain components render
-// without a Liveblocks provider tree. The stub surfaces the three things
-// ISS-5010 changes as inspectable DOM: the visible title, the `aside` slot the
-// actor avatar occupies, and the link target.
-vi.mock("@liveblocks/react-ui", () => ({
-  InboxNotification: {
-    Custom: ({
-      title,
-      href,
-      aside,
-      children,
-      className,
-    }: {
-      title: ReactNode;
-      href: string;
-      aside?: ReactNode;
-      children: ReactNode;
-      className?: string;
-    }) => (
-      <a className={className} data-testid="notification" href={href}>
-        {/* Liveblocks renders the 36px aside column only when `aside` is
-            truthy, so the stub must too: whether the gutter exists at all is
-            what these tests are asserting. */}
-        {aside ? <span data-testid="aside">{aside}</span> : null}
-        <span data-testid="title">{title}</span>
-        {children}
-      </a>
-    ),
-    Avatar: ({
-      userId,
-      "aria-hidden": ariaHidden,
-    }: {
-      userId: string;
-      "aria-hidden"?: "false" | "true";
-    }) => (
-      <span
-        aria-hidden={ariaHidden}
-        data-testid="actor-avatar"
-        data-user-id={userId}
-      />
-    ),
-  },
-}));
+// Shared `@liveblocks/react-ui` stand-in; see the module for what it models.
+vi.mock(
+  "@liveblocks/react-ui",
+  () => import("./support/liveblocks-react-ui-stub")
+);
 
 type MockUserResult =
   | { isLoading: true }

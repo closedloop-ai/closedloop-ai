@@ -1,18 +1,12 @@
+import { render } from "@repo/app/shared/test-fixtures/render-with-nav";
 import { screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { render } from "./render-with-nav";
 
 vi.mock(
   "@repo/app/documents/hooks/use-artifact-favorites",
   async () => await import("./__mocks__/use-artifact-favorites")
 );
-
-vi.mock("@repo/app/judges-analytics/hooks/use-judges", () => ({
-  useFeatureJudgesFeedback: vi.fn(() => ({ data: null, isLoading: false })),
-  usePlanJudgesFeedback: vi.fn(() => ({ data: null, isLoading: false })),
-  usePrdJudgesFeedback: vi.fn(() => ({ data: null, isLoading: false })),
-}));
 
 vi.mock("@repo/design-system/components/ui/tooltip", () => ({
   Tooltip: ({ children }: { children: ReactNode }) => <>{children}</>,
@@ -139,5 +133,16 @@ describe("DocumentRow shared cell tooltips", () => {
 
     expect(screen.getAllByText("Ada Lovelace").length).toBeGreaterThan(0);
     expect(hasTooltipText("Ada Lovelace")).toBe(true);
+  });
+
+  it("says who is assigned even when nobody is, rather than leaving a bare avatar", () => {
+    const item: DocumentRowItem = {
+      kind: "document",
+      data: makeArtifact({ assigneeId: null, assignee: null }),
+    };
+
+    renderRow(item, { visibleColumns: [Col.Assignee] });
+
+    expect(hasTooltipText("Unassigned")).toBe(true);
   });
 });

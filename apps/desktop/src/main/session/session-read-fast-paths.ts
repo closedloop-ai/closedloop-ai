@@ -2,11 +2,18 @@ import { isExhaustiveCostFilter } from "@repo/api/src/agent-session-filters";
 import type { SharedAgentSessionsListRequest } from "../../shared/shared-agent-sessions-contract.js";
 import {
   type RepositoryScopedSessionIdsOptions,
+  type SessionListCursorFacets,
   SessionListCursorSortKey,
 } from "../agent-sync/agent-session-read-model.js";
+import type { SyncedAgentSession } from "../agent-sync/agent-session-sync-contract.js";
 import type { AgentSessionSyncSource } from "../agent-sync/agent-session-sync-source.js";
-import { isDisplayedStatusParityEnabled } from "./displayed-status-parity-gate.js";
-import { canPageRepositoryFilterBeforeHydration } from "./session-repository-facet.js";
+import { supportsSessionCompactFilter } from "./session-compact-filter-capability.js";
+import { matchesLocalFacetFilters } from "./session-local-facet-filters.js";
+import {
+  canPageRepositoryFilterBeforeHydration,
+  sessionMatchesRepositoryFilter,
+} from "./session-repository-facet.js";
+import { matchesStatusFilter } from "./session-status-filter-match.js";
 import type { SanitizedQuery } from "./shared-agent-sessions-query.js";
 
 /**
@@ -20,10 +27,11 @@ import type { SanitizedQuery } from "./shared-agent-sessions-query.js";
  */
 
 /**
- * True when none of the in-memory-only facet filters (harness/model multi-select
- * and autonomy-tier / cost-bucket thresholds) are active. These are evaluated by
- * `matchesQuery`, so any fast path that bypasses it must fall back when one is
- * set — otherwise the filter would be silently ignored.
+ * True when none of the in-memory-only facet filters (harness/model multi-select,
+ * autonomy-tier / cost-bucket thresholds, change / PR evidence and priority) are
+ * active. These are evaluated by `matchesQuery`, so any fast path that bypasses
+ * it must fall back when one is set — otherwise the filter would be silently
+ * ignored.
  */
 export function hasNoLocalFacetFilters(query: SanitizedQuery): boolean {
   return (
@@ -38,14 +46,19 @@ export function hasNoLocalFacetFilters(query: SanitizedQuery): boolean {
     (query.costBuckets.length === 0 ||
       isExhaustiveCostFilter(query.costBuckets)) &&
     query.changePresence.length === 0 &&
-    query.prAssociation.length === 0
+    query.prAssociation.length === 0 &&
+    // ISS-10332: no aggregate SQL expresses the priority facet (the list cursor
+    // page does, ISS-12439).
+    query.priorities.length === 0
   );
 }
 
 /**
  * True when the sessions LIST read may be served by the source's SQL cursor
- * page (`listSessionCursorPage`) — the window, search, sort, and (goal stage 1)
- * Status facet all render into that page's SQL, so only the visible page is
+ * page (`listSessionCursorPage`) — the window, sort, the Owner,
+ * Harness, Model and Priority facets (ISS-12439), and (goal stage 1) the
+ * Status, Quality and Repository facets render into that page's SQL when the
+ * source advertises the versioned compact-filter capability, so only the visible page is
  * hydrated. A Status selection no longer forces the hydration fallback:
  * `loadCursorPageBeforeHydration` passes it through, and the sqlite page SQL
  * renders it via `buildUsageStatusPredicate` — the exact twin of the hydrated
@@ -55,8 +68,14 @@ export function hasNoLocalFacetFilters(query: SanitizedQuery): boolean {
  * `shared-agent-sessions-api.ts` (shrink-only grandfathered) beside its sibling
  * admission predicates.
  *
- * EXCEPT while the displayed-status parity gate is ON — see
- * {@link statusSelectionIsSqlExpressible}.
+ * ISS-7019: a Status selection no longer disqualifies this path. It used to,
+ * because the SQL twin ran in the DB-host CHILD (FEA-2038), which registers no
+ * parity resolver and so read the gate as OFF while MAIN read the user's real
+ * flag — with the flag on, the two selected different rows and an ended
+ * awaiting-input row vanished from the page while the count above still claimed
+ * it. Making the projection unconditional removed the disagreement rather than
+ * routing around it, which is the stage-2 end state that exclusion was holding
+ * the door for.
  */
 export function canUseListCursorPage(
   request: SharedAgentSessionsListRequest,
@@ -64,18 +83,19 @@ export function canUseListCursorPage(
 ): boolean {
   return (
     !Object.hasOwn(request, "ids") &&
-    query.harness === null &&
-    statusSelectionIsSqlExpressible(query) &&
-    query.userId === null &&
-    query.userIds.length === 0 &&
-    query.repositories.length === 0 &&
+    // ISS-12439: the Owner, Harness, Model and Priority facets ride the cursor
+    // page (see `listFacetsFromQuery`); the facets below still need the
+    // hydrated row.
+    //
     // FEA-3009: the completion bound is in-memory only (the cursor page has no
     // endedAt predicate); fall back to the matcher when it's set.
     query.completedAfter === null &&
-    hasNoLocalFacetFilters(query) &&
-    // FEA-3284: the substantive default is not SQL-expressible (see
-    // canPageBeforeLoading); fall back to the in-memory matcher when it's active.
-    query.quality === "all" &&
+    hasNoLocalFacetFilters({
+      ...query,
+      harnesses: [],
+      models: [],
+      priorities: [],
+    }) &&
     listCursorSortFromQuery(query) !== null
   );
 }
@@ -84,7 +104,7 @@ export function canUseListCursorPage(
  * Goal stage 1b: the `{ sortBy, sortDir }` this list read should page by, or
  * `null` when its sort is one only the hydrated `sortSyncedSessions` can honor.
  *
- * The three cases, and why the third is not a behavior change:
+ * The four cases, and why the third is not a behavior change:
  *
  * - a real cursor column (`lastActivity` / `started`) pages by it in the read's
  *   own direction, exactly as before;
@@ -96,6 +116,8 @@ export function canUseListCursorPage(
  *   `updated_at DESC, id DESC` sequence — the identical ordering this key pages
  *   by. `sortDir` is deliberately NOT read here: the hydrated path ignores it
  *   too when there is no sort column, so honoring it would be the change;
+ * - an explicit `updated` sort pages by `updated_at` in the read's own
+ *   direction (ISS-12439);
  * - any other `sortBy` (a table column with no cursor equivalent — cost, owner,
  *   duration…) returns `null` and keeps the hydrated fallback.
  *
@@ -114,6 +136,12 @@ export function listCursorSortFromQuery(
   if (query.sortBy === null) {
     return { sortBy: SessionListCursorSortKey.Updated, sortDir: "desc" };
   }
+  // ISS-12439: an explicit `updated` sort is `updated_at` in its own direction,
+  // the order `sortSyncedSessions` produced from the `updated_at DESC, id DESC`
+  // cursor sequence (a stable sort leaves ties in that sequence, id descending).
+  if (query.sortBy === SessionListCursorSortKey.Updated) {
+    return { sortBy: SessionListCursorSortKey.Updated, sortDir: query.sortDir };
+  }
   return null;
 }
 
@@ -130,6 +158,10 @@ export function canPageBeforeLoading(
 ): boolean {
   return (
     !Object.hasOwn(request, "ids") &&
+    // PR #8980 review (tamsinb): `resolveOrderedIds` answers a component
+    // cohort with the cohort's raw ids, ahead of the repository filter, window
+    // and sort this branch relies on it to apply. The matcher path applies them.
+    query.componentSessionIds === undefined &&
     // ISS-4558 (whitlockk, PR #4751): the date window and sort the REAL Sessions
     // request carries. Rejecting both outright sent every production
     // repo-filtered read back to the capped fallback, which is the contradiction
@@ -152,12 +184,8 @@ export function canPageBeforeLoading(
     // rule and its source gate live in `canPageRepositoryFilterBeforeHydration`.
     canPageRepositoryFilterBeforeHydration(source, query.repositories) &&
     hasNoLocalFacetFilters(query) &&
-    // FEA-3284/FEA-4145: both the `substantive` and `idle` segments derive from
-    // turn/token/tool signals the `sessions` table does not store as columns, so
-    // neither can be pushed into the cursor-page SQL. Only `all` (no quality
-    // narrowing) may take the fast path; a narrowed segment falls back to the
-    // full-hydration path where `matchesListQuery` applies it — mirroring how the
-    // change-presence/cost-bucket facets are handled.
+    // This ID-list branch cannot select turn/token/tool quality. The separate
+    // versioned SQLite cursor page above can; here only `all` is admissible.
     query.quality === "all" &&
     query.search === null
   );
@@ -240,45 +268,6 @@ export function repositoryScopeOptionsFromQuery(
 }
 
 /**
- * Whether this read's Status selection (if any) can be pushed into the cursor
- * page's SQL and still select the SAME rows the hydrated matcher would.
- *
- * Goal stage 1 pushed the Status facet into `buildUsageStatusPredicate`, the SQL
- * twin of the hydrated `matchesStatusFilter`. The two are twins only when they
- * resolve the `sessions-displayed-status-parity` gate the same way — and they
- * CANNOT while it is on, because they run in different processes:
- *
- *   - the hydrated matcher and `mapListItem` run in Electron MAIN, where the
- *     composition root registers the store-backed resolver
- *     (`setDisplayedStatusParityResolver`) and the IPC read boundary pins one
- *     decision per read (`withDisplayedStatusParityScope`);
- *   - `listSessionCursorPage` is a `syncSource.*` op FORWARDED to the DB-host
- *     CHILD (FEA-2038), which has no composition root and never registers a
- *     resolver — so `isDisplayedStatusParityEnabled()` there reads the
- *     fail-closed default `false`, whatever the user's Labs flag says.
- *
- * Concretely, with the gate ON, an ENDED row still carrying `awaitingInputSince`
- * displays as Active (parity: a terminal row is not "waiting"), so the hydrated
- * fallback lists it under Active — but the child builds the predicate with
- * parity OFF, where the Active branch excludes EVERY awaiting-input row
- * regardless of `ended_at`, and the row silently vanishes from the page. The row
- * count above the table would still claim it.
- *
- * So while the gate is on, a status-filtered list read keeps taking the hydrated
- * fallback, which is exactly today's behavior. The gate is read HERE, in main,
- * where the answer is the real one. Passing the pinned decision down with the
- * cursor request is the better end state, but it has to move the usage/KPI
- * aggregate and the FEA-4142 count read in the same step — those are `prisma`
- * reads in the same child and already resolve the gate to `false` today — or the
- * list and the cards above it would start disagreeing in the other direction.
- * Tracked as stage-2 work, not smuggled in here.
- */
-function statusSelectionIsSqlExpressible(query: SanitizedQuery): boolean {
-  const hasStatusSelection = query.statuses.length > 0 || query.status !== null;
-  return !(hasStatusSelection && isDisplayedStatusParityEnabled());
-}
-
-/**
  * The Status facet this read actually selects: the multi-select `statuses` set,
  * else the single back-compat `status` as a one-element set — the precedence
  * `matchesQuery` applies. Empty means "no Status selection".
@@ -315,23 +304,30 @@ export function selectedStatusesFromQuery(
  * from `query.sortBy`/`query.sortDir` directly — an absent sort has no cursor
  * key of its own to name.
  */
-export function loadCursorPageBeforeHydration(
+export async function loadCursorPageBeforeHydration(
   source: AgentSessionSyncSource,
   request: SharedAgentSessionsListRequest,
   query: SanitizedQuery
-): SessionListCursorPageResult | Promise<SessionListCursorPageResult> | null {
-  const cursorSort = listCursorSortFromQuery(query);
+): Promise<SessionListCursorPageResult | null> {
+  if (!canLoadCursorPageBeforeHydration(source, request, query)) {
+    return null;
+  }
   if (
-    !(
-      source.listSessionCursorPage &&
-      cursorSort &&
-      canUseListCursorPage(request, query)
-    )
+    (query.quality !== "all" || query.repositories.length > 0) &&
+    !(await supportsSessionCompactFilter(source, "cursor"))
   ) {
+    return null;
+  }
+  const cursorSort = listCursorSortFromQuery(query);
+  if (!(cursorSort && source.listSessionCursorPage)) {
     return null;
   }
   const statuses = selectedStatusesFromQuery(query);
   return source.listSessionCursorPage({
+    ...(query.quality === "all" ? {} : { quality: query.quality }),
+    ...(query.repositories.length > 0
+      ? { repositories: query.repositories }
+      : {}),
     limit: query.limit,
     offset: query.offset,
     sortBy: cursorSort.sortBy,
@@ -340,7 +336,53 @@ export function loadCursorPageBeforeHydration(
     ...(query.endDate ? { endDate: query.endDate } : {}),
     ...(query.search ? { search: query.search } : {}),
     ...(statuses.length > 0 ? { statuses } : {}),
+    ...listFacetsFromQuery(query),
   });
+}
+
+/** Pure admission decision shared by execution telemetry and the actual read. */
+export function canLoadCursorPageBeforeHydration(
+  source: AgentSessionSyncSource,
+  request: SharedAgentSessionsListRequest,
+  query: SanitizedQuery
+): boolean {
+  return Boolean(
+    source.listSessionCursorPage &&
+      ((query.quality === "all" && query.repositories.length === 0) ||
+        source.readSessionCompactFilterCapabilities) &&
+      listCursorSortFromQuery(query) &&
+      canUseListCursorPage(request, query)
+  );
+}
+
+function ownerIdsFromQuery(query: SanitizedQuery): { userIds?: string[] } {
+  if (query.userIds.length > 0) {
+    return { userIds: query.userIds };
+  }
+  return query.userId ? { userIds: [query.userId] } : {};
+}
+
+/**
+ * ISS-12439: the facets {@link canUseListCursorPage} admits beyond Status,
+ * in the shape of the cursor request. `matchesQuery` reads `harness` only when
+ * `harnesses` is empty and `userId` only when `userIds` is empty, so the same
+ * precedence holds here.
+ */
+export function listFacetsFromQuery(
+  query: SanitizedQuery
+): SessionListCursorFacets {
+  return {
+    ...(query.componentSessionIds === undefined
+      ? {}
+      : { componentSessionIds: query.componentSessionIds }),
+    ...ownerIdsFromQuery(query),
+    ...(query.harnesses.length === 0 && query.harness
+      ? { harness: query.harness }
+      : {}),
+    ...(query.harnesses.length > 0 ? { harnesses: query.harnesses } : {}),
+    ...(query.models.length > 0 ? { models: query.models } : {}),
+    ...(query.priorities.length > 0 ? { priorities: query.priorities } : {}),
+  };
 }
 
 /** The cursor page's shape as this module's consumers read it — ids plus the
@@ -348,6 +390,7 @@ export function loadCursorPageBeforeHydration(
 type SessionListCursorPageResult = {
   rows: { id: string }[];
   total: number;
+  idleCount?: number;
 };
 
 /**
@@ -361,11 +404,19 @@ type SessionListCursorPageResult = {
  * summarize: free-text search (the lightweight rows carry no `baseBranch`), the
  * autonomy tier (`session.autonomy` derives from the session-trace
  * events/analytics presentation), and change-presence / PR-association (no
- * git/branch diff-stat rows, no PR rows). Harness, model and cost stay here —
- * the lightweight rows carry those values. (The cost facet's numeric-vs-Unknown
- * boundary also consults `localSubstantiveCounts`, which reads the `events`
- * those rows omit. That pre-dates ISS-5626 and is untouched by it; it belongs
- * with the exclusions above the day someone measures it.)
+ * git/branch diff-stat rows, no PR rows). Harness and model stay here — the
+ * lightweight rows carry those values.
+ *
+ * The COST facet is excluded for the same reason (ISS-6416), and the exclusion
+ * is UNCONDITIONAL rather than scoped to the Repository selection below: its
+ * numeric-vs-Unknown boundary consults `localSubstantiveCounts`, which counts
+ * the tool-use `events` these rows omit, so a subscription session with no
+ * tokens and no turns but a tool-use event is a known `$0.00` here and reads as
+ * Unknown there. `hasNoLocalFacetFilters` already refuses any cost selection at
+ * the SQL `aggregateUsage`, so a cost bucket on its own reaches this path too.
+ * An EXHAUSTIVE selection excludes no row and `matchesLocalCostBucketFilter` is
+ * skipped for it, so it stays admitted — the same carve-out
+ * `hasNoLocalFacetFilters` makes, for the same reason.
  *
  * ISS-5626: the REPOSITORY facet was excluded for that same missing-field
  * reason and no longer is. ISS-5271 taught the lightweight load to resolve each
@@ -384,9 +435,36 @@ type SessionListCursorPageResult = {
  */
 export function lightweightUsageLoadFitsQuery(query: SanitizedQuery): boolean {
   return (
+    // Lightweight rows omit the turn/tool/invocation signals required by the
+    // shared substantive predicate.
+    query.quality === "all" &&
     query.search === null &&
     query.autonomyTiers.length === 0 &&
+    (query.costBuckets.length === 0 ||
+      isExhaustiveCostFilter(query.costBuckets)) &&
     query.changePresence.length === 0 &&
     query.prAssociation.length === 0
+  );
+}
+
+/**
+ * ISS-12439: re-apply the cursor page's mutable selection to a hydrated row.
+ * Status, and the Harness multi-select, Model and Priority facets (a re-import
+ * or a user write), can change between the page's selection invoke and the
+ * hydration invoke; a row that no longer matches would render under a facet it
+ * has left. Quality stays on the SQLite selection: the hydrated projection can
+ * omit malformed token operands, while pageData's revision retry catches a
+ * concurrent store change. Owner and the single-value harness are not re-checked.
+ */
+export function stillMatchesCursorSelection(
+  session: SyncedAgentSession,
+  query: SanitizedQuery
+): boolean {
+  const statuses = selectedStatusesFromQuery(query);
+  return (
+    (statuses.length === 0 ||
+      statuses.some((status) => matchesStatusFilter(session, status))) &&
+    matchesLocalFacetFilters(session, query) &&
+    sessionMatchesRepositoryFilter(session, query.repositories)
   );
 }

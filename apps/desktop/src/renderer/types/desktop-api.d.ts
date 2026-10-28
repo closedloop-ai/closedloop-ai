@@ -7,6 +7,7 @@ import type {
 } from "@closedloop-ai/loops-api/insights";
 import type {
   AgentComponentDetail,
+  AgentComponentFrequency,
   AgentComponentListResponse,
   AgentComponentQueryFilters,
   ComponentModelTrendResponse,
@@ -14,41 +15,47 @@ import type {
   SubagentFrequencyResponse,
 } from "@repo/api/src/types/agent-component";
 import type {
+  AgentComponentInvocationSessionTreePage,
+  AgentComponentInvocationSessionTreeRequest,
+} from "@repo/api/src/types/agent-component-invocation-session-tree";
+import type { AgentComponentVersionUsageResponse } from "@repo/api/src/types/agent-component-version-usage";
+import type {
   AgentSessionAnalytics,
   AgentSessionDetail,
   AgentSessionListResponse,
   AgentSessionsPageData,
   AgentSessionUsageSummary,
 } from "@repo/api/src/types/agent-session";
+import type {
+  AgentSessionEventsPage,
+  AgentSessionEventsPageRequest,
+} from "@repo/api/src/types/agent-session-events-page";
 import type { PackAnalyticsResponse } from "@repo/api/src/types/analytics";
 import type {
   BranchAnalytics,
   BranchListResponse,
   BranchPageDetail,
 } from "@repo/api/src/types/branch";
-import type {
-  BranchAnalyticsCohortRequest,
-  BranchAnalyticsCohortResponse,
-} from "@repo/api/src/types/branch-analytics-cohort";
+import type { BranchAnalyticsCohortResponse } from "@repo/api/src/types/branch-analytics-cohort";
 import type { BranchUsageSummary } from "@repo/api/src/types/branch-usage";
-import type {
-  BranchTraceCommentCollectionQuery,
-  TraceComment,
-  TraceCommentDeleteResult,
-  TraceCommentDraft,
-  TraceCommentReplyDraft,
-  TraceCommentTarget,
-  TraceCommentUpdate,
-} from "@repo/api/src/types/comment";
 import type {
   ConvertInstallOutcome,
   ConvertInstallRequest,
 } from "@repo/api/src/types/convert-install";
-import type { DesktopSignInProvider } from "@repo/api/src/types/desktop-authorize-url";
+import { DataSyncLevel } from "@repo/api/src/types/data-sync-level";
+import type {
+  DesktopSignInFraming,
+  DesktopSignInMethod,
+} from "@repo/api/src/types/desktop-authorize-url";
+import type { DesktopFeatureFlagAssignment } from "@repo/api/src/types/desktop-feature-flags";
 import type { DesktopIdentity } from "@repo/api/src/types/desktop-identity";
 import type { OptInDistributionDto } from "@repo/api/src/types/distribution";
 import type { GitHubIntegrationStatus } from "@repo/api/src/types/github";
 import type { GitHubResyncNudgeBody } from "@repo/api/src/types/github-dirty-scope-constants";
+import type {
+  AgentComponentPageDataRequest,
+  AgentComponentPageDataResult,
+} from "@repo/api/src/utils/agent-component-page-data";
 import type {
   RelayHttpRequestPayload,
   RelayResponseEnvelope,
@@ -57,6 +64,7 @@ import type {
   AgentHierarchyNode,
   AgentRow,
   AnalyticsData,
+  CatalogContentItem,
   CatalogEntry,
   CatalogMutationResult,
   DashboardCoreFeatures,
@@ -91,67 +99,72 @@ import type {
   WorkflowQueryData,
 } from "../../shared/agent-db-contract";
 import type {
-  AuditFileRequest,
-  AuditFileResult,
-  AuditProgressPayload,
-  AuditRunRequest,
-  AuditRunResult,
-} from "../../shared/audit-contract";
-import type {
   CloudApiFetchRequest,
   CloudApiFetchResult,
 } from "../../shared/cloud-api-fetch-contract";
-import type { CloudReadReadinessSnapshot } from "../../shared/cloud-read-readiness-contract";
 import type {
   CoachingHarnessResult,
   CoachingPackInfo,
 } from "../../shared/coaching-pack-contract";
-import type {
+import {
   AgentMonitorHooksResult,
-  DataSyncLevel,
   DesktopAuthState,
+  DesktopBootstrapOrganizationInput,
+  DesktopBootstrapOrganizationResult,
   DesktopBrowserSignInResult,
   DesktopExistingUserResolution,
+  DesktopSignInOptions,
   SaveConfigPayload,
   SyncObservabilityTier,
 } from "../../shared/contracts";
-import type { DiagnosticsData } from "../../shared/diagnostics-contract";
+import type { DeadEndTelemetryPayload } from "../../shared/dead-end-telemetry-contract";
+import type { DesktopRealtimeApi } from "../../shared/desktop-realtime-contract";
+import type { DesktopSessionReplayBridge } from "../../shared/desktop-session-replay-bridge";
+import type {
+  DiagnosticsData,
+  DiagnosticsRequest,
+} from "../../shared/diagnostics-contract";
+import type { DirectoryScopePickPayload } from "../../shared/directory-scope-ipc-channel";
 import type {
   DocsHelpGetPageResult,
   DocsHelpNavResult,
   DocsHelpSearchResult,
   DocsHelpStatus,
 } from "../../shared/docs-help-contract";
+import type {
+  LocalPriorityWriteRequest,
+  LocalPriorityWriteResult,
+} from "../../shared/local-priority-write-contract";
 import type { LocalSessionSourceStatus } from "../../shared/local-session-source-status";
+import type { SharedAgentSessionReadOptions } from "../../shared/read-initiator-contract";
 import type {
   RendererOtelBridgePayload,
   RendererOtelExportResult,
 } from "../../shared/renderer-otel-bridge-constants";
 import type { RendererReadyPhase } from "../../shared/renderer-ready-phase";
 import type {
-  ScheduledTaskListItem,
-  ScheduledTaskRunItem,
-  ScheduledTaskRunsRequest,
-  ScheduledTaskSaveInput,
-  SchedulePreviewRequest,
-  SchedulePreviewResult,
-} from "../../shared/scheduled-tasks-channel";
-import type {
   SessionLimitsSnapshot,
   StatuslineCaptureResult,
 } from "../../shared/session-limits-channel.js";
 import type {
+  SharedAgentSessionsCancelReadResult,
   SharedAgentSessionsListRequest,
   SharedAgentSessionsQuery,
 } from "../../shared/shared-agent-sessions-contract";
 import type {
+  SharedBranchCohortLocalReadRequest,
   SharedBranchesDetailRequest,
   SharedBranchesListRequest,
+  SharedBranchesLocalReadRequest,
   SharedBranchesPageDataResponse,
-  SharedBranchesQuery,
   SharedBranchTraceResponse,
 } from "../../shared/shared-branches-contract";
+import type {
+  SurfaceAnalyticsIpcPayload,
+  SurfaceAnalyticsIpcResult,
+} from "../../shared/surface-analytics-ipc-contract";
 import type { SyncConsentRecord } from "../../shared/sync-consent";
+import type { ThreadViewedResult } from "../../shared/thread-viewership-contract";
 import type {
   TranscriptCancelRequest,
   TranscriptForceArchiveRequest,
@@ -224,9 +237,14 @@ export type GitHubConnectOpenResult =
 export type GitHubConnectOpenRequest = {
   install?: boolean;
   returnTo?: string;
+  /** Bring Desktop back to the front once the connect lands. */
+  returnToDesktop?: boolean;
 };
 
-// Re-exported for the renderer surfaces (e.g. the Account tab) that read the
+// ISS-8024: the per-user PostHog assignment the desktop feature-flag provider
+// resolves its gates from.
+export type { DesktopFeatureFlagAssignment } from "@repo/api/src/types/desktop-feature-flags";
+// Re-exported for the renderer surfaces (e.g. `IdentityDetails`) that read the
 // signed-in identity shape from the desktop-api module.
 export type { DesktopIdentity } from "@repo/api/src/types/desktop-identity";
 // First-party auth wire contract (FEA-2219). Sourced from the shared
@@ -240,6 +258,7 @@ export type {
   DesktopBrowserSignInFailure,
   DesktopBrowserSignInResult,
   DesktopExistingUserResolution,
+  DesktopSignInOptions,
 } from "../../shared/contracts";
 
 export type DesktopApi = {
@@ -267,34 +286,6 @@ export type DesktopApi = {
    */
   macOSMajorVersion: number | null;
   getSettings: () => Promise<unknown>;
-  /**
-   * PRD-566 / FEA-4348 (formerly FEA-3852/3853/3854 / PRD-553): the Routines
-   * surface (the `scheduledTasks` namespace / `scheduled-tasks:*` channels are
-   * the preserved wire contract). `list`/`runs`
-   * read the crewd scheduler's SQLite-mirrored store (empty when the daemon is
-   * off / the local store is unavailable); `create`/`update`/`delete`/`toggle`/
-   * `runNow` mutate through the trusted-sender-gated handlers; `previewSchedule`
-   * validates a cron and returns its next fire times; `onChanged` subscribes to
-   * the change push and returns an unsubscribe fn.
-   */
-  scheduledTasks: {
-    list: () => Promise<ScheduledTaskListItem[]>;
-    runs: (
-      request?: ScheduledTaskRunsRequest
-    ) => Promise<ScheduledTaskRunItem[]>;
-    create: (payload: ScheduledTaskSaveInput) => Promise<ScheduledTaskListItem>;
-    update: (payload: ScheduledTaskSaveInput) => Promise<ScheduledTaskListItem>;
-    delete: (id: string) => Promise<boolean>;
-    toggle: (
-      id: string,
-      enabled: boolean
-    ) => Promise<ScheduledTaskListItem | null>;
-    runNow: (id: string) => Promise<boolean>;
-    previewSchedule: (
-      request: SchedulePreviewRequest
-    ) => Promise<SchedulePreviewResult>;
-    onChanged: (callback: () => void) => () => void;
-  };
   getSessionLimits: () => Promise<SessionLimitsSnapshot | null>;
   /** FEA-3492: read the statusline-capture opt-in state. */
   getStatuslineCaptureEnabled: () => Promise<boolean>;
@@ -313,14 +304,6 @@ export type DesktopApi = {
    */
   getTranscriptSyncStatus: () => Promise<TranscriptSyncStatusSnapshot>;
   /**
-   * ISS-5477: whether the desktop→cloud backlog has drained far enough for the
-   * app-core read source to move to the cloud. Per-lane drain states and queue
-   * depths — counts only, never content. Mirrors the
-   * `desktop:get-cloud-read-readiness` handler in
-   * `src/main/ipc/runtime-info-ipc.ts`.
-   */
-  getCloudReadReadiness: () => Promise<CloudReadReadinessSnapshot>;
-  /**
    * FEA-3843 / PRD-555: in-app Docs & Help bridge. Read-only lookups over the
    * build-time bundled `apps/web/content/docs` snapshot — search the local index, fetch a
    * bundled page, read the bundle status (M1), and list the `meta.json` nav tree
@@ -334,15 +317,6 @@ export type DesktopApi = {
     status: () => Promise<DocsHelpStatus>;
     nav: () => Promise<DocsHelpNavResult>;
   };
-  listCommandSigningKeys: () => Promise<unknown>;
-  listAuthorizedKeys: () => Promise<unknown>;
-  authorizeKey: (payload: unknown) => Promise<unknown>;
-  removeAuthorizedKey: (fingerprint: string) => Promise<unknown>;
-  listOrgPublicKeys: () => Promise<unknown>;
-  approveOrgPublicKey: (fingerprint: string) => Promise<unknown>;
-  rejectOrgPublicKey: (fingerprint: string) => Promise<unknown>;
-  authorizeCommandSigningKey: (fingerprint: string) => Promise<unknown>;
-  revokeCommandSigningKey: (fingerprint: string) => Promise<unknown>;
   getActivityEvents: () => Promise<unknown>;
   clearActivityEvents: () => Promise<unknown>;
   getPendingApprovals: () => Promise<unknown>;
@@ -385,6 +359,31 @@ export type DesktopApi = {
    */
   setDataSyncLevel: (level: DataSyncLevel) => Promise<{ level: DataSyncLevel }>;
   /**
+   * ISS-8376: the desktop-local onboarding facts — the transcript byte
+   * inventory (ISS-8506) and the analysis ETA (ISS-8507).
+   *
+   * OPTIONAL because an installed renderer can outlive the preload that
+   * exposes it: a build without this bridge must degrade to "no local state"
+   * rather than throwing. Resolves `unknown` on purpose — the adapter validates
+   * with `parseOnboardingLocalState`, so nothing hands the renderer a shape
+   * that was never checked.
+   *
+   * `attemptId` is echoed back on the response so a reply belonging to a
+   * superseded onboarding attempt can be dropped rather than merged.
+   */
+  getOnboardingLocalState?: (payload?: {
+    attemptId?: string;
+  }) => Promise<unknown>;
+  /**
+   * ISS-7249: report one dead-end treatment — the rendered "we could not show
+   * you the thing you asked for" state, a retry the user took, or what that
+   * retry settled into. Closed enums, a boolean, and two bounded numbers;
+   * nothing here can carry a session id, a name, content, or a path.
+   */
+  recordDeadEndTelemetry: (
+    payload: DeadEndTelemetryPayload
+  ) => Promise<{ ok: boolean }>;
+  /**
    * ISS-5489: whether this device has already answered the sync-consent
    * question, and for which org. A `tier` of null means it never has — the one
    * signal `getDataSyncLevel` cannot give, since it reconciles an unset level
@@ -399,8 +398,24 @@ export type DesktopApi = {
     level: DataSyncLevel;
     organizationId: string | null;
   }) => Promise<{ level: DataSyncLevel; organizationId: string | null }>;
+  /**
+   * ISS-10890: record that this device agreed to local session analysis
+   * (Welcome's Start). Optional: the browser-bridge mirror does not carry it.
+   */
+  recordSessionAnalysisAgreement?: () => Promise<{ ok: boolean }>;
+  /**
+   * ISS-5489: subscribe to consent-record pushes; returns an unsubscribe fn.
+   *
+   * OPTIONAL for version skew — an already-installed build's preload predates
+   * this channel, and the renderer must degrade to re-reading through
+   * {@link getSyncConsentRecord} rather than assuming the push exists.
+   */
+  onSyncConsentRecordChanged?: (
+    callback: (record: SyncConsentRecord) => void
+  ) => () => void;
   pickSandboxDirectory: () => Promise<SandboxInspectResult | null>;
   inspectSandboxPath: (path: string) => Promise<SandboxInspectResult | null>;
+  pickDirectoryScopeEntry: () => Promise<DirectoryScopePickPayload | null>;
   getDangerousAutoApprove: () => Promise<boolean>;
   setDangerousAutoApprove: (enabled: boolean) => Promise<boolean>;
   removeAlwaysAllowRule: (ruleId: string) => Promise<unknown>;
@@ -409,10 +424,6 @@ export type DesktopApi = {
   moveToApplications: () => Promise<boolean>;
   isDebugAuthEnabled: () => Promise<boolean>;
   mintDebugToken: (origin?: string) => Promise<unknown>;
-  listRunningJobs: () => Promise<unknown>;
-  listCompletedJobs: () => Promise<unknown>;
-  getJob: (jobId: string) => Promise<unknown>;
-  getJobLogTail: (jobId: string, lines?: number) => Promise<unknown>;
   getLogs: () => Promise<unknown>;
   clearLogs: () => Promise<unknown>;
   getLogFilePath: () => Promise<string>;
@@ -438,6 +449,14 @@ export type DesktopApi = {
   exportOtelTelemetry?: (
     payload: RendererOtelBridgePayload
   ) => Promise<RendererOtelExportResult>;
+  /**
+   * ISS-8752: relay one surface-attributed analytics event to the main
+   * process's product-analytics transport. Optional for preload version skew —
+   * the renderer adapter drops events best-effort when absent.
+   */
+  captureSurfaceAnalytics?: (
+    payload: SurfaceAnalyticsIpcPayload
+  ) => Promise<SurfaceAnalyticsIpcResult>;
   saveConfig: (payload: string | SaveConfigPayload) => Promise<unknown>;
   findMatchingConfig: () => Promise<unknown>;
   listConfigs: () => Promise<unknown>;
@@ -458,7 +477,8 @@ export type DesktopApi = {
    */
   reimportAgentSessions?: () => Promise<void>;
   getAllFlags: () => Promise<{ flags: DesktopFeatureFlagState[] }>;
-  onFlagsChanged?: (callback: () => void) => void;
+  /** Subscribe to desktop flag-change pushes; returns an unsubscribe fn. */
+  onFlagsChanged?: (callback: () => void) => () => void;
   /**
    * Run the rendered coaching prompt through the local `claude -p` harness.
    * Resolves to a structured result for BOTH success and operational failure
@@ -487,34 +507,18 @@ export type DesktopApi = {
    * active (the pack "distribution method"). Returns the installed pack info.
    */
   installCoachingPack: (sourceDir: string) => Promise<CoachingPackInfo>;
-  /**
-   * Audit Bot (FEA-3847 / PRD-556 M1). `run` executes a crewd review character
-   * (Docs Darwin) against the open repo via the harness cascade and resolves with
-   * the parsed findings; `onProgress` subscribes to the streamed cascade trail and
-   * returns an unsubscribe. Gated main-side by the `auditBot` Labs flag + sender
-   * trust; a disabled/denied run resolves with a typed refusal (`reason` set).
-   */
-  audit: {
-    run: (request: AuditRunRequest) => Promise<AuditRunResult>;
-    /**
-     * FEA-3849 (PRD-556 M3): file the user's SELECTED findings to ClosedLoop as
-     * dedup-guarded TRIAGE issues. Called only after the user selects findings
-     * and confirms — never automatically. The ClosedLoop network call runs
-     * main-side; a disabled/denied/failed call resolves with a typed refusal.
-     */
-    file: (request: AuditFileRequest) => Promise<AuditFileResult>;
-    onProgress: (
-      callback: (payload: AuditProgressPayload) => void
-    ) => () => void;
-  };
   /** @deprecated Replaced by in-process dashboard database */
   getAgentMonitorData?: (query: string) => Promise<unknown>;
   /** Local shared Agent Sessions API adapter exposed by the design-system preload. */
   agentSessionsApi: {
+    componentScopeVersion?: number;
     list: (
       request?: SharedAgentSessionsListRequest
     ) => Promise<AgentSessionListResponse>;
-    detail: (id: string) => Promise<AgentSessionDetail | null>;
+    detail: (
+      id: string,
+      options?: SharedAgentSessionReadOptions
+    ) => Promise<AgentSessionDetail | null>;
     usage: (
       request?: SharedAgentSessionsQuery
     ) => Promise<AgentSessionUsageSummary>;
@@ -525,6 +529,48 @@ export type DesktopApi = {
     pageData: (
       request?: SharedAgentSessionsListRequest
     ) => Promise<AgentSessionsPageData>;
+    /**
+     * ISS-9857: one keyset page of raw events past the detail's bounded
+     * prefix. `null` is the fail-closed answer (unknown session, malformed
+     * cursor, disabled runtime); the local data source maps it to a 404.
+     * Optional because the mirrored web renderer can run against an installed
+     * build whose preload predates the channel; the local source then omits
+     * its own `eventsPage`, so the panel offers no continuation.
+     */
+    eventsPage?: (
+      request: AgentSessionEventsPageRequest
+    ) => Promise<AgentSessionEventsPage | null>;
+    /**
+     * ISS-10737: every agent-component invocation of one session, as the Trace
+     * tab's tree. `null` is the fail-closed answer (unknown session, a source
+     * that cannot serve it, disabled runtime); the local data source maps it to
+     * a 404. Optional for the same version-skew reason `eventsPage` is — a
+     * mirrored renderer can run against an installed build whose preload
+     * predates the channel, and the local source then omits its own
+     * `sessionInvocationTree`, which the Trace tab reads as "this source cannot
+     * serve a tree" rather than as an empty one.
+     */
+    invocationTree?: (
+      request: AgentComponentInvocationSessionTreeRequest
+    ) => Promise<AgentComponentInvocationSessionTreePage | null>;
+    /**
+     * ISS-9802: abandon the in-flight read carrying `token`. Optional for the
+     * same version-skew reason `eventsPage` is — a mirrored renderer can run
+     * against an installed build whose preload predates the bridge — and the
+     * local data source PROBES for it, reporting `cancelsInFlightReads: false`
+     * and falling back to today's behaviour when it is absent.
+     */
+    cancelRead?: (
+      token?: string
+    ) => Promise<SharedAgentSessionsCancelReadResult>;
+    /**
+     * ISS-10332: set or clear a local session's priority. Optional for the
+     * same version-skew reason as `eventsPage`; the local data source probes
+     * for it and offers no `updatePriority` — so no editor — when absent.
+     */
+    updatePriority?: (
+      request: LocalPriorityWriteRequest
+    ) => Promise<LocalPriorityWriteResult>;
   };
   /** Local shared Branches API adapter exposed by the design-system preload. */
   branchesApi: {
@@ -534,53 +580,35 @@ export type DesktopApi = {
     ) => Promise<BranchPageDetail | null>;
     /** PLN-1148 Phase 2: lazy events-heavy merged trace for the timeline tab. */
     trace: (id: string) => Promise<SharedBranchTraceResponse>;
-    usage: (request?: SharedBranchesQuery) => Promise<BranchUsageSummary>;
-    analytics: (request?: SharedBranchesQuery) => Promise<BranchAnalytics>;
+    usage: (
+      request?: SharedBranchesLocalReadRequest
+    ) => Promise<BranchUsageSummary>;
+    analytics: (
+      request?: SharedBranchesLocalReadRequest
+    ) => Promise<BranchAnalytics>;
     /** Additive in newer preloads; older installed mains may omit it. */
     cohortAnalytics?: (
-      request: BranchAnalyticsCohortRequest
+      request: SharedBranchCohortLocalReadRequest
     ) => Promise<BranchAnalyticsCohortResponse | null>;
     /** FEA-3056 follow-up: combined list + analytics read, one raw scan shared. */
     pageData: (
       request?: SharedBranchesListRequest
     ) => Promise<SharedBranchesPageDataResponse>;
-  };
-  /** Cloud-backed trace comments exposed through main-process IPC. */
-  traceCommentsApi: {
-    /** Present only when main preserves Branch detail/timeline collection identity. */
-    supportsBranchTraceCommentSurfaces?: true;
-    list: (
-      target: TraceCommentTarget,
-      query?: BranchTraceCommentCollectionQuery
-    ) => Promise<TraceComment[]>;
-    create: (
-      target: TraceCommentTarget,
-      draft: TraceCommentDraft,
-      query?: BranchTraceCommentCollectionQuery
-    ) => Promise<TraceComment>;
-    reply: (
-      target: TraceCommentTarget,
-      commentId: string,
-      draft: TraceCommentReplyDraft,
-      query?: BranchTraceCommentCollectionQuery
-    ) => Promise<TraceComment>;
-    update: (
-      target: TraceCommentTarget,
-      commentId: string,
-      update: TraceCommentUpdate,
-      query?: BranchTraceCommentCollectionQuery
-    ) => Promise<TraceComment>;
-    delete: (
-      target: TraceCommentTarget,
-      commentId: string,
-      query?: BranchTraceCommentCollectionQuery
-    ) => Promise<TraceCommentDeleteResult>;
+    /** ISS-10332: set or clear a local branch's priority; optional like `cohortAnalytics`. */
+    updatePriority?: (
+      request: LocalPriorityWriteRequest
+    ) => Promise<LocalPriorityWriteResult>;
   };
   /** Database IPC channels (typed against the in-process repository shapes). */
   db: {
     getSessions: () => Promise<SessionRow[]>;
     getSession: (id: string) => Promise<SessionRow | undefined>;
     getSessionDetails: (id: string) => Promise<SessionWithAgents | undefined>;
+    /**
+     * ISS-7830: record that the user navigated INTO this thread. Monotonic — the
+     * first view is the one kept, so a caller may fire it on every mount.
+     */
+    markSessionViewed: (id: string) => Promise<ThreadViewedResult>;
     getAgents: (sessionId: string) => Promise<AgentRow[]>;
     getEvents: (sessionId: string, agentId?: string) => Promise<EventRow[]>;
     getDashboardSummary: () => Promise<DashboardSummary>;
@@ -623,8 +651,9 @@ export type DesktopApi = {
     /** Cloud: org-wide analytics for a pack (desktop-team overlay). */
     getPackAnalytics: (packId: string) => Promise<PackAnalyticsResponse | null>;
     getCatalogEntry: (packId: string) => Promise<CatalogEntry | null>;
-    getCatalogReadme: (packId: string) => Promise<string | null>;
-    getCatalogContents: (packId: string) => Promise<unknown[] | null>;
+    getCatalogContents: (
+      packId: string
+    ) => Promise<CatalogContentItem[] | null>;
     getCatalogHistory: (
       packId: string
     ) => Promise<Array<{ fetchedAt: string; stars: number; forks: number }>>;
@@ -672,6 +701,8 @@ export type DesktopApi = {
      * an unconfirmable offer must not install.
      */
     ensureDistributionAssigned: (distributionId: string) => Promise<void>;
+    /** Refresh the retained offer snapshot after a generic install succeeds. */
+    acknowledgeDistributionHandled: (distributionId: string) => Promise<void>;
     catalogUninstall: (
       packId: string,
       harness: string,
@@ -686,7 +717,6 @@ export type DesktopApi = {
     getPackSessions: (packId: string) => Promise<unknown[]>;
     getAllSkills: () => Promise<SkillWithInvocations[]>;
     getSkillInvocations: (name: string) => Promise<SkillInvocation[]>;
-    getRecentProjects: () => Promise<string[]>;
 
     // Plans (FEA-1189)
     getPlansList: (opts?: {
@@ -722,9 +752,39 @@ export type DesktopApi = {
     getAgentComponentDetail: (
       slug: string
     ) => Promise<AgentComponentDetail | null>;
+    getAgentComponentFrequency?: (
+      slug: string,
+      windowDays: number
+    ) => Promise<AgentComponentFrequency | null>;
+    /**
+     * ISS-6822: the bounded page-data read — the visible page, the matched
+     * total, the facet counts, and the current window's aggregate, reduced in
+     * the main process beside the SQLite read.
+     *
+     * OPTIONAL because an installed build's preload may predate it. The local
+     * data source probes for it and omits its own `pageData` when it is missing,
+     * which keeps the shared Agents list on the `listAgentComponents` path
+     * rather than failing.
+     */
+    getAgentComponentsPageData?: (
+      request: AgentComponentPageDataRequest
+    ) => Promise<AgentComponentPageDataResult>;
+    /**
+     * ISS-10467/ISS-10468: one or more content versions' own usage for the
+     * component detail's drill-down and side-by-side compare.
+     *
+     * OPTIONAL because an installed build's preload may predate it. The local
+     * data source probes for it and omits its own `versionUsage` when it is
+     * missing, which makes the shared panel say the capability is absent rather
+     * than render figures nobody measured.
+     */
+    getAgentComponentVersionUsage?: (
+      slug: string,
+      versionHashes: readonly string[]
+    ) => Promise<AgentComponentVersionUsageResponse | null>;
 
     // Diagnostics (FEA-1959)
-    getDiagnostics: () => Promise<DiagnosticsData>;
+    getDiagnostics: (request?: DiagnosticsRequest) => Promise<DiagnosticsData>;
 
     // Optimization analytics (FEA-2923 / AC-022)
     /**
@@ -799,10 +859,23 @@ export type DesktopApi = {
    * {@link onDesktopAuthStateChanged}.
    */
   beginDesktopSignIn: (
-    provider?: DesktopSignInProvider
+    method?: DesktopSignInMethod,
+    emailHint?: string,
+    framing?: DesktopSignInFraming,
+    options?: DesktopSignInOptions
   ) => Promise<DesktopBrowserSignInResult>;
   /** Cancel an in-flight sign-in (no-op when none is running). */
   cancelDesktopSignIn: () => Promise<void>;
+  /**
+   * ISS-11345: confirm the account a `confirmAccount` sign-in is holding
+   * (`DesktopAuthState.pendingAccount`). Optional so a partial test stub need
+   * not supply it.
+   */
+  confirmDesktopSignIn?: () => Promise<void>;
+  /** Consume the main-held bootstrap capability to create the first org. */
+  createBootstrapOrganization?: (
+    input: DesktopBootstrapOrganizationInput
+  ) => Promise<DesktopBootstrapOrganizationResult>;
   /** Sign out: best-effort server revoke + clear keychain + access token. */
   signOutDesktop: () => Promise<void>;
   /**
@@ -814,12 +887,14 @@ export type DesktopApi = {
   cloudApiFetch: (
     request: CloudApiFetchRequest
   ) => Promise<CloudApiFetchResult>;
+  /** PLN-2162 M4: absent from a preload that predates it, which leaves the renderer polling. */
+  realtime?: DesktopRealtimeApi;
   /**
    * Cloud-transcript read bridge (FEA-3324 Option B2): asks the main process to
    * prepare a transcript file by id. Main mints the signed S3 URL itself,
    * streams the bytes into a local cache, and returns an opaque same-origin
-   * `app://renderer/transcripts/…` URL the renderer fetches under the unchanged
-   * `connect-src 'self' app:`. The transcript bytes never cross IPC.
+   * `app://renderer/transcripts/…` URL the renderer fetches with no transcript
+   * origin in `connect-src`. The transcript bytes never cross IPC.
    */
   prepareTranscript?: (
     request: TranscriptPrepareRequest
@@ -847,10 +922,54 @@ export type DesktopApi = {
   getGitHubIntegrationStatus?: () => Promise<GitHubIntegrationStatus | null>;
   /** Display identity (name, email, org name) for the signed-in desktop session. */
   getDesktopIdentity?: () => Promise<DesktopIdentity | null>;
+  /**
+   * ISS-8379 — the Settings local-device snapshot (machine name, platform, app
+   * version, gateway port/reachability, and the cloud compute-target id while
+   * online). Resolves `unknown`: the caller validates it with
+   * `parseSettingsLocalDeviceSnapshot`, so an unvalidated payload cannot reach a
+   * panel. OPTIONAL for version skew — an installed build's preload predates
+   * this channel, and the adapter degrades to an `unavailable` projection rather
+   * than assuming the method exists.
+   */
+  getSettingsLocalDevice?: () => Promise<unknown>;
+  /**
+   * ISS-8024 — the signed-in user's PostHog feature-flag assignment, evaluated
+   * server-side against the same distinct ids the web app resolves from. `null`
+   * for a signed-out session, an unreachable bridge, or any transport/schema
+   * failure; the provider reads `null` as UNRESOLVED, so every gate stays
+   * closed. Optional: an older preload does not expose it.
+   */
+  getDesktopFeatureFlags?: () => Promise<DesktopFeatureFlagAssignment | null>;
+  /**
+   * ISS-12048 — this device's Dev Tools overrides for main's own flag reads, or
+   * an empty record. Main applies them only under its own Dev Mode check.
+   * Optional: an older preload does not expose it.
+   */
+  setFeatureFlagOverrides?: (
+    overrides: Readonly<Record<string, boolean>>
+  ) => Promise<boolean>;
+  /** ISS-12048 — the flag keys main checked while in Dev Mode; validate it. */
+  getMainCheckedFeatureFlags?: () => Promise<unknown>;
+  /** ISS-12048 — main checked a key it had not reported; returns unsubscribe. */
+  onMainCheckedFeatureFlagsChanged?: (callback: () => void) => () => void;
+  /**
+   * ISS-8753 — the Electron E2E harness's seeded flag assignment for this
+   * launch, or `null`.
+   *
+   * `null` on every shipped launch: main refuses a packaged build before it
+   * reads argv, and refuses an unpackaged one that was not started with the
+   * harness launch argument, so nothing a user can write on their own machine
+   * answers here. Optional in the same sense as the member above — an older
+   * preload does not expose it, and a renderer test that hand-writes
+   * `window.desktopApi` omits it — and its absence reads as "no seed".
+   */
+  getE2eSeededFeatureFlags?: () => Promise<DesktopFeatureFlagAssignment | null>;
   /** Open the first-party web GitHub App connect flow from main process. */
   openGitHubConnect: (
     request?: GitHubConnectOpenRequest
   ) => Promise<GitHubConnectOpenResult>;
+  /** ISS-12257: see {@link DesktopSessionReplayBridge}. */
+  reportDesktopReplayRecording?: DesktopSessionReplayBridge["reportDesktopReplayRecording"];
   /** Subscribe to auth-state pushes; returns an unsubscribe fn. */
   onDesktopAuthStateChanged: (
     callback: (state: DesktopAuthState) => void

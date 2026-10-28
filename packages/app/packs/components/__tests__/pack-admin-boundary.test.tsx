@@ -8,9 +8,15 @@
 
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import {
+  PACK_ADMIN_CAPABILITY_META,
+  PackAdminCapability,
+} from "../../lib/pack-admin-capability";
 import { PackAdminBoundary } from "../pack-admin-boundary";
 
 const LOAD_ERROR_COPY = /couldn't load pack permissions/i;
+const AUTHOR_CATALOG_LABEL =
+  PACK_ADMIN_CAPABILITY_META[PackAdminCapability.AuthorCatalog].label;
 
 describe("PackAdminBoundary", () => {
   it("renders the three pack capabilities with their holder audiences", () => {
@@ -19,7 +25,7 @@ describe("PackAdminBoundary", () => {
     expect(
       screen.getByRole("region", { name: "Pack permissions" })
     ).toBeInTheDocument();
-    expect(screen.getByText("Author the catalog")).toBeInTheDocument();
+    expect(screen.getByText(AUTHOR_CATALOG_LABEL)).toBeInTheDocument();
     expect(screen.getByText("Distribute packs")).toBeInTheDocument();
     expect(screen.getByText("Install to own machines")).toBeInTheDocument();
     // The two admin-gated capabilities read "Admins & owners"; installing to
@@ -61,13 +67,13 @@ describe("PackAdminBoundary", () => {
     expect(
       screen.getByTestId("pack-admin-boundary-skeleton")
     ).toBeInTheDocument();
-    expect(screen.queryByText("Author the catalog")).toBeNull();
+    expect(screen.queryByText(AUTHOR_CATALOG_LABEL)).toBeNull();
   });
 
   it("surfaces a failed read as an honest error, never a silent empty boundary", () => {
     render(<PackAdminBoundary error={new Error("boom")} />);
 
     expect(screen.getByRole("alert")).toHaveTextContent(LOAD_ERROR_COPY);
-    expect(screen.queryByText("Author the catalog")).toBeNull();
+    expect(screen.queryByText(AUTHOR_CATALOG_LABEL)).toBeNull();
   });
 });

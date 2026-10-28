@@ -7,11 +7,11 @@ import {
 
 /**
  * Fetches the signed-in user's display identity (name, email, organization
- * name and slug) from `GET /desktop/identity` for the desktop Settings → Account tab.
+ * name and slug) from `GET /desktop/identity` for the desktop renderer.
  * Auth uses the current first-party desktop session token — the same token the
  * renderer attaches elsewhere — not the configured managed API key.
  *
- * Every transport, response, or schema failure returns null so the Account tab
+ * Every transport, response, or schema failure returns null so the renderer
  * falls back to the ids it already holds instead of trusting malformed data.
  */
 export type DesktopIdentityFetchOptions = SessionFetchOptions;
@@ -32,18 +32,23 @@ const desktopIdentitySchema = z
     // too, so a server that ever does send an explicit null is not a whole-
     // payload rejection.
     organizationSlug: z.string().nullable().optional(),
-    // FEA-4169: server-owned org sync policy (the OUTER gate above per-device
-    // consent). Optional for version skew: an old server omits it, and the
-    // desktop treats "absent" as "no policy → keep current device-consent
-    // behavior". A new server always sends an explicit boolean.
-    sessionSyncPolicyEnabled: z.boolean().optional(),
-    // ISS-4705: versioned capability marker. A current server that understands
-    // the org-sync policy always sends `true`; an old server omits it. The store
-    // uses it to tell an old server (marker absent → skew degrade) apart from a
-    // buggy current server that dropped only `sessionSyncPolicyEnabled` (marker
-    // present → fail closed) — presence of the policy field alone cannot.
-    sessionSyncPolicySupported: z.boolean().optional(),
+    // ISS-11465: the organization logo and user avatar the workspace menu
+    // renders. Declared HERE and not only on `DesktopIdentity`, because
+    // `.passthrough()` carries an undeclared key through untouched — the
+    // annotation then says `string` while a number or an object reaches the
+    // renderer and goes straight into an `<img src>`. Optional + nullable for
+    // version skew, exactly as `organizationSlug` above.
+    organizationImageUrl: z.string().nullable().optional(),
+    userImageUrl: z.string().nullable().optional(),
   })
+  // Pre-existing, and deliberately kept. It is NOT what admits the retired
+  // `sessionSyncPolicyEnabled` / `sessionSyncPolicySupported` a server still
+  // sends (ISS-11449 dropped both declarations): a bare `z.object` STRIPS unknown
+  // keys rather than rejecting, so that body parses either way. What `.passthrough()` changes is
+  // that unknown keys ride through untyped instead of being dropped. The contract
+  // worth holding is the one it shares with a bare object — an unknown key must
+  // never fail the whole parse, because a rejection returns `null` and blanks the
+  // Account tab against a healthy server. Do not tighten this to `.strict()`.
   .passthrough();
 
 export function fetchDesktopIdentity(

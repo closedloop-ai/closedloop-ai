@@ -6,7 +6,7 @@ import {
 } from "@repo/api/src/types/branch-metrics";
 import { BranchVisibleLifecyclePhase } from "@repo/api/src/types/branch-phase-attribution";
 import { GitHubPRState } from "@repo/api/src/types/github";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import {
@@ -15,8 +15,8 @@ import {
 } from "../../__tests__/branch-fixtures";
 import { BranchHeadlineCards } from "../branch-headline-cards";
 import { BranchLeadTimeWaterfall } from "../branch-lead-time-waterfall";
-import { BranchMultiPrNotice } from "../branch-multi-pr-notice";
 import { BranchPropertiesPanel } from "../branch-properties-panel";
+import { BRANCH_UNAVAILABLE_LABEL } from "../branch-unavailable-value";
 
 const OUTCOME_UNAVAILABLE_RE =
   /selected-cycle outcome evidence is unavailable or not applicable/i;
@@ -77,11 +77,60 @@ describe("BranchHeadlineCards", () => {
     );
 
     expect(screen.getByText("21")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Lifetime verified publication LOC ÷ lifetime qualifying cost"
+      )
+    ).toBeInTheDocument();
     expect(screen.getByText("N/A")).toBeInTheDocument();
     expect(screen.getByText("No data")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Not applicable to the selected pull request's latest cycle."
+      )
+    ).toBeInTheDocument();
   });
 
-  it("marks a partial canonical value and carries its disclosure", () => {
+  it("treats missing canonical detail metrics as unavailable version-skew evidence", () => {
+    const legacyDetail = detail({ canonicalMetrics: undefined });
+
+    render(
+      <>
+        <BranchHeadlineCards detail={legacyDetail} />
+        <BranchLeadTimeWaterfall detail={legacyDetail} />
+      </>
+    );
+
+    expect(screen.getAllByText(BRANCH_UNAVAILABLE_LABEL)).toHaveLength(3);
+    expect(screen.getAllByText("Evidence is unavailable.")).toHaveLength(3);
+    expect(screen.getByText(OUTCOME_UNAVAILABLE_RE)).toBeInTheDocument();
+    expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
+  });
+
+  it("explains lifetime LOC per $ N/A without blaming PR selection", () => {
+    render(
+      <BranchHeadlineCards
+        detail={detail({
+          canonicalMetrics: metricBundle({
+            abandonmentTimeMs: notApplicable(),
+            leadTimeMs: notApplicable(),
+            locPerDollar: notApplicable(),
+          }),
+        })}
+      />
+    );
+
+    expect(
+      screen.getByText("No positive lifetime qualifying cost.")
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByText(
+        "Not applicable to the selected pull request's latest cycle."
+      )
+    ).toHaveLength(2);
+  });
+
+  it("marks a partial canonical value and carries its disclosure in the info popover", async () => {
     render(
       <BranchHeadlineCards
         detail={detail({
@@ -91,11 +140,19 @@ describe("BranchHeadlineCards", () => {
     );
 
     expect(screen.getByText("19*")).toBeInTheDocument();
+    // ISS-10540 (product ruling 2026-09-22): the sentence is not on the face.
     expect(
-      screen.getByText((content) =>
+      screen.queryByText((content) =>
         content.includes(BranchMetricDisclosure.DefaultIncomplete)
       )
-    ).toBeInTheDocument();
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "About LOC per $" }));
+    const dialog = await screen.findByRole("dialog", {
+      name: "About LOC per $",
+    });
+    expect(dialog.textContent).toContain(
+      BranchMetricDisclosure.DefaultIncomplete
+    );
   });
 
   it("humanizes only the multi-day headline lead time", () => {
@@ -115,13 +172,6 @@ describe("BranchHeadlineCards", () => {
   });
 });
 
-describe("BranchMultiPrNotice", () => {
-  it("lists every linked pull request without blocking the page", () => {
-    render(<BranchMultiPrNotice linkedPrNumbers={[42, 43]} />);
-    expect(screen.getByRole("note")).toHaveTextContent("#42, #43");
-  });
-});
-
 describe("BranchPropertiesPanel", () => {
   it("keeps Reviewer and selected-PR title out of Properties", async () => {
     const user = userEvent.setup();
@@ -136,6 +186,18 @@ describe("BranchPropertiesPanel", () => {
     expect(screen.queryByText(SELECTED_PR_TITLE)).not.toBeInTheDocument();
     expect(screen.getByText("Repository")).toBeInTheDocument();
     expect(screen.getByText("Branch")).toBeInTheDocument();
+  });
+
+  it("shows the unavailable word for Changes when the line counts are absent", async () => {
+    const user = userEvent.setup();
+    render(
+      <BranchPropertiesPanel
+        detail={detail({ additions: null, deletions: null })}
+      />
+    );
+
+    await user.click(getBranchPropertiesToggle());
+    expect(screen.getByText(BRANCH_UNAVAILABLE_LABEL)).toBeInTheDocument();
   });
 
   it("exposes collapsed and expanded state to assistive technology", async () => {

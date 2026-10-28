@@ -39,15 +39,31 @@ function migrateLegacyKey(surface: string): void {
   }
 }
 
-export type SharedDateRangeState = {
-  dateRange: DateRange;
-  setDateRange: (range: DateRange) => void;
+export type SharedDateRangeState<Range extends DateRange = DateRange> = {
+  dateRange: Range;
+  setDateRange: (range: Range) => void;
 };
 
 export function useSharedDateRange(
   surface: string,
-  defaultRange: DateRange = DEFAULT_RANGE
-): SharedDateRangeState {
+  defaultRange?: DateRange
+): SharedDateRangeState<DateRange>;
+/**
+ * A narrower surface (the insights dashboard) passes the ranges it can answer
+ * and gets that narrower union back, so the admitted set and the result type
+ * cannot drift apart. A stored value outside the set resolves to the default
+ * exactly like an unrecognised one.
+ */
+export function useSharedDateRange<Range extends DateRange>(
+  surface: string,
+  defaultRange: Range | undefined,
+  ranges: readonly Range[]
+): SharedDateRangeState<Range>;
+export function useSharedDateRange(
+  surface: string,
+  defaultRange: DateRange = DEFAULT_RANGE,
+  ranges: readonly DateRange[] = DATE_RANGES
+): SharedDateRangeState<DateRange> {
   const migrated = useRef(false);
   if (!migrated.current) {
     migrated.current = true;
@@ -59,8 +75,7 @@ export function useSharedDateRange(
     defaultRange
   );
 
-  const parsed = rangeSchema.safeParse(raw);
-  const dateRange: DateRange = parsed.success ? parsed.data : defaultRange;
+  const dateRange = ranges.find((range) => range === raw) ?? defaultRange;
 
   const setDateRange = useCallback(
     (range: DateRange) => {

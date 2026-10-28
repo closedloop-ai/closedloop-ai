@@ -9,7 +9,10 @@ import type {
   SessionEventGroup,
   SessionOverviewStats,
 } from "@repo/app/agents/lib/session-types";
-import { Chip } from "@repo/design-system/components/ui/chip";
+import {
+  CHIP_FOCUS_RING_CLASS,
+  Chip,
+} from "@repo/design-system/components/ui/chip";
 import { EmptyState } from "@repo/design-system/components/ui/empty-state";
 import { Section } from "@repo/design-system/components/ui/layout/section";
 import { MetricCard } from "@repo/design-system/components/ui/primitives/metric-card";
@@ -29,7 +32,6 @@ import {
 import { cn } from "@repo/design-system/lib/utils";
 import {
   AlertCircleIcon,
-  BotIcon,
   HistoryIcon,
   TerminalSquareIcon,
   WrenchIcon,
@@ -67,15 +69,6 @@ export type SessionMetadataField = {
   value: string;
 };
 
-export type SessionModelUsageRow = {
-  model: string;
-  inputTokens: string;
-  outputTokens: string;
-  cacheReadTokens: string;
-  cacheWriteTokens: string;
-  estimatedCost: string;
-};
-
 export type SessionToolInvocationRow = {
   toolName: string;
   count: string;
@@ -98,10 +91,6 @@ type SessionSummaryMetricsProps = {
 type SessionMetadataPanelProps = {
   metadata: SessionMetadataField[];
   details?: SessionMetadataField[];
-};
-
-type SessionModelUsageTableProps = {
-  rows: SessionModelUsageRow[];
 };
 
 type SessionToolInvocationsPanelProps = {
@@ -199,10 +188,8 @@ function MetadataValue({
     <span
       className={cn(
         "block min-w-0 truncate",
-        // Only clipped values are focusable, so only they carry a focus ring —
-        // matches the interactive chip's focus-visible treatment.
-        isTruncated &&
-          "rounded-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+        // Only clipped values are focusable, so only they carry a focus ring.
+        isTruncated && `rounded-sm ${CHIP_FOCUS_RING_CLASS}`,
         className
       )}
       ref={textRef}
@@ -254,56 +241,6 @@ export function SessionMetadataPanel({
           ))}
         </div>
       ) : null}
-    </Section>
-  );
-}
-
-export function SessionModelUsageTable({ rows }: SessionModelUsageTableProps) {
-  return (
-    <Section
-      contentClassName="space-y-0"
-      description="Input, output, cache, and cost totals grouped by model."
-      title="Token usage by model"
-    >
-      {rows.length === 0 ? (
-        <EmptyState
-          className="py-10"
-          description="No model usage rows were recorded for this session."
-          icon={BotIcon}
-          title="No model usage"
-        />
-      ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Model</TableHead>
-              <TableHead className="text-right">Input</TableHead>
-              <TableHead className="text-right">Output</TableHead>
-              <TableHead className="text-right">Cache Read</TableHead>
-              <TableHead className="text-right">Cache Write</TableHead>
-              <TableHead className="text-right">Cost</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {rows.map((row) => (
-              <TableRow key={row.model}>
-                <TableCell className="font-medium">{row.model}</TableCell>
-                <TableCell className="text-right">{row.inputTokens}</TableCell>
-                <TableCell className="text-right">{row.outputTokens}</TableCell>
-                <TableCell className="text-right">
-                  {row.cacheReadTokens}
-                </TableCell>
-                <TableCell className="text-right">
-                  {row.cacheWriteTokens}
-                </TableCell>
-                <TableCell className="text-right">
-                  {row.estimatedCost}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      )}
     </Section>
   );
 }
@@ -429,7 +366,7 @@ export function SessionTimelineSection({
     <Section
       contentClassName="space-y-0"
       description="Normalized event stream with shared filtering and grouped rows."
-      title="Event timeline"
+      title={SESSION_TIMELINE_SECTION_TITLE}
     >
       {groups.length === 0 ? (
         <EmptyState
@@ -594,11 +531,6 @@ export function SessionOverviewSection({ stats }: SessionOverviewSectionProps) {
                 <Chip variant="muted">{stats.activeAgent.currentTool}</Chip>
               ) : null}
             </div>
-            {stats.activeAgent.task ? (
-              <p className="mt-3 text-muted-foreground text-sm">
-                {stats.activeAgent.task}
-              </p>
-            ) : null}
           </div>
         ) : null}
       </div>
@@ -694,3 +626,5 @@ function SubagentTypesBody({ stats }: { stats: SessionOverviewStats }) {
     </>
   );
 }
+
+export const SESSION_TIMELINE_SECTION_TITLE = "Event timeline";

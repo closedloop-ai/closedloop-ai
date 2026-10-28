@@ -2,9 +2,9 @@ import { CodeBlock } from "@repo/design-system/components/ui/primitives/code-blo
 import type { Meta, StoryObj } from "@storybook/react";
 
 const meta = {
-  title: "Design System/Primitives/Code Block",
+  title: "Composites v1.0/Content/Code Block",
   component: CodeBlock,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   argTypes: {
     tone: {
@@ -34,6 +34,7 @@ export const Default: Story = {};
  * useful for eyeballing the tint contrast side by side.
  */
 export const Tones: Story = {
+  tags: ["!manifest"],
   render: () => (
     <div className="flex flex-col gap-3">
       <CodeBlock
@@ -53,6 +54,7 @@ export const Tones: Story = {
       />
     </div>
   ),
+  parameters: { controls: { disable: true } },
 };
 
 /**

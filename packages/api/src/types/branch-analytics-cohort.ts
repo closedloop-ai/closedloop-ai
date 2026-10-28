@@ -1,6 +1,8 @@
 import { z } from "zod";
 import {
   type BranchListMetricBundle,
+  type BranchListMetricValue,
+  type BranchListWindowScopedMetrics,
   BranchMetricAvailability,
   BranchMetricComparisonLabel,
   BranchMetricDisclosure,
@@ -15,7 +17,7 @@ const BRANCH_ANALYTICS_COHORT_ID_MAX_CHARS = 512;
 const textEncoder = new TextEncoder();
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const FIXED_WINDOW_DURATIONS_MS = new Set(
-  [7, 30, 90].flatMap((days) => [days * MS_PER_DAY, days * MS_PER_DAY - 1])
+  [7, 30, 60, 90].flatMap((days) => [days * MS_PER_DAY, days * MS_PER_DAY - 1])
 );
 const cohortBranchIdSchema = z
   .string()
@@ -226,21 +228,44 @@ function branchListMetricBundleSchema(
   instantMetricResultSchema: z.ZodType<BranchMetricResult<string>>,
   numericMetricResultSchema: z.ZodType<BranchMetricResult<number>>
 ) {
-  const numericMetricValueSchema = z.object({
+  // ISS-10363 (whitlockk, tamsinb review on #7448): the INNER value shape carries
+  // the same keys-covered guard the bundle shape below has carried since
+  // ISS-9732, and for the same reason — `series` was added to
+  // `BranchListMetricValue` and not here, so the exact-cohort read stripped it
+  // and the mark vanished on exactly the filtered request that re-fetches.
+  const numericMetricValueShape = {
     current: numericMetricResultSchema,
     comparison: z
       .object({
         label: z.enum([
           BranchMetricComparisonLabel.WeekOverWeek,
           BranchMetricComparisonLabel.MonthOverMonth,
+          BranchMetricComparisonLabel.PriorSixtyDays,
           BranchMetricComparisonLabel.QuarterOverQuarter,
         ]),
         priorWindow: branchMetricWindowSchema,
         deltaPct: numericMetricResultSchema,
       })
       .optional(),
-  });
-  return z.object({
+    series: z.array(z.number().nullable()).optional(),
+  } satisfies Record<keyof BranchListMetricValue, z.ZodType>;
+  const numericMetricValueSchema = z.object(numericMetricValueShape);
+  // `z.object` strips what it does not declare, so an undeclared additive field
+  // would survive the plain `/branches/analytics` read and vanish only on the
+  // exact-cohort read — the tile would then silently fall back to the lifetime
+  // value exactly when a facet is narrowing the list.
+  //
+  // ISS-9732 (whitlockk, tamsinb review on #6838): that comment was here and the
+  // next additive field was still added to the TYPE and not to this shape, so
+  // the warning is now a compile-time obligation. `satisfies Record<keyof T,
+  // …>` demands a key per bundle field — optional ones included, because a
+  // missing OPTIONAL key is exactly this bug — and rejects a key the type does
+  // not have, so a rename fails `tsc` on both sides at once.
+  const windowScopedShape = {
+    activeBranches: numericMetricValueSchema,
+    aiSpendUsd: numericMetricValueSchema,
+  } satisfies Record<keyof BranchListWindowScopedMetrics, z.ZodType>;
+  const bundleShape = {
     period: z.enum(BranchMetricPeriod),
     label: z.enum(BranchMetricComparisonLabel),
     window: branchMetricWindowSchema,
@@ -251,7 +276,13 @@ function branchListMetricBundleSchema(
     medianPrSize: numericMetricValueSchema,
     aiSpendUsd: numericMetricValueSchema,
     mergeRatePct: numericMetricValueSchema,
-  });
+    canonicalLocPerDollar: numericMetricValueSchema.optional(),
+    totalLocPushed: numericMetricValueSchema.optional(),
+    pushedLocPerDollar: numericMetricValueSchema.optional(),
+    penseroPointsPerDollar: numericMetricValueSchema.optional(),
+    windowScoped: z.object(windowScopedShape).optional(),
+  } satisfies Record<keyof BranchListMetricBundle, z.ZodType>;
+  return z.object(bundleShape);
 }
 
 function responseSchema(

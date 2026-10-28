@@ -1,9 +1,12 @@
 "use client";
 
+import { DOC_SYNC_EDITOR_FLAG_KEY } from "@repo/api/src/types/doc-sync-editor-flag";
 import type { DocumentDetail } from "@repo/api/src/types/document";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { useCallback, useEffect, useState } from "react";
+import { useFeatureFlagEnabled } from "../../shared/feature-flags/use-feature-flag-enabled";
 import { useCreateDocumentVersion } from "./use-documents";
+import { useResetLiveDraft } from "./use-reset-live-draft";
 
 type UseArtifactContentConfig = {
   artifact: DocumentDetail;
@@ -41,6 +44,10 @@ export function useDocumentContent(config: UseArtifactContentConfig) {
 
   // TanStack Query mutation for creating new versions
   const createVersion = useCreateDocumentVersion(artifact.id);
+  const resetLiveDraft = useResetLiveDraft(artifact.id);
+  // The scaffold mounts `DocSyncRoom` from this flag; this hook runs above
+  // that provider, so it reads the flag rather than the room (PLN-2190 T-3.1).
+  const isOnDocSync = useFeatureFlagEnabled(DOC_SYNC_EDITOR_FLAG_KEY);
 
   // Content state - tracks local edits
   const [content, setContent] = useState(artifact.version.content ?? "");
@@ -76,11 +83,13 @@ export function useDocumentContent(config: UseArtifactContentConfig) {
         {
           onSuccess: (updatedArtifact) => {
             toast.success("New version published");
-            // Re-seed the editor's Y.Doc with the newly published content.
-            // `resetDocumentRoom` clears the room server-side, so without
-            // this the publisher's editor would briefly render blank
-            // before another sync catches up.
-            setEditorContent(updatedArtifact.version.content ?? "");
+            // On Liveblocks, `resetDocumentRoom` clears the room server-side,
+            // so the publisher's editor reseeds it or renders blank until
+            // another sync catches up. On doc-sync the server seeded the
+            // version, which arrived as a Yjs sync before this response.
+            if (!isOnDocSync) {
+              setEditorContent(updatedArtifact.version.content ?? "");
+            }
             onVersionCreated?.(updatedArtifact);
             onSuccess?.();
           },
@@ -91,24 +100,35 @@ export function useDocumentContent(config: UseArtifactContentConfig) {
       content,
       createVersion,
       hasUnsavedChanges,
+      isOnDocSync,
       onVersionCreated,
       setEditorContent,
     ]
   );
 
   const restoreVersion = useCallback(() => {
-    setEditorContent(artifact.version.content ?? "");
-
-    // If the user is on the latest version, just overwrite what's in liveblocks.
-    // Otherwise we need to publish a new version with the content from the previous version.
+    const versionContent = artifact.version.content ?? "";
+    // A historical version is published as a new version; the server puts it
+    // into the live document on both transports.
     if (!isLatestVersion) {
-      saveContent(artifact.version.content ?? "", true);
+      if (!isOnDocSync) {
+        setEditorContent(versionContent);
+      }
+      saveContent(versionContent, true);
+      return;
+    }
+    if (isOnDocSync) {
+      resetLiveDraft.mutate();
+    } else {
+      setEditorContent(versionContent);
     }
   }, [
     artifact.version.content,
-    setEditorContent,
-    saveContent,
     isLatestVersion,
+    isOnDocSync,
+    resetLiveDraft,
+    saveContent,
+    setEditorContent,
   ]);
 
   return {

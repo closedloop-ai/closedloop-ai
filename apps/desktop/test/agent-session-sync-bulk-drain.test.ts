@@ -44,7 +44,7 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   ACK_OMITTED_BACKOFF_MS,
   MAX_CONSECUTIVE_ACK_OMITTED,
@@ -359,8 +359,8 @@ test("FEA-4375: a persistently-failing send is bounded-retried then dead-lettere
     getSyncComputeTargetId: () => COMPUTE_TARGET,
     sendBatch: async () => {
       attempts += 1;
-      // A persistent transport fault (socket drop): it must dead-letter after
-      // MAX_CONSECUTIVE_TRANSPORT_ERRORS consecutive throws, never loop forever.
+      // A persistent UNTYPED throw (a typed network one defers the lane,
+      // ISS-10602): it must dead-letter after MAX_CONSECUTIVE_TRANSPORT_ERRORS.
       throw new Error(`socket drop (attempt ${attempts})`);
     },
   });

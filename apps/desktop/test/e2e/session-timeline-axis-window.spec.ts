@@ -1,30 +1,6 @@
 /**
- * ISS-4833 / ISS-4822 / ISS-5137 (Electron twin): the Session Timeline axis
- * anchors on the PLOTTED-ACTIVITY window through the LAUNCHED desktop renderer,
- * and that window covers the phase tiling's whole span — idle tail included.
- *
- * The web twin is `e2e/session-timeline-axis-window.spec.ts`. Both drive the
- * same shared `AgentSessionDetailView` out of `@repo/app`, but the two adapters
- * feed it from entirely different producers — the cloud detail projection on
- * web, the local SQLite read (`shared-agent-session-detail-projection.ts` `mapDetail`) here —
- * and the gate itself resolves differently too (a PostHog flag on web, the
- * desktop Labs setting here). So per `packages/app/AGENTS.md` this needs a real
- * regression on EACH adapter, not one plus an assumption.
- *
- * The seeded session is the SES 019fa57e shape: `ended_at` stamped stale
- * (FEA-3594 sweeper/heal) at the session start while the phase tiling runs three
- * hours past it. Under the PRIOR derivation the axis measured `startedAt` to the
- * session's LIFECYCLE end rather than to anything plotted — see
- * {@link PRIOR_AXIS_TOTAL} for the exact shape that takes on this adapter, where
- * `lastActivityAt` is derived from event rows rather than read from a column.
- * ISS-5366 retired the `session-timeline-axis-reconciliation` Labs gate to its
- * enabled state, so the reconciled total is what this seeded corpus must now
- * render with no seeding at all — and `PRIOR_AXIS_TOTAL` is kept as the negative
- * assertion that proves it is not silently rendering the old window.
- *
- * Prerequisites:
- *   - Build first: `pnpm -C apps/desktop prebuild && pnpm -C apps/desktop build`
- *   - Run via: CODEX_HOME="$(mktemp -d)" pnpm -C apps/desktop test:e2e
+ * Local SQLite activity segments, including the idle tail, must set the
+ * launched Desktop axis to 4h 30m despite the stale lifecycle end.
  */
 
 import fs from "node:fs";

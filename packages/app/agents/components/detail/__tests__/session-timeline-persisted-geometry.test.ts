@@ -1,10 +1,14 @@
-import type { AgentSessionDetail } from "@repo/api/src/types/agent-session";
+import type {
+  AgentSessionDetail,
+  SessionMarker,
+} from "@repo/api/src/types/agent-session";
 import { describe, expect, it } from "vitest";
 import { createAgentSessionDetailFixture } from "../agent-session-detail-fixtures";
 import {
   buildActivityMarkers,
   buildLimitDotEvents,
-} from "../agent-session-detail-view";
+} from "../session-activity-markers";
+import { buildDotCells } from "../session-timeline-dot-cells";
 
 /**
  * ISS-4821 review (whitlockk, codex): PERSISTED timeline geometry did not follow the
@@ -97,6 +101,80 @@ describe("persisted throttle dots follow the resolved window (whitlockk review)"
     );
 
     expect(dots[0].x).toBe(PRODUCER_PERCENT);
+  });
+});
+
+/**
+ * ISS-8653: a limit dot carries its ABSOLUTE instant, so the dot rail has a key
+ * commensurable with the `atMs` `buildTurnMarker` already attaches.
+ *
+ * ATTACHED ONLY WHERE `x` ALREADY ENCODES THAT INSTANT — a usable window and a
+ * timestamp inside it, which is exactly when `getWindowPercent` returns an
+ * unclamped fraction of that same window. That precondition is what makes the
+ * addition inert for POSITION: `resolveMarkerMs` reads back the instant it would
+ * otherwise reconstruct from `x`. Outside it the two genuinely disagree, so the
+ * absence in the three negative cases below is the contract, not an oversight.
+ */
+describe("a limit dot carries its instant only where x already encodes it (ISS-8653)", () => {
+  it("attaches atMs for a throttle inside the resolved window", () => {
+    const dots = buildLimitDotEvents(
+      sessionWith({
+        throttles: [
+          {
+            durMin: 5,
+            tl: 0,
+            t0: WINDOW_MID_AT,
+            t1: WINDOW_END_AT,
+            x0: PRODUCER_PERCENT,
+          },
+        ],
+      }),
+      WINDOW
+    );
+
+    expect(dots[0].atMs).toBe(Date.parse(WINDOW_MID_AT));
+  });
+
+  it("attaches none when the session resolves no window to bound the instant", () => {
+    const dots = buildLimitDotEvents(
+      sessionWith({
+        throttles: [
+          {
+            durMin: 5,
+            tl: 0,
+            t0: WINDOW_MID_AT,
+            t1: WINDOW_END_AT,
+            x0: PRODUCER_PERCENT,
+          },
+        ],
+      }),
+      null
+    );
+
+    expect(dots[0].atMs).toBeUndefined();
+  });
+
+  it("attaches none for a throttle dated outside the window, whose x is clamped", () => {
+    const dots = buildLimitDotEvents(
+      sessionWith({
+        throttles: [
+          {
+            durMin: 5,
+            tl: 0,
+            t0: "2026-06-10T12:00:00.000Z",
+            t1: "2026-06-10T12:05:00.000Z",
+            x0: PRODUCER_PERCENT,
+          },
+        ],
+      }),
+      WINDOW
+    );
+
+    // Clamped to the right edge, and `atMs` would move it off that edge — or out
+    // of the projection entirely. Where the dot belongs then is a separate
+    // question this ticket does not answer.
+    expect(dots[0].x).toBe(100);
+    expect(dots[0].atMs).toBeUndefined();
   });
 });
 
@@ -203,3 +281,92 @@ describe("persisted markers follow the resolved window (whitlockk / codex review
     expect(markers[0].x).toBe(PRODUCER_PERCENT);
   });
 });
+
+/**
+ * ISS-7632: a persisted marker this screen cannot anchor to a transcript row
+ * carries NO jump target, and the type now says so.
+ *
+ * FEA-4252's first bullet already promised it — "an absent/non-finite `tl` is
+ * preserved (the dot stays an inert no-op, never a fabricated jump to the top)"
+ * — and the dot rail already honoured it, reading `?.tl ?? null` because
+ * ISS-5479 found a synced marker deserializing without a row. What was missing
+ * was a compiler that agreed: `normalizePersistedMarkerRow` declared `: number`
+ * and reached the promise through `return tl as number`, so no reader was ever
+ * forced to handle the absence and nothing exercised it.
+ *
+ * The two producers of "no usable row" are pinned separately because they are
+ * reachable by different routes: a non-finite `tl` is type-legal and therefore
+ * reachable inside the type boundary, while an outright missing `tl` is a
+ * deserialization state the wire type does not model.
+ */
+describe("a persisted marker with no anchorable row yields no jump target (ISS-7632)", () => {
+  it("yields no row for a non-finite tl rather than passing NaN off as a number", () => {
+    const markers = buildActivityMarkers(
+      sessionWith({
+        markers: [
+          {
+            kind: "commit",
+            label: "seed",
+            t: WINDOW_MID_AT,
+            tl: Number.NaN,
+            x: PRODUCER_PERCENT,
+          },
+        ],
+      }),
+      WINDOW
+    );
+
+    expect(markers).toHaveLength(1);
+    // Not `NaN`: `NaN` survives the `?? null` every downstream reader uses, so
+    // it reached the rail as a dot that still offered — and announced — a jump,
+    // to a row that does not exist.
+    expect(markers[0].tl).toBeUndefined();
+  });
+
+  it("yields no row for a tl the sync boundary dropped", () => {
+    const markers = buildActivityMarkers(
+      sessionWith({ markers: [markerWithoutRow()] }),
+      WINDOW
+    );
+
+    expect(markers).toHaveLength(1);
+    expect(markers[0].tl).toBeUndefined();
+  });
+
+  it("carries the absence into the dot cell the rail reads its jump target from", () => {
+    const markers = buildActivityMarkers(
+      sessionWith({ markers: [markerWithoutRow()] }),
+      WINDOW
+    );
+
+    const [cell] = buildDotCells(markers, [], 1);
+
+    // Lane-agnostic on purpose: the assertion is about the row surviving the
+    // hop, not about which lane a commit lands in.
+    const events = [...cell.b, ...cell.g, ...cell.r];
+    expect(events).toHaveLength(1);
+    // `session-timeline-dot-rail.tsx` turns exactly this into `?.tl ?? null`,
+    // and a null `dotRow` is what makes the dot an inert, aria-disabled no-op.
+    expect(events[0].tl).toBeUndefined();
+    expect(events[0].tl ?? null).toBeNull();
+  });
+});
+
+/**
+ * A persisted marker that deserialized without its transcript row.
+ *
+ * `SessionMarker.tl` is declared required, but `markers` is parsed out of a
+ * synced JSON column rather than constructed in-process — the trust boundary
+ * where AGENTS.md keeps malformed and version-skewed input in scope for tests —
+ * and ISS-5479 exists precisely because a real marker arrives without one. The
+ * cast is how a fixture reaches that state; the alternative is a test that
+ * cannot exercise the case at all.
+ */
+function markerWithoutRow(): SessionMarker {
+  return {
+    kind: "commit",
+    label: "seed",
+    t: WINDOW_MID_AT,
+    x: PRODUCER_PERCENT,
+  } as SessionMarker;
+}

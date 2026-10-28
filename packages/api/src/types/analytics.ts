@@ -67,11 +67,8 @@ export type RankingResponse = {
  * fields complement (do not replace) the absolute `locPerDollar` /
  * `invocations` / `sessions` already carried by the analytics DTOs.
  *
- * `qualityScore`/`qualityDelta` are computed best-effort (session → source loop
- * → artifact evaluation → judge score) but are intentionally NOT rendered yet:
- * most sessions carry no attached evaluation until judging is wired deeper into
- * the UX, so they are `null` for most packs and the card lights up with zero
- * backend change once scores populate.
+ * `qualityScore`/`qualityDelta` are always `null` since ISS-12435 removed the
+ * loops they were scored from, and are not rendered.
  */
 export type CohortDeliveryMetrics = {
   /** ISS-4667: % lift in LOC/$ vs. the baseline; null when not computable. */
@@ -98,9 +95,16 @@ export type CohortDeliveryMetrics = {
   /** Distinct merged PRs produced by the cohort's sessions. */
   mergedPrs: number | null;
   /**
-   * ISS-5521: whether {@link mergedPrs} was counted over a bounded SAMPLE of the
-   * cohort rather than all of it — i.e. the cohort held more than
-   * {@link COHORT_SCAN_CAP} sessions and only the first that many were scanned.
+   * ISS-5521: whether {@link mergedPrs} (and every other cohort figure on this
+   * payload) was computed over a bounded SAMPLE of the cohort rather than all
+   * of it.
+   *
+   * What "sample" means depends on the producer. A server predating ISS-9853
+   * scanned only the first 2,000 cohort sessions, in arbitrary order. A server
+   * at or after ISS-9853 walks every session id it is handed, so this is `true`
+   * only when the CALLER attested that the id set was itself a bounded sample —
+   * the component-detail path's usage lane hit its row bound (ISS-9852), so the
+   * sessions behind the most recent rows are the cohort it could see.
    *
    * When true the count is a FLOOR, not a total: distinct merged PRs over a
    * subset can only be less than or equal to the figure over the whole cohort.
@@ -117,6 +121,26 @@ export type CohortDeliveryMetrics = {
    * about the population's completeness in either direction.
    */
   mergedPrsTruncated?: boolean;
+  /**
+   * ISS-9853: how many baseline sessions the `successDelta` / `qualityDelta`
+   * comparator was SAMPLED from, when that sample was smaller than the window.
+   *
+   * The LOC/token deltas compare against rowless aggregates over every baseline
+   * session in the cohort's window; the success-rate and quality comparators
+   * read a bounded most-recent sample instead (PRD-666 permits a bound on one
+   * batch, and a comparator is not a record a user retrieves). A number here
+   * says the window held MORE baseline sessions than that, so the "vs.
+   * baseline" chip compares against the sample, not the population; `null` says
+   * the comparator was not a strict sample — it covered the whole window, or no
+   * baseline was computed at all (every delta is `null` then, and no chip
+   * renders).
+   *
+   * OPTIONAL and additive, same tri-state rule as {@link mergedPrsTruncated}: a
+   * producer predating this field sampled the very same way and could not say
+   * so, so omission is UNKNOWN, not "whole window". Decode it through
+   * {@link resolveBaselineSampleCoverage} rather than comparing inline.
+   */
+  baselineSampleSize?: number | null;
   /**
    * Best-effort avg judge score (0–10) over the cohort's sessions; computed but
    * NOT rendered yet (sparse until judging is integrated). Null for most cohorts.
@@ -143,6 +167,7 @@ export const EMPTY_COHORT_DELIVERY_METRICS: CohortDeliveryMetrics = {
   efficiencyTrend: [],
   mergedPrs: null,
   mergedPrsTruncated: false,
+  baselineSampleSize: null,
   qualityScore: null,
   qualityDelta: null,
 };
@@ -170,10 +195,17 @@ export type PackAnalyticsResponse = {
    * on read (resolve via `resolveLocPerDollar`, which scales it into LOC/$).
    */
   klocPerDollar?: number | null;
-  /** Distinct teammates who have used the pack (display names). */
+  /** Distinct teammates who have used the pack (display names, bounded roster). */
   owners: string[];
   /** Adoption breadth — distinct compute targets (devices). */
   deviceCount: number;
+  /**
+   * ISS-9854: exact installer count from a rowless aggregate, excluding
+   * cloud-authored sentinel rows (identity.ts:778 `isCloudAuthoredRow`).
+   * Additive and optional for cross-repo compat — a pre-ISS-9854 cloud
+   * omits it, and the consumer falls back to `owners.length`.
+   */
+  installerCount?: number;
 } & CohortDeliveryMetrics;
 
 // ---------------------------------------------------------------------------
@@ -236,29 +268,15 @@ export type ComplianceResponse = {
 };
 
 /**
- * ISS-5521: upper bound on the number of cohort sessions scanned when computing
- * {@link CohortDeliveryMetrics}. The scan runs on the db-host worker and a busy
- * org's component can hold tens of thousands of sessions, so the bound is the
- * FEA-3132 OOM guard and is deliberate — the defect it caused was never the cap
- * itself, only a capped figure described to the user as covering everything.
- *
- * Owned here, beside the contract whose {@link CohortDeliveryMetrics.mergedPrsTruncated}
- * semantics it defines, so the server that applies the bound
- * (`apps/api/app/agent-components/cohort-performance.ts`) and the card copy that
- * discloses it (`packages/app/agents/lib/detail-data.ts`) read ONE number
- * instead of each spelling it out.
- */
-export const COHORT_SCAN_CAP = 2000;
-
-/**
  * How much of a cohort a {@link CohortDeliveryMetrics.mergedPrs} count actually
  * covered — the THREE states {@link CohortDeliveryMetrics.mergedPrsTruncated}
  * can express, named.
  */
 export const MergedPrsCoverage = {
   /**
-   * The producer declared it scanned only the first {@link COHORT_SCAN_CAP}
-   * cohort sessions, so the count is a FLOOR and must be rendered as one.
+   * The producer declared it computed over a bounded SAMPLE of the cohort (an
+   * older server's first 2,000 sessions; an ISS-9853 server's lane-bounded id
+   * set), so the count is a FLOOR and must be rendered as one.
    */
   Capped: "capped",
   /** The producer declared the count covered the whole session cohort. */
@@ -295,4 +313,45 @@ export function resolveMergedPrsCoverage(
     return MergedPrsCoverage.WholeCohort;
   }
   return MergedPrsCoverage.Unknown;
+}
+
+/**
+ * How much of the baseline window the success/quality comparator covered — the
+ * THREE states {@link CohortDeliveryMetrics.baselineSampleSize} can express,
+ * named. Sibling of {@link MergedPrsCoverage}, for the same reason.
+ */
+export const BaselineSampleCoverage = {
+  /** The producer declared the comparator was a sample smaller than the window. */
+  Sampled: "sampled",
+  /** The producer declared the comparator was not a strict sample. */
+  WholeWindow: "whole-window",
+  /** The producer declared nothing (or something unusable): say nothing. */
+  Unknown: "unknown",
+} as const;
+export type BaselineSampleCoverage =
+  (typeof BaselineSampleCoverage)[keyof typeof BaselineSampleCoverage];
+
+/**
+ * Read {@link CohortDeliveryMetrics.baselineSampleSize} as the tri-state it is.
+ *
+ * A sample size is a positive integer or it is not a sample size: a fractional,
+ * zero, negative or non-finite value is wire data that cannot be right, and
+ * rendering it as a confident "sampled from N" would be worse than saying
+ * nothing, so every such value resolves {@link BaselineSampleCoverage.Unknown}
+ * — the same answer as omission.
+ */
+export function resolveBaselineSampleCoverage(
+  baselineSampleSize: number | null | undefined
+): BaselineSampleCoverage {
+  if (baselineSampleSize === null) {
+    return BaselineSampleCoverage.WholeWindow;
+  }
+  if (
+    baselineSampleSize !== undefined &&
+    Number.isInteger(baselineSampleSize) &&
+    baselineSampleSize > 0
+  ) {
+    return BaselineSampleCoverage.Sampled;
+  }
+  return BaselineSampleCoverage.Unknown;
 }

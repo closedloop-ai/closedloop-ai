@@ -4,7 +4,7 @@
  * the security-critical gateway-request gate extracted from `DesktopApplication`
  * in PLN-1359 Phase 3. These tests exercise the evaluator's ORCHESTRATION —
  * onboarding gating, the dangerous-auto-approve escape hatch, operation
- * resolution, the update_and_restart feature gate, always-allow-rule matching
+ * resolution, always-allow-rule matching
  * and pruning, tier-based auto-approve, force-interactive handling, and the
  * enqueue-and-await-decision tail — against real `SettingsStore`/`ApprovalStore`
  * collaborators. The pure helpers it composes (approval-policy, approval-operations,
@@ -26,8 +26,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, test } from "node:test";
-import { vi } from "vitest";
+import { afterEach, describe, test, vi } from "vitest";
 import { ALWAYS_ALLOW_RULE_TTL_MS } from "../src/main/approvals/always-allow-rules.js";
 import { ApprovalEvaluator } from "../src/main/approvals/approval-evaluator.js";
 import { ApprovalStore } from "../src/main/approvals/approval-store.js";
@@ -56,7 +55,6 @@ function makeSettingsStore(seed?: {
   defaultApprovalTier?: RiskTier;
   autoApprovalRules?: Record<string, RiskTier>;
   alwaysAllowRules?: AlwaysAllowRule[];
-  updateAndRestartEnabled?: boolean;
 }): SettingsStore {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "approval-eval-"));
   tempDirs.push(tmpDir);
@@ -70,9 +68,6 @@ function makeSettingsStore(seed?: {
   if (seed?.alwaysAllowRules) {
     store.setAlwaysAllowRules(seed.alwaysAllowRules);
   }
-  if (seed?.updateAndRestartEnabled !== undefined) {
-    store.setUpdateAndRestartEnabled(seed.updateAndRestartEnabled);
-  }
   return store;
 }
 
@@ -81,7 +76,7 @@ function makeRequest(
 ): GatewayApprovalRequest {
   return {
     method: "GET",
-    path: "/api/gateway/health-check",
+    path: "/api/gateway/git/local-changes",
     body: "",
     origin: null,
     referer: null,
@@ -163,7 +158,7 @@ describe("ApprovalEvaluator onboarding gate", () => {
   test("refuses operations before onboarding completes", async () => {
     const harness = makeEvaluator({ setupComplete: false });
     const result = await harness.evaluator.evaluate(
-      makeRequest({ path: "/api/gateway/health-check" })
+      makeRequest({ path: "/api/gateway/git/local-changes" })
     );
     assert.deepEqual(result, {
       allow: false,
@@ -239,7 +234,7 @@ describe("ApprovalEvaluator short-circuits", () => {
     });
     // A high-risk op that would otherwise enqueue.
     const result = await harness.evaluator.evaluate(
-      makeRequest({ method: "POST", path: "/api/gateway/deploy" })
+      makeRequest({ method: "POST", path: "/api/gateway/security/upgrade" })
     );
     assert.deepEqual(result, { allow: true });
     assert.equal(harness.approvalStore.countPending(), 0);
@@ -268,27 +263,13 @@ describe("ApprovalEvaluator short-circuits", () => {
       "Unmapped operation: /not-the-gateway"
     );
   });
-
-  test("blocks update_and_restart when the feature setting is disabled", async () => {
-    const harness = makeEvaluator({
-      settings: { updateAndRestartEnabled: false },
-    });
-    const result = await harness.evaluator.evaluate(
-      makeRequest({ method: "POST", path: "/api/gateway/update-and-restart" })
-    );
-    assert.deepEqual(result, {
-      allow: false,
-      statusCode: 501,
-      payload: { error: "feature_disabled", feature: "update_and_restart" },
-    });
-  });
 });
 
 describe("ApprovalEvaluator auto-approve and always-allow", () => {
   test("auto-approves when the operation risk is within the configured tier", async () => {
     const harness = makeEvaluator({ settings: { defaultApprovalTier: "low" } });
     const result = await harness.evaluator.evaluate(
-      makeRequest({ path: "/api/gateway/health-check" })
+      makeRequest({ path: "/api/gateway/git/local-changes" })
     );
     assert.deepEqual(result, { allow: true });
     assert.equal(harness.approvalStore.countPending(), 0);
@@ -305,6 +286,12 @@ describe("ApprovalEvaluator auto-approve and always-allow", () => {
     assert.deepEqual(result, { allow: true });
     assert.equal(pending.operationId, "git_pr");
     assert.equal(pending.riskTier, "medium");
+    // No `approvalReason` on the request (ISS-8883: the executor drops one
+    // `Headers.set` would throw on), so the card carries the generated reason.
+    assert.equal(
+      pending.reason,
+      "git_pr is medium-risk, but your auto-approve threshold is low"
+    );
   });
 
   test("honors a matching, active always-allow rule", async () => {
@@ -333,9 +320,9 @@ describe("ApprovalEvaluator auto-approve and always-allow", () => {
         alwaysAllowRules: [expiredRule],
       },
     });
-    // health_check auto-approves; the expired rule is pruned + persisted first.
+    // git_local_changes auto-approves; the expired rule is pruned + persisted first.
     await harness.evaluator.evaluate(
-      makeRequest({ path: "/api/gateway/health-check" })
+      makeRequest({ path: "/api/gateway/git/local-changes" })
     );
     assert.deepEqual(harness.settingsStore.getAll().alwaysAllowRules, []);
   });
@@ -366,10 +353,10 @@ describe("ApprovalEvaluator auto-approve and always-allow", () => {
 });
 
 describe("ApprovalEvaluator interactive decisions", () => {
-  const deployRequest = () =>
+  const highRiskRequest = () =>
     makeRequest({
       method: "POST",
-      path: "/api/gateway/deploy",
+      path: "/api/gateway/security/upgrade",
       source: "Local Desktop",
     });
 
@@ -377,11 +364,11 @@ describe("ApprovalEvaluator interactive decisions", () => {
     const harness = makeEvaluator({ settings: { defaultApprovalTier: "low" } });
     const { result, pending } = await evaluateWithDecision(
       harness,
-      deployRequest(),
+      highRiskRequest(),
       (store, id) => store.approve(id)
     );
     assert.deepEqual(result, { allow: true });
-    assert.equal(pending.operationId, "deploy");
+    assert.equal(pending.operationId, "desktop_security_upgrade");
     assert.equal(pending.riskTier, "high");
     assert.equal(pending.location, "Local Desktop");
   });
@@ -390,14 +377,14 @@ describe("ApprovalEvaluator interactive decisions", () => {
     const harness = makeEvaluator({ settings: { defaultApprovalTier: "low" } });
     const { result, pending } = await evaluateWithDecision(
       harness,
-      deployRequest(),
+      highRiskRequest(),
       (store, id) => store.deny(id)
     );
     assert.equal(result.allow, false);
     assert.equal(result.allow === false && result.statusCode, 403);
     assert.deepEqual(result.allow === false && result.payload, {
       error: "request denied",
-      operationId: "deploy",
+      operationId: "desktop_security_upgrade",
       approvalId: pending.id,
     });
   });
@@ -407,7 +394,7 @@ describe("ApprovalEvaluator interactive decisions", () => {
     vi.spyOn(harness.approvalStore, "waitForDecision").mockImplementation(
       async () => "expired" as const
     );
-    const result = await harness.evaluator.evaluate(deployRequest());
+    const result = await harness.evaluator.evaluate(highRiskRequest());
     assert.equal(result.allow, false);
     assert.equal(result.allow === false && result.statusCode, 408);
     assert.equal(
@@ -416,7 +403,7 @@ describe("ApprovalEvaluator interactive decisions", () => {
     );
     assert.equal(
       result.allow === false && result.payload.operationId,
-      "deploy"
+      "desktop_security_upgrade"
     );
   });
 
@@ -424,15 +411,15 @@ describe("ApprovalEvaluator interactive decisions", () => {
     const harness = makeEvaluator({ settings: { defaultApprovalTier: "low" } });
     const { result } = await evaluateWithDecision(
       harness,
-      deployRequest(),
+      highRiskRequest(),
       (store, id) => store.alwaysAllow(id)
     );
     assert.deepEqual(result, { allow: true });
     const rules = harness.settingsStore.getAll().alwaysAllowRules;
     assert.equal(rules.length, 1);
-    assert.equal(rules[0].operationId, "deploy");
+    assert.equal(rules[0].operationId, "desktop_security_upgrade");
     assert.equal(rules[0].method, "POST");
-    assert.equal(rules[0].path, "/api/gateway/deploy");
+    assert.equal(rules[0].path, "/api/gateway/security/upgrade");
   });
 
   test("does NOT save a rule for a force-interactive always-allow decision", async () => {
@@ -453,7 +440,7 @@ describe("ApprovalEvaluator interactive decisions", () => {
       harness,
       makeRequest({
         method: "POST",
-        path: "/api/gateway/deploy",
+        path: "/api/gateway/security/upgrade",
         body: JSON.stringify({ repoPath: "/tmp/my-repo" }),
       }),
       (store, id) => store.approve(id)
@@ -473,22 +460,22 @@ describe("ApprovalEvaluator.saveAlwaysAllowRuleForPending", () => {
       isDangerousAutoApprove: () => false,
     });
     evaluator.saveAlwaysAllowRuleForPending({
-      operationId: "deploy",
+      operationId: "desktop_security_upgrade",
       method: "post",
-      path: "/api/gateway/deploy",
+      path: "/api/gateway/security/upgrade",
     });
     const rules = settingsStore.getAll().alwaysAllowRules;
     assert.equal(rules.length, 1);
-    assert.equal(rules[0].operationId, "deploy");
+    assert.equal(rules[0].operationId, "desktop_security_upgrade");
     assert.equal(rules[0].method, "POST", "method is upper-cased");
   });
 
   test("refreshes an existing matching rule's expiry to now + TTL", () => {
     nodeTestTimers.enable(["Date"], { now: FIXED_NOW });
     const stale = makeRule({
-      operationId: "deploy",
+      operationId: "desktop_security_upgrade",
       method: "POST",
-      path: "/api/gateway/deploy",
+      path: "/api/gateway/security/upgrade",
       expiresAt: new Date(FIXED_NOW + 1000).toISOString(),
     });
     const settingsStore = makeSettingsStore({ alwaysAllowRules: [stale] });
@@ -500,9 +487,9 @@ describe("ApprovalEvaluator.saveAlwaysAllowRuleForPending", () => {
       isDangerousAutoApprove: () => false,
     });
     evaluator.saveAlwaysAllowRuleForPending({
-      operationId: "deploy",
+      operationId: "desktop_security_upgrade",
       method: "POST",
-      path: "/api/gateway/deploy",
+      path: "/api/gateway/security/upgrade",
     });
     const rules = settingsStore.getAll().alwaysAllowRules;
     assert.equal(rules.length, 1, "no duplicate rule created");

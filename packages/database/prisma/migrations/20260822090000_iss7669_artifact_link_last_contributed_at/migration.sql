@@ -1,0 +1,11 @@
+-- ISS-7669: Related Sessions orders by the artifact's NEWEST contribution, but
+-- the slug-link lane is find-then-create-if-absent, so `created_at` is pinned at
+-- the sync that first created the edge. This column is what later syncs advance.
+--
+-- Additive and NULLABLE by design: every row written before this migration was
+-- never stamped, and a NULL reads as "never restated", which the read path
+-- resolves by falling back to `created_at` (the value it used before). No
+-- backfill — dating a legacy edge to the migration timestamp would assert a
+-- contribution that never happened.
+-- AlterTable
+ALTER TABLE "artifact_links" ADD COLUMN     "last_contributed_at" TIMESTAMP(3);

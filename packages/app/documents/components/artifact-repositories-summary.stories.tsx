@@ -6,13 +6,13 @@ const snapshotWithPrimary: ArtifactRepositorySnapshot = {
   source: "loop_selection",
   repositories: [
     {
-      fullName: "closedloop-ai/example-repo",
+      fullName: "closedloop-ai/closedloop-ai",
       role: "primary",
       position: 1,
       branch: "codex/design-system-adoption-audit",
     },
     {
-      fullName: "closedloop-ai/example-repo",
+      fullName: "closedloop-ai/closedloop-ai",
       role: "additional",
       position: 2,
       ref: "main",
@@ -31,9 +31,9 @@ const emptySnapshot: ArtifactRepositorySnapshot = {
 };
 
 const meta = {
-  title: "App Core/Documents/Artifact Repositories Summary",
+  title: "Composites v1.0/Documents/Artifact Repositories Summary",
   component: ArtifactRepositoriesSummary,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: {
     layout: "padded",
   },

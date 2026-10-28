@@ -4,9 +4,9 @@ import { SessionLocPerDollarProperty } from "./session-loc-per-dollar-property";
 import { SessionPropertiesFrame } from "./session-properties-story-frame";
 
 const meta = {
-  title: "App Core/Agents/Session LOC Per Dollar Property",
+  title: "Primitives v1.0/Data Display/Session LOC Per Dollar Property",
   component: SessionLocPerDollarProperty,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   decorators: [
     (Story) => (

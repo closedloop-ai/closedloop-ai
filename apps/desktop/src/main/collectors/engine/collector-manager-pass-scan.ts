@@ -19,8 +19,10 @@ import type { CatchupCache } from "./catchup-cache.js";
 import type { IngestProgressTracker } from "./collector-manager-ingest-progress.js";
 import {
   collectPendingSources,
+  measurePendingSourceBytes,
   type WatcherEventSources,
 } from "./collector-pending-sources.js";
+import type { E2eAbandonHistoricalPass } from "./e2e-boot-import-abandon-seam.js";
 import type { ParseQuarantine } from "./parse-quarantine.js";
 
 type ImportPassScanDeps = {
@@ -34,8 +36,13 @@ type ImportPassScanDeps = {
   loadExistingSessionIds: () => Promise<ReadonlySet<string> | undefined>;
   waitForRendererBackgroundSlot: () => Promise<void>;
   isImportActive: (generation: number) => boolean;
-  deleteSessionRow?: (sessionId: string) => Promise<void>;
+  deleteSessionRow?: (sessionId: string) => Promise<boolean>;
   log: (message: string) => void;
+  /**
+   * ISS-8982 (TEST-ONLY, `undefined` in every production run): see
+   * `CollectorManagerOptions.e2eAbandonHistoricalPass`.
+   */
+  e2eAbandonHistoricalPass?: E2eAbandonHistoricalPass;
 };
 
 type ImportPassScan = {
@@ -54,6 +61,14 @@ type ImportPassScan = {
   changedPathsBySource: ReadonlyMap<string, string[]>;
   pendingSources: Awaited<ReturnType<typeof collectPendingSources>>;
   /**
+   * ISS-8346: each pending source's size, measured once here so the import loop
+   * subtracts the SAME number the pass's byte total was built from. Recomputing
+   * it per source at completion time would let a file that grew mid-pass leave
+   * more bytes than it contributed. Empty when this pass is not the tracked
+   * first fill, which is exactly when nothing reads it.
+   */
+  pendingBytesBySource: ReadonlyMap<string, number>;
+  /**
    * ISS-5028: returned to the caller because the import loop needs it to decide
    * whether a finished source will be READMITTED by the orphan self-heal (see
    * `willSourceBeRescanned`) — the difference between a source that is durably
@@ -70,6 +85,7 @@ function abandonedScan(trackProgress: boolean): ImportPassScan {
     sources: [],
     changedPathsBySource: new Map(),
     pendingSources: [],
+    pendingBytesBySource: new Map(),
     existingSessionIds: undefined,
     trackProgress,
   };
@@ -87,7 +103,7 @@ async function deleteFoldedChildren({
   foldedChildSessionIds: ReadonlySet<string>;
   generation: number;
   isImportActive: (generation: number) => boolean;
-  deleteSessionRow?: (sessionId: string) => Promise<void>;
+  deleteSessionRow?: (sessionId: string) => Promise<boolean>;
   log: (message: string) => void;
 }): Promise<void> {
   if (!deleteSessionRow) {
@@ -128,6 +144,7 @@ export async function scanImportPass(
     isImportActive,
     deleteSessionRow,
     log,
+    e2eAbandonHistoricalPass,
   } = deps;
   // First-pass historical import: flag "preparing" and yield BEFORE any
   // synchronous source scan blocks the main thread, so the import banner can
@@ -192,14 +209,42 @@ export async function scanImportPass(
     if (!isImportActive(generation)) {
       return abandonedScan(trackProgress);
     }
+    let pendingBytesBySource: ReadonlyMap<string, number> = new Map();
     if (trackProgress && pendingSources.length > 0) {
-      ingest.beginPass(collector.key, pendingSources.length);
+      // ISS-8346: sizing the pending set awaits (a batch collector's sources
+      // carry no stat and are stat'd here), so re-check the generation before
+      // opening the pass, for the same reason every other await in this scan
+      // does — a stale continuation must not reopen a pass `stop()` just closed.
+      const measured = await measurePendingSourceBytes(pendingSources);
+      if (!isImportActive(generation)) {
+        return abandonedScan(trackProgress);
+      }
+      pendingBytesBySource = measured.bytesBySource;
+      ingest.beginPass(
+        collector.key,
+        pendingSources.length,
+        measured.totalBytes
+      );
+      // ISS-8982 (TEST-ONLY): throws a recoverable `DbHostExitError` while this
+      // harness's seam budget lasts, so the pass the line above just opened
+      // abandons exactly as it would had the db-host died under it.
+      //
+      // AFTER `beginPass`, and that ordering is load-bearing: a pass that
+      // rejects before it opens takes `abandonPass`'s `!startedAt` early return
+      // and records NO shortfall, so `drained` reads true alongside
+      // `retriesExhausted` (ISS-5808/ISS-5281, and the budget docblock in
+      // `collector-manager-ingest-progress.ts`). Moving this above `beginPass`
+      // would silently flip that, and drive the terminal over a state that
+      // claims the queue emptied. `undefined` outside the E2E launch env, where
+      // this is an optional call on nothing.
+      e2eAbandonHistoricalPass?.(collector.key);
     }
     return {
       active: true,
       sources,
       changedPathsBySource,
       pendingSources,
+      pendingBytesBySource,
       existingSessionIds,
       trackProgress,
     };

@@ -1,8 +1,4 @@
-import { STATUS_DISPLAY_ORDER } from "./status-grouping";
-
-const COMBINED_STATUS_SORT_ORDER = new Map<string, number>(
-  STATUS_DISPLAY_ORDER.map((status, index) => [status, index])
-);
+import { statusDisplayRank } from "@repo/api/src/types/artifact-status-display-order";
 
 // Memoize the index Map per `order` array reference so a comparator passed to
 // Array.prototype.sort (O(n log n) calls) builds it once, not on every call.
@@ -22,28 +18,24 @@ function indexMapFor(order: readonly string[]): Map<string, number> {
 /**
  * Compare two status strings by display order. Defaults to the combined
  * Document+Feature order used by the mixed documents table (PRD-495); pass an
- * explicit `order` array to sort within a single vocabulary. Unknown statuses
- * sort after all known ones.
+ * explicit `order` array to sort within a single vocabulary. Unknown statuses —
+ * and rows with no status — sort after all known ones.
+ *
+ * ISS-9669: the default path delegates to {@link statusDisplayRank} rather than
+ * keeping its own index map, because the documents table's status GROUPING
+ * ranks sections with that same function. Two private derivations of "where
+ * does an unknown status go" is how one table came to sort a row last and group
+ * it first.
  */
 export function compareStatusValues(
   a: string | null | undefined,
   b: string | null | undefined,
   order?: readonly string[]
 ): number {
-  if (!(a || b)) {
-    return 0;
+  if (!order) {
+    return statusDisplayRank(a) - statusDisplayRank(b);
   }
-  if (!a) {
-    return 1;
-  }
-  if (!b) {
-    return -1;
-  }
-  const sortOrder = order ? indexMapFor(order) : COMBINED_STATUS_SORT_ORDER;
-  const unknownOrder = order ? order.length : STATUS_DISPLAY_ORDER.length;
-  const aOrder = sortOrder.get(a) ?? unknownOrder;
-  const bOrder = sortOrder.get(b) ?? unknownOrder;
-  return aOrder - bOrder;
+  return rankWithin(order, a) - rankWithin(order, b);
 }
 
 export function compareSlugValues(
@@ -67,3 +59,14 @@ export const NAME_SORT_OPTIONS = [
   { key: "status", label: "Status" },
   { key: "slug", label: "ID" },
 ] as const;
+
+/** Position of `status` in an explicit single-vocabulary order; misses rank last. */
+function rankWithin(
+  order: readonly string[],
+  status: string | null | undefined
+): number {
+  if (!status) {
+    return order.length;
+  }
+  return indexMapFor(order).get(status) ?? order.length;
+}

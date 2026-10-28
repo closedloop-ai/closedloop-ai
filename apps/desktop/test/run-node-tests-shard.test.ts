@@ -18,8 +18,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+import { describe, it } from "vitest";
 import { censusTestFiles } from "../scripts/node-test-census.mjs";
 import {
   parseShardSpec,
@@ -67,7 +67,7 @@ type CapturedRun = {
  * Run run-node-tests.mjs against a stub `pnpm` and report what it spawned.
  *
  * APPEND, not overwrite. Since ISS-4933 the runner spawns twice — Vitest for the
- * shim-compatible files, then `tsx --test` for the remainder — and a stub that
+ * census's Vitest set, then `tsx --test` for the remainder — and a stub that
  * truncated would show only the second, leaving every assertion about the first
  * asserting nothing at all.
  *
@@ -328,7 +328,7 @@ describe("run-node-tests.mjs honours NODE_TEST_SHARD", () => {
     return lane;
   }
 
-  /** The remaining `tsx --test` lane — mostly the set ISS-4934 converts. */
+  /** The remaining `tsx --test` lane — the `VITEST_INCOMPATIBLE_FILES` entries. */
   function legacyLane(lanes: CapturedLane[]): CapturedLane {
     const lane = lanes.find((candidate) => candidate.argv.includes("--test"));
     if (lane === undefined) {
@@ -390,13 +390,25 @@ describe("run-node-tests.mjs honours NODE_TEST_SHARD", () => {
         spec,
         `the Vitest child must inherit NODE_TEST_SHARD=${spec}; without it vitest.node.config.ts derives the WHOLE census on every matrix leg`
       );
-      const spawned = laneFiles(legacyLane(lanes));
-      assert.deepEqual(
-        spawned,
-        selectShard(expectedAll, parseShardSpec(spec)),
-        `NODE_TEST_SHARD=${spec} must reach the spawned argv as this shard's files, not the whole suite`
-      );
-      seen.push(...spawned);
+      const expected = selectShard(expectedAll, parseShardSpec(spec));
+      if (expected.length > 0) {
+        const spawned = laneFiles(legacyLane(lanes));
+        assert.deepEqual(
+          spawned,
+          expected,
+          `NODE_TEST_SHARD=${spec} must reach the spawned argv as this shard's files, not the whole suite`
+        );
+        seen.push(...spawned);
+      } else {
+        // ISS-6258: 2 legacy files over 3 shards leaves one shard empty. With
+        // no file arguments `tsx --test` falls back to node's default glob and
+        // runs the whole tree, so an empty shard must not spawn the lane.
+        assert.equal(
+          lanes.some((candidate) => candidate.argv.includes("--test")),
+          false,
+          `NODE_TEST_SHARD=${spec} has no legacy files and must not spawn tsx --test`
+        );
+      }
     }
 
     assert.equal(new Set(seen).size, seen.length, "shards overlapped");
@@ -486,19 +498,14 @@ describe("vitest.node.config.ts honours NODE_TEST_SHARD", () => {
     );
   });
 
-  it("aliases node:test onto the shim", () => {
-    // The one line all 776 migrated files rest on. Removing it is loud (Vitest
-    // collects nothing) but nothing else in the suite pins it, and the shim's
-    // own test imports `node:test` rather than the shim, so it cannot tell the
-    // two apart.
+  it("does not alias node:test", () => {
+    // ISS-11262 converted every suite to import vitest and deleted the alias
+    // shim. Reintroducing an alias would let a node:test import pass silently
+    // on this lane instead of being routed by the census.
     const alias = nodeConfig.resolve?.alias as
       | Record<string, string>
       | undefined;
-    assert.ok(alias, "the node config must declare resolve.alias");
-    assert.equal(
-      alias["node:test"],
-      join(desktopDir, "test/support/node-test-vitest-shim.ts")
-    );
+    assert.equal(alias?.["node:test"], undefined);
   });
 
   it("gives hooks the same cap as tests", () => {

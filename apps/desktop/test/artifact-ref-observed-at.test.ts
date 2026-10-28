@@ -16,7 +16,7 @@
  *    form, because the column it lands in is compared LEXICALLY.
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import { extractArtifactRefs } from "../src/main/collectors/parsing/artifact-ref-extractor.js";
 import { extractLaunchMetadataRefs } from "../src/main/collectors/parsing/artifact-ref-launch-metadata.js";
 import {
@@ -122,7 +122,7 @@ describe("FEA-3635: PR-open marker anchors to the transcript turn", () => {
           name: "Bash",
           timestamp: TOOL_TIME,
           input: { command: "gh pr create --title 'Fix' --body 'body'" },
-          output: "https://github.com/closedloop-ai/example-repo/pull/3240\n",
+          output: "https://github.com/closedloop-ai/closedloop-ai/pull/3240\n",
         },
       ],
     });
@@ -144,7 +144,7 @@ describe("FEA-3635: PR-open marker anchors to the transcript turn", () => {
           name: "Bash",
           timestamp: null,
           input: { command: "gh pr create --fill" },
-          output: "https://github.com/closedloop-ai/example-repo/pull/44\n",
+          output: "https://github.com/closedloop-ai/closedloop-ai/pull/44\n",
         },
       ],
     });
@@ -159,7 +159,7 @@ describe("FEA-3635: PR-open marker anchors to the transcript turn", () => {
   test("a later re-mention of the same PR keeps the open marker at the create turn (comment 2)", () => {
     const CREATE_TIME = "2026-06-08T09:15:00.000Z";
     const REMENTION_TIME = "2026-06-08T11:45:00.000Z";
-    const prUrl = "https://github.com/closedloop-ai/example-repo/pull/3240";
+    const prUrl = "https://github.com/closedloop-ai/closedloop-ai/pull/3240";
     const session = makeSession({
       toolUses: [
         // The PR is OPENED here.
@@ -208,7 +208,7 @@ describe("FEA-3635: PR-open marker anchors to the transcript turn", () => {
           timestamp: "2026-06-08T10:00:00.000Z",
           input: { file: "README.md" },
           output:
-            "See https://github.com/closedloop-ai/example-repo/pull/10 for context.",
+            "See https://github.com/closedloop-ai/closedloop-ai/pull/10 for context.",
         },
       ],
     });
@@ -462,9 +462,10 @@ describe("ISS-5236: the dedup survivor carries the event instant", () => {
 });
 
 describe("ISS-5236: an unparseable source instant is never persisted", () => {
-  // `toIso` (@repo/lib/harness/parser-utils) returns an unparseable string
-  // VERBATIM instead of null, and Claude's `isoTs` does no parsing at all — both
-  // deliberately mirror the vendors' leniency. So junk genuinely reaches
+  // Before ISS-6738 there were two normalizers: `toIso` returned unparseable
+  // text VERBATIM and Claude's did no parsing at all. There is now one that
+  // returns null instead — but nothing rewrote the rows written under the old
+  // behaviour, so junk still reaches
   // `session.startedAt` on every harness and `NormalizedToolUse.timestamp` on
   // OpenCode, whose values come from arbitrary TEXT columns in the user's
   // `opencode.db`. A `??` chain would PREFER that junk, because it is non-null.
@@ -542,8 +543,8 @@ describe("ISS-5236: an unparseable source instant is never persisted", () => {
 describe("ISS-5427: the stamped instant is always canonical UTC 'Z'", () => {
   // ISS-5236 replaced the import wall clock (canonical by construction) with the
   // harness-supplied instant, and the resolver only VALIDATED it. Claude's
-  // `isoTs` returns a transcript string UNCHANGED, so an offset-form value now
-  // reaches `session_artifact_links.observed_at` — a TEXT column every consumer
+  // `toIso` returned a transcript string UNCHANGED until ISS-6738, so an
+  // offset-form value already reached `session_artifact_links.observed_at` — a TEXT column every consumer
   // compares lexically: `artifact-link-persistence`'s set-once
   // `first_pushed_at = MIN(COALESCE(first_pushed_at, $2), $2)`, and the
   // `ORDER BY sal.observed_at` reads in `branch-reads` / `component-invocations`.

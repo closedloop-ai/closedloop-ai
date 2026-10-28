@@ -1,11 +1,13 @@
 "use client";
 
+import { ArtifactStatusEditSurface } from "@repo/api/src/types/artifact-status-contract";
 import type { Priority } from "@repo/api/src/types/common";
 import {
   DOCUMENT_LIST_MAX_LIMIT,
   type DocumentWithProject,
 } from "@repo/api/src/types/document";
 import { DocumentTableToolbar } from "@repo/app/documents/components/table/document-table-toolbar";
+import { DocumentsView } from "@repo/app/documents/components/table/documents-view";
 import type { FilterCategory } from "@repo/app/documents/components/table/filter-category";
 import type { RowEditHandlers } from "@repo/app/documents/components/table/row-edit-context";
 import { useFavoriteArtifacts } from "@repo/app/documents/hooks/use-artifact-favorites";
@@ -16,21 +18,27 @@ import {
   useUpdateDocument,
 } from "@repo/app/documents/hooks/use-documents";
 import { useGroupBy } from "@repo/app/documents/hooks/use-group-by";
+import {
+  keepSamePageSizePlaceholder,
+  useMyTasksCardPage,
+  useMyTasksCardPageBounds,
+} from "@repo/app/documents/hooks/use-my-tasks-card-page";
 import { useProjectFilters } from "@repo/app/documents/hooks/use-project-filters";
+import { ARTIFACT_PRIORITY_UNSET_FLAG_KEY } from "@repo/app/documents/lib/artifact-priority-unset-flag";
+import { withPriorityDisplayFallback } from "@repo/app/documents/lib/priority-display-fallback";
 import { MyTasksCardView } from "@repo/app/my-tasks/components/my-tasks-card-view";
 import { MyTasksLoadFailedState } from "@repo/app/my-tasks/components/my-tasks-load-failed-state";
 import { MyTasksPaginationFooter } from "@repo/app/my-tasks/components/my-tasks-pagination-footer";
 import {
   MyTasksPagedUnit,
-  type MyTasksTruncation,
-  mergeMyTasksTruncations,
   resolveMyTasksRangeReadout,
-  resolveMyTasksTreeTruncation,
-  resolveMyTasksTruncation,
 } from "@repo/app/my-tasks/lib/my-tasks-range-readout";
 import { MY_TASKS_RECENCY_CHIP_LABEL } from "@repo/app/my-tasks/lib/my-tasks-recency-window";
 import { useProjects } from "@repo/app/projects/hooks/use-projects";
-import { useFeatureFlagGate } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import {
+  useFeatureFlagEnabledOptional,
+  useFeatureFlagGate,
+} from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import {
   DocumentColumn,
   MY_TASKS_DEFAULT_COLUMNS,
@@ -41,9 +49,11 @@ import { useLocalStorageState } from "@repo/app/shared/hooks/use-local-storage-s
 import { useScrollRestore } from "@repo/app/shared/hooks/use-scroll-restore";
 import { useViewStatePersistence } from "@repo/app/shared/hooks/use-view-state-persistence";
 import { MY_TASKS_RECENCY_WINDOW_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
+import { stringUnionOrFallback } from "@repo/app/shared/lib/local-storage-validators";
 import { useOrgUsersAsPopoverUsers } from "@repo/app/users/hooks/use-org-users-as-popover-users";
 import { useCurrentUser } from "@repo/app/users/hooks/use-users";
 import { FilterChip } from "@repo/design-system/components/ui/filter-chip";
+import type { TableViewMode } from "@repo/design-system/components/ui/table-view-menu";
 import {
   ToggleGroup,
   ToggleGroupItem,
@@ -52,30 +62,21 @@ import { useNavigation } from "@repo/navigation/use-navigation";
 import { usePath } from "@repo/navigation/use-path";
 import { useSearchParamsValue } from "@repo/navigation/use-search-params-value";
 import { useCallback, useMemo, useState } from "react";
-import { DocumentsView } from "@/app/(authenticated)/[orgSlug]/teams/[teamId]/projects/[projectId]/components/documents-view";
 import { Header } from "@/app/(authenticated)/components/header";
-import { AgentOnboardingCard } from "../../components/agent-onboarding-card";
 import { InviteSpotlightHost } from "../../components/invite-spotlight-host";
 import { OnboardingChecklist } from "../../components/onboarding-checklist";
 import { MyTasksEmptyState } from "./components/my-tasks-empty-state";
 import { MyTasksKanban } from "./components/my-tasks-kanban";
-import {
-  keepSamePageSizePlaceholder,
-  useMyTasksCardPage,
-  useMyTasksCardPageBounds,
-} from "./hooks/use-my-tasks-card-page";
-import {
-  MY_TASKS_PAGE_SIZE,
-  useMyTasksPagination,
-} from "./hooks/use-my-tasks-pagination";
-import { useMyTasksTreeSource } from "./hooks/use-my-tasks-tree-source";
+import { useMyTasksListData } from "./hooks/use-my-tasks-list-data";
+import { MY_TASKS_PAGE_SIZE } from "./hooks/use-my-tasks-pagination";
 import { resolveMyTasksListState } from "./lib/my-tasks-list-state";
+import { useMyTasksViewStateKeys } from "./my-tasks-view-state-keys";
 import { buildArtifactListParams, selectKanbanArtifacts } from "./utils";
 
+// The list/card/kanban view MODE. Deliberately NOT organization-namespaced
+// (ISS-9726): it names no entity and narrows no population, so carrying it
+// between organizations tells the reader nothing untrue.
 const VIEW_KEY = "my-tasks-view";
-const COLUMN_VISIBILITY_KEY = "table:columns:my-tasks";
-const COLUMN_ORDER_KEY = "table:column-order:my-tasks";
-const STORAGE_KEY = "my-tasks-artifacts";
 
 const COLUMN_DEFAULTS = {
   [DocumentColumn.Type]: true,
@@ -87,12 +88,6 @@ const COLUMN_DEFAULTS = {
  */
 const NO_ARTIFACTS: DocumentWithProject[] = [];
 
-/** Nothing was left out of the fetched window — no floor marker, no note. */
-const NO_TRUNCATION: MyTasksTruncation = {
-  isTotalPartial: false,
-  note: null,
-};
-
 /**
  * The card board's search copy (ISS-4682 item 2). ONE sentence, used verbatim as
  * the accessible name and, with an ellipsis, as the visible placeholder — a
@@ -102,11 +97,15 @@ const CARD_SEARCH_LABEL = "Filter tasks on this page";
 
 // This page composes many extracted siblings/helpers: the card view
 // (MyTasksCardView), the kanban selection (selectKanbanArtifacts), the
-// list-state resolution (resolveMyTasksListState), and — ISS-4466 — the unified
-// data-layer pagination (useMyTasksPagination). The residual is the FEA-3938
+// list-state resolution (resolveMyTasksListState), and — ISS-10472 — the list
+// view's whole data layer (useMyTasksListData), which owns which read is live
+// and which paginator owns it. The residual is the FEA-3938
 // view/loading/error/empty branch matrix over many independent async signals.
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: residual is the FEA-3938 view/loading/error/empty branch matrix over independent async signals.
 export default function MyTasksPage() {
+  // ISS-9726: one resolution of every persisted key on this surface, namespaced
+  // by the active organization.
+  const viewStateKeys = useMyTasksViewStateKeys();
   const navigation = useNavigation();
   const pathname = usePath();
   const searchParams = useSearchParamsValue();
@@ -116,27 +115,33 @@ export default function MyTasksPage() {
     isError: isUserError,
     refetch: refetchCurrentUser,
   } = useCurrentUser();
-  const [view, setView] = useLocalStorageState<"list" | "card">(
+  const [view, setView] = useLocalStorageState<TableViewMode>(
     VIEW_KEY,
-    "list"
+    DEFAULT_VIEW,
+    coerceStoredView
   );
   const [filterText, setFilterText, clearSearch] =
-    useViewStatePersistence<string>("table:search:my-tasks", "");
+    useViewStatePersistence<string>(viewStateKeys.search, "");
   const [scrollContainer, setScrollContainer] = useState<HTMLElement | null>(
     null
   );
   const { clearPosition: clearScroll } = useScrollRestore(
-    "table:scroll:my-tasks",
+    viewStateKeys.scroll,
     scrollContainer
   );
   const [, , clearSort] = useViewStatePersistence<null>(
-    "table:sort:my-tasks",
+    viewStateKeys.sort,
     null
   );
   const [filterCategory, setFilterCategory] = useState<FilterCategory>("all");
   const { data: projects = [], isLoading: isProjectsLoading } = useProjects();
   const assigneeId = currentUser?.id ?? null;
   const isListView = view === "list";
+  // ISS-10472: the All tab pages ROOT GROUPS on the server, so its filters are
+  // applied there too. The flat tabs keep today's client-paged read (operator
+  // ruling 2026-10-20), which is why this is a per-tab fact rather than a
+  // per-view one.
+  const isServerPagedList = isListView && filterCategory === "all";
   // FEA-1626 (ISS-4779 closed-by-default): whether the board asks the endpoint
   // for a bounded recency + lifecycle window instead of its full assigned
   // history. OFF (default) it sends neither param and reads exactly as today.
@@ -161,12 +166,11 @@ export default function MyTasksPage() {
   // value, so the chip, the empty state, and the request cannot disagree.
   const isRecencyWindowActive = recencyWindowEnabled && !isRecencyWindowRemoved;
 
-  // ---- API-paged assigned-artifact read (ISS-4576) ----
   //
   // The board reads ONE server page plus the real total behind it. The card view
   // asks for a screen-sized page because it renders one card per row; the list
   // view asks for the widest window the endpoint serves because it merges this
-  // stream with branch/session rows in the browser, and reports any residue
+  // stream with the tree rows in the browser, and reports any residue
   // through `hasMore` rather than pretending the window was the whole queue.
   const cardCursor = useMyTasksCardPage(MY_TASKS_PAGE_SIZE);
   const requestedLimit = isListView
@@ -221,7 +225,20 @@ export default function MyTasksPage() {
   // "queue is clear" state for the moment the flag is still resolving — the
   // exact class of lie the empty-state work below exists to remove.
   const isArtifactsPending = isArtifactsLoading || !isRecencyWindowFlagReady;
-  const rawArtifacts = artifactsPage?.items ?? NO_ARTIFACTS;
+  // ISS-9665: see `withPriorityDisplayFallback` — with the flag off these rows
+  // carry the `Medium` the serializer used to fold an unset priority to, so the
+  // board and the list render exactly as they shipped.
+  const unsetPriorityEnabled = useFeatureFlagEnabledOptional(
+    ARTIFACT_PRIORITY_UNSET_FLAG_KEY
+  );
+  const fetchedArtifacts = artifactsPage?.items ?? NO_ARTIFACTS;
+  const rawArtifacts = useMemo(
+    () =>
+      unsetPriorityEnabled
+        ? fetchedArtifacts
+        : withPriorityDisplayFallback(fetchedArtifacts),
+    [fetchedArtifacts, unsetPriorityEnabled]
+  );
   // The server's count of every assigned artifact, independent of this page.
   const assignedTotal = artifactsPage?.total ?? 0;
   // The key `useDocumentsPage` registered, threaded to the kanban so its
@@ -233,8 +250,6 @@ export default function MyTasksPage() {
     [listParams]
   );
 
-  // ---- Column visibility ----
-
   const {
     visibility,
     toggleColumn,
@@ -242,15 +257,13 @@ export default function MyTasksPage() {
     reorderColumns,
     resetColumnOrder,
   } = useColumnVisibility({
-    storageKey: COLUMN_VISIBILITY_KEY,
-    orderStorageKey: COLUMN_ORDER_KEY,
+    storageKey: viewStateKeys.columnVisibility,
+    orderStorageKey: viewStateKeys.columnOrder,
     defaults: COLUMN_DEFAULTS,
     columns: MY_TASKS_DEFAULT_COLUMNS,
   });
 
   const { groupBy, setGroupBy } = useGroupBy("table:groupByStatus:my-tasks");
-
-  // ---- Edit handlers ----
 
   const updateArtifactMutation = useUpdateDocument();
   // Type-scoped delete dispatch (branch vs document endpoint) lives in the
@@ -265,15 +278,21 @@ export default function MyTasksPage() {
       surfaceVariant: "my-tasks",
       onUpdateAssignee: (id, assigneeId) =>
         updateArtifactMutation.mutate({ id, assigneeId }),
-      onUpdatePriority: (id, priority: Priority) =>
-        updateArtifactMutation.mutate({ id, priority }),
+      onUpdatePriority: (id, priority: Priority | null) =>
+        updateArtifactMutation.mutate({
+          id,
+          priority,
+          surface: ArtifactStatusEditSurface.InlineCell,
+        }),
       onUpdateStatus: (id, status) =>
-        updateArtifactMutation.mutate({ id, status }),
+        updateArtifactMutation.mutate({
+          id,
+          status,
+          surface: ArtifactStatusEditSurface.InlineCell,
+        }),
     }),
     [orgUsers, updateArtifactMutation.mutate]
   );
-
-  // ---- Items & filters ----
 
   const { data: favoriteArtifacts } = useFavoriteArtifacts();
   const favoriteArtifactIds = useMemo(
@@ -285,46 +304,56 @@ export default function MyTasksPage() {
     documents: rawArtifacts,
     filterCategory,
     currentUserId: currentUser?.id,
-    persistenceKey: "table:filters:my-tasks",
+    persistenceKey: viewStateKeys.filters,
     favoriteArtifactIds,
+    // The route's status enum is the STORED inventory, and `Unknown` is a
+    // render bucket for an off-vocabulary row rather than a stored value — so a
+    // server-filtered tab can neither send it nor offer it (operator ruling
+    // 2026-10-21). The hook drops it from the applied set for the same reason.
+    supportsUnknownStatusFacet: !isServerPagedList,
   });
 
   const filterCurrentUser = useFilterCurrentUser(currentUser);
 
-  // ---- Merged project trees for cross-project nesting ----
-
-  // FEA-1651 (parent FEA-908, flagged by whitlockk in the PR #1077 review): the
-  // list view's tree came from ONE `GET /projects/:id/tree` per project the user
-  // is assigned in. `GET /artifacts/assigned-tree` collapses that fan-out into a
-  // single org-scoped request. Which read is live, the flag-readiness rules, and
-  // the branch read the fan-out needs all live in the hook, so this component
-  // holds one tree stream rather than two half-gated ones. Closed-by-default
-  // (ISS-4779).
+  // ISS-10472 — one hook owns the list view's whole data layer: which read is
+  // live, which paginator owns it, and what the footer may therefore state. The
+  // All tab pages root groups on the SERVER, with filters and search applied
+  // there and an exact total; the flat tabs keep the client-paged read and its
+  // floor marker (operator ruling 2026-10-20). Extracted rather than branched
+  // here, because that is one cohesive decision and this file is already at the
+  // size where the repo asks for a factoring instead of another branch.
   //
-  // Branch + tree reads feed the second task stream (branch/session rows). A
-  // failure there must surface, not be silently omitted from the total (the
-  // footer would otherwise report an honest-looking "of N" missing a whole
-  // stream) — ISS-4466, davetho.
+  // A tree failure must still SURFACE rather than leave the total quietly short
+  // — on the flat tabs it is one of two merged streams, and a footer reporting
+  // an honest-looking "of N" that is missing a whole stream is the defect
+  // ISS-4466 fixed (davetho). FEA-1651 is why there is one tree read at all:
+  // the list view used to issue one `GET /projects/:id/tree` per project the
+  // user was assigned in, and `GET /artifacts/assigned-tree` collapsed that
+  // fan-out into a single org-scoped request (parent FEA-908, whitlockk in the
+  // PR #1077 review).
+  const listData = useMyTasksListData({
+    applyProjectFilters: filtersReturn.applyFilters,
+    assignedTotal,
+    assigneeId,
+    documentsHasMore: artifactsPage?.hasMore ?? false,
+    filterCategory,
+    filters: filtersReturn.filters,
+    filterText,
+    groupBy,
+    isFilterActive: filtersReturn.isAnyFilterActive,
+    isListView,
+    isRecencyWindowActive,
+    isRecencyWindowFlagReady,
+    projects,
+    rawArtifacts,
+    sortPersistenceKey: viewStateKeys.sort,
+  });
   const {
     treeData: mergedTreeData,
     isTreeLoading: isTreeDataLoading,
     isTreeError: isTreeStreamError,
     refetchTree,
-  } = useMyTasksTreeSource({
-    assigneeId,
-    isListView,
-    isUserLoading,
-    artifacts: rawArtifacts,
-  });
-
-  // ---- Server-side-style pagination across all three streams (ISS-4466) ----
-  //
-  // Pages at the DATA layer over the unified, deduped root-group list so the
-  // board paginates like Sessions/Branches: ONE honest count matching every
-  // visible root, filters applied across the FULL set, tree nesting preserved.
-  // `DocumentsView` receives an already-paged `documents`/`treeData` subset, so
-  // its render assembly is untouched. Replaces the FEA-4373 bounded-fetch cap +
-  // truncation footer.
+  } = listData;
   const {
     page,
     setPage,
@@ -334,16 +363,9 @@ export default function MyTasksPage() {
     total: pageTotal,
     pagedDocuments,
     pagedTreeData,
-  } = useMyTasksPagination({
-    documents: rawArtifacts,
-    treeData: mergedTreeData,
-    filterCategory,
-    filterText,
-    applyProjectFilters: filtersReturn.applyFilters,
-    isFilterActive: filtersReturn.isAnyFilterActive,
-    groupBy,
-    sortPersistenceKey: "table:sort:my-tasks",
-  });
+    sectionTotalsByKey,
+    continuedSectionKeys,
+  } = listData.pagination;
 
   // The "Try again" action must retry whichever read failed, not just the
   // documents read. When `/me` fails, `assigneeId` is null and the artifacts
@@ -358,13 +380,19 @@ export default function MyTasksPage() {
   // failed TREE read as readily as a failed documents read, and a Try again
   // that cannot clear the failure it is offered for is a dead end
   // (closedloop-ai-stage, PR #4461).
+  // The assignee guard is explicit here because ISS-12637 removed the place it
+  // used to live: the documents refetch reached this handler through the
+  // fan-out's missing-project reconciliation, which was itself
+  // `enabled: !!assigneeId`. With the fan-out gone, card view has no tree at
+  // all, so without this the only read a card-view Try again could clear is the
+  // user query.
   const handleRetry = useCallback(() => {
     refetchCurrentUser();
-    refetchTree();
     if (assigneeId) {
       refetchArtifacts();
     }
-  }, [refetchCurrentUser, refetchArtifacts, refetchTree, assigneeId]);
+    refetchTree();
+  }, [assigneeId, refetchArtifacts, refetchCurrentUser, refetchTree]);
 
   // Paging to another page should land the viewer at the top of the new page
   // rather than keeping the previous page's scroll offset (the scroll-restore
@@ -400,18 +428,11 @@ export default function MyTasksPage() {
   // reconcile with every visible root across all streams — so a bounded tree
   // read makes that number a floor too, and every reason gets named rather than
   // one stream quietly leaving the count (closedloop-ai-stage, PR #4461).
-  const documentsTruncation =
-    isListView && (artifactsPage?.hasMore ?? false)
-      ? resolveMyTasksTruncation(rawArtifacts.length, assignedTotal)
-      : NO_TRUNCATION;
-  const listTruncation = isListView
-    ? mergeMyTasksTruncations([
-        documentsTruncation,
-        resolveMyTasksTreeTruncation(mergedTreeData?.truncation),
-      ])
-    : NO_TRUNCATION;
-
-  // ---- List-view task-set resolution (FEA-3938) ----
+  // ISS-10472 narrows where that marker applies: the All tab's total is now the
+  // server's exact count over the same predicate the page was drawn from, so
+  // there is no floor to mark. The states that still read a BOUNDED window keep
+  // it, and the hook decides which this is.
+  const listTruncation = listData.truncation;
 
   const { hasAnyTasks, isTasksError, isTasksLoading, isTotalSettled } =
     resolveMyTasksListState({
@@ -423,11 +444,13 @@ export default function MyTasksPage() {
       isArtifactsFetching,
       isArtifactsError,
       isProjectsLoading,
+      isServerPagedList,
       isTreeDataLoading,
       isTreeStreamError,
+      // The rows the live source yielded, which on the All tab is the tree
+      // page — `rawArtifacts` is fetched there but never rendered.
+      renderableRowCount: listData.documents.length,
     });
-
-  // ---- Kanban data (API-paged — ISS-4576) ----
 
   const kanbanArtifacts = useMemo(
     () =>
@@ -545,7 +568,6 @@ export default function MyTasksPage() {
         <OnboardingChecklist />
         {/* ISS-5490 FR-7: anchors to the checklist's invite row above. */}
         <InviteSpotlightHost />
-        <AgentOnboardingCard />
 
         {/* Title bar */}
         <div className={isListView ? "border-b" : ""}>
@@ -574,22 +596,19 @@ export default function MyTasksPage() {
               teamMembersError: null,
               teamMembersLoading: false,
             }}
-            filterPopoverProps={
-              filterCategory === "branches"
-                ? undefined
-                : {
-                    currentUser: filterCurrentUser,
-                    filtersReturn,
-                    hideAssignee: true,
-                    teamMembers: [],
-                    teamMembersError: null,
-                    teamMembersLoading: false,
-                  }
-            }
+            filterPopoverProps={{
+              currentUser: filterCurrentUser,
+              filtersReturn,
+              hideAssignee: true,
+              teamMembers: [],
+              teamMembersError: null,
+              teamMembersLoading: false,
+            }}
             filterText={filterText}
             leadingContent={
               isListView && (
                 <ToggleGroup
+                  aria-label="Filter by artifact type"
                   onValueChange={(value) => {
                     if (value) {
                       setFilterCategory(value as FilterCategory);
@@ -604,7 +623,6 @@ export default function MyTasksPage() {
                   <ToggleGroupItem value="documents">PRDs</ToggleGroupItem>
                   <ToggleGroupItem value="features">Issues</ToggleGroupItem>
                   <ToggleGroupItem value="plans">Plans</ToggleGroupItem>
-                  <ToggleGroupItem value="branches">Branches</ToggleGroupItem>
                 </ToggleGroup>
               )
             }
@@ -698,16 +716,28 @@ export default function MyTasksPage() {
             className="min-h-0 flex-1 overflow-auto"
             ref={setScrollContainer}
           >
-            {/* ISS-4466: `DocumentsView` renders only the current page's
-                already-paged documents + tree subset — its render assembly is
-                unchanged; the paging happened at the data layer in
-                `useMyTasksPagination`. */}
+            {/* `DocumentsView` renders only the current page's already-paged
+                documents + tree subset — its render assembly is unchanged
+                whichever paginator drew the page, which is what let ISS-10472
+                move the All tab onto a server page without touching it. */}
             <DocumentsView
+              // One predicate decides the rows, and on the server-paged tab it is
+              // the server's. The browser's is not equivalent — the tree payload
+              // carries no tags, and its date window is frozen at selection time
+              // while the browser's re-resolves — so re-applying it drops rows
+              // the footer counts, and `treeDocumentRows` flattens roots with
+              // their children, so a dropped row can be a whole counted group.
               applyProjectFilters={
-                filtersReturn.isAnyFilterActive
+                !isServerPagedList && filtersReturn.isAnyFilterActive
                   ? filtersReturn.applyFilters
                   : undefined
               }
+              // ISS-4704: with section-aware paging planned upstream, a section
+              // header states the status's whole population and a section too
+              // large for one page says it is continuing. Both are `undefined`
+              // while that plan is not in force, and the view falls back to the
+              // ISS-4466 page-local count.
+              continuedSectionKeys={continuedSectionKeys}
               documents={pagedDocuments}
               editHandlers={editHandlers}
               filterCategory={filterCategory}
@@ -726,8 +756,15 @@ export default function MyTasksPage() {
               onClearFilters={filtersReturn.clearAllFilters}
               onDelete={handleDelete}
               onReorderColumns={reorderColumns}
-              sortPersistenceKey="table:sort:my-tasks"
-              storageKey={STORAGE_KEY}
+              // The ordering the SERVER packed this page in (whitlockk). Without it
+              // the view resolves its own from its PostHog gates, and two of
+              // the three key a status band on the raw status while the third
+              // coerces it — so a band could be keyed differently from the
+              // section total the paginator computed for it.
+              sectionOrdering={listData.sectionOrdering ?? undefined}
+              sectionTotalsByKey={sectionTotalsByKey}
+              sortPersistenceKey={viewStateKeys.sort}
+              storageKey={viewStateKeys.expansion}
               treeData={pagedTreeData}
               visibleColumns={visibleColumns}
             />
@@ -735,13 +772,13 @@ export default function MyTasksPage() {
         )}
 
         {/* Pagination footer (ISS-4466 / ISS-4576): one honest total that
-            matches every visible root row, across documents, branches, and
-            sessions. Gated on `isTotalSettled` so the "of N" never publishes a
-            partial total while the branch/tree stream is still landing after
-            documents (davetho). ISS-4576 adds the truncation case: when the
-            server reports assigned artifacts beyond the fetched window the total
-            is marked a floor and the note names exactly what was left out, so a
-            bounded read can no longer be read as a complete count. */}
+            matches every visible root row. Gated on `isTotalSettled` so the
+            "of N" never publishes a partial total while the tree stream is
+            still landing after documents (davetho). ISS-4576 adds the
+            truncation case: when the server reports assigned artifacts beyond
+            the fetched window the total is marked a floor and the note names
+            exactly what was left out, so a bounded read can no longer be read
+            as a complete count. */}
         {isListView && !isTasksError && hasAnyTasks && isTotalSettled && (
           <MyTasksPaginationFooter
             onPageChange={handlePageChange}
@@ -760,4 +797,30 @@ export default function MyTasksPage() {
       </div>
     </div>
   );
+}
+
+const DEFAULT_VIEW: TableViewMode = "list";
+
+/**
+ * Every {@link TableViewMode}, as a runtime value.
+ *
+ * An exhaustive `Record`, not a hand-written array: adding a mode to the union fails
+ * `tsc` HERE rather than compiling into a list that silently coerces every value of
+ * the new mode to {@link DEFAULT_VIEW}. The design system exports `TableViewMode` as a
+ * type only, so this is the closest thing to a runtime source of truth available
+ * without changing that package.
+ */
+const TABLE_VIEW_MODES: Record<TableViewMode, true> = {
+  card: true,
+  list: true,
+};
+
+const ALLOWED_VIEWS = Object.keys(TABLE_VIEW_MODES) as TableViewMode[];
+
+/** ISS-8533: a stored value that is not a view mode renders the default view. */
+function coerceStoredView(
+  value: unknown,
+  fallback: TableViewMode
+): TableViewMode {
+  return stringUnionOrFallback(value, ALLOWED_VIEWS, fallback);
 }

@@ -11,31 +11,64 @@ import { type ChildProcess, spawnSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { finished } from "node:stream/promises";
 import { _electron as electron, type Page } from "@playwright/test";
+import {
+  closeElectronApp,
+  discardPartialLaunch,
+} from "../e2e/helpers/desktop-app";
+import {
+  firstWindowOrExplainExit,
+  launchElectronOrExplain,
+} from "../e2e/helpers/electron-launch-attribution";
+import { DESKTOP_MAIN_BUNDLE } from "../e2e/helpers/electron-launch-preflight";
+import { captureProcessGroupId } from "../e2e/helpers/process-group-kill";
+import type { MockCloudServer } from "./mock-cloud-server";
 import {
   MOCK_GATEWAY_ID,
   MOCK_ORGANIZATION_ID,
   MOCK_REFRESH_TOKEN,
   MOCK_USER_ID,
-  type MockCloudServer,
-} from "./mock-cloud-server";
+} from "./soak-cloud-fixture";
 import {
   establishPageReadPopulation,
+  type PageReadRendererMark,
   type PageReadSample,
+  raceReadAgainstDeadline,
   recordPageReadSample,
 } from "./soak-page-read";
 import { log, sleep } from "./soak-support";
 import type { AuthBlobs, LaunchedSoakApp, PageReadStats } from "./soak-types";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DESKTOP_ROOT = path.resolve(__dirname, "../..");
-export const MAIN_JS = path.join(DESKTOP_ROOT, "dist/main/index.js");
+export type SoakElectronLauncher = typeof electron.launch;
+type SoakCloudOrigins = Pick<MockCloudServer, "apiOrigin" | "relayOrigin">;
+
+type LaunchSoakAppDependencies = {
+  launchElectron: SoakElectronLauncher;
+  firstWindowTimeoutMs?: number;
+};
+
+const REAL_LAUNCH_SOAK_APP_DEPENDENCIES: LaunchSoakAppDependencies = {
+  launchElectron: (options = {}) =>
+    launchElectronOrExplain(options, (prepared) => electron.launch(prepared)),
+};
+
+export const MAIN_JS = DESKTOP_MAIN_BUNDLE;
 
 const TOKEN_EXPIRY = "2027-12-31T00:00:00.000Z";
-const PAGE_READ_DEADLINE_MS = 10_000;
-/** Distinguishes a deadline win from any value the read itself could resolve. */
-const TIMEOUT_SENTINEL = Symbol("page-read-timeout");
+/**
+ * ISS-6102 — where the renderer publishes its in-flight page-read mark. A
+ * harness-only property on `window`, written by the probe's own evaluation and
+ * read by nothing in the app.
+ */
+const RENDERER_PAGE_READ_MARK_KEY = "__soakPageReadMark";
+/**
+ * Distinguishes each read's mark from the one the previous read left at the same
+ * `window` key. A read whose CDP dispatch has not landed yet has published no
+ * mark of its own, and the stale one still sitting there is about a different
+ * read entirely.
+ */
+let pageReadSeq = 0;
 const AUTH_DEADLINE_MS = 60_000;
 const HELLO_DEADLINE_MS = 60_000;
 /**
@@ -48,6 +81,11 @@ const HELLO_DEADLINE_MS = 60_000;
  * loaded box turned a SLOW boot into no information at all: the cycle was lost
  * to `electronApplication.firstWindow: Timeout 30000ms exceeded` and nothing was
  * learned about how slow.
+ *
+ * ISS-10066: the wait is raced against the child's own `exit`, so this budget is
+ * only ever spent on an app that is still ALIVE. A boot that dies costs its exit
+ * code immediately instead of three minutes and the same empty timeout — the
+ * same trade the e2e suite takes at 30s, worth six times more here.
  */
 const FIRST_WINDOW_TIMEOUT_MS = 180_000;
 
@@ -63,6 +101,22 @@ const OOM_SIGNATURES = [
  * longer than the longest signature.
  */
 const OOM_SIGNATURE_CARRY_CHARS = 128;
+
+function failedFirstWindowError(
+  failure: unknown,
+  oomHits: ReadonlySet<string>,
+  userDataDir: string
+): Error {
+  const diagnosis =
+    failure instanceof Error
+      ? (failure.stack ?? failure.message)
+      : String(failure);
+  const signatures = [...oomHits];
+  return new Error(
+    `${diagnosis}\n[desktop-soak] OOM signatures observed before first window: ${signatures.length > 0 ? signatures.join(", ") : "none"}\n[desktop-soak] Cycle-owned profile: ${userDataDir}`,
+    { cause: failure }
+  );
+}
 
 /**
  * One bootstrap launch against a throwaway profile to safeStorage-encrypt the
@@ -87,16 +141,19 @@ export async function bootstrapAuthBlobs(
   fs.mkdirSync(cacheDir, { recursive: true });
   const bootProfile = fs.mkdtempSync(path.join(workRoot, "auth-boot-"));
   log("auth blobs: bootstrap launch to encrypt session via safeStorage");
-  const app = await electron.launch({
-    args: [MAIN_JS, `--user-data-dir=${bootProfile}`],
-    env: {
-      ...process.env,
-      ...homes,
-      CLOSEDLOOP_DISABLE_AUTO_UPDATE: "1",
-      ELECTRON_DISABLE_SECURITY_WARNINGS: "1",
-      OTEL_SDK_DISABLED: "1",
+  const app = await launchElectronOrExplain(
+    {
+      args: [MAIN_JS, `--user-data-dir=${bootProfile}`],
+      env: {
+        ...process.env,
+        ...homes,
+        CLOSEDLOOP_DISABLE_AUTO_UPDATE: "1",
+        ELECTRON_DISABLE_SECURITY_WARNINGS: "1",
+        OTEL_SDK_DISABLED: "1",
+      },
     },
-  });
+    (prepared) => electron.launch(prepared)
+  );
   try {
     const { privateKey } = generateKeyPairSync("ed25519");
     const privateKeyPkcs8Pem = privateKey
@@ -208,9 +265,10 @@ export function seedProfile(
 
 export async function launchSoakApp(
   userDataDir: string,
-  mock: MockCloudServer,
+  mock: SoakCloudOrigins,
   homes: Record<string, string>,
-  stdioLogPath: string
+  stdioLogPath: string,
+  dependencies: LaunchSoakAppDependencies = REAL_LAUNCH_SOAK_APP_DEPENDENCIES
 ): Promise<LaunchedSoakApp> {
   const oomHits = new Set<string>();
   // Appended, never rotated or capped: a relaunch after an appkill continues
@@ -230,7 +288,7 @@ export async function launchSoakApp(
     }
     carry = scanned.slice(-OOM_SIGNATURE_CARRY_CHARS);
   };
-  const app = await electron.launch({
+  const app = await dependencies.launchElectron({
     args: [MAIN_JS, `--user-data-dir=${userDataDir}`],
     env: {
       ...process.env,
@@ -246,11 +304,55 @@ export async function launchSoakApp(
     },
   });
   const child: ChildProcess = app.process();
+  const groupId = captureProcessGroupId(child);
+  // Subscribe before firstWindow can reject: exit does not mean the pipes
+  // have delivered their final buffered bytes, but close does.
+  const childClosed = new Promise<void>((resolve) =>
+    child.once("close", resolve)
+  );
   child.stderr?.on("data", record);
   // OOM signatures can land on stdout depending on the crash path.
   child.stdout?.on("data", record);
   const windowWaitStart = Date.now();
-  const page = await app.firstWindow({ timeout: FIRST_WINDOW_TIMEOUT_MS });
+  let page: Page;
+  try {
+    page = await firstWindowOrExplainExit(
+      app.firstWindow({
+        timeout: dependencies.firstWindowTimeoutMs ?? FIRST_WINDOW_TIMEOUT_MS,
+      }),
+      child
+    );
+  } catch (failure) {
+    await discardPartialLaunch(async () => {
+      let closeTimeout: NodeJS.Timeout | undefined;
+      try {
+        await closeElectronApp(app, child, groupId);
+        await Promise.race([
+          childClosed,
+          new Promise<never>((_resolve, reject) => {
+            closeTimeout = setTimeout(
+              () =>
+                reject(
+                  new Error("Soak child stdio did not close within 5000ms")
+                ),
+              5000
+            );
+          }),
+        ]);
+      } finally {
+        clearTimeout(closeTimeout);
+        // Keep recording through process death: a fatal signature can be the
+        // child's last output, and losing it would erase the soak diagnosis.
+        child.stderr?.off("data", record);
+        child.stdout?.off("data", record);
+        stdioLog.end();
+        await finished(stdioLog);
+      }
+    });
+    // runCycle still needs the profile's final outbox state and main.log after
+    // an appkill relaunch fails. Only that owner can decide when to remove it.
+    throw failedFirstWindowError(failure, oomHits, userDataDir);
+  }
   await page.waitForLoadState("domcontentloaded");
   log(`app window ready in ${Date.now() - windowWaitStart}ms`);
   return { app, page, oomHits, child };
@@ -307,30 +409,95 @@ export async function waitForHello(mock: MockCloudServer): Promise<void> {
  * be tested without a runtime.
  */
 function readPageDataOnce(page: Page): Promise<PageReadSample> {
-  const start = Date.now();
-  const evaluation = page.evaluate(() =>
-    (
-      window as unknown as {
+  const startedAt = Date.now();
+  pageReadSeq += 1;
+  const readId = `page-read-${pageReadSeq}`;
+  const evaluation = page.evaluate(
+    async ({ markKey, readId: id }) => {
+      const w = window as unknown as {
         desktopApi: {
-          agentSessionsApi: {
-            pageData: (query: unknown) => Promise<unknown>;
-          };
+          agentSessionsApi: { pageData: (query: unknown) => Promise<unknown> };
         };
+      } & Record<string, PageReadRendererMark | undefined>;
+      // `Date.now()`, not `performance.now()`: the runner compares both of the
+      // mark's instants against its own, and only the wall clock is shared
+      // between the two processes.
+      const startedAt = Date.now();
+      // Published BEFORE the await so a read that is still outstanding when the
+      // runner's deadline fires is readable as exactly that. `startedAt` rides
+      // along so a read that had not BEGUN by the deadline is distinguishable
+      // from one that began on time and ran long — the two lose their deadline
+      // on opposite sides of the renderer boundary.
+      const mark: PageReadRendererMark = {
+        readId: id,
+        settledAt: null,
+        startedAt,
+      };
+      w[markKey] = mark;
+      const rendererStartedAt = performance.now();
+      try {
+        const value = await w.desktopApi.agentSessionsApi.pageData({
+          quality: "all",
+        });
+        mark.settledAt = Date.now();
+        return {
+          value,
+          rendererMs: performance.now() - rendererStartedAt,
+          rendererStartedAt: startedAt,
+        };
+      } catch (error) {
+        mark.settledAt = Date.now();
+        throw error;
       }
-    ).desktopApi.agentSessionsApi.pageData({ quality: "all" })
+    },
+    { markKey: RENDERER_PAGE_READ_MARK_KEY, readId }
   );
-  // A read that rejects AFTER the deadline already won the race would be an
-  // unhandled rejection; this handler marks it handled without hiding it
-  // from the race below.
-  evaluation.catch(() => undefined);
-  return Promise.race([
+  return raceReadAgainstDeadline({
     evaluation,
-    sleep(PAGE_READ_DEADLINE_MS).then(() => TIMEOUT_SENTINEL),
-  ]).then((result) => ({
-    result,
-    elapsedMs: Date.now() - start,
-    timedOut: result === TIMEOUT_SENTINEL,
-  }));
+    readId,
+    startedAt,
+    now: () => Date.now(),
+    sleep,
+    readRendererMark: () => readRendererMark(page),
+  });
+}
+
+/**
+ * Read back the renderer's in-flight mark after the deadline has already been
+ * lost. Deliberately a SEPARATE, tiny evaluation: it carries one number rather
+ * than a page-data payload, so the probe that measures the transport segment
+ * does not itself pay it.
+ *
+ * Returns `null` on any failure — a mark we could not read is recorded as
+ * `unknown`, never guessed into one of the real phases. This `try/catch` bounds
+ * a REJECTION only; a wedged renderer never answers at all, and that case is
+ * bounded by the caller (see `RENDERER_MARK_PROBE_DEADLINE_MS`).
+ */
+async function readRendererMark(
+  page: Page
+): Promise<PageReadRendererMark | null> {
+  try {
+    const mark = await page.evaluate(
+      (markKey) =>
+        (window as unknown as Record<string, PageReadRendererMark | undefined>)[
+          markKey
+        ] ?? null,
+      RENDERER_PAGE_READ_MARK_KEY
+    );
+    return mark === null
+      ? null
+      : {
+          readId: mark.readId,
+          settledAt: mark.settledAt,
+          // `?? null` rather than a spread: the mark crosses a CDP structured
+          // clone, and a shape missing the field must arrive as an explicit
+          // "not reported" so the classifier falls back to the settle-instant
+          // rule instead of reading `undefined` as a usable instant.
+          startedAt: mark.startedAt ?? null,
+        };
+  } catch {
+    return null;
+  }
 }
 
 /** ISS-6100 — establish this cycle's page-read population. */

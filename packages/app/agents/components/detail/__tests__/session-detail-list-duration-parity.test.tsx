@@ -1,12 +1,8 @@
 import {
-  DISPLAYED_SESSION_STATUS,
   SESSION_STATUS,
   STALE_SESSION_DISPLAY_THRESHOLD_HOURS,
 } from "@repo/api/src/types/session-status";
-import {
-  SESSION_STALE_TOOLTIP,
-  SESSION_STATUS_LABELS,
-} from "@repo/api/src/types/session-status-display";
+import { SESSION_STATUS_LABELS } from "@repo/api/src/types/session-status-display";
 import { tooltipMockModule } from "@repo/app/test/mocks/tooltip";
 import { screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -83,10 +79,9 @@ function activeRecordSilentFor(silentForMs: number): SessionRecord {
 }
 
 /**
- * ISS-6455: the same record, blocked on a human. The desktop LOCAL producer
- * serves exactly this shape — a raw `active` status with `awaitingInputSince`
- * beside it — whenever the `sessions-displayed-status-parity` Labs gate is off,
- * which is its closed-by-default state.
+ * ISS-6455: the same record, blocked on a human — a raw `active` status with
+ * `awaitingInputSince` beside it, the shape a version-skewed producer can still
+ * serve.
  *
  * The fixture above hardcoded `awaitingInputSince: null`, so the ONE branch that
  * diverged was never seeded and this file stayed green through the split it
@@ -193,25 +188,23 @@ afterEach(() => {
 });
 
 describe("ISS-5575: list and detail report one Duration for one session", () => {
-  it("renders the same Duration on both surfaces for a silent active run", () => {
+  // ISS-10364 (operator ruling, 2026-09-23) retired the staleness fold this
+  // case pinned: `resolveDisplayedSessionStatus` no longer reads `now` at all,
+  // so a stored `active` run silent for 30h reads Active, not Stale, on both
+  // surfaces — and a Running window, not an em-dash. The parity claim this
+  // file exists for still holds; the answer the two surfaces agree on changed.
+  it("renders the same Duration on both surfaces for a long-silent active run", () => {
     renderBothSurfaces(activeRecordSilentFor(SILENT_FOR_MS));
 
-    // The list has folded the run — this is the population the bug was about.
     expect(listStatusText()).toContain(
-      SESSION_STATUS_LABELS[DISPLAYED_SESSION_STATUS.STALE]
+      SESSION_STATUS_LABELS[SESSION_STATUS.ACTIVE]
     );
 
     // The assertion that matters: the two surfaces agree WITH EACH OTHER.
     expect(detailDurationText()).toBe(listDurationText());
-    // ...and they agree on the honest answer, not on a number. A run we have
-    // stopped believing is running cannot also be timed against `now()`.
-    expect(detailDurationText()).toBe(EM_DASH);
-
-    // ISS-5575 (#review, visual-QA): the dash SAYS WHY, in the accessible name
-    // rather than a mouse-only `title`. This row is the only surface a default
-    // user sees this change on, and the status chip that would otherwise explain
-    // it is not rendered with the prototype-parity flag off.
-    expect(detailDurationRow().textContent).toContain(SESSION_STALE_TOOLTIP);
+    // ...and they agree on a measured span: `now - startedAt` = RAN_FOR_MS
+    // (3h), regardless of how long the run has gone silent.
+    expect(detailDurationText()).toBe("3h 0m");
   });
 
   it("still renders the same measured Duration on both surfaces for a live run", () => {
@@ -228,24 +221,18 @@ describe("ISS-5575: list and detail report one Duration for one session", () => 
   });
 
   /**
-   * ISS-6455: the population the `projectsLiveWaiting` short-circuit re-opened
-   * the split for. The detail exempted an awaiting-input run from the staleness
-   * fold and kept timing it; the list never read `awaitingInputSince`, folded
-   * the same row to Stale, and emptied its Duration cell.
-   *
-   * A run blocked on a human three days ago genuinely IS still awaiting input,
-   * so the agreed answer is the MEASURED one — asserted as such, not only as
-   * equality, because two dashes would satisfy equality while silently taking
-   * the wrong side of the disagreement.
+   * ISS-10364 (operator ruling, 2026-09-23/24) retired the Waiting projection
+   * this case used to pin: neither surface reads `awaitingInputSince` into the
+   * displayed status any more, so a silent awaiting-input run now badges plain
+   * Active on both the list and the detail — the same word a long-silent
+   * non-awaiting run gets, since there is no longer a distinction between
+   * them. The parity claim still holds; the agreed word changed.
    */
-  it("renders the same running Duration on both surfaces for a silent awaiting-input run", () => {
+  it("ISS-10364: renders the same running Duration on both surfaces for a silent awaiting-input run, now badged plain Active", () => {
     renderBothSurfaces(awaitingInputRecordSilentFor(SILENT_FOR_MS));
 
-    // The list badges the projection rather than folding it away — the same word
-    // the detail's title chip already shows, and the one the desktop Status
-    // facet gathers this row under.
     expect(listStatusText()).toContain(
-      SESSION_STATUS_LABELS[DISPLAYED_SESSION_STATUS.WAITING]
+      SESSION_STATUS_LABELS[SESSION_STATUS.ACTIVE]
     );
 
     expect(detailDurationText()).toBe(listDurationText());

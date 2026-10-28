@@ -1,21 +1,15 @@
 import { GroupByMode } from "@repo/app/documents/lib/group-by";
+import { TABLE_COLLAPSED_GROUP_PARAM } from "@repo/app/shared/lib/table-collapsed-groups";
+import { TABLE_GROUP_PARAM } from "@repo/app/shared/lib/table-group-view-params";
 import type { NavigationActions } from "@repo/navigation/navigation-adapter";
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const featureFlagEnabledMock = vi.fn();
-
-vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
-  useFeatureFlagEnabled: (key: string) => featureFlagEnabledMock(key),
-}));
-
 import { useStackRankReset } from "../use-stack-rank-reset";
 
 function setup(
-  flagEnabled: boolean,
   searchParams = new URLSearchParams("filter=open&sortBy=status&sortDir=desc")
 ) {
-  featureFlagEnabledMock.mockReturnValue(flagEnabled);
   const clearSort = vi.fn();
   const setGroupBy = vi.fn();
   const replace = vi.fn();
@@ -23,6 +17,7 @@ function setup(
     navigate: vi.fn(),
     replace,
     back: vi.fn(),
+    forward: vi.fn(),
     refresh: vi.fn(),
   } satisfies NavigationActions;
 
@@ -44,13 +39,8 @@ describe("useStackRankReset (PLN-755 Phase D)", () => {
     vi.clearAllMocks();
   });
 
-  it("returns undefined when the feature flag is off", () => {
-    const { handler } = setup(false);
-    expect(handler).toBeUndefined();
-  });
-
-  it("returns a working handler when the feature flag is on", () => {
-    const { handler, clearSort, setGroupBy, replace } = setup(true);
+  it("returns a working handler", () => {
+    const { handler, clearSort, setGroupBy, replace } = setup();
     expect(handler).toBeInstanceOf(Function);
 
     act(() => {
@@ -65,9 +55,24 @@ describe("useStackRankReset (PLN-755 Phase D)", () => {
     });
   });
 
+  it("drops the linked grouping and its closed bands with the sort", () => {
+    const { handler, replace } = setup(
+      new URLSearchParams(
+        `filter=open&sortBy=status&${TABLE_GROUP_PARAM}=status:custom&${TABLE_COLLAPSED_GROUP_PARAM}=done`
+      )
+    );
+
+    act(() => {
+      handler?.();
+    });
+
+    expect(replace).toHaveBeenCalledWith("/x/teams/y/projects/z?filter=open", {
+      scroll: false,
+    });
+  });
+
   it("falls back to bare pathname when no other params remain", () => {
     const { handler, clearSort, setGroupBy, replace } = setup(
-      true,
       new URLSearchParams("sortBy=status&sortDir=desc")
     );
 

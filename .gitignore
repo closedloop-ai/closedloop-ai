@@ -93,6 +93,8 @@ lib-cov
 
 # Coverage directory used by tools like istanbul
 coverage
+# ISS-12017: per-model seed coverage files, source, not a coverage output.
+!packages/database/prisma/seeds/coverage/
 *.lcov
 
 # nyc test coverage
@@ -282,6 +284,13 @@ $RECYCLE.BIN/
 !.closedloop-ai/settings/critic-gates.json
 .agent-types
 CLAUDE.md.backup
+# ISS-4430 perf-qa. A profiling run holds a copy of a developer's real data and
+# their real file paths, so .perf/ must never be committable: the dataset-prep
+# and snapshot-import scripts refuse any target `git check-ignore` does not
+# already cover, which makes this entry load-bearing rather than hygiene.
+.perf/
+*.cpuprofile
+*.heapsnapshot
 
 # For local plans
 plan-docs
@@ -351,3 +360,9 @@ apps/desktop/src/main/database/migrations-manifest.ts
 apps/desktop/src/main/docs-help/docs-bundle-manifest.ts
 # Scratch trees written by apps/desktop/test/run-typecheck-passes.test.ts
 apps/desktop/.iss5375-fixture-*
+
+/apps/prototypes/public/storybook/
+
+*.db-shm
+
+*.db-wal

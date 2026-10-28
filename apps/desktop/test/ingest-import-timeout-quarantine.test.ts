@@ -22,7 +22,6 @@
 import assert from "node:assert/strict";
 import {
   mkdtempSync,
-  readFileSync,
   rmSync,
   statSync,
   utimesSync,
@@ -30,16 +29,20 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { importSessionBounded } from "../src/main/collectors/engine/bounded-import-session.js";
 import { CollectorManager } from "../src/main/collectors/engine/collector-manager.js";
-import { ingestCachePath } from "../src/main/collectors/engine/ingest-paths.js";
 import type {
   Importer,
   ImportResult,
 } from "../src/main/dashboard/agent-dashboard-db-types.js";
-import { createWriteQueue } from "../src/main/database/write-queue.js";
+import {
+  createWriteQueue,
+  WriteQueueCancelOutcome,
+} from "../src/main/database/write-queue.js";
+import { SourceTimeoutStage } from "../src/shared/ingest-quarantine-contract.js";
 import { deferred } from "./deferred.js";
+import { createMemoryIngestStoreProvider } from "./ingest-store-test-utils.js";
 import { fakeCollector, makeSession } from "./normalized-session-test-utils.js";
 
 // A tiny bound keeps the test fast: the wedged write never settles, so the only
@@ -62,6 +65,31 @@ function sessionIdOf(source: string): string {
 
 async function noopCooperativeDelay(): Promise<void> {
   // No pacing pauses — keep the import loop tight for the test.
+}
+
+/**
+ * ISS-9838: the ingest stores are SQLite-backed, so what carries a store across
+ * the "new manager per pass" boundary is the shared PROVIDER, not the shared
+ * directory. One provider per state dir preserves `runPass`'s durability
+ * property exactly. Keying the map on the state dir is safe across cases
+ * because every case mints its own `mkdtempSync` directory, so no case can ever
+ * read a provider a previous one primed.
+ */
+const ingestStoresByStateDir = new Map<
+  string,
+  ReturnType<typeof createMemoryIngestStoreProvider>
+>();
+
+function ingestStoresFor(
+  stateDir: string
+): ReturnType<typeof createMemoryIngestStoreProvider> {
+  const existing = ingestStoresByStateDir.get(stateDir);
+  if (existing) {
+    return existing;
+  }
+  const created = createMemoryIngestStoreProvider();
+  ingestStoresByStateDir.set(stateDir, created);
+  return created;
 }
 
 /**
@@ -99,8 +127,8 @@ async function runPass(
       importSession,
       ...(cancelInFlightWrite ? { cancelInFlightWrite } : {}),
     },
-    detectBillingMode: () => "metered_api",
     stateDir,
+    ingestStores: ingestStoresFor(stateDir).provider,
     emit: () => {},
     getCollectionMode: () => "watcher",
     cooperativeDelay: noopCooperativeDelay,
@@ -121,7 +149,7 @@ async function runPass(
     await bootComplete.promise;
     return manager.getIngestProgress().quarantinedCount;
   } finally {
-    manager.stop();
+    await manager.stop();
   }
 }
 
@@ -213,10 +241,8 @@ test("ISS-6115: an import that keeps timing out is quarantined after its attempt
     // record, so the quarantined source must be absent from it while its healthy
     // neighbour is present — otherwise clearing the quarantine would silently
     // skip a source that was never actually imported.
-    const cache = JSON.parse(
-      readFileSync(ingestCachePath(dir, "claude"), "utf8")
-    ) as { entries?: Record<string, unknown> };
-    const entries = cache.entries ?? {};
+    const entries =
+      ingestStoresFor(dir).catchupCache("claude").peek()?.entries ?? {};
     assert.ok(
       Object.hasOwn(entries, goodSource),
       `the healthy source was marked seen: ${JSON.stringify(entries)}`
@@ -224,6 +250,130 @@ test("ISS-6115: an import that keeps timing out is quarantined after its attempt
     assert.ok(
       !Object.hasOwn(entries, wedgedSource),
       `the quarantined source was NOT marked seen: ${JSON.stringify(entries)}`
+    );
+  } finally {
+    for (const release of releases) {
+      release();
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * ISS-7257 — the import that COMMITTED and was booked as a failure anyway.
+ *
+ * A source whose write lands and whose `importSession` reports it a moment after
+ * the bound trips used to be left unmarked AND charged an attempt, so it was
+ * re-imported in full forever and, after three passes, quarantined — while its
+ * rows sat complete in the database and `quarantinedCount` told the user a
+ * transcript could not be imported.
+ *
+ * The two sources here are a matched pair that differ in EXACTLY the fact under
+ * test. Both burn the whole bound, both evict to `None` (nothing of theirs is on
+ * the writer), and both are re-listed the same way. Only `committed` actually
+ * reports a durable result. Without the pair, "committed is not quarantined" would
+ * also hold for a fix that quarantined nothing at all.
+ *
+ * MUTATION: restore the ISS-4410 discard — make `evictionLeftWriteIntact` return
+ * false, so no late settle is ever read — and `committed` is quarantined alongside
+ * its wedged neighbour: `counts` reads [0,0,2] instead of [0,0,1]. The opposite
+ * mutation, marking on ANY late settle, is caught one level down by the
+ * INCOMPLETE case in `bounded-import-session.test.ts`; it cannot be caught here,
+ * because the wedged source never reports a settle at all.
+ */
+test("ISS-7257: a write that COMMITS after the bound marks its source and is never charged; a wedged neighbour still quarantines", {
+  timeout: TEST_CASE_TIMEOUT_MS,
+}, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "iss-7257-committed-"));
+  const committedSource = join(dir, "committed.jsonl");
+  const wedgedSource = join(dir, `${WEDGED_SESSION_ID}.jsonl`);
+  writeFileSync(committedSource, "{}\n");
+  writeFileSync(wedgedSource, "{}\n");
+  const sources = [committedSource, wedgedSource];
+  const releases: Array<() => void> = [];
+
+  try {
+    const counts: number[] = [];
+    for (let pass = 0; pass < TEST_MAX_ATTEMPTS; pass++) {
+      const writes = new Map<
+        string,
+        ReturnType<typeof deferred<ImportResult>>
+      >();
+      releases.push(() => {
+        for (const write of writes.values()) {
+          write.resolve({ skipped: false, reactivated: false });
+        }
+      });
+      counts.push(
+        await runPass(
+          dir,
+          sources,
+          (session) => {
+            const write = deferred<ImportResult>();
+            writes.set(session.sessionId, write);
+            return write.promise;
+          },
+          false,
+          (sessionId) => {
+            // Neither session holds the writer at the deadline, so the eviction
+            // takes no victim. `committed` reports a complete durable write an
+            // instant later — resolving here is what makes that ordering
+            // deterministic rather than a race against the bound.
+            if (sessionId === sessionIdOf(committedSource)) {
+              writes
+                .get(sessionId)
+                ?.resolve({ skipped: false, reactivated: false });
+            }
+            return WriteQueueCancelOutcome.None;
+          }
+        )
+      );
+    }
+
+    // Only the source that never reported a commit converges on the budget.
+    assert.deepEqual(
+      counts,
+      [0, 0, 1],
+      "the committed source is never charged; the wedged one still quarantines"
+    );
+
+    // Behaviour 1: the catchup cache is the durable "this source was imported"
+    // record. The committed source must be in it — otherwise it is re-imported in
+    // full on every launch forever — and the wedged one must not.
+    const entries =
+      ingestStoresFor(dir).catchupCache("claude").peek()?.entries ?? {};
+    assert.ok(
+      Object.hasOwn(entries, committedSource),
+      `the committed source was marked seen: ${JSON.stringify(entries)}`
+    );
+    assert.ok(
+      !Object.hasOwn(entries, wedgedSource),
+      `the wedged source was NOT marked seen: ${JSON.stringify(entries)}`
+    );
+
+    // Behaviours 2 and 3, read off the persisted store the FTUE count is derived
+    // from: the committed source holds no entry at all, so it can never be one of
+    // the transcripts the UI reports as un-importable.
+    const storeEntries = (ingestStoresFor(dir).parseQuarantine("claude").peek()
+      ?.entries ?? {}) as Record<string, Record<string, unknown>>;
+    assert.deepEqual(
+      Object.keys(storeEntries),
+      [wedgedSource],
+      `only the wedged source is charged: ${JSON.stringify(storeEntries)}`
+    );
+    const wedgedEntry = storeEntries[wedgedSource];
+    assert.deepEqual(
+      {
+        attempts: wedgedEntry?.attempts,
+        quarantined: wedgedEntry?.quarantined,
+        stage: wedgedEntry?.stage,
+      },
+      {
+        attempts: 3,
+        quarantined: true,
+        stage: SourceTimeoutStage.Import,
+      },
+      `the wedged source spent its whole budget: ${JSON.stringify(wedgedEntry)}`
     );
   } finally {
     for (const release of releases) {
@@ -272,7 +422,69 @@ test("ISS-6115: a batch store is exempt from the budget — one wedged session m
   }
 });
 
-test("ISS-6115: a pass that burned no deadline clears the tally, even when the import stayed incomplete", {
+/**
+ * ISS-12036 SUPERSEDES ISS-6115 HERE, on the operator's instruction, and the old
+ * expectation is kept below as its counterfactual.
+ *
+ * ISS-6115 charged the budget only for a burned DEADLINE and deliberately
+ * CLEARED the tally for an `incomplete` import, reasoning that a tolerated
+ * record-group failure is not a deadline burn. What that left is the same
+ * unbounded retry one level down: the ISS-4476 isolate path leaves such a source
+ * UNMARKED, so it is re-parsed and re-offered on every pass with the tally reset
+ * each time, and no terminal path is reachable. ISS-12036 measured it —
+ * `sources_remaining` flat at 66 for 48h, 134 of 208 windows `wedged` — so the
+ * rule is now "a pass that failed to LAND the source charges an attempt".
+ *
+ * MUTATION: delete the `noteImportDidNotLand()` call in the manager's import
+ * loop and the source is never quarantined, so `attempts` keeps growing and the
+ * final assertion fails.
+ */
+test("ISS-12036: a source whose import stays incomplete every pass is quarantined", {
+  timeout: TEST_CASE_TIMEOUT_MS,
+}, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "iss-12036-incomplete-"));
+  const source = join(dir, `${WEDGED_SESSION_ID}.jsonl`);
+  writeFileSync(source, "{}\n");
+  const attempts: string[] = [];
+  const incompleteImport: Importer["importSession"] = (session) => {
+    attempts.push(session.sessionId);
+    return { skipped: false, reactivated: false, incomplete: true };
+  };
+
+  try {
+    const counts: number[] = [];
+    for (let pass = 0; pass < TEST_MAX_ATTEMPTS; pass++) {
+      counts.push(await runPass(dir, [source], incompleteImport));
+    }
+    assert.deepEqual(
+      counts,
+      [0, 0, 1],
+      "the budget is spent over three passes and the third quarantines"
+    );
+
+    const attemptsAtQuarantine = attempts.length;
+    await runPass(dir, [source], incompleteImport);
+    assert.equal(
+      attempts.length,
+      attemptsAtQuarantine,
+      "a quarantined source is not offered again"
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * ISS-6115's clear, kept and re-pointed at what still clears it: a pass that
+ * landed the source. ISS-4444's concern is the one this pins — attempts must not
+ * accrete across unrelated passes — and ISS-12036 narrowed which passes count as
+ * unrelated, not whether the clear exists.
+ *
+ * MUTATION: make `settleSourceQuarantine` skip its `quarantine.clear` and the
+ * third timeout crosses a budget two prior timeouts had already half-spent, so
+ * the final assertion reads 1 instead of 0.
+ */
+test("ISS-6115: a pass that LANDED the source clears the tally", {
   timeout: TEST_CASE_TIMEOUT_MS,
 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "iss-6115-clear-"));
@@ -288,15 +500,11 @@ test("ISS-6115: a pass that burned no deadline clears the tally, even when the i
       await runPass(dir, [source], wedged.importSession);
     }
 
-    // An `incomplete` import committed within the bound: a tolerated record group
-    // failed, so the source stays unmarked for retry — but no deadline was burned,
-    // so the tally must reset. Gating the clear on the source having COMMITTED
-    // would let old attempts accrete across passes that went fine, which is what
-    // ISS-4444's clear existed to prevent.
+    // A clean, complete import inside the bound: the source landed, so the two
+    // timed-out passes before it are forgotten.
     await runPass(dir, [source], () => ({
       skipped: false,
       reactivated: false,
-      incomplete: true,
     }));
 
     const wedgedAgain = wedgedImporter(attempts);
@@ -310,6 +518,60 @@ test("ISS-6115: a pass that burned no deadline clears the tally, even when the i
     for (const release of releases) {
       release();
     }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * ISS-12036: the counterfactual that keeps the new charge from quarantining a
+ * HEALTHY source.
+ *
+ * A byte-identical re-offer returns `{ skipped, !reactivated }`, which is not
+ * durable progress — so a predicate built on `isDurableImportProgress` alone
+ * would charge it, and the orphan self-heal re-lists such a source on every
+ * scan, so three passes would quarantine a transcript with nothing wrong with
+ * it. `unchanged` is what separates the two.
+ *
+ * MUTATION: drop the `result.unchanged` early return from
+ * `isUnlandedImportOffer` and the source is quarantined on pass three, so the
+ * counts read [0, 0, 1] and the offer count stops growing.
+ */
+test("ISS-12036: a byte-identical re-offer never charges the budget", {
+  timeout: TEST_CASE_TIMEOUT_MS,
+}, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "iss-12036-unchanged-"));
+  const source = join(dir, `${WEDGED_SESSION_ID}.jsonl`);
+  writeFileSync(source, "{}\n");
+  const attempts: string[] = [];
+  const noOpImport: Importer["importSession"] = (session) => {
+    attempts.push(session.sessionId);
+    return { skipped: true, reactivated: false, unchanged: true };
+  };
+
+  try {
+    const counts: number[] = [];
+    for (let pass = 0; pass < TEST_MAX_ATTEMPTS + 1; pass++) {
+      counts.push(await runPass(dir, [source], noOpImport));
+      // Touch the transcript so the catchup cache offers it again. Without this
+      // the no-op lands, the source is marked seen, and later passes skip it —
+      // correct behaviour, but it would mean the budget was never asked the
+      // question this case exists to ask. A source re-offered on every pass is
+      // the real shape: the orphan self-heal and the Codex `extraMtime` fold
+      // both produce it.
+      const stat = statSync(source);
+      utimesSync(source, stat.atime, new Date(stat.mtimeMs + 1000));
+    }
+    assert.deepEqual(
+      counts,
+      [0, 0, 0, 0],
+      "nothing was left unlanded, so nothing is ever charged"
+    );
+    assert.equal(
+      attempts.length,
+      TEST_MAX_ATTEMPTS + 1,
+      "the source is offered on every pass and never quarantined"
+    );
+  } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test, vi } from "vitest";
 import { getSharedBranchUsage } from "../src/main/branch/shared-branches-api.js";
 import { link, makeSource } from "./shared-branches-test-helpers.js";
+
+vi.mock(
+  "../src/main/branch/shared-branches-default-eligibility.js",
+  async (importOriginal) =>
+    (
+      await import("./helpers/complete-eligibility-snapshot.js")
+    ).withCompleteEligibility(await importOriginal())
+);
 
 /**
  * FEA-4280: `getSharedBranchUsage` must degrade gracefully on a single invalid

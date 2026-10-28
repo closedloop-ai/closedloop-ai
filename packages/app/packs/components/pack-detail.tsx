@@ -5,14 +5,25 @@ import {
   DistributionTargetingType,
   DistributionTargetStatusValue,
 } from "@repo/api/src/types/distribution";
-import { LOC_PER_DOLLAR_LABEL } from "@repo/api/src/utils/loc-per-dollar";
+import { INSIGHTS_LOC_TERMINOLOGY_FLAG_KEY } from "@repo/api/src/types/insights-loc-terminology-flag";
+import {
+  LOC_METRIC_DEFINITION,
+  LocMetricDefinitionId,
+} from "@repo/api/src/types/loc-metric-definitions";
 import type { Harness } from "@repo/app/agents/lib/session-types";
+import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { useMetricCardHideUnavailable } from "@repo/app/shared/feature-flags/use-metric-card-hide-unavailable";
 import { useMetricDeltaTreatment } from "@repo/app/shared/feature-flags/use-metric-delta-treatment";
 import { useTabParam } from "@repo/app/shared/hooks/use-tab-param";
+import { AGENTS_DETAIL_HONESTY_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import {
   formatLocPerDollar,
   KPI_NO_VALUE,
 } from "@repo/app/shared/lib/format-utils";
+import {
+  hiddenMetricCardIds,
+  type MetricCardHideCandidate,
+} from "@repo/app/shared/lib/metric-card-hide-policy";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import { MetricCard } from "@repo/design-system/components/ui/primitives/metric-card";
@@ -38,11 +49,16 @@ import type { PackComponentInstallMatrix } from "../lib/pack-install-matrix";
 import {
   adoptionShare,
   CONTENT_KIND_ORDER,
-  installCount,
+  installCountOrUnavailable,
   type PackContentEntry,
+  type PackPerformance,
   type PackView,
 } from "../lib/pack-view";
 import type { PacksContext } from "../lib/packs-context";
+import {
+  type SuccessRateReadout,
+  successRateTileReadout,
+} from "../lib/success-rate-readout";
 import { InstallControls, type InstallPending } from "./install-controls";
 import { InstallMatrix } from "./install-matrix";
 import { InstallStateStatus } from "./install-state-status";
@@ -78,6 +94,8 @@ type PackDetailProps = {
   withdrawDistributionPending?: boolean;
   /** Extra admin actions (e.g. Archive) rendered in the detail header. */
   headerActions?: ReactNode;
+  /** The host could not refresh bundled contents for the selected pack. */
+  contentsUnavailable?: boolean;
   /** Replaces the read-only Contents list (e.g. the admin editable components
    *  manager). When present, it renders in place of the derived contents. */
   contentsSlot?: ReactNode;
@@ -186,12 +204,15 @@ const TeamUsageSummary = ({ pack }: { pack: PackView }) => {
   const share = adoptionShare(pack);
   const deviceLabel =
     usage?.deviceCount == null ? "" : ` · ${usage.deviceCount} devices`;
+  // A readout, so it must not floor an unavailable roster to `0` — "0 teammates
+  // use this" is a claim no producer made. `deviceCount` stands on its own.
+  const installs = installCountOrUnavailable(pack);
   return (
     <div className="flex items-center justify-between gap-4 rounded-lg border border-border bg-background px-5 py-4">
       {share == null ? (
         <div>
           <div className="font-bold text-2xl tabular-nums tracking-tight">
-            {installCount(pack)}
+            {installs ?? KPI_NO_VALUE}
           </div>
           <div className="text-muted-foreground text-sm">
             teammates use this{deviceLabel}
@@ -255,6 +276,11 @@ const CONTENTS_MACHINE_NOTE =
 // draws real per-component states, never carries this note.
 const CONTENTS_DESKTOP_ONLY_NOTE =
   "Open this pack in the desktop app to see which components are installed on your machine.";
+const CONTENTS_UNAVAILABLE_NOTE =
+  "Bundled contents could not be refreshed right now. Showing cached contents when available.";
+const CONTENTS_UNAVAILABLE_EMPTY_NOTE =
+  "Bundled contents could not be refreshed right now. No cached contents are available yet.";
+export const CONTENTS_EMPTY_NOTE = "This pack does not list bundled contents.";
 
 function hasResolvedContentInstallState(pack: PackView): boolean {
   return pack.contents.some((item) => Boolean(item.installState));
@@ -284,11 +310,13 @@ function resolveContentsNote(params: {
 const ContentsTab = ({
   pack,
   installLocally,
+  contentsUnavailable = false,
   contentsSlot,
 }: {
   pack: PackView;
   /** Whether the surface can install locally (desktop) — gates the machine note. */
   installLocally: boolean;
+  contentsUnavailable?: boolean;
   contentsSlot?: ReactNode;
 }) => {
   if (contentsSlot) {
@@ -302,7 +330,9 @@ const ContentsTab = ({
   if (sections.length === 0) {
     return (
       <p className="text-muted-foreground text-sm">
-        This pack does not list bundled contents.
+        {contentsUnavailable
+          ? CONTENTS_UNAVAILABLE_EMPTY_NOTE
+          : CONTENTS_EMPTY_NOTE}
       </p>
     );
   }
@@ -315,6 +345,11 @@ const ContentsTab = ({
 
   return (
     <div className="space-y-5">
+      {contentsUnavailable ? (
+        <p className="text-muted-foreground text-sm">
+          {CONTENTS_UNAVAILABLE_NOTE}
+        </p>
+      ) : null}
       {contentsNote ? (
         <p className="text-muted-foreground text-sm">{contentsNote}</p>
       ) : null}
@@ -349,20 +384,33 @@ const UsageTab = ({ pack }: { pack: PackView }) => {
     return null;
   }
   const notInstalled = usage.notInstalled ?? [];
+  const installers = usage.installers;
+  // ISS-9854: the heading is a COUNT, so it reads the exact installer count
+  // when the producer supplies one. The name roster beneath it is bounded by
+  // the API's inventory cap, so its length is a prefix, never the total.
+  const installerCount = usage.installedCount ?? installers?.length;
   return (
     <div className="space-y-5">
       <TeamUsageSummary pack={pack} />
       <div>
         <h3 className="mb-2 font-medium text-sm">
-          Used by ({usage.installers.length})
+          {installerCount === undefined
+            ? "Used by"
+            : `Used by (${installerCount})`}
         </h3>
-        <ul className="grid gap-1.5 sm:grid-cols-2">
-          {usage.installers.map((user) => (
-            <li className="py-1.5" key={user.id}>
-              <UserPill user={user} />
-            </li>
-          ))}
-        </ul>
+        {installers === undefined ? (
+          <p className="text-muted-foreground text-sm">
+            Roster unavailable for this pack.
+          </p>
+        ) : (
+          <ul className="grid gap-1.5 sm:grid-cols-2">
+            {installers.map((user) => (
+              <li className="py-1.5" key={user.id}>
+                <UserPill user={user} />
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
       {notInstalled.length > 0 ? (
         <div>
@@ -385,6 +433,14 @@ const UsageTab = ({ pack }: { pack: PackView }) => {
 // Canonical per-pack analytics from the org-wide agent-component rollup:
 // LOC/$, org-wide invocations, and distinct sessions.
 const NUMBER_FORMAT = new Intl.NumberFormat("en-US");
+/**
+ * ISS-9749 ruled the performance tiles OUT of `metric-card-hide-unavailable`:
+ * this returns a pre-formatted dash STRING, so `MetricCard` never sees a
+ * `noData` state to hide and the gate would be inert here. Migrating the six
+ * tiles to `value={null}` is the ISS-5401 presentation change other surfaces
+ * already took, and it moves their absent value's weight and colour — a visible
+ * change that belongs to its own gated PR, not to this one.
+ */
 const dashOr = (value: number | null, fmt: (n: number) => string): string =>
   value == null ? KPI_NO_VALUE : fmt(value);
 /** Signed integer percent, e.g. `+12%` / `-4%`, for headline efficiency values. */
@@ -436,25 +492,43 @@ const HigherIsBetterMetricCard = ({
 };
 
 const PerformanceTab = ({ pack }: { pack: PackView }) => {
+  const hideUnavailable = useMetricCardHideUnavailable();
+  // ISS-9853 (ISS-4779 closed-by-default): the Success-rate tile's population
+  // copy is gated by the same `agents-detail-honesty` key the rest of this
+  // response's coverage disclosure rides on. Read here, above the early return
+  // below, because a hook cannot sit after one.
+  const honestCoverage = useFeatureFlagEnabledOptional(
+    AGENTS_DETAIL_HONESTY_FEATURE_FLAG_KEY
+  );
+  // ISS-8184: the same key that retires KLOC on the Insights tiles retires it
+  // here. Only the WORDS move — this headline is a signed percent delta, which
+  // is scale-invariant, so the ruling's 1000x magnitude change does not reach it.
+  const locTerminology = useFeatureFlagEnabledOptional(
+    INSIGHTS_LOC_TERMINOLOGY_FLAG_KEY
+  );
   const perf = pack.performance;
   if (!perf) {
     return null;
   }
-  return (
-    <div className="space-y-4">
-      <p className="text-muted-foreground text-sm">
-        How sessions that use {pack.name} compare to a baseline of org sessions
-        that do not. Deltas are shown only where a baseline is available.
-      </p>
-      {/*
-        Six real, computed metrics: three from the prototype's comparison model
-        (LOC/$, Success rate, Token efficiency) and three canonical usage
-        metrics (Invocations, Sessions, Merged PRs). Output quality is computed
-        server-side (perf.qualityScore) but intentionally NOT rendered yet — most
-        sessions carry no attached judge evaluation until judging is wired deeper
-        into the UX, so the card stays hidden until scores populate.
-      */}
-      <div className="grid gap-3 sm:grid-cols-2">
+  // Flag off → the shipped caption and headline, byte for byte.
+  const successRate = honestCoverage
+    ? successRateTileReadout(perf)
+    : SHIPPED_SUCCESS_RATE_READOUT;
+  const candidates = performanceTileCandidates(perf);
+  const hidden = hiddenMetricCardIds({
+    cards: candidates,
+    enabled: hideUnavailable,
+  });
+  // Six real, computed metrics: three from the prototype's comparison model
+  // (LOC/$, Success rate, Token efficiency) and three canonical usage metrics
+  // (Invocations, Sessions, Merged PRs). Output quality is computed server-side
+  // (perf.qualityScore) but intentionally NOT rendered yet — most sessions
+  // carry no attached judge evaluation until judging is wired deeper into the
+  // UX, so the card stays hidden until scores populate.
+  const tiles: { id: PackPerformanceTileId; tile: ReactNode }[] = [
+    {
+      id: PackPerformanceTileId.LocPerDollar,
+      tile: (
         <HigherIsBetterMetricCard
           delta={nullableDelta(perf.locDelta)}
           deltaLabel="vs. baseline"
@@ -462,60 +536,110 @@ const PerformanceTab = ({ pack }: { pack: PackView }) => {
           info={{
             what: "Lines produced by sessions using the pack ÷ their cost.",
           }}
-          label={LOC_PER_DOLLAR_LABEL}
+          key={PackPerformanceTileId.LocPerDollar}
+          label={
+            LOC_METRIC_DEFINITION[LocMetricDefinitionId.ComponentLinesChanged]
+              .label
+          }
           value={formatLocPerDollar(perf.locPerDollar)}
         />
+      ),
+    },
+    {
+      id: PackPerformanceTileId.SuccessRate,
+      tile: (
         <HigherIsBetterMetricCard
           delta={nullableDelta(perf.successDelta)}
-          deltaLabel="vs. baseline"
+          deltaLabel={successRate.deltaLabel}
           detail="of sessions reach a merged PR"
-          info={{
-            what: "Share of the pack's sessions that link to a merged PR.",
-          }}
+          info={successRate.info}
+          key={PackPerformanceTileId.SuccessRate}
           label="Success rate"
           value={dashOr(perf.successRate, (n) => `${n.toFixed(0)}%`)}
         />
+      ),
+    },
+    {
+      id: PackPerformanceTileId.TokenEfficiency,
+      tile: (
         <MetricCard
           // The value already IS the signed delta vs. baseline, so no separate
           // delta chip. The efficiency trend uses a different unit (KLOC/1k
-          // tokens) than this % headline, so it is deliberately not shown here
+          // tokens — `klocPer1kTokensOf`, which ISS-8184 did not touch) than
+          // this % headline, so it is deliberately not shown here
           // to avoid a value/trend contradiction — `perf.efficiencyTrend` stays
           // in the model for a future dedicated visualization.
-          detail="fewer tokens per KLOC vs. baseline"
+          detail={
+            locTerminology
+              ? "fewer tokens per LOC vs. baseline"
+              : "fewer tokens per KLOC vs. baseline"
+          }
           info={{
-            what: "Tokens per KLOC, pack sessions vs. baseline (directional).",
+            what: locTerminology
+              ? "Tokens per LOC, pack sessions vs. baseline (directional)."
+              : "Tokens per KLOC, pack sessions vs. baseline (directional).",
           }}
+          key={PackPerformanceTileId.TokenEfficiency}
           label="Token efficiency"
           value={dashOr(perf.tokenEfficiencyDelta, signedPct)}
         />
+      ),
+    },
+    {
+      id: PackPerformanceTileId.Invocations,
+      tile: (
         <MetricCard
           detail="org-wide invocations"
           info={{
             what: "Total times the pack was invoked across all sessions.",
           }}
+          key={PackPerformanceTileId.Invocations}
           label="Invocations"
           value={dashOr(perf.invocations, (n) => NUMBER_FORMAT.format(n))}
         />
+      ),
+    },
+    {
+      id: PackPerformanceTileId.Sessions,
+      tile: (
         <MetricCard
           detail="distinct sessions"
           info={{
             what: "Distinct agent sessions in which the pack was invoked.",
           }}
+          key={PackPerformanceTileId.Sessions}
           label="Sessions"
           value={dashOr(perf.sessions, (n) => NUMBER_FORMAT.format(n))}
         />
-        {/*
-          ISS-6462: the count is a FLOOR when the server scanned only the first
-          COHORT_SCAN_CAP cohort sessions, so the value and its population copy
-          both come from `merged-prs-readout` rather than being formatted inline
-          like the tiles above.
-        */}
+      ),
+    },
+    {
+      id: PackPerformanceTileId.MergedPrs,
+      // ISS-6462: the count is a FLOOR when the server declared it counted over
+      // a bounded sample of the cohort, so the value and its population copy
+      // both come from `merged-prs-readout` rather than being formatted inline
+      // like the tiles above.
+      tile: (
         <MetricCard
           detail="merged PRs from those sessions"
           info={mergedPrsTileInfo(perf)}
+          key={PackPerformanceTileId.MergedPrs}
           label="Merged PRs"
           value={mergedPrsTileValue(perf)}
         />
+      ),
+    },
+  ];
+  return (
+    <div className="space-y-4">
+      <p className="text-muted-foreground text-sm">
+        How sessions that use {pack.name} compare to a baseline of org sessions
+        that do not. Deltas are shown only where a baseline is available.
+      </p>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {tiles
+          .filter((entry) => !hidden.has(entry.id))
+          .map((entry) => entry.tile)}
       </div>
     </div>
   );
@@ -683,6 +807,7 @@ export const PackDetail = ({
   onWithdrawDistribution,
   withdrawDistributionPending,
   headerActions,
+  contentsUnavailable,
   contentsSlot,
   disambiguator,
   memberTargetsLoading,
@@ -795,6 +920,7 @@ export const PackDetail = ({
           <TabsContent value="contents">
             <ContentsTab
               contentsSlot={contentsSlot}
+              contentsUnavailable={contentsUnavailable}
               installLocally={capabilities.installLocally}
               pack={pack}
             />
@@ -828,4 +954,74 @@ export const PackDetail = ({
       </Tabs>
     </div>
   );
+};
+
+const PackPerformanceTileId = {
+  LocPerDollar: "locPerDollar",
+  SuccessRate: "successRate",
+  TokenEfficiency: "tokenEfficiency",
+  Invocations: "invocations",
+  Sessions: "sessions",
+  MergedPrs: "mergedPrs",
+} as const;
+type PackPerformanceTileId =
+  (typeof PackPerformanceTileId)[keyof typeof PackPerformanceTileId];
+
+/**
+ * Which Performance tiles nobody could compute a value for.
+ *
+ * Asked of the RAW nullable field rather than of the `dashOr` string the tile
+ * renders: those two answers differ on a real `0` (0%, 0 invocations, +0%),
+ * which `dashOr` prints as a figure and which must stay on screen because it is
+ * a fact about the cohort, not an absence.
+ *
+ * Merged PRs asks the same question of `perf.mergedPrs` rather than of
+ * `mergedPrsTileValue`, and the two also differ: the readout folds an absent
+ * count together with a present-but-non-finite one, and a `NaN` arriving over
+ * the wire is corrupt data whose only evidence is the tile still being there. A
+ * count marked as a capped floor (`996+`) is a real value and never a candidate.
+ *
+ * `pack.performance` is either absent — the tab renders nothing at all — or a
+ * settled block, so nothing asked about here is a read in flight or a read that
+ * failed.
+ */
+function performanceTileCandidates(
+  perf: PackPerformance
+): MetricCardHideCandidate<PackPerformanceTileId>[] {
+  return [
+    {
+      id: PackPerformanceTileId.LocPerDollar,
+      notComputable: perf.locPerDollar == null,
+    },
+    {
+      id: PackPerformanceTileId.SuccessRate,
+      notComputable: perf.successRate == null,
+    },
+    {
+      id: PackPerformanceTileId.TokenEfficiency,
+      notComputable: perf.tokenEfficiencyDelta == null,
+    },
+    {
+      id: PackPerformanceTileId.Invocations,
+      notComputable: perf.invocations == null,
+    },
+    {
+      id: PackPerformanceTileId.Sessions,
+      notComputable: perf.sessions == null,
+    },
+    {
+      id: PackPerformanceTileId.MergedPrs,
+      notComputable: perf.mergedPrs == null,
+    },
+  ];
+}
+
+/**
+ * The Success-rate tile before ISS-9853: a caption and a headline that describe
+ * the whole population whatever the producer declared. What the flag-off path
+ * renders, unchanged.
+ */
+const SHIPPED_SUCCESS_RATE_READOUT: SuccessRateReadout = {
+  deltaLabel: "vs. baseline",
+  info: { what: "Share of the pack's sessions that link to a merged PR." },
 };

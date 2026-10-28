@@ -4,6 +4,16 @@ import {
   LinkType,
 } from "@repo/api/src/types/artifact";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+// PRODUCES admission reads the organization graph and placement state, which
+// this suite's database fake does not model; its own coverage is the
+// produces-cycle-admission integration suite.
+vi.mock("@/app/artifact-links/produces-link-admission", () => ({
+  refuseProducesLinkCycle: vi.fn(async () => null),
+  refuseProducesLinkDepth: vi.fn(async () => null),
+}));
+
+import { basicUserSelect } from "@/lib/db-utils";
 import { mockWithDbCall } from "../../../__tests__/utils/db-helpers";
 
 vi.mock("@repo/database", () => ({
@@ -28,9 +38,9 @@ function artifact(overrides: Record<string, unknown>) {
     status: "APPROVED",
     priority: null,
     assigneeId: null,
+    assignee: null,
     dueDate: null,
     externalUrl: null,
-    sortOrder: null,
     createdAt: new Date("2026-05-13T00:00:00.000Z"),
     createdById: "user-1",
     updatedAt: new Date("2026-05-13T00:00:00.000Z"),
@@ -96,13 +106,18 @@ describe("artifactLinksService.findSelectedParentProjections", () => {
         linkType: LinkType.Produces,
       },
       include: {
+        // ISS-7732: the endpoint projection now joins the assignee, so the
+        // parent row can render who it is assigned to instead of showing the
+        // unassigned glyph for every artifact.
         source: {
           include: {
+            assignee: basicUserSelect,
             branch: { include: { currentPullRequestDetail: true } },
           },
         },
         target: {
           include: {
+            assignee: basicUserSelect,
             branch: { include: { currentPullRequestDetail: true } },
           },
         },
@@ -159,7 +174,7 @@ describe("artifactLinksService.findSelectedParentProjections", () => {
           name: "PR #1170",
           slug: null,
           externalUrl:
-            "https://github.com/closedloop-ai/example-repo/pull/1170",
+            "https://github.com/closedloop-ai/closedloop-ai/pull/1170",
         }),
       }),
       link({

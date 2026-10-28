@@ -17,6 +17,10 @@
 import { AgentComponentKind } from "@repo/api/src/types/agent-component";
 import { encodeComponentSlug } from "@repo/api/src/types/agent-component-analytics";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  orphanFixtureFindMany,
+  type WhereClause,
+} from "@/__tests__/support/agent-components/usage-lane-doubles";
 
 const mocks = vi.hoisted(() => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
@@ -112,11 +116,26 @@ function installOrphanOnlyDb(): ConcurrencyProbe {
       return value;
     });
 
+  // ISS-10469: same probe, but it EVALUATES the used-only partition's
+  // FK-liveness arm. The fixture rows model no inventory owner, so the
+  // live-owner lane selects none of them; answering it with the same rows would
+  // model a population the complementary lanes cannot produce.
+  const trackedOrphanDelegate = <T>(rows: readonly T[]) =>
+    vi.fn(async (args?: { where?: WhereClause }): Promise<T[]> => {
+      inFlight += 1;
+      probe.peak = Math.max(probe.peak, inFlight);
+      await Promise.resolve();
+      inFlight -= 1;
+      return orphanFixtureFindMany(rows, args?.where);
+    });
+
   const db = {
     // No inventory row for this identity -> the orphan-only path.
     agentComponent: { findMany: trackedDelegate([]) },
     agentComponentSessionUsage: {
-      findMany: trackedDelegate([orphanUsageRow()]),
+      // ISS-10469: a name route issues BOTH used-only lanes. The fixture row
+      // models no FK, so the live-owner arm must select none of it.
+      findMany: trackedOrphanDelegate([orphanUsageRow()]),
     },
     // Branch attribution behind `resolveDetailSessionTabs`.
     artifactLink: { findMany: trackedDelegate([]) },

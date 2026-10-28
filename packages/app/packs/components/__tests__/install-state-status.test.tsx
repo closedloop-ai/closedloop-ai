@@ -8,6 +8,8 @@
  * state, assert the rendered label and the DS status-icon marker; no source
  * scans, no timing.
  */
+import { IssueStatus } from "@repo/api/src/types/document";
+import { IssueStatusIcon } from "@repo/app/documents/components/issue-status-icon";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import {
@@ -16,6 +18,18 @@ import {
   PackInstallState,
 } from "../../lib/install-state";
 import { InstallStateStatus } from "../install-state-status";
+
+function svgOf(container: HTMLElement): SVGSVGElement {
+  const svg = container.querySelector("svg");
+  if (!svg) {
+    throw new Error("expected an svg to render");
+  }
+  return svg as SVGSVGElement;
+}
+
+function markOf(container: HTMLElement): string {
+  return svgOf(container).innerHTML;
+}
 
 describe("install-state vocabulary", () => {
   const allStates = Object.values(PackInstallState);
@@ -120,4 +134,29 @@ describe("install-state vocabulary", () => {
       expect(treatment.color).toBe("var(--muted-foreground)");
     }
   });
+
+  it.each([
+    {
+      mark: "complete",
+      install: PackInstallState.Installed,
+      issue: IssueStatus.Done,
+    },
+    {
+      mark: "lowest commitment",
+      install: PackInstallState.NotInstalled,
+      issue: IssueStatus.Backlog,
+    },
+  ])(
+    "keeps the packs $mark mark in step with the registry it duplicates",
+    ({ install, issue }) => {
+      const asPack = markOf(
+        render(<InstallStateStatus state={install} />).container
+      );
+      const asIssue = markOf(
+        render(<IssueStatusIcon status={issue} />).container
+      );
+
+      expect(asPack).toBe(asIssue);
+    }
+  );
 });

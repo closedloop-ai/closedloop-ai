@@ -6,7 +6,7 @@ description: The execution environment that actually runs loops and determines w
 The runtime is where loops become real work. In Closedloop.ai, the runtime is the combination of:
 
 - a registered compute target (the desktop client on a specific machine)
-- that machine's installed tools (`claude`, `codex`, `git`, `gh`, `python3`)
+- that machine's installed tools (`claude`, `codex`, `git`, `python3`)
 - the Claude Code plugins resolved under `~/.claude/plugins/cache/closedloop-ai/`
 - the process-level sandbox the gateway enforces on every operation
 
@@ -14,7 +14,7 @@ The runtime is where loops become real work. In Closedloop.ai, the runtime is th
 
 - **Expose provider support** — capabilities are reported via the `/health` endpoint and via `desktop.hello` when the cloud socket connects.
 - **Run execution safely** — every path input is filtered through the sandbox allowlist. Certain paths are hard-denied even inside the sandbox.
-- **Report health and availability** — tray state (`starting`, `ready`, `degraded`, `error`) plus heartbeat against the API (`POST /compute-targets/:id/heartbeat` every 30 seconds).
+- **Report health and availability** — tray state (`starting`, `ready`, `degraded`, `error`) plus presence through the cloud socket: the API marks the compute target online when the socket connects and offline when it disconnects.
 - **Return structured output** — operation handlers emit NDJSON streams or JSON responses, which the cloud executor forwards as `desktop.command.event` messages.
 
 ## Capabilities
@@ -23,12 +23,12 @@ The runtime reports a capabilities object shaped like:
 
 ```ts
 ComputeTargetCapabilities {
-  tools: Record<"claude"|"codex"|"git"|"gh"|"python3", boolean>
   versions: Partial<Record<CapabilityToolName, string>>
+  commandSigning: false
 }
 ```
 
-The server starts with empty capabilities and fills them in via health-check routes. If a required binary is missing, telemetry emits `preflight.binary_not_found`.
+This object advertises protocol support, not tool availability. If a required binary is missing, telemetry emits `preflight.binary_not_found`.
 
 ## Binary resolution
 
@@ -38,31 +38,12 @@ Override specific binaries at **Settings → Binary paths** or via `PATCH /api/g
 
 ## Process management
 
-The `ProcessManager` in `src/server/process-manager.ts` supports three spawn modes:
+The `ProcessManager` in `src/server/process-manager.ts` supports two spawn modes:
 
-- `spawnStreaming` — detached process with stdout/stderr readers, NDJSON line parsing, auto-kill 30s after a terminal `result` line, 5s grace for SIGTERM before SIGKILL.
 - `spawnDetached` — detached with stdio redirected to a log file, unreferenced after spawn. Used for long-running background jobs.
 - `exec` — wraps `execFileAsync` for one-shot calls.
 
 Every spawn calls `assertOperationPath(cwd)` to enforce the sandbox allowlist before launching.
-
-## Job lifecycle
-
-Long-running symphony loop jobs are tracked in the `JobStore`:
-
-- 11 lifecycle states: `QUEUED`, `STARTING`, `RUNNING`, `AWAITING_USER`, `STOPPED`, `CANCEL_PENDING`, `COMPLETED`, `FAILED`, `CANCELLED`, `UNKNOWN`
-- Per-job `pid`, `statePath`, `logPath`, `jsonlPath`, `worktreeDir`
-- Terminal jobs roll into a capped array (max 100)
-
-On startup, the `BootRecoveryService`:
-
-1. Reattaches live jobs (any `pid` that is still running gets re-tailed).
-2. Finalizes dead jobs (processes that died while the app was down are resolved from their state file).
-3. Sweeps orphaned loop tokens no longer in the JobStore.
-
-## Output tailing
-
-The server polls the claude-output JSONL files (`CLOSEDLOOP_TAILER_POLL_MS`) and throttles replay (`CLOSEDLOOP_TAILER_THROTTLE_MS`). Each job tracks a `lastObservedJsonlOffset` so replays are safe even after a cloud disconnect.
 
 ## Plugin resolution
 

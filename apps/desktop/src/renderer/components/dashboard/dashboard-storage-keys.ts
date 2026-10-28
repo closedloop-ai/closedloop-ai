@@ -5,25 +5,11 @@ export const dashboardOnboardedStorageKey = "cl-desktop-dashboard-onboarded";
 export const dashboardTourSeenStorageKey = "cl-desktop-dashboard-tour-seen";
 
 /**
- * LocalStorage flag set once the first-run landing has been ANSWERED — by
- * entering as a guest or by signing in (ISS-5112, PLN-1600 Step F).
- *
- * Third of the three first-run keys and kept beside them deliberately: "what has
- * this install already been shown" is one question, and splitting its answers
- * across files is how one of them gets missed. The landing gate reads
- * `dashboardOnboardedStorageKey` too — an install whose first-launch reveal has
- * already played is not a first run, whether or not this key was ever written,
- * which is what keeps the landing off every EXISTING install when the flag is
- * turned on.
- */
-export const desktopLandingSeenStorageKey = "cl-desktop-landing-seen";
-
-/**
  * LocalStorage flag set once the post-auth invite spotlight has been ANSWERED
  * for one organization — by inviting, by "Maybe later", or by dismissing the
  * pop-up any other way (ISS-5489, PLN-1694 M2).
  *
- * Keyed BY ORG, unlike the three flags above, because the nudge itself is
+ * Keyed BY ORG, unlike the two flags above, because the nudge itself is
  * per-org: "invite your team" means a different team in each one, and an answer
  * given for the org you were in last month is not an answer for the one you
  * joined today. Device scope comes free — `localStorage` is this install's.
@@ -41,6 +27,24 @@ export function inviteSpotlightDismissedStorageKey(
 }
 
 /**
+ * LocalStorage record of a SIGNED-OUT guest's guided onboarding run (ISS-10195
+ * follow-up).
+ *
+ * Third of the first-run keys and kept beside them deliberately: "what has
+ * this install already been shown" is one question, and splitting its answers
+ * across files is how one of them gets missed.
+ *
+ * Unlike its two neighbours this key does not hold a marker — it holds the
+ * run's serialized state and revision, because a guest's run has a POSITION and
+ * not merely a have-they-seen-it bit. A guest who quit at Session Discovery
+ * returns to Session Discovery, the same way an account's run resumes from its
+ * `OnboardingAttempt` row. The signed-in equivalent is that server row; this is
+ * the local authority for the reader who has no account to own one.
+ */
+export const desktopGuestGuidedOnboardingStorageKey =
+  "cl-desktop-guest-guided-onboarding";
+
+/**
  * Both accessors swallow a throwing store, not just an absent one.
  *
  * `getLocalStorage` already guarded the PROPERTY access, but the read and write
@@ -54,7 +58,7 @@ export function inviteSpotlightDismissedStorageKey(
  */
 export function readFlag(key: string): boolean {
   try {
-    return getLocalStorage()?.getItem(key) === "1";
+    return getLocalStorage()?.getItem(key) === DASHBOARD_FLAG_SET;
   } catch {
     return false;
   }
@@ -62,7 +66,7 @@ export function readFlag(key: string): boolean {
 
 export function writeFlag(key: string): void {
   try {
-    getLocalStorage()?.setItem(key, "1");
+    getLocalStorage()?.setItem(key, DASHBOARD_FLAG_SET);
   } catch {
     // Nothing to do and nothing to tell the user: the flag is a convenience, and
     // no client-side logging (repo policy).
@@ -82,5 +86,74 @@ function getLocalStorage(): Storage | null {
     return storage;
   } catch {
     return null;
+  }
+}
+
+/**
+ * The one value a set flag is stored as, so the writer and every reader of these
+ * keys cannot drift apart about what a set flag looks like on disk. ISS-9728's
+ * validated guest read parses against this rather than restating the literal.
+ */
+export const DASHBOARD_FLAG_SET = "1";
+
+/**
+ * The stored value for `key`, unexamined — `undefined` when this store cannot
+ * answer at all.
+ *
+ * For a caller that must tell an ABSENT record from an unreadable one and from
+ * a set one, which {@link readFlag}'s boolean cannot (ISS-9728). It routes
+ * through the same {@link getLocalStorage} guard rather than reaching for the
+ * global itself, so there is still exactly one place that decides whether this
+ * install has a usable store.
+ */
+export function readRawFlag(key: string): unknown {
+  try {
+    return getLocalStorage()?.getItem(key);
+  } catch {
+    return;
+  }
+}
+
+/**
+ * Store `value` verbatim under `key`.
+ *
+ * The twin of {@link readRawFlag}, for the one key here that holds a record
+ * rather than a marker ({@link desktopGuestGuidedOnboardingStorageKey}).
+ * {@link writeFlag} cannot serve it: that function writes
+ * {@link DASHBOARD_FLAG_SET} and ignores any value, which is correct for a
+ * marker and silently lossy for a record.
+ *
+ * Routes through the same {@link getLocalStorage} guard, so there is still one
+ * place that decides whether this install has a usable store, and swallows a
+ * throwing store for the reason the accessors above do — a guest whose store is
+ * full or blocked keeps a working renderer and loses only the resumption.
+ */
+export function writeRawFlag(key: string, value: string): void {
+  try {
+    getLocalStorage()?.setItem(key, value);
+  } catch {
+    // Nothing to do and nothing to tell the user: losing the record costs this
+    // guest a resumed position, never correctness, and no client-side logging
+    // (repo policy).
+  }
+}
+
+/**
+ * Drop `key` entirely.
+ *
+ * Removal rather than writing an empty or "done" marker, because every reader
+ * of these keys folds an ABSENT value to "not yet" — see
+ * {@link desktopGuestGuidedOnboardingStorageKey}. A sentinel meaning "handed
+ * off" would be a second vocabulary for the same slot, and the first reader to
+ * miss it would read it as a record.
+ *
+ * Routes through the same {@link getLocalStorage} guard and swallows a throwing
+ * store for the reason its siblings do.
+ */
+export function removeRawFlag(key: string): void {
+  try {
+    getLocalStorage()?.removeItem(key);
+  } catch {
+    // Nothing to do and nothing to tell the user (repo policy on client logs).
   }
 }

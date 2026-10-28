@@ -17,7 +17,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { CollectorManager } from "../src/main/collectors/engine/collector-manager.js";
 import { sourcePathsForWatcherEventsWithOrigins } from "../src/main/collectors/engine/collector-pending-sources.js";
 import {
@@ -63,7 +63,6 @@ test("ISS-4390: the manager forwards the original child path to onLiveTranscript
       importer: {
         importSession: async () => ({ skipped: false, reactivated: false }),
       },
-      detectBillingMode: () => "metered_api",
       stateDir: dir,
       emit: () => {},
       getCollectionMode: () => "watcher",
@@ -89,7 +88,7 @@ test("ISS-4390: the manager forwards the original child path to onLiveTranscript
     await waitUntil(() => emitWatcherEvent !== undefined);
     emitWatcherEvent?.("rollout-child.jsonl");
     await sawActivity;
-    manager.stop();
+    await manager.stop();
 
     const live = activity.at(-1);
     assert.ok(live, "the live watcher import must report activity");

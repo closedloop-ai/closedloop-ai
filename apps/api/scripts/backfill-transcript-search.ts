@@ -22,10 +22,16 @@
  *   cd apps/api
  *   DATABASE_URL=<url> AWS_… npx tsx scripts/backfill-transcript-search.ts
  */
+import { realpathSync } from "node:fs";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { TranscriptUploadStatus } from "@repo/api/src/types/desktop-transcripts";
 import { withDb } from "@repo/database";
 import { MAIN_FILE_KEY } from "@/app/agent-sessions/transcript-availability";
-import { transcriptSearchIndexService } from "@/app/search/transcript-search-indexer";
+import {
+  TranscriptIdentityOrigin,
+  transcriptSearchIndexService,
+} from "@/app/search/transcript-search-indexer";
 import { mapWithDbConcurrency } from "@/lib/db-fanout";
 
 const PAGE_SIZE = 200;
@@ -80,6 +86,12 @@ async function indexOne(row: TranscriptIdentityRow): Promise<boolean> {
       computeTargetId: row.computeTargetId,
       externalSessionId: row.externalSessionId,
       fileKey: MAIN_FILE_KEY,
+      // ISS-8125: this id was SELECTed out of `SessionTranscript`, so it is
+      // already whatever the column stores. The default wire handling would
+      // project it a second time and index nothing for exactly the sessions
+      // whose id had to be bound — silently, since a missed lookup is
+      // indistinguishable here from a session with no projection to write.
+      identityOrigin: TranscriptIdentityOrigin.Stored,
     });
   } catch (error) {
     console.error(
@@ -119,10 +131,12 @@ async function main(): Promise<void> {
   );
 }
 
-if (
-  typeof process !== "undefined" &&
-  import.meta.url === `file://${process.argv[1]}`
-) {
+const isDirectRun =
+  process.argv[1] &&
+  import.meta.url ===
+    pathToFileURL(realpathSync(resolve(process.argv[1]))).href;
+
+if (isDirectRun) {
   main().catch((error) => {
     console.error("[backfill-transcript-search] failed:", error);
     process.exitCode = 1;

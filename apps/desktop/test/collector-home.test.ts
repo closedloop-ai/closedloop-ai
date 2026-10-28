@@ -12,7 +12,8 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, test } from "node:test";
+import { afterEach, describe, test } from "vitest";
+import { getClaudeDesktopSessionsDir } from "../src/main/collectors/claude/claude-desktop-origin.js";
 import {
   sessionIdFromTranscriptPath as claudeSessionId,
   getClaudeHome,
@@ -43,6 +44,7 @@ import {
   getOpenCodeDbWatchFiles,
   getOpenCodeHome,
 } from "../src/main/collectors/opencode/opencode-home.js";
+import { isolatedHarnessHomes } from "./helpers/isolated-harness-homes.js";
 import {
   cleanupTempDirs,
   makeTempDir,
@@ -50,6 +52,12 @@ import {
 
 const ENV_KEYS = [
   "CLAUDE_HOME",
+  // Review (#5717, tamsinb): the Claude DESKTOP sidecar root, a home distinct
+  // from `CLAUDE_HOME`, which `getClaudeDesktopSessionsDir()` otherwise resolves
+  // under `os.homedir()` on macOS. Snapshotted here because the isolation
+  // helper now sets it, and the guard below fails on any key it sets that this
+  // list does not restore.
+  "CLAUDE_DESKTOP_SESSIONS_HOME",
   "CODEX_HOME",
   "CURSOR_HOME",
   "COPILOT_HOME",
@@ -571,5 +579,87 @@ describe("opencode-home", () => {
       getOpenCodeConfigHome(),
       path.join(os.homedir(), ".config", "opencode")
     );
+  });
+});
+
+/**
+ * ISS-7697 — the isolation helper must redirect every collector, executed.
+ *
+ * The sibling assertion in `e2e/seeded-sessions-harness-isolation.spec.ts` only
+ * compares `isolatedHarnessHomes`'s own key set against a hand-written literal,
+ * so it fires when a variable is DROPPED from the set and stays green when a
+ * COLLECTOR is added that was never in it — which is the direction the defect
+ * actually runs in. This case closes that: it applies the helper's environment
+ * and then asks each harness's REAL resolver, the same function the shipped
+ * collector calls, where it now points. A resolver that ignores its override,
+ * has its variable misspelled in the helper, or belongs to a harness the helper
+ * never heard of answers with a path under the operator's home, and fails here.
+ *
+ * The resolver list is the coverage boundary and is stated deliberately: it is
+ * every entry point the five shipped collectors use to reach disk. A SIXTH
+ * collector still has to be added here — no runtime check can enumerate
+ * functions nobody imported — but it is added beside its siblings in the file
+ * that already owns per-harness path discovery, rather than inferred from a
+ * list of environment variable names.
+ */
+describe("isolated-harness-homes", () => {
+  test("redirects every collector's REAL home resolver away from the operator's", () => {
+    const root = makeTempDir("iss7697-isolated-homes-");
+    const env = isolatedHarnessHomes(root);
+    for (const key of Object.keys(env)) {
+      // This file's `afterEach` restores only `ENV_KEYS`. A variable the helper
+      // sets but that list does not know would survive into every later test in
+      // the process, pointing a collector at a deleted temp dir.
+      assert.ok(
+        (ENV_KEYS as readonly string[]).includes(key),
+        `${key} is set by isolatedHarnessHomes but missing from ENV_KEYS, so this test would leak it`
+      );
+    }
+    for (const [key, value] of Object.entries(env)) {
+      process.env[key] = value;
+    }
+    // OpenCode's config home has two LOWER-precedence fallbacks
+    // (`OPENCODE_CONFIG`, `XDG_CONFIG_HOME`). They are cleared so this asserts
+    // that `OPENCODE_CONFIG_DIR` — the only one the helper sets — is the branch
+    // that actually wins, rather than passing because an ambient XDG value
+    // happened to agree.
+    setEnv("OPENCODE_CONFIG", undefined);
+    setEnv("XDG_CONFIG_HOME", undefined);
+
+    // The sidecar resolver is the one that can decline to read at all: it
+    // answers `null` off macOS, where Claude Desktop has no verified layout.
+    // The override branch runs on EVERY platform though, and the helper just
+    // pinned it — so `null` here means the helper's variable name no longer
+    // matches the one the resolver reads, which is the misspelling case this
+    // whole test exists to catch. Graded before the map so it says that.
+    const claudeDesktopSidecar = getClaudeDesktopSessionsDir();
+    assert.notEqual(
+      claudeDesktopSidecar,
+      null,
+      "the Claude Desktop sidecar resolver ignored the isolated CLAUDE_DESKTOP_SESSIONS_HOME, so a run would scan the operator's real Desktop history"
+    );
+
+    const resolved: Record<string, string> = {
+      claude: getClaudeHome(),
+      claudeDesktopSidecar: claudeDesktopSidecar ?? "",
+      codex: getCodexHome(),
+      copilotCli: getCopilotCliHome(),
+      copilotVscode: getVscodeWorkspaceStorageDir(),
+      cursor: getCursorHome(),
+      openCodeConfig: getOpenCodeConfigHome(),
+      openCodeData: getOpenCodeHome(),
+    };
+
+    const home = os.homedir();
+    for (const [harness, dir] of Object.entries(resolved)) {
+      assert.ok(
+        dir.startsWith(root),
+        `${harness} resolved to ${dir}, outside the isolated root ${root} — a test run would read the operator's real history`
+      );
+      assert.ok(
+        !dir.startsWith(home),
+        `${harness} resolved under the operator's home directory (${dir})`
+      );
+    }
   });
 });

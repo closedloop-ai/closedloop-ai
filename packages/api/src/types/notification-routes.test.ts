@@ -15,15 +15,6 @@ describe("getNotificationEntityPath", () => {
     ).toBe("/sessions/abc-123");
   });
 
-  it("still builds the loop deep-link path", () => {
-    expect(
-      getNotificationEntityPath({
-        kind: NotificationEntityKind.Loop,
-        loopId: "loop-9",
-      })
-    ).toBe("/loops/loop-9");
-  });
-
   it("still builds the project deep-link path", () => {
     expect(
       getNotificationEntityPath({

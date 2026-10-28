@@ -32,3 +32,17 @@ export function useNavigationAdapter(): NavigationAdapter {
     "Navigation hooks require a <NavigationProvider> ancestor. Mount one at the app root with a surface adapter (web: nextNavigationAdapter)."
   );
 }
+
+/**
+ * Like {@link useNavigationAdapter}, but resolves to `null` (never throws) when
+ * no `NavigationProvider` is mounted.
+ *
+ * For a SHARED component that reads the route but also renders under mount
+ * sites with no router — the desktop `PacksView` mount guard renders its whole
+ * tree provider-free and asserts it does not throw (FEA-4159: a hard-throwing
+ * hook there is a blank application window, not a failed subtree). Same posture
+ * as `useFeatureFlagEnabledOptional` in `@repo/app`.
+ */
+export function useNavigationAdapterOptional(): NavigationAdapter | null {
+  return useContext(NavigationAdapterContext);
+}

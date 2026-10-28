@@ -10,7 +10,6 @@ import {
   event,
 } from "./agent-session-detail-projection.test-helpers.ts";
 import {
-  deriveAgentSessionFallbackState,
   projectAgentSessionTimelineEvents,
   projectAgentSessionTurnItems,
 } from "./agent-session-detail-projection.ts";
@@ -157,6 +156,7 @@ describe("projectAgentSessionTurnItems", () => {
     expect(read?.input).toBeUndefined();
     expect(read?.output).toBeUndefined();
     expect(read?.durationMs).toBeUndefined();
+    expect(read?.id).toBeUndefined();
   });
 
   describe("truthful tool-call detail state + identity (FEA-3696)", () => {
@@ -644,56 +644,6 @@ describe("projectAgentSessionTurnItems", () => {
  * carry the terminal FAILURE outcome (FEA-4287), and the fallthrough a retired
  * spelling now reaches is asserted rather than left incidental.
  */
-describe("deriveAgentSessionFallbackState", () => {
-  // FEA-4287: terminal ERROR/FAILED preserve the Error outcome instead of
-  // collapsing to Blocked, so the detail projection matches what the Sessions
-  // LIST renders.
-  it("returns Error for the terminal error status", () => {
-    // ISS-5592 dropped the `failed` alias with the rest of the alias map: the
-    // desktop no longer manufactures that spelling, so `error` is what arrives.
-    expect(deriveAgentSessionFallbackState({ status: "error" })).toBe("ERROR");
-  });
-
-  it("classifies an unrecognized status by its evidence, not by its spelling", () => {
-    // The ISS-6588 consequence, pinned so it is a decision rather than a
-    // side effect: with no branch of its own, a spelling this build does not
-    // model is judged on `endedAt` alone.
-    expect(
-      deriveAgentSessionFallbackState({
-        status: "abandoned",
-        endedAt: "2026-06-17T00:00:00.000Z",
-      })
-    ).toBe("COMPLETED");
-    expect(deriveAgentSessionFallbackState({ status: "abandoned" })).toBe(
-      "RUNNING"
-    );
-  });
-
-  it("returns PendingApproval when awaiting input and not ended", () => {
-    expect(
-      deriveAgentSessionFallbackState({
-        status: "active",
-        awaitingInputSince: "2026-06-17T00:00:00.000Z",
-      })
-    ).toBe("PENDING_APPROVAL");
-  });
-
-  it("treats an ended-but-uncanonicalized session as Completed", () => {
-    expect(
-      deriveAgentSessionFallbackState({
-        status: "active",
-        awaitingInputSince: "2026-06-17T00:00:00.000Z",
-        endedAt: "2026-06-17T00:05:00.000Z",
-      })
-    ).toBe("COMPLETED");
-  });
-
-  it("falls back to Running for an active session with no terminal signals", () => {
-    expect(deriveAgentSessionFallbackState({ status: "active" })).toBe(
-      "RUNNING"
-    );
-  });
-});
 
 // ---------------------------------------------------------------------------
 // Additional projection tests covering previously uncovered branch paths.

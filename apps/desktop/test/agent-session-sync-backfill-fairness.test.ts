@@ -9,8 +9,9 @@
  * wins the tick. On an install that keeps producing local session updates the
  * incremental lane never empties, so backfill was never selected at all. The
  * reported install held 646 backfill rows motionless for two days while
- * incremental trickled down, and the durable cursor — which only persists once
- * BOTH queues drain — stayed 29 hours stale behind it.
+ * incremental trickled down, and the durable cursor — which then persisted only
+ * once BOTH queues drained, before ISS-8041 moved it to the acked-contiguous
+ * prefix — stayed 29 hours stale behind it.
  *
  * ISS-4712 already removed one SOURCE of that pressure (rebuild `updated_at`
  * churn re-enqueuing rows the backfill queue already owned, covered by
@@ -36,7 +37,7 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { BACKFILL_SESSION_BATCH_SIZE } from "../src/main/agent-sync/agent-session-sync-backoff-policy.js";
 import type { SyncedAgentSession } from "../src/main/agent-sync/agent-session-sync-contract.js";
 import { AgentSessionSyncService } from "../src/main/agent-sync/agent-session-sync-service.js";

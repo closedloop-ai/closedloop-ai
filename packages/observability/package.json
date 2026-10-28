@@ -10,27 +10,28 @@
     "test:coverage": "vitest run --coverage --coverage.reporter=json --coverage.reporter=json-summary --coverage.reportOnFailure '--coverage.include=**/*.{ts,tsx}'"
   },
   "dependencies": {
+    "@repo/api": "workspace:*",
     "@closedloop-ai/loops-api": "workspace:*",
     "@closedloop-ai/telemetry-contract": "workspace:*",
     "@opentelemetry/api": "^1.9.0",
-    "@opentelemetry/exporter-trace-otlp-http": "^0.221.0",
-    "@opentelemetry/instrumentation": "^0.221.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.222.0",
+    "@opentelemetry/instrumentation": "^0.222.0",
     "@opentelemetry/instrumentation-pg": "^0.73.0",
     "@opentelemetry/resources": "^2.10.0",
-    "@opentelemetry/sdk-trace-node": "^2.10.0",
+    "@opentelemetry/sdk-trace-node": "^2.11.0",
     "@opentelemetry/semantic-conventions": "1.39.0",
-    "@repo/api": "workspace:*",
     "@t3-oss/env-nextjs": "^0.13.11",
     "react": "19.2.9",
     "server-only": "^0.0.1",
-    "zod": "^4.3.6"
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
+    "@repo/vitest-config": "workspace:*",
     "@types/node": "^25.9.1",
     "@types/react": "^19.2.17",
     "@types/react-dom": "19.2.3",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.9"
+    "vitest": "^5.0.2"
   }
 }

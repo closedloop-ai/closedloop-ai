@@ -1,8 +1,10 @@
 "use client";
 
 import * as React from "react";
+import { resolveCompletionDisplay } from "../../lib/completion-percentage";
 import {
-  FilledStatusCircle,
+  PROGRESS_RING_COLOR,
+  StatusAppearanceIcon,
   StatusDash,
   StatusRing,
 } from "./status-icon-primitives";
@@ -86,16 +88,31 @@ function StatusPercentageIcon(props: StatusPercentageIconProps) {
     thinking = false,
     ...rest
   } = props;
-  const clamped = Math.max(0, Math.min(100, value));
-  const resolvedLabel = label ?? `${Math.round(clamped)}% complete`;
+  // One rule, both channels. `isComplete` picks the mark and `percentage` is
+  // the number the default name says, and the rule guarantees `percentage`
+  // reads 100 only when `isComplete` — deriving them separately is what let a
+  // caller's 99.6 draw an incomplete ring announcing "100% complete" to a
+  // screen reader (ISS-9922).
+  //
+  // BOTH CHANNELS MOVE AT THE RESERVE, not just the mark (tamsinb review): a
+  // caller passing 99.6 with no `label` used to hear "100% complete" and now
+  // hears "99% complete", because the default name is built from `percentage`.
+  // That is the point — the name was the channel carrying the lie — but it does
+  // mean this is not a mark-only change.
+  //
+  // `clamped` stays the ring's GEOMETRY, so the arc drawn for a given value is
+  // untouched by any of it: 99.5 and 99 say the same sentence and still draw
+  // different arcs, and a sub-1% population still draws an arc while its
+  // sentence reads 0%.
+  const { clamped, isComplete, percentage } = resolveCompletionDisplay(value);
+  const resolvedLabel = label ?? `${percentage}% complete`;
 
-  if (clamped >= 100) {
+  if (isComplete) {
     return (
-      <FilledStatusCircle
+      <StatusAppearanceIcon
+        appearance="success-check"
         className={className}
         data-slot="status-percentage-icon"
-        fill="var(--success)"
-        glyph="check"
         label={resolvedLabel}
         size={size}
         {...rest}
@@ -106,7 +123,7 @@ function StatusPercentageIcon(props: StatusPercentageIconProps) {
   return (
     <StatusRing
       className={className}
-      color="var(--progress-foreground)"
+      color={PROGRESS_RING_COLOR}
       data-slot="status-percentage-icon"
       label={resolvedLabel}
       percentage={clamped}

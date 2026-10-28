@@ -28,6 +28,13 @@ import type { NormalizedSession } from "../types.js";
 export type FoldedChildPruneResult = {
   /** Ids actually deleted. The caller adds this to `summary.deleted`. */
   deletedIds: string[];
+  /**
+   * ISS-8601: ids the store REFUSED to delete because the row is non-terminal —
+   * a wedged row the age bound admitted to the rebuild but which may never be
+   * purged. Left in `pending` by this module; the caller decides their
+   * disposition (they keep their stale revision as the retry marker).
+   */
+  refusedIds: string[];
   /** Deletes that threw. The caller adds this to `summary.errors`. */
   errors: number;
 };
@@ -38,13 +45,30 @@ export type FoldedChildPruneInput = {
   /** Every session the CURRENT parse returned as top level. */
   sessions: readonly NormalizedSession[];
   /**
-   * The stale TERMINAL session ids still pending for this harness. Membership is
-   * both the existence proof (the row is really in the store) and the liveness
-   * guard (an active row is never in this set, so it is never deleted). Deleted
-   * ids are removed from it in place.
+   * The stale session ids still pending for this harness. Membership is the
+   * existence proof — the row is really in the store. Deleted ids are removed
+   * from it in place.
+   *
+   * ISS-8601: membership is NO LONGER the liveness guard. This set used to hold
+   * terminal rows only, so "an active row is never in this set" made the guard
+   * implicit; the age bound admits a non-terminal row that has been silent past
+   * the staleness cutoff, so a non-terminal id CAN appear here now. The guard is
+   * therefore explicit and lives where it can be enforced: {@link deleteSessionRow}
+   * re-checks status inside its own transaction and REPORTS whether it deleted,
+   * and this module only records a deletion it was told actually happened.
    */
   pending: Set<string>;
-  deleteSessionRow: (sessionId: string) => Promise<void>;
+  /**
+   * Deletes the row and reports whether it actually did.
+   *
+   * ISS-8601: the outcome is load-bearing, not decorative. The store refuses a
+   * non-terminal row by returning early, and while that outcome was `void` this
+   * module treated every non-throwing call as a success — pushing the id into
+   * `deletedIds`, dropping it from `pending`, and logging a deletion that never
+   * happened. The caller then counted it, so the row left the pass, stayed in the
+   * store, and was never stamped.
+   */
+  deleteSessionRow: (sessionId: string) => Promise<boolean>;
   log: (message: string) => void;
   pauseAfterWrite: () => Promise<void>;
   shouldContinue: () => boolean;
@@ -101,7 +125,11 @@ export async function pruneFoldedChildRows(
     pauseAfterWrite,
     shouldContinue,
   } = input;
-  const result: FoldedChildPruneResult = { deletedIds: [], errors: 0 };
+  const result: FoldedChildPruneResult = {
+    deletedIds: [],
+    refusedIds: [],
+    errors: 0,
+  };
   for (const childSessionId of foldedChildSessionIdsFromParse(sessions)) {
     if (!pending.has(childSessionId)) {
       continue;
@@ -109,12 +137,24 @@ export async function pruneFoldedChildRows(
     if (!shouldContinue()) {
       return result;
     }
+    let deleted: boolean;
     try {
-      await deleteSessionRow(childSessionId);
+      deleted = await deleteSessionRow(childSessionId);
     } catch (error) {
       result.errors++;
       log(
         `data-revision rebuild [${harness}]: folded-child cleanup failed for ${childSessionId}: ${error instanceof Error ? error.message : String(error)}`
+      );
+      continue;
+    }
+    if (!deleted) {
+      // ISS-8601: refused in-transaction because the row is non-terminal. It is
+      // reported as refused rather than deleted so the caller can leave its stale
+      // revision in place as the retry marker; recording it here would both
+      // inflate `deleted` and strand the row.
+      result.refusedIds.push(childSessionId);
+      log(
+        `data-revision rebuild [${harness}]: store refused to delete pre-fold subagent row ${childSessionId} (non-terminal); its duplicate top-level row stays and the stale revision remains its retry marker`
       );
       continue;
     }

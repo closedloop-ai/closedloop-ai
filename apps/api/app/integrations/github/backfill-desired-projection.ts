@@ -35,6 +35,46 @@ export function reviewThreadIdentity(
   );
 }
 
+/**
+ * Review comments grouped by thread, each thread oldest first by creation then
+ * id, so a reply follows the comment it answers. A thread is keyed by its root
+ * comment (a reply's `in_reply_to_id`), which every comment carries, rather
+ * than by the GraphQL thread id, which a comment whose metadata read was
+ * capped lacks.
+ */
+export function groupReviewThreads(
+  comments: readonly GitHubPullRequestReviewComment[]
+): GitHubPullRequestReviewComment[][] {
+  const threads = new Map<string, GitHubPullRequestReviewComment[]>();
+  for (const comment of comments) {
+    const identity = String(comment.in_reply_to_id ?? comment.id);
+    const thread = threads.get(identity);
+    if (thread) {
+      thread.push(comment);
+    } else {
+      threads.set(identity, [comment]);
+    }
+  }
+  return [...threads.values()].map((thread) =>
+    [...thread].sort(compareReviewComments)
+  );
+}
+
+/**
+ * The comment a thread's position, URL, review and resolution are taken from:
+ * the one GitHub anchors the thread to, else the oldest.
+ */
+export function reviewThreadRoot(
+  thread: readonly GitHubPullRequestReviewComment[]
+): GitHubPullRequestReviewComment {
+  const root =
+    thread.find((comment) => comment.in_reply_to_id === null) ?? thread[0];
+  if (!root) {
+    throw new Error("A review thread has at least one comment");
+  }
+  return root;
+}
+
 export function desiredReviewThreadProjection(
   comment: GitHubPullRequestReviewComment
 ) {
@@ -46,6 +86,7 @@ export function desiredReviewThreadProjection(
       : null,
     path: comment.path,
     line: comment.line,
+    originalLine: comment.original_line,
     side: normalizeGitHubDiffSide(comment.side),
     startLine: comment.start_line,
     startSide: normalizeGitHubDiffSide(comment.start_side),
@@ -55,6 +96,15 @@ export function desiredReviewThreadProjection(
       comment.review_thread_is_resolved
     ),
   };
+}
+
+function compareReviewComments(
+  left: GitHubPullRequestReviewComment,
+  right: GitHubPullRequestReviewComment
+): number {
+  const byCreated =
+    Date.parse(left.created_at) - Date.parse(right.created_at) || 0;
+  return byCreated === 0 ? left.id - right.id : byCreated;
 }
 
 export function keepLatestReviewPerAuthor(

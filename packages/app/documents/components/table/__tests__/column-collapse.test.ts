@@ -11,9 +11,7 @@ import {
 } from "@repo/app/shared/test-fixtures/documents";
 import { describe, expect, it } from "vitest";
 
-// ---------------------------------------------------------------------------
 // Fixtures
-// ---------------------------------------------------------------------------
 
 const OTHER_USER = { ...TEST_USER, id: "user-2", firstName: "Grace" } as const;
 
@@ -46,9 +44,7 @@ const ALL_COLUMNS = [
   Col.Parent,
 ];
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 describe("collapseUninformativeColumns — constant columns (FEA-3945)", () => {
   it("hides Assignee when every row has the same assignee", () => {

@@ -1,11 +1,18 @@
+import { SyncLane } from "@closedloop-ai/telemetry-contract/sync";
 import type {
   AgentComponentInvocationSyncAck,
   AgentComponentInvocationSyncPart,
 } from "@repo/api/src/types/agent-component-invocation";
-import { Result, Status, type StatusCode } from "@repo/api/src/types/result";
-import { agentComponentInvocationsService } from "@/app/agent-sessions/service/component-invocations";
+import { DesktopAgentComponentInvocationSyncRestErrorCode } from "@repo/api/src/types/desktop-write-lane";
+import { Result } from "@repo/api/src/types/result";
+import {
+  agentComponentInvocationsService,
+  type IngestAgentComponentInvocationPartResult,
+} from "@/app/agent-sessions/service/component-invocations";
 import { computeTargetsService } from "@/app/compute-targets/service";
-import { isOrgSessionSyncPolicyEnabled } from "@/lib/org-session-sync-policy";
+import { reportComputeTargetOwnershipRefusal } from "@/app/compute-targets/service/ownership-refusal-telemetry";
+import type { AuthContext } from "@/lib/auth/with-auth";
+import type { RecordWriteInTransaction } from "@/lib/record-write-in-transaction";
 
 type DesktopAgentComponentInvocationsSyncInput = {
   clerkUserId: string | null;
@@ -13,22 +20,28 @@ type DesktopAgentComponentInvocationsSyncInput = {
   organizationId: string;
   part: AgentComponentInvocationSyncPart;
   userId: string;
-  /** Injectable for tests; defaults to the server-owned org-policy lookup. */
-  isOrgPolicyEnabled?: (organizationId: string) => Promise<boolean>;
+  /** ISS-11426 telemetry only: which credential authenticated the request. */
+  authMethod?: AuthContext["authMethod"];
 };
 
 /**
- * Verifies target ownership and the org session-sync policy, then ingests one
- * independently acknowledged part. Component-invocation parts are session-derived
- * ingest data, so FEA-4169's server-owned org policy must gate this boundary too:
- * a policy-off org (or an older/compromised Desktop that ignores the local gate)
- * cannot persist invocation definitions here. Fail-closed and independent of any
- * client-sent field.
+ * Verifies target ownership, then ingests one independently acknowledged part.
+ *
+ * ISS-11449: ownership is now the ONLY refusal here, so the route's single
+ * `Forbidden` has a single cause. Whether a session's data may egress at all is
+ * the user's own `DataSyncLevel` election, decided on the device before the
+ * part is ever sent — there is no org-level override above it.
  */
 export const desktopAgentComponentInvocationsSyncService = {
   async sync(
-    input: DesktopAgentComponentInvocationsSyncInput
-  ): Promise<Result<AgentComponentInvocationSyncAck, StatusCode>> {
+    input: DesktopAgentComponentInvocationsSyncInput,
+    recordWrite?: RecordWriteInTransaction<IngestAgentComponentInvocationPartResult>
+  ): Promise<
+    Result<
+      AgentComponentInvocationSyncAck,
+      typeof DesktopAgentComponentInvocationSyncRestErrorCode.TargetNotOwned
+    >
+  > {
     const target = await computeTargetsService.findOwnedById(
       input.computeTargetId,
       input.organizationId,
@@ -36,20 +49,26 @@ export const desktopAgentComponentInvocationsSyncService = {
       input.clerkUserId
     );
     if (!target) {
-      return Result.err(Status.Forbidden);
+      await reportComputeTargetOwnershipRefusal({
+        lane: SyncLane.InvocationParts,
+        computeTargetId: input.computeTargetId,
+        organizationId: input.organizationId,
+        userId: input.userId,
+        authMethod: input.authMethod,
+      });
+      return Result.err(
+        DesktopAgentComponentInvocationSyncRestErrorCode.TargetNotOwned
+      );
     }
 
-    const isOrgPolicyEnabled =
-      input.isOrgPolicyEnabled ?? isOrgSessionSyncPolicyEnabled;
-    if (!(await isOrgPolicyEnabled(input.organizationId))) {
-      return Result.err(Status.Forbidden);
-    }
-
-    const result = await agentComponentInvocationsService.ingestPart({
-      organizationId: input.organizationId,
-      computeTargetId: input.computeTargetId,
-      part: input.part,
-    });
+    const result = await agentComponentInvocationsService.ingestPart(
+      {
+        organizationId: input.organizationId,
+        computeTargetId: input.computeTargetId,
+        part: input.part,
+      },
+      recordWrite
+    );
     if (result.ok) {
       return Result.ok({
         accepted: true,

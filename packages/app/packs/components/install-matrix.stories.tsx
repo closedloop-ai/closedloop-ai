@@ -79,9 +79,9 @@ const MATRIX: PackComponentInstallMatrix = {
 };
 
 const meta = {
-  title: "App Core/Packs/Install Matrix",
+  title: "Composites v1.0/Packs/Install Matrix",
   component: InstallMatrix,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   args: {
     matrix: MATRIX,
     componentName: "pre-commit-guard",

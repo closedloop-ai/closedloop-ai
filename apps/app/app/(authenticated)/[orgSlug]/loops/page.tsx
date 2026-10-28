@@ -12,9 +12,8 @@ import { notFound, redirect } from "next/navigation";
  * Sessions now is. (My Tasks is a personal queue and would read as a bug.) This
  * matches the sibling Monitoring redirect, which also forwards to Sessions.
  *
- * The underlying loops service / data plumbing is intentionally untouched — this
- * is a nav+UI removal only. Per-execution detail (`loops/[id]`) still exists and
- * is reached functionally from plans and document-run flows.
+ * PRD-795 (ISS-12435) removed Loops entirely, including per-loop detail
+ * (`loops/[id]`) and usage (`loops/usage`); this redirect stays for bookmarks.
  *
  * Temporary (307), not permanent (308): a 308 is aggressively cached by browsers
  * and would be near-impossible to repoint later. `orgSlug` is checked for path

@@ -20,13 +20,13 @@
  * match too. So on two of the three tabs the claim could come back unnoticed.
  * Pinning the shared emitter covers all three at once, with exact equality.
  *
- * On the ordering claim specifically: the rows behind these captions are NOT
- * the recency head of the population. `resolveDetailSessionTabs` takes
- * `[...invCountBySession.keys()].slice(0, MAX_DETAIL_SESSION_IN_IDS)` from an
- * unordered group-by, so above that bound the delivered rows are the recency
- * head of an ARBITRARY subset, and desktop's local reader additionally drops ids
- * it cannot hydrate. The caption may therefore state how many rows it shows and
- * out of how many exist, and nothing about WHICH ones.
+ * On the ordering claim specifically: the rows behind these captions are still
+ * NOT provably the recency head of the population. ISS-9855 closed the cloud
+ * half — `resolveDetailSessionTabs` sorts by `lastInvokedAt` and serves that
+ * head, instead of slicing an unordered group-by — but desktop's local reader
+ * still drops ids it cannot hydrate, and this caption is shared. One producer
+ * being ordered is not the caption being ordered. It may therefore state how
+ * many rows it shows and out of how many exist, and nothing about WHICH ones.
  */
 
 import { describe, expect, it } from "vitest";

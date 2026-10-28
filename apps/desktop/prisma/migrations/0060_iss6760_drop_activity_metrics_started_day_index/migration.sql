@@ -1,0 +1,56 @@
+-- ISS-6760: drop `idx_session_activity_metrics_started_day`.
+--
+-- 0027 created `session_activity_metrics` for read-time cohort aggregation, and
+-- gave its `started_day` column a dedicated index — which declares the column a
+-- group-by axis.
+--
+-- It cannot be one. `started_day` is a stored UTC-day derivation FEA-2430
+-- declared storage-only, with the contract stated at its writer
+-- (session-analytics-rollup.ts): "storage-only, zero readers ... Any future
+-- DISPLAY read must re-bucket from the raw timestamp with strftime(...,
+-- 'localtime') ... never read this column". It must stay UTC because a stored
+-- LOCAL day goes stale on a timezone change or DST shift. Every other desktop
+-- Insights day series buckets in the user's LOCAL calendar (the timezone
+-- contract in local-insights.ts, via `localDay()` in db-helpers.ts), so a
+-- coverage-over-time chart grouped on this column would have put non-UTC users'
+-- activity on the wrong day. That is not hypothetical: FEA-2999 had to correct
+-- exactly this read in optimization-analytics-queries.ts, where reading
+-- `agent_component_session_usage.started_day` directly "landed pull-in activity
+-- on the wrong calendar day for non-UTC users and disagreed with the rest of
+-- the dashboard".
+--
+-- No renderer ever consumed the column, so nothing changes on screen. What the
+-- index did do was read as an endorsement to the next author. A coverage-over-
+-- time read joins `sessions` and buckets with `localDay(s.started_at)`; it needs
+-- no index here, and the surviving column is documented as storage-only in both
+-- schema.prisma and activity-metrics.ts.
+--
+-- The rollup's own contract comment (session-analytics-rollup.ts) now enumerates
+-- all THREE copies of that UTC day under the same terms: this one,
+-- `agent_component_session_usage.started_day`, and — in the CLOUD —
+-- `AgentSessionUsageRollup.startedDay`, which sync-source.ts uploads. Two are
+-- deliberately left alone here. `idx_acsu_day` stays because ISS-6760 was raised
+-- against `session_activity_metrics` and this migration keeps to that table; the
+-- contract comment records it as a known outstanding index rather than an
+-- endorsement. The cloud copy is the one to watch — `localDay()` is
+-- desktop-local, so nothing cloud-side would catch a `GROUP BY started_day`.
+--
+-- Scope is the INDEX only. The column stays because dropping it would enter the
+-- migration runner's `laterDroppedColumns` heal set under the bare name
+-- `started_day` — a name three SURVIVING columns still use
+-- (`session_analytics`, `session_tool_analytics`, `agent_component_session_usage`).
+-- That heal keys tolerance on the column NAME, because SQLite's
+-- `no such column: <name>` does not name the table, and it rests on the manifest
+-- invariant that a dropped name identifies exactly one column
+-- (migration-manifest-drop-uniqueness.test.ts). Dropping this one would break
+-- that invariant: a genuine `no such column: started_day` from 0001_init's
+-- `idx_session_analytics_started_day` / `idx_session_tool_analytics_day`, or
+-- 0015/0017's `idx_acsu_day`, would then be silently SKIPPED on an untracked
+-- partial store instead of refusing boot. Trading a loud refusal for a silent
+-- one to delete a write-only column is the wrong trade, so the column stays and
+-- the contract is carried in the docstrings.
+--
+-- Re-applying 0027 on an untracked store re-creates this index (its column is
+-- still there, so the `CREATE INDEX IF NOT EXISTS` succeeds); this migration
+-- then drops it again. The history converges either way.
+DROP INDEX IF EXISTS "idx_session_activity_metrics_started_day";

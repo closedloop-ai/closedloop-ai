@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "OpenCode import bookkeeping (ISS-5266) read only by import diagnostics, not by a product view."
+}

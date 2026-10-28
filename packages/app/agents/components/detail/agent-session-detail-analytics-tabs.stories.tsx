@@ -47,9 +47,9 @@ const ERROR_MAP_MARKER = "1 error event total";
 const NARROW_VIEWPORT_PX = 360;
 
 const meta = {
-  title: "App Core/Agents/Agent Session Detail Analytics Tabs",
+  title: "Composites v1.0/Agents/Detail/Agent Session Detail Analytics Tabs",
   component: AgentSessionDetailAnalyticsTabs,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
 } satisfies Meta<typeof AgentSessionDetailAnalyticsTabs>;
 

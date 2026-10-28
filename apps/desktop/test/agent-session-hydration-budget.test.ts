@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { hydrateWithinByteBudget } from "../src/main/agent-sync/agent-session-hydration-budget.js";
 import type { SyncedAgentSession } from "../src/main/agent-sync/agent-session-sync-contract.js";
 import { SESSION_HYDRATION_SLICE_SIZE } from "../src/main/agent-sync/agent-session-sync-limits.js";

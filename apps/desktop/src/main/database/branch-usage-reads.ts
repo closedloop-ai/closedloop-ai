@@ -3,7 +3,12 @@
  * @description Branch-linked aggregate and event usage reads extracted from
  * the oversized Branch read facade while preserving its public API.
  */
-import { resolveBillingMode } from "../cost/billing-mode-detector.js";
+
+import type { BillingMode } from "../../shared/billing-mode.js";
+import {
+  billingModeAt,
+  resolveBillingModesNonBlocking,
+} from "../cost/billing-mode-detector.js";
 import type { BranchUsageTokenRow } from "./branch-reads.js";
 import { branchUsageEventFingerprintSql } from "./branch-usage-event-fingerprint.js";
 import {
@@ -42,26 +47,31 @@ type TokenUsageRawRow = {
   cost_usd_estimated: number | null;
 };
 
+type BranchBillingModeRow = {
+  billing_mode: string | null;
+  harness: string | null;
+};
+
 /**
- * Resolve a branch-joined session row's billing mode the SAME way every Sessions
- * path does (`resolveBillingModeForRow` → `resolveBillingMode`): a stored,
- * definite mode wins, and a missing/legacy/"unknown" one falls back to live
- * detection.
+ * Resolve each branch-joined session row's billing mode the SAME way every
+ * Sessions path does (`resolveBillingMode`): a stored, definite mode wins, and a
+ * missing/legacy/"unknown" one falls back to live detection.
  *
  * Reading `s.billing_mode` verbatim here is what let the two surfaces disagree
  * (ISS-4869 review): after the Keychain detector landed, a historical row stored
  * as 'unknown' resolved to `subscription_unknown` in Sessions while Branches
- * still bucketed the same spend as unclassified. Detection is memoized behind a
- * TTL, so calling it per row costs no extra subprocess.
+ * still bucketed the same spend as unclassified.
+ *
+ * ISS-12120: only the SQL runs on the db-host; this mapping runs on the Electron
+ * main thread, where the synchronous resolver's Keychain probe would freeze
+ * every window, so it resolves through the non-blocking resolver.
  */
-function resolveBranchRowBillingMode(row: {
-  billing_mode: string | null;
-  harness: string | null;
-}): string {
-  return resolveBillingMode({
-    billingMode: row.billing_mode,
-    harness: row.harness,
-  });
+function resolveBranchRowBillingModes(
+  rows: readonly BranchBillingModeRow[]
+): Promise<BillingMode[]> {
+  return resolveBillingModesNonBlocking(
+    rows.map((row) => ({ billingMode: row.billing_mode, harness: row.harness }))
+  );
 }
 
 function mapTokenUsageRawRow(
@@ -87,7 +97,7 @@ function mapTokenUsageRawRow(
  * single raw SQL JOIN — no `IN (…)` clause, so there is no SQLite parameter
  * limit (FEA-2260). The `sessions` JOIN carries `billing_mode` AND `harness` for
  * the usage summary's subscription/API billing split — both are needed because
- * the mode is re-resolved through `resolveBranchRowBillingMode`, never read as
+ * the mode is re-resolved through `resolveBranchRowBillingModes`, never read as
  * the raw column, so Branches and Sessions bucket the same spend identically.
  */
 export function readBranchUsageTokenRows(
@@ -120,11 +130,12 @@ export function readBranchUsageTokenRows(
        WHERE tu.session_id IN (${branchLinkedSessionSubquery})
        ORDER BY tu.session_id ASC, tu.model ASC`
     )
-    .then((rows) =>
-      rows.map((row) =>
-        mapTokenUsageRawRow(row, resolveBranchRowBillingMode(row))
-      )
-    );
+    .then(async (rows) => {
+      const modes = await resolveBranchRowBillingModes(rows);
+      return rows.map((row, index) =>
+        mapTokenUsageRawRow(row, billingModeAt(modes, index))
+      );
+    });
 }
 
 /**
@@ -217,15 +228,16 @@ export function readBranchUsageEventRows(
        ORDER BY te.session_id ASC, te.created_at ASC`,
       ...params
     )
-    .then((rows) =>
-      rows.map((row) => ({
+    .then(async (rows) => {
+      const modes = await resolveBranchRowBillingModes(rows);
+      return rows.map((row, index) => ({
         eventRowId: row.event_row_id,
         eventFingerprint: row.event_fingerprint,
         sessionId: row.session_id,
         model: row.model,
         ...mapBranchUsageTokenCounts(row, "branch_event"),
         ...mapBranchUsageCacheWriteTiers(row, "branch_event"),
-        billingMode: resolveBranchRowBillingMode(row),
+        billingMode: billingModeAt(modes, index),
         createdAt: row.created_at,
         sessionStartedAt: row.session_started_at ?? null,
         // FEA-4270: the per-event captured cost, so a windowed spend read that
@@ -236,6 +248,6 @@ export function readBranchUsageEventRows(
           row.cost_usd_estimated == null
             ? null
             : Number(row.cost_usd_estimated),
-      }))
-    );
+      }));
+    });
 }

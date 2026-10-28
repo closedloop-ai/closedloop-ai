@@ -1,7 +1,9 @@
+import { INLINE_EDIT_SAVE_ERROR_MESSAGE } from "@repo/app/shared/lib/inline-edit-save-error";
 import { describe, expect, it } from "vitest";
 import {
   buildOrgPolicyUpdateInput,
   ORG_POLICY_FIELD_STATE_BADGES,
+  ORG_POLICY_SAVE_FAILED_MESSAGE,
   ORG_POLICY_SAVE_OUTCOME_ALERTS,
   OrgPolicyField,
   OrgPolicyFieldState,
@@ -43,22 +45,24 @@ describe("resolveOrgPolicyFieldState", () => {
 });
 
 describe("readOrgPolicyField", () => {
-  it("reads the new optional-field shape for each policy field", () => {
-    const organization = {
-      searchIncludeTranscripts: true,
-      sessionSyncPolicyEnabled: false,
-    };
+  it("reads the new optional-field shape, both booleans", () => {
     expect(
-      readOrgPolicyField(organization, OrgPolicyField.SearchIncludeTranscripts)
+      readOrgPolicyField(
+        { searchIncludeTranscripts: true },
+        OrgPolicyField.SearchIncludeTranscripts
+      )
     ).toBe(true);
     expect(
-      readOrgPolicyField(organization, OrgPolicyField.SessionSyncPolicyEnabled)
+      readOrgPolicyField(
+        { searchIncludeTranscripts: false },
+        OrgPolicyField.SearchIncludeTranscripts
+      )
     ).toBe(false);
   });
 
   it("preserves omission for the old stripped-field shape", () => {
     expect(
-      readOrgPolicyField({}, OrgPolicyField.SessionSyncPolicyEnabled)
+      readOrgPolicyField({}, OrgPolicyField.SearchIncludeTranscripts)
     ).toBeUndefined();
   });
 
@@ -176,19 +180,13 @@ describe("buildOrgPolicyUpdateInput", () => {
       )
     ).toEqual({ id: ORGANIZATION_ID, searchIncludeTranscripts: true });
   });
-
-  it("writes only the session-sync policy field", () => {
-    expect(
-      buildOrgPolicyUpdateInput(
-        ORGANIZATION_ID,
-        OrgPolicyField.SessionSyncPolicyEnabled,
-        false
-      )
-    ).toEqual({ id: ORGANIZATION_ID, sessionSyncPolicyEnabled: false });
-  });
 });
 
 describe("canonical presentation maps", () => {
+  it("aliases the cross-feature save-failure copy", () => {
+    expect(ORG_POLICY_SAVE_FAILED_MESSAGE).toBe(INLINE_EDIT_SAVE_ERROR_MESSAGE);
+  });
+
   it("styles a badge only for the Unavailable state", () => {
     // Outline, not warning: amber is reserved for the NotConfirmed save alert
     // (an action that may not have taken), so the status chip stays a neutral

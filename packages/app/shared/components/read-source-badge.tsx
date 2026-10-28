@@ -11,8 +11,10 @@ import {
 
 /**
  * FEA-3120 (PRD-525 Priority 2, DoD #6): a small, unobtrusive indicator of the
- * store a Sessions/Branches surface actually read from — `local` SQLite, synced
- * `cloud` state, or a degraded `fallback`.
+ * store a surface actually read from — `local` SQLite, synced `cloud` state, or
+ * a degraded `fallback`. ISS-6005 dropped it from the Sessions LIST toolbar
+ * outright, and ISS-10209 dropped it from the Branches LIST toolbars the same
+ * way — removed, not gated.
  *
  * ISS-5714: the tooltip answers the USER's question — which data this view is
  * showing, and whether it is complete — and nothing else. It used to close with
@@ -27,8 +29,9 @@ import {
  *
  * Domain component (it encodes the `ReadSource` vocabulary), so it lives in the
  * shared `packages/app` slice and composes the generic design-system `Badge` —
- * NOT in `packages/design-system`. Shared here (rather than duplicated in the
- * branches/agents slices) because both surfaces render the identical concept.
+ * NOT in `packages/design-system`. It stays in this shared slice rather than
+ * moving to the desktop renderer because that renderer imports it from here and
+ * the ISS-5714 cross-surface parity suite mounts it directly.
  *
  * Presentational only: no `window`/`localStorage`, so it renders identically in
  * the web shell and the Electron renderer.
@@ -84,21 +87,6 @@ export type ReadSourceBadgeProps = {
    * "where is this coming from".
    */
   detail?: string;
-  /**
-   * ISS-5477: this read is KNOWN to be short — a cloud read the fail-open let
-   * through without the backlog draining, or one the cutover latched before
-   * newer local work caught up. It is the one state on the surface where we
-   * already know the numbers are incomplete, so it must not wear the same calm
-   * `info` tone as a genuinely drained cloud read with the whole difference
-   * hidden in hover text. Borrows the `warning` tone the `Fallback` source
-   * already uses for a degraded, best-effort result, and qualifies the label so
-   * the difference survives with the tooltip closed.
-   *
-   * Independent of `readSource`, which keeps meaning PROVENANCE: a fail-open
-   * read genuinely did come from the cloud, and mislabelling it `Fallback`
-   * would trade one wrong answer for another.
-   */
-  incomplete?: boolean;
   className?: string;
 };
 
@@ -106,7 +94,6 @@ export function ReadSourceBadge({
   readSource,
   surfaceLabel,
   detail,
-  incomplete = false,
   className,
 }: ReadSourceBadgeProps) {
   // Guard unknown values: `readSource` may arrive over HTTP/desktop IPC as a
@@ -127,11 +114,10 @@ export function ReadSourceBadge({
           className={className}
           data-read-source={readSource}
           data-read-source-detail={detail}
-          data-read-source-incomplete={incomplete ? "true" : undefined}
           data-testid="read-source-badge"
-          variant={incomplete ? "warning" : presentation.tone}
+          variant={presentation.tone}
         >
-          {incomplete ? `${presentation.label} (partial)` : presentation.label}
+          {presentation.label}
         </Badge>
       </TooltipTrigger>
       <TooltipContent>

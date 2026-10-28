@@ -1,0 +1,30 @@
+{
+  "provenance": {
+    "warning": "DERIVED fixture — produced by the real desktop payload builders and never hand-edited. Regenerate with the command in `regenCommand`; `apps/desktop/test/contract-replay-fixtures.test.ts` reds until you do.",
+    "incident": "ISS-8271",
+    "standsFor": "Desktop parks rows at the local sentinel revisions -1 (import pending) and 0 (maintenance stale) and the sync lane has no revision filter, so both leak onto the wire. A `min(1)` at the wire schema rejected the WHOLE batch — the parse is batch-wide — and the reseal that heals the row emits no sync signal, so ~450 deliveries/day stranded. Both sentinels must be ACCEPTED and dispositioned per session.",
+    "generatedBy": "apps/desktop/test/contract-replay/fixtures-build.ts",
+    "regenCommand": "CONTRACT_REPLAY_WRITE_FIXTURES=1 pnpm --filter desktop exec vitest run --config vitest.node.config.ts test/contract-replay-fixtures.test.ts",
+    "builders": [
+      "apps/desktop/src/main/agent-sync/agent-session-sync-payload.ts"
+    ]
+  },
+  "schemaVersion": 2,
+  "kind": "session",
+  "sessions": [
+    {
+      "externalSessionId": "contract-replay-iss8271-sentinel-negative",
+      "name": "contract replay session",
+      "status": "active",
+      "harness": "claude",
+      "cwd": "/tmp/contract-replay",
+      "startedAt": "2026-09-01T10:00:00.000Z",
+      "updatedAt": "2026-09-01T11:00:00.000Z",
+      "agents": [],
+      "events": [],
+      "tokenUsageByModel": [],
+      "dataRevision": -1,
+      "metadata": null
+    }
+  ]
+}

@@ -53,12 +53,7 @@ export function chartColorPair(index: number): ChartColorPair {
 }
 
 export function chartColorPairForTokenIndex(index: number): ChartColorPair {
-  const base = chartColor(index);
-  return {
-    base,
-    soft: `color-mix(in oklch, ${base} 62%, var(--background))`,
-    strong: `color-mix(in oklch, ${base} 84%, var(--foreground))`,
-  };
+  return chartColorPairForColor(chartColor(index));
 }
 
 /**
@@ -146,4 +141,18 @@ export function chartSeriesColor(index: number): string {
     return CHART_OTHER_SERIES_COLOR;
   }
   return chartColor(CHART_SERIES_TOKEN_INDEXES[slot]);
+}
+
+/**
+ * The soft/strong companions for an arbitrary base colour, so a surface that
+ * needs a pair for a NON-palette colour (a reserved neutral, say) derives the
+ * companions from the same recipe the palette pairs use instead of hand-mixing
+ * its own.
+ */
+export function chartColorPairForColor(base: string): ChartColorPair {
+  return {
+    base,
+    soft: `color-mix(in oklch, ${base} 62%, var(--background))`,
+    strong: `color-mix(in oklch, ${base} 84%, var(--foreground))`,
+  };
 }

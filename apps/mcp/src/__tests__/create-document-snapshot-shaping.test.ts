@@ -267,4 +267,24 @@ describe("readSnapshotSource", () => {
     const snapshot = output.repositorySnapshot as Record<string, unknown>;
     expect(snapshot).toHaveProperty("source", SnapshotSource.LoopSelection);
   });
+
+  // ISS-8164: the literal is deliberate. Spelled as a SnapshotSource member,
+  // this case would keep passing against a parser that only recognises the
+  // members it was hand-written with, which is the drop this guards.
+  it("includes a branch-link source rather than dropping the artifact's provenance", async () => {
+    mockPost.mockResolvedValueOnce({
+      repositorySnapshot: {
+        repositories: [],
+        source: "branch_link",
+      },
+    });
+
+    const output = parseToolPayload(await handler(BASE_INPUT)) as Record<
+      string,
+      unknown
+    >;
+
+    const snapshot = output.repositorySnapshot as Record<string, unknown>;
+    expect(snapshot).toHaveProperty("source", "branch_link");
+  });
 });

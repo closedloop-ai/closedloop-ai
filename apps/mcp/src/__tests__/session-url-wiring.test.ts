@@ -1,4 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import {
+  DOCUMENT_ROUTE_PREFIX,
+  DocumentType,
+} from "@repo/api/src/types/document.js";
 import { afterAll, describe, expect, it, vi } from "vitest";
 
 /**
@@ -21,7 +25,7 @@ const { originalInternalApiSecret } = vi.hoisted(() => {
 vi.mock("../api-client.js", () => ({
   checkApiReachable: vi.fn(),
   createApiClient: vi.fn(() => ({
-    post: vi.fn(async () => ({ received: true })),
+    put: vi.fn(async () => ({ slug: "PRD-7", type: DocumentType.Prd })),
   })),
   verifyApiKey: vi.fn(),
 }));
@@ -87,14 +91,14 @@ type ToolHandler = (
   extra: Record<string, unknown>
 ) => Promise<{ content: { text?: string }[]; isError?: boolean }>;
 
-async function captureAddLoopEventHandler(
+async function captureUpdateDocumentHandler(
   organizationId: string
 ): Promise<ToolHandler> {
   let handler: ToolHandler | undefined;
   const spy = vi
     .spyOn(McpServer.prototype, "registerTool")
     .mockImplementation((name: string, _config: unknown, callback: unknown) => {
-      if (name === "add-loop-event") {
+      if (name === "update-document") {
         handler = callback as ToolHandler;
       }
       return undefined as never;
@@ -113,13 +117,13 @@ async function captureAddLoopEventHandler(
     spy.mockRestore();
   }
   if (!handler) {
-    throw new Error("add-loop-event was not registered");
+    throw new Error("update-document was not registered");
   }
   return handler;
 }
 
 async function drivenWebUrl(handler: ToolHandler): Promise<string> {
-  const result = await handler({ loopId: "loop-1", message: "status" }, {});
+  const result = await handler({ documentId: "PRD-7", title: "status" }, {});
   if (result.isError) {
     throw new Error(`tool handler errored: ${result.content[0]?.text}`);
   }
@@ -131,23 +135,23 @@ async function drivenWebUrl(handler: ToolHandler): Promise<string> {
 
 describe("per-session webUrl org slugs (ISS-6570)", () => {
   it("keeps each session's webUrls on its own org slug across interleaved session creation", async () => {
-    const orgA = await captureAddLoopEventHandler("org-a-id");
-    const orgB = await captureAddLoopEventHandler("org-b-id");
+    const orgA = await captureUpdateDocumentHandler("org-a-id");
+    const orgB = await captureUpdateDocumentHandler("org-b-id");
 
     // Drive org A only AFTER org B's session initialized — the original bug
     // stamped whichever org initialized last into every session's webUrls.
     expect(await drivenWebUrl(orgB)).toBe(
-      "https://app.closedloop.ai/org-b/loops/loop-1"
+      `https://app.closedloop.ai/org-b/${DOCUMENT_ROUTE_PREFIX}/PRD-7`
     );
     expect(await drivenWebUrl(orgA)).toBe(
-      "https://app.closedloop.ai/org-a/loops/loop-1"
+      `https://app.closedloop.ai/org-a/${DOCUMENT_ROUTE_PREFIX}/PRD-7`
     );
   });
 
   it("degrades to org-less webUrls when the org slug cannot be resolved", async () => {
-    const handler = await captureAddLoopEventHandler("unknown-org-id");
+    const handler = await captureUpdateDocumentHandler("unknown-org-id");
     expect(await drivenWebUrl(handler)).toBe(
-      "https://app.closedloop.ai/loops/loop-1"
+      `https://app.closedloop.ai/${DOCUMENT_ROUTE_PREFIX}/PRD-7`
     );
   });
 
@@ -155,9 +159,9 @@ describe("per-session webUrl org slugs (ISS-6570)", () => {
   // org), which never reaches the catch. Here the lookup REJECTS, so the
   // session must still initialize instead of failing server creation outright.
   it("still initializes with org-less webUrls when the org slug lookup rejects", async () => {
-    const handler = await captureAddLoopEventHandler(DB_FAILURE_ORG_ID);
+    const handler = await captureUpdateDocumentHandler(DB_FAILURE_ORG_ID);
     expect(await drivenWebUrl(handler)).toBe(
-      "https://app.closedloop.ai/loops/loop-1"
+      `https://app.closedloop.ai/${DOCUMENT_ROUTE_PREFIX}/PRD-7`
     );
   });
 
@@ -168,9 +172,9 @@ describe("per-session webUrl org slugs (ISS-6570)", () => {
   it("drops a stale org slug rather than emit it, then adopts the org's renamed slug", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
-      const handler = await captureAddLoopEventHandler(RENAMED_ORG_ID);
+      const handler = await captureUpdateDocumentHandler(RENAMED_ORG_ID);
       expect(await drivenWebUrl(handler)).toBe(
-        "https://app.closedloop.ai/before-rename/loops/loop-1"
+        `https://app.closedloop.ai/before-rename/${DOCUMENT_ROUTE_PREFIX}/PRD-7`
       );
 
       // The org renames; "before-rename" is now free for another tenant.
@@ -178,16 +182,18 @@ describe("per-session webUrl org slugs (ISS-6570)", () => {
       vi.setSystemTime(Date.now() + ORG_SLUG_TTL_MS + 1);
 
       expect(await drivenWebUrl(handler)).toBe(
-        "https://app.closedloop.ai/loops/loop-1"
+        `https://app.closedloop.ai/${DOCUMENT_ROUTE_PREFIX}/PRD-7`
       );
 
       const refreshed = await vi.waitFor(async () => {
         const url = await drivenWebUrl(handler);
-        expect(url).not.toBe("https://app.closedloop.ai/loops/loop-1");
+        expect(url).not.toBe(
+          `https://app.closedloop.ai/${DOCUMENT_ROUTE_PREFIX}/PRD-7`
+        );
         return url;
       });
       expect(refreshed).toBe(
-        "https://app.closedloop.ai/after-rename/loops/loop-1"
+        `https://app.closedloop.ai/after-rename/${DOCUMENT_ROUTE_PREFIX}/PRD-7`
       );
     } finally {
       ORG_SLUGS_BY_ID[RENAMED_ORG_ID] = "before-rename";
@@ -201,9 +207,9 @@ describe("per-session webUrl org slugs (ISS-6570)", () => {
   it("renews a live session's slug before expiry instead of degrading", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
-      const handler = await captureAddLoopEventHandler(RENEWED_ORG_ID);
+      const handler = await captureUpdateDocumentHandler(RENEWED_ORG_ID);
       expect(await drivenWebUrl(handler)).toBe(
-        "https://app.closedloop.ai/renew-before/loops/loop-1"
+        `https://app.closedloop.ai/renew-before/${DOCUMENT_ROUTE_PREFIX}/PRD-7`
       );
 
       ORG_SLUGS_BY_ID[RENEWED_ORG_ID] = "renew-after";
@@ -212,7 +218,7 @@ describe("per-session webUrl org slugs (ISS-6570)", () => {
       // — and this call is what kicks off the background renewal.
       vi.setSystemTime(Date.now() + ORG_SLUG_TTL_MS / 2 + 1);
       expect(await drivenWebUrl(handler)).toBe(
-        "https://app.closedloop.ai/renew-before/loops/loop-1"
+        `https://app.closedloop.ai/renew-before/${DOCUMENT_ROUTE_PREFIX}/PRD-7`
       );
       await flushPendingRefresh();
 
@@ -220,7 +226,7 @@ describe("per-session webUrl org slugs (ISS-6570)", () => {
       // original binding, so without that early renewal this would be org-less.
       vi.setSystemTime(Date.now() + ORG_SLUG_TTL_MS / 2 + 1);
       expect(await drivenWebUrl(handler)).toBe(
-        "https://app.closedloop.ai/renew-after/loops/loop-1"
+        `https://app.closedloop.ai/renew-after/${DOCUMENT_ROUTE_PREFIX}/PRD-7`
       );
     } finally {
       ORG_SLUGS_BY_ID[RENEWED_ORG_ID] = "renew-before";

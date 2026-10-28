@@ -1,9 +1,17 @@
+import path from "node:path";
 import { config } from "dotenv";
 import { vi } from "vitest";
+import { installPostTeardownConsoleGuard } from "./utils/post-teardown-console-guard";
 
-// Load environment variables from .env.local for integration tests
-// If .env.local doesn't exist (e.g., in CI), this will silently fail
-config({ path: ".env.local" });
+// Load environment variables from apps/api/.env.local.
+// If it doesn't exist (e.g., in CI), this will silently fail.
+//
+// ABSOLUTE, not `".env.local"`: dotenv resolves a relative path against the
+// PROCESS cwd, which is `apps/api` for every normal invocation but the repo
+// root under `pnpm mutation` (ISS-7952). Left relative, a repo-root run reads
+// `<repo>/.env.local` — a different file, or none — so env-gated branches
+// diverge from what the same suite takes locally.
+config({ path: path.resolve(import.meta.dirname, "../.env.local") });
 
 // DD_SERVICE identifies this process as the API service for telemetry/origin
 // resolution. Must be set before any test module imports
@@ -46,7 +54,13 @@ vi.mock("server-only", () => ({}));
 vi.mock("@repo/analytics/server", () => ({
   analytics: {
     capture: vi.fn(),
+    captureImmediate: vi.fn().mockResolvedValue(undefined),
     identify: vi.fn(),
     shutdown: vi.fn().mockResolvedValue(undefined),
   },
 }));
+
+// ISS-10749: a route's fire-and-forget `waitUntil(...)` seam that a suite left
+// unmocked logs after that suite is done, and that write on Vitest's RPC
+// channel fails the whole run with a green suite. See the guard's docblock.
+installPostTeardownConsoleGuard();

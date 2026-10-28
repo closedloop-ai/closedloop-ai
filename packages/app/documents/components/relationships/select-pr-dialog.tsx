@@ -6,6 +6,7 @@ import {
   LinkQueryMode,
   LinkType,
 } from "@repo/api/src/types/artifact";
+import type { ChecksStatus } from "@repo/api/src/types/branch-checks";
 import {
   GitHubPRState,
   type GitHubPullRequestSummary,
@@ -14,10 +15,18 @@ import type {
   CreatePrArtifactInput,
   CreatePrArtifactResponse,
 } from "@repo/api/src/types/pull-request-artifact-link";
+import { RENDER_MISSING } from "@repo/app/branches/lib/branch-row";
+import {
+  CHECKS_STATUS_LABEL,
+  CHECKS_STATUS_UNREPORTED_LABEL,
+  CHECKS_STATUS_VARIANT,
+} from "@repo/app/branches/lib/checks-status-display";
+import { PULL_REQUEST_AUTHOR_UNKNOWN_LABEL } from "@repo/app/branches/lib/pull-request-provenance-display";
 import {
   buildLinkedPullRequestToast,
   LinkedPullRequestToastTone,
 } from "@repo/app/documents/components/relationships/linked-pr-toast";
+import { useResolvedJobRepos } from "@repo/app/documents/editors/shared/job-repositories/use-resolved-job-repos";
 import {
   useCreateArtifactLink,
   useResolvedArtifactLinks,
@@ -26,8 +35,9 @@ import {
   type TaggedPullRequest,
   useGitHubPullRequestsAcrossRepos,
 } from "@repo/app/github/hooks/use-github-integration";
-import { useResolvedJobRepos } from "@repo/app/loops/hooks/use-resolved-job-repos";
 import { useApiClient } from "@repo/app/shared/api/use-api-client";
+import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { PULL_REQUEST_ROW_PROJECTION_FIELDS_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import {
   Alert,
   AlertDescription,
@@ -49,6 +59,7 @@ import {
   DialogTitle,
 } from "@repo/design-system/components/ui/dialog";
 import { toast } from "@repo/design-system/components/ui/sonner";
+import { ToneLabel } from "@repo/design-system/components/ui/tone-label";
 import { cn } from "@repo/design-system/lib/utils";
 import { useMutation } from "@tanstack/react-query";
 import {
@@ -215,7 +226,10 @@ export function SelectPullRequestDialog({
         number: pr.number,
         githubId: pr.githubId,
         headBranch: pr.headBranch,
-        baseBranch: pr.baseBranch,
+        // ISS-8155: omit an unmeasured base rather than asserting `""`. The
+        // server takes the branch's base from the live PR it re-fetches, so this
+        // is an assertion the client can simply decline to make.
+        ...(pr.baseBranch ? { baseBranch: pr.baseBranch } : {}),
         headSha: pr.headSha,
         state: pr.state,
         isDraft: pr.isDraft,
@@ -401,8 +415,10 @@ export function SelectPullRequestDialog({
                         <div className="flex items-center gap-2 text-muted-foreground text-xs">
                           <GitBranchIcon className="h-3 w-3" />
                           <span className="truncate">{pr.headBranch}</span>
-                          <span>by {pr.author}</span>
+                          <PullRequestBaseBranch baseBranch={pr.baseBranch} />
+                          <PullRequestAuthor author={pr.author} />
                           <PrStateBadge pr={pr} />
+                          <PullRequestChecks checksStatus={pr.checksStatus} />
                         </div>
                         {totalRepoCount > 1 && pr.repoFullName && (
                           <div className="flex items-center gap-2 text-muted-foreground text-xs">
@@ -498,4 +514,77 @@ function showLinkedPullRequestToast(
     return;
   }
   toast.success(message);
+}
+
+/**
+ * ISS-8155: name the PR's author, or say plainly that nobody reported one.
+ *
+ * UNFLAGGED, by operator decision on 2026-08-26. An unattributed PR used to
+ * render the literal `by unknown` — a login a real GitHub account can hold, so a
+ * reader could not tell a measured author from an absent one. That was never
+ * intended output, which puts it under ISS-4779's exemption for a bug fix that
+ * restores already-intended behavior rather than under its closed-by-default
+ * rule. The two fields this row never showed at all are a different matter and
+ * stay gated.
+ */
+function PullRequestAuthor({ author }: Readonly<{ author: string }>) {
+  if (author) {
+    return <span>by {author}</span>;
+  }
+  return <span>{PULL_REQUEST_AUTHOR_UNKNOWN_LABEL}</span>;
+}
+
+/**
+ * ISS-8155 AC-1: the PR's own base ref, which this row never showed.
+ *
+ * `baseBranch` is `""` when no producer measured one, so it takes the same named
+ * placeholder the Branches table gives an unmeasured base rather than collapsing
+ * to a blank the reader would take for "same as default".
+ */
+function PullRequestBaseBranch({
+  baseBranch,
+}: Readonly<{ baseBranch: string }>) {
+  const projectionFieldsEnabled = useFeatureFlagEnabled(
+    PULL_REQUEST_ROW_PROJECTION_FIELDS_FEATURE_FLAG_KEY
+  );
+  if (!projectionFieldsEnabled) {
+    return null;
+  }
+  return (
+    <span className="truncate">
+      <span aria-hidden="true">→ </span>
+      <span className="sr-only">into </span>
+      {baseBranch || RENDER_MISSING}
+    </span>
+  );
+}
+
+/**
+ * ISS-8155 AC-1: the CI rollup, likewise carried by the contract and dropped
+ * here.
+ *
+ * An ABSENT `checksStatus` means no producer reached this PR; a reported
+ * `Unknown` means the provider had no conclusion. They read differently on
+ * purpose — defaulting either one to a passing, failing, or "no checks" state is
+ * exactly what the absent-value contract forbids.
+ */
+function PullRequestChecks({
+  checksStatus,
+}: Readonly<{ checksStatus?: ChecksStatus | null }>) {
+  const projectionFieldsEnabled = useFeatureFlagEnabled(
+    PULL_REQUEST_ROW_PROJECTION_FIELDS_FEATURE_FLAG_KEY
+  );
+  if (!projectionFieldsEnabled) {
+    return null;
+  }
+  if (!checksStatus) {
+    return (
+      <ToneLabel variant="default">{CHECKS_STATUS_UNREPORTED_LABEL}</ToneLabel>
+    );
+  }
+  return (
+    <ToneLabel variant={CHECKS_STATUS_VARIANT[checksStatus]}>
+      {CHECKS_STATUS_LABEL[checksStatus]}
+    </ToneLabel>
+  );
 }

@@ -71,3 +71,28 @@ export function stressLane(testFile, census) {
     ? StressLane.Vitest
     : StressLane.NodeTest;
 }
+
+/**
+ * The suites a stress run hunts in when `STRESS_FILE` is unset. ISS-6258 split
+ * the boot-import cases out of `ingest-orchestrator.test.ts`, so both halves
+ * are listed; the nightly would otherwise stop stressing ~40% of that suite.
+ */
+export const DEFAULT_STRESS_FILES = [
+  "test/ingest-orchestrator.test.ts",
+  "test/ingest-orchestrator-boot-import.test.ts",
+];
+
+/**
+ * `STRESS_FILE` as a list: comma-separated paths relative to `apps/desktop`.
+ * Unset or blank means {@link DEFAULT_STRESS_FILES}.
+ *
+ * @param {string | undefined} value The raw `STRESS_FILE` value.
+ * @returns {string[]}
+ */
+export function stressFiles(value) {
+  const files = (value ?? "")
+    .split(",")
+    .map((file) => file.trim())
+    .filter((file) => file !== "");
+  return files.length > 0 ? files : DEFAULT_STRESS_FILES;
+}

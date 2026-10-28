@@ -28,11 +28,17 @@ import {
 } from "../../non-empty-org-guard";
 import { BASELINE_ORG_ID } from "../fixtures/baseline-org";
 import {
-  type AnyDelegate,
   buildEmptyOrgMock,
   buildFullyConflictedOrgMock,
   buildSeedOwnedOrgMock,
 } from "../fixtures/org-guard-mocks";
+import {
+  artifactRow,
+  gitHubInstallationRow,
+  linearIntegrationRow,
+  projectRow,
+  slackIntegrationRow,
+} from "../fixtures/org-guard-rows";
 
 // ---------------------------------------------------------------------------
 // Suite: clean org → no conflicts
@@ -49,34 +55,31 @@ describe("detectOrgConflicts — clean org (no existing data)", () => {
 
   it("passes organizationId to all 6 model queries", async () => {
     const prisma = buildEmptyOrgMock();
-    const p = prisma as AnyDelegate;
 
     await detectOrgConflicts(prisma, BASELINE_ORG_ID);
 
-    expect(p.gitHubInstallation.findUnique).toHaveBeenCalledWith({
+    expect(prisma.gitHubInstallation.findUnique).toHaveBeenCalledWith({
       where: { organizationId: BASELINE_ORG_ID },
       select: { id: true },
     });
-    expect(p.linearIntegration.findUnique).toHaveBeenCalledWith({
+    expect(prisma.linearIntegration.findUnique).toHaveBeenCalledWith({
       where: { organizationId: BASELINE_ORG_ID },
       select: { id: true },
     });
-    expect(p.slackIntegration.findUnique).toHaveBeenCalledWith({
+    expect(prisma.slackIntegration.findUnique).toHaveBeenCalledWith({
       where: { organizationId: BASELINE_ORG_ID },
       select: { id: true },
     });
-    expect(p.project.count).toHaveBeenCalledWith({
+    expect(prisma.project.count).toHaveBeenCalledWith({
       where: { organizationId: BASELINE_ORG_ID },
     });
-    expect(p.team.count).toHaveBeenCalledWith({
+    expect(prisma.team.count).toHaveBeenCalledWith({
       where: { organizationId: BASELINE_ORG_ID },
     });
-    expect(p.loop.findMany).toHaveBeenCalledWith({
+    expect(prisma.loop.count).toHaveBeenCalledWith({
       where: { organizationId: BASELINE_ORG_ID },
-      select: { id: true, prompt: true },
-      take: 500,
     });
-    expect(p.comment.findMany).toHaveBeenCalledWith({
+    expect(prisma.comment.findMany).toHaveBeenCalledWith({
       where: { thread: { organizationId: BASELINE_ORG_ID } },
       select: { id: true, plainText: true },
       take: 500,
@@ -98,7 +101,6 @@ describe("detectOrgConflicts — seed-owned idempotent org", () => {
       "Project (2 rows)",
       "Team (1 row)",
       "Artifact (4 rows)",
-      "Loop (1 row)",
       "Comment (5 rows)",
       "CustomField (1 row)",
       "ArtifactEvaluation (1 row)",
@@ -108,13 +110,12 @@ describe("detectOrgConflicts — seed-owned idempotent org", () => {
 
   it("fails closed when seed-owned rows are mixed with a foreign row", async () => {
     const prisma = buildSeedOwnedOrgMock();
-    const p = prisma as AnyDelegate;
-    p.project.findMany.mockResolvedValue([
-      {
+    prisma.project.findMany.mockResolvedValue([
+      projectRow({
         id: deterministicUuid(`project:${BASELINE_ORG_ID}:platform-foundation`),
         slug: "platform-foundation",
-      },
-      { id: "foreign-project-id", slug: "customer-project" },
+      }),
+      projectRow({ id: "foreign-project-id", slug: "customer-project" }),
     ]);
 
     const result = await detectOrgConflicts(prisma, BASELINE_ORG_ID);
@@ -125,14 +126,13 @@ describe("detectOrgConflicts — seed-owned idempotent org", () => {
 
   it("fails closed when a foreign artifact is mixed into a seed-owned org", async () => {
     const prisma = buildSeedOwnedOrgMock();
-    const p = prisma as AnyDelegate;
-    p.artifact.count.mockResolvedValue(2);
-    p.artifact.findMany.mockResolvedValue([
-      {
+    prisma.artifact.count.mockResolvedValue(2);
+    prisma.artifact.findMany.mockResolvedValue([
+      artifactRow({
         id: deterministicUuid(`artifact:document:${BASELINE_ORG_ID}:prd`),
         slug: "seed-doc-prd-001",
-      },
-      { id: "foreign-artifact-id", slug: "customer-artifact" },
+      }),
+      artifactRow({ id: "foreign-artifact-id", slug: "customer-artifact" }),
     ]);
 
     const result = await detectOrgConflicts(prisma, BASELINE_ORG_ID);
@@ -143,18 +143,17 @@ describe("detectOrgConflicts — seed-owned idempotent org", () => {
 
   it("fails closed when bounded seed-owned sampling cannot prove every artifact row", async () => {
     const prisma = buildSeedOwnedOrgMock();
-    const p = prisma as AnyDelegate;
-    p.artifact.count.mockResolvedValue(501);
-    p.artifact.findMany.mockResolvedValue([
-      {
+    prisma.artifact.count.mockResolvedValue(501);
+    prisma.artifact.findMany.mockResolvedValue([
+      artifactRow({
         id: deterministicUuid(`artifact:document:${BASELINE_ORG_ID}:prd`),
         slug: "seed-doc-prd-001",
-      },
+      }),
     ]);
 
     const result = await detectOrgConflicts(prisma, BASELINE_ORG_ID);
 
-    expect(p.artifact.findMany).toHaveBeenCalledWith({
+    expect(prisma.artifact.findMany).toHaveBeenCalledWith({
       where: { organizationId: BASELINE_ORG_ID },
       select: { id: true, slug: true },
       take: 500,
@@ -222,8 +221,9 @@ describe("detectOrgConflicts — non-empty org WITH SEED_FORCE_OVERWRITE=1", () 
 describe("detectOrgConflicts — individual model conflict detection", () => {
   it("detects only GitHubInstallation when it is the sole conflict", async () => {
     const prisma = buildEmptyOrgMock();
-    const p = prisma as AnyDelegate;
-    p.gitHubInstallation.findUnique.mockResolvedValue({ id: "gh-install-1" });
+    prisma.gitHubInstallation.findUnique.mockResolvedValue(
+      gitHubInstallationRow({ id: "gh-install-1" })
+    );
 
     const { conflicts } = await detectOrgConflicts(prisma, BASELINE_ORG_ID);
 
@@ -232,8 +232,9 @@ describe("detectOrgConflicts — individual model conflict detection", () => {
 
   it("detects only LinearIntegration when it is the sole conflict", async () => {
     const prisma = buildEmptyOrgMock();
-    const p = prisma as AnyDelegate;
-    p.linearIntegration.findUnique.mockResolvedValue({ id: "linear-1" });
+    prisma.linearIntegration.findUnique.mockResolvedValue(
+      linearIntegrationRow({ id: "linear-1" })
+    );
 
     const { conflicts } = await detectOrgConflicts(prisma, BASELINE_ORG_ID);
 
@@ -242,8 +243,9 @@ describe("detectOrgConflicts — individual model conflict detection", () => {
 
   it("detects only SlackIntegration when it is the sole conflict", async () => {
     const prisma = buildEmptyOrgMock();
-    const p = prisma as AnyDelegate;
-    p.slackIntegration.findUnique.mockResolvedValue({ id: "slack-1" });
+    prisma.slackIntegration.findUnique.mockResolvedValue(
+      slackIntegrationRow({ id: "slack-1" })
+    );
 
     const { conflicts } = await detectOrgConflicts(prisma, BASELINE_ORG_ID);
 
@@ -252,8 +254,7 @@ describe("detectOrgConflicts — individual model conflict detection", () => {
 
   it("detects only Project rows when they are the sole conflict", async () => {
     const prisma = buildEmptyOrgMock();
-    const p = prisma as AnyDelegate;
-    p.project.count.mockResolvedValue(2);
+    prisma.project.count.mockResolvedValue(2);
 
     const { conflicts } = await detectOrgConflicts(prisma, BASELINE_ORG_ID);
 
@@ -262,8 +263,7 @@ describe("detectOrgConflicts — individual model conflict detection", () => {
 
   it("detects only Team rows when they are the sole conflict", async () => {
     const prisma = buildEmptyOrgMock();
-    const p = prisma as AnyDelegate;
-    p.team.count.mockResolvedValue(1);
+    prisma.team.count.mockResolvedValue(1);
 
     const { conflicts } = await detectOrgConflicts(prisma, BASELINE_ORG_ID);
 
@@ -272,8 +272,7 @@ describe("detectOrgConflicts — individual model conflict detection", () => {
 
   it("conflict descriptions include the actual row count for Project", async () => {
     const prisma = buildEmptyOrgMock();
-    const p = prisma as AnyDelegate;
-    p.project.count.mockResolvedValue(7);
+    prisma.project.count.mockResolvedValue(7);
 
     const { conflicts } = await detectOrgConflicts(prisma, BASELINE_ORG_ID);
 
@@ -282,8 +281,7 @@ describe("detectOrgConflicts — individual model conflict detection", () => {
 
   it("conflict descriptions include the actual row count for Team", async () => {
     const prisma = buildEmptyOrgMock();
-    const p = prisma as AnyDelegate;
-    p.team.count.mockResolvedValue(3);
+    prisma.team.count.mockResolvedValue(3);
 
     const { conflicts } = await detectOrgConflicts(prisma, BASELINE_ORG_ID);
 

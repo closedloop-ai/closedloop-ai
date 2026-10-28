@@ -4,11 +4,14 @@ import {
   RankInteractionMode,
   shouldShowRankSlot,
 } from "@repo/app/documents/components/table/sort-keys";
+import { CHIP_FOCUS_RING_CLASS } from "@repo/design-system/components/ui/chip";
+import { GridContextualAction } from "@repo/design-system/components/ui/grid-interaction-contract";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@repo/design-system/components/ui/tooltip";
+import { cn } from "@repo/design-system/lib/utils";
 import { GripVerticalIcon } from "lucide-react";
 
 /**
@@ -25,13 +28,23 @@ export function buildRankSlot(
 ): React.ReactNode {
   if (shouldShowRankSlot(mode)) {
     return (
-      <div className="flex h-7 w-7 shrink-0 items-center justify-center">
+      <div
+        className={cn(
+          "flex h-7 shrink-0 items-center justify-center",
+          RANK_SLOT_WIDTH_CLASS
+        )}
+      >
         <RankSlot dragHandle={dragHandle} mode={mode} />
       </div>
     );
   }
   if (reserveRankSlot) {
-    return <div aria-hidden="true" className="w-7 shrink-0" />;
+    return (
+      <div
+        aria-hidden="true"
+        className={cn(RANK_SLOT_WIDTH_CLASS, "shrink-0")}
+      />
+    );
   }
   return null;
 }
@@ -41,8 +54,7 @@ export function buildRankSlot(
  * in stack-rank reordering (PRD-421 / PLN-755 Phase E). The parent supplies
  * `dragHandle` (the `@dnd-kit` grip button) for the `Enabled` mode; the
  * `DisabledGrouped` branch renders an explanatory greyed icon with a tooltip.
- * Both reveal on row hover (`group-hover/row`) to match the enabled handle and
- * avoid a permanently-visible grip on every grouped row.
+ * Both use the shared contextual reveal with the legacy row-hover fallback.
  */
 function RankSlot({
   mode,
@@ -52,19 +64,44 @@ function RankSlot({
   dragHandle: React.ReactNode;
 }) {
   if (mode === RankInteractionMode.Enabled) {
-    return <>{dragHandle}</>;
+    return (
+      <GridContextualAction asChild legacyReveal="rowGroup">
+        {dragHandle}
+      </GridContextualAction>
+    );
   }
   if (mode === RankInteractionMode.DisabledGrouped) {
     return (
       <Tooltip>
         <TooltipTrigger asChild>
-          <span className="flex h-6 w-6 cursor-not-allowed items-center justify-center text-muted-foreground/40 opacity-0 group-hover/row:opacity-100">
-            <GripVerticalIcon className="h-4 w-4" />
-          </span>
+          <GridContextualAction asChild legacyReveal="rowGroup">
+            <span className="flex h-6 w-6 cursor-not-allowed items-center justify-center text-muted-foreground/40">
+              <GripVerticalIcon className="h-4 w-4" />
+            </span>
+          </GridContextualAction>
         </TooltipTrigger>
-        <TooltipContent>Disable grouping to reorder</TooltipContent>
+        <TooltipContent>{RANK_DISABLED_HINT}</TooltipContent>
       </Tooltip>
     );
   }
   return null;
 }
+
+/**
+ * Width of the rank slot's track. The rendered slot and the empty spacer MUST
+ * carry the same width: the slot only appears on root rows, so a spacer of any
+ * other width cancels or doubles one level of child indentation
+ * in the ungrouped document tree. One constant so the two cannot drift apart.
+ */
+export const RANK_SLOT_WIDTH_CLASS = "w-7";
+
+/**
+ * The `@dnd-kit` grip button's own presentation, owned here beside the slot
+ * that positions it rather than by the one caller that wires up the drag
+ * listeners. The contextual wrapper supplies reveal, including the legacy
+ * touch fallback for pointers without row hover.
+ */
+export const RANK_DRAG_HANDLE_CLASS = `flex h-6 w-6 touch-none cursor-grab items-center justify-center rounded text-muted-foreground opacity-0 touch:opacity-100 hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:ring-offset-2 focus-visible:ring-offset-background active:cursor-grabbing group-hover/row:opacity-100 ${CHIP_FOCUS_RING_CLASS}`;
+
+/** Why the grip is inert while the table is grouped. */
+export const RANK_DISABLED_HINT = "Disable grouping to reorder";

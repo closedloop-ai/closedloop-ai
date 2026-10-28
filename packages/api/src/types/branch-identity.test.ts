@@ -3,6 +3,7 @@ import {
   BranchCollaboratorSource,
   BranchIdentityAvailability,
   BranchPersonProvider,
+  branchPersonKey,
   projectBranchPeople,
 } from "./branch-identity.ts";
 import { GitHubActorType } from "./github-actor.ts";
@@ -140,5 +141,23 @@ describe("projectBranchPeople", () => {
       availability: BranchIdentityAvailability.Unavailable,
       people: [],
     });
+  });
+});
+
+describe("branchPersonKey", () => {
+  it("uses the linked ClosedLoop user ID across providers", () => {
+    expect(
+      branchPersonKey({
+        provider: BranchPersonProvider.GitHub,
+        id: "gh_1",
+        userId: "u1",
+      })
+    ).toBe("closedloop:u1");
+  });
+
+  it("uses the provider-qualified ID when no user is linked", () => {
+    expect(
+      branchPersonKey({ provider: BranchPersonProvider.GitHub, id: "gh_1" })
+    ).toBe("github:gh_1");
   });
 });

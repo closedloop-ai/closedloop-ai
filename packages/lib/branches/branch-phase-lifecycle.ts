@@ -1,4 +1,5 @@
 import type { BranchAssociatedPullRequestCollection } from "@repo/api/src/types/branch-associated-pull-request";
+import { isUnobservedPullRequest } from "@repo/api/src/types/branch-associated-pull-request";
 import { GitHubPRState } from "@repo/api/src/types/github-status";
 import type { BranchPhasePullRequestCycle } from "./branch-phase-attribution";
 
@@ -19,6 +20,17 @@ export function branchPhaseLifecycleFromAssociatedPullRequests(
   const pullRequestCycles: BranchPhasePullRequestCycle[] = [];
   const ambiguousWriteAfter: string[] = [];
   for (const pullRequest of collection?.items ?? []) {
+    // ISS-8422: a pull request nobody observed has no cycle to attribute. Its
+    // `state` is the OPEN its column default produced, and `openedAt`,
+    // `mergedAt` and `closedAt` are all null — evidence a factless row has none
+    // of — so it pushed a cycle with NO bound at either end, which reads as an
+    // open cycle that never closes and pulls sessions into a phase no pull
+    // request was ever measured to be in. Skipping it attributes the branch
+    // exactly as one with no connected pull request, which is the ruling
+    // ISS-8422 already applies to its status.
+    if (isUnobservedPullRequest(pullRequest)) {
+      continue;
+    }
     const hasFoldedReopen =
       pullRequest.state === GitHubPRState.Open && pullRequest.closedAt !== null;
     pullRequestCycles.push({

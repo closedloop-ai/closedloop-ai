@@ -15,7 +15,6 @@ import {
   type TableViewMode as SharedTableViewMode,
 } from "@repo/design-system/components/ui/table-view-menu";
 import {
-  BadgeCheckIcon,
   CalendarIcon,
   ClockIcon,
   FileIcon,
@@ -31,7 +30,6 @@ const COLUMN_ICONS: Partial<Record<DocumentColumn, ReactNode>> = {
   [Col.Assignee]: <UserIcon className="h-4 w-4 text-muted-foreground" />,
   [Col.Parent]: <ListTreeIcon className="h-4 w-4 text-muted-foreground" />,
   [Col.Priority]: <PriorityIcon priority={Priority.Medium} size={16} />,
-  [Col.Score]: <BadgeCheckIcon className="h-4 w-4 text-muted-foreground" />,
   [Col.Tags]: <TagIcon className="h-4 w-4 text-muted-foreground" />,
   [Col.DueDate]: <CalendarIcon className="h-4 w-4 text-muted-foreground" />,
   [Col.Updated]: <ClockIcon className="h-4 w-4 text-muted-foreground" />,

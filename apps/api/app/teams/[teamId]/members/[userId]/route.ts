@@ -1,13 +1,14 @@
 import type { TeamMember } from "@repo/api/src/types/teams";
+import { TeamRole } from "@repo/api/src/types/teams";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   deleteResponse,
   errorResponse,
-  forbiddenResponse,
   notFoundResponse,
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
+import { requireTeamRole } from "../../../require-team-role";
 import { teamsService } from "../../../service";
 import { updateMemberValidator } from "../../../validators";
 
@@ -18,20 +19,10 @@ export const PUT = withAuth<TeamMember, "/teams/[teamId]/members/[userId]">(
   async ({ user }, request, params) => {
     try {
       const { teamId, userId: targetUserId } = await params;
-      const team = await teamsService.findById(teamId, user.organizationId);
 
-      if (!team) {
-        return notFoundResponse("Team");
-      }
-
-      // Check user has permission (must be team owner or admin)
-      const hasPermission = await teamsService.hasRole(
-        teamId,
-        user.id,
-        "ADMIN"
-      );
-      if (!hasPermission) {
-        return forbiddenResponse();
+      const authError = await requireTeamRole(teamId, user, TeamRole.Admin);
+      if (authError) {
+        return authError;
       }
 
       // Check target member exists
@@ -70,16 +61,10 @@ export const DELETE = withAuth<
 >(async ({ user }, _, params) => {
   try {
     const { teamId, userId: targetUserId } = await params;
-    const team = await teamsService.findById(teamId, user.organizationId);
 
-    if (!team) {
-      return notFoundResponse("Team");
-    }
-
-    // Check user has permission (must be team owner or admin)
-    const hasPermission = await teamsService.hasRole(teamId, user.id, "ADMIN");
-    if (!hasPermission) {
-      return forbiddenResponse();
+    const authError = await requireTeamRole(teamId, user, TeamRole.Admin);
+    if (authError) {
+      return authError;
     }
 
     // Check target member exists
@@ -89,9 +74,11 @@ export const DELETE = withAuth<
     }
 
     // Prevent removing the last owner
-    if (targetMember.role === "OWNER") {
+    if (targetMember.role === TeamRole.Owner) {
       const members = await teamsService.getMembers(teamId);
-      const ownerCount = members.filter((m) => m.role === "OWNER").length;
+      const ownerCount = members.filter(
+        (m) => m.role === TeamRole.Owner
+      ).length;
       if (ownerCount <= 1) {
         return errorResponse(
           "Cannot remove the last owner of a team",

@@ -1,7 +1,7 @@
 import { Prisma } from "@repo/database";
 import {
   FAILURE_THROTTLE_SOURCE_TYPES,
-  TERMINAL_AGENT_SESSION_STATES,
+  TERMINAL_ANALYTICS_SESSION_STATUSES,
 } from "./session-analytics-classify";
 
 /**
@@ -60,8 +60,13 @@ const SQL_ENUM_VALUE = /^[a-z0-9_]+$/i;
  * `session_detail.wall_clock` is a human-formatted string, so the span is
  * derived from timestamps instead. A session that never recorded an end falls
  * back to its last genuine activity (`last_activity_at`, which advances only on
- * real agent activity) before `session_updated_at`, which sync bookkeeping can
- * bump. A negative or absent span clamps to 0 rather than contributing noise.
+ * real agent activity). A negative or absent span clamps to 0 rather than
+ * contributing noise.
+ *
+ * ISS-6463 removed a third rung, `session_updated_at`. It was only ever reached
+ * when `last_activity_at` was NULL, and that column is now NOT NULL — so the
+ * rung was unreachable, and keeping it implied this metric could be derived
+ * from a sync-bookkeeping timestamp, which it cannot.
  *
  * The divisor is a SQL LITERAL, not `${SECONDS_PER_MINUTE}` — see the
  * parameter-free rule in the module header. It is a hardcoded internal
@@ -72,7 +77,7 @@ export const WALL_CLOCK_MINUTES = assertGroupSafe(
   Prisma.sql`
   GREATEST(
     EXTRACT(EPOCH FROM (
-      COALESCE(s.session_ended_at, s.last_activity_at, s.session_updated_at)
+      COALESCE(s.session_ended_at, s.last_activity_at)
       - s.session_started_at
     )),
     0
@@ -157,10 +162,15 @@ export const FAILURE_THROTTLE_SOURCE = assertGroupSafe(
  * The SQL mirror of "this run's outcome was NOT `SpendOutcome.Clean`".
  *
  * `outcomeOf` in `session-analytics-classify.ts` calls a run Clean only when
- * `ends_with_error = false` AND the run has actually finished — a null state
- * (never recorded) or one of {@link TERMINAL_AGENT_SESSION_STATES}. A live row
- * carries `ends_with_error: false` for the reaper's benefit, so a RUNNING,
- * BLOCKED, IN_REVIEW, or PENDING_APPROVAL session is Unknown, not Clean.
+ * `ends_with_error = false` AND the run has actually finished — a null status
+ * (never recorded) or one of {@link TERMINAL_ANALYTICS_SESSION_STATUSES}. A live row
+ * carries `ends_with_error: false` for the reaper's benefit, so an `active`
+ * session is Unknown, not Clean.
+ *
+ * ISS-7019: `active` is the whole of that set now. This named RUNNING, BLOCKED,
+ * IN_REVIEW and PENDING_APPROVAL while the gate keyed on `AgentSessionState`;
+ * the gate reads `a.status`, and the lifecycle vocabulary has exactly one
+ * non-terminal value.
  *
  * This exists (ISS-5263) because `LOST_SESSION_PREFILTER` previously spelled the
  * same idea as `s.ends_with_error IS DISTINCT FROM false`, which drops every
@@ -184,8 +194,8 @@ export const NOT_CLEAN_OUTCOME = Prisma.sql`
   NOT COALESCE(
     s.ends_with_error = false
     AND (
-      s.state IS NULL
-      OR s.state IN (${sqlEnumList(TERMINAL_AGENT_SESSION_STATES)})
+      a.status IS NULL
+      OR a.status IN (${sqlEnumList(TERMINAL_ANALYTICS_SESSION_STATUSES)})
     ),
     false
   )
@@ -197,7 +207,7 @@ export const SESSION_ANALYTICS_FROM = Prisma.sql`
   JOIN artifacts a ON a.id = s.artifact_id
 `;
 
-/** Display name for a session's owner, falling back to the email on file. */
+/** Display name of the joined `u` (the session's creator), falling back to the email on file. */
 export const ENGINEER_NAME = assertGroupSafe(
   "ENGINEER_NAME",
   Prisma.sql`
@@ -228,7 +238,7 @@ export type SignalGridRow = {
   endsWithError: boolean | null;
   throttleSource: string | null;
   producedArtifact: boolean;
-  state: string | null;
+  status: string | null;
   /**
    * Whether the sessions in this bucket consumed any wall-clock. Grouped on, not
    * derived from the summed minutes: without it a bucket mixing a zero-duration
@@ -260,7 +270,7 @@ export const SIGNAL_GRID_SELECT = assertGroupSafe(
   s.ends_with_error AS "endsWithError",
   ${FAILURE_THROTTLE_SOURCE} AS "throttleSource",
   ${PRODUCED_ARTIFACT} AS "producedArtifact",
-  s.state AS "state",
+  a.status AS "status",
   (${WALL_CLOCK_MINUTES} > 0) AS "hasWallClock",
   COUNT(*)::int AS "sessions",
   COALESCE(SUM(${WALL_CLOCK_MINUTES}), 0)::float8 AS "minutes"
@@ -277,7 +287,7 @@ export const SIGNAL_GRID_GROUP_BY = assertGroupSafe(
   s.ends_with_error,
   ${FAILURE_THROTTLE_SOURCE},
   ${PRODUCED_ARTIFACT},
-  s.state,
+  a.status,
   (${WALL_CLOCK_MINUTES} > 0)
 `
 );
@@ -287,14 +297,14 @@ export function signalsOf(row: SignalGridRow): {
   endsWithError: boolean | null;
   hasFailureThrottle: boolean;
   producedArtifact: boolean;
-  state: string | null;
+  status: string | null;
   wallClockMinutes: number;
 } {
   return {
     endsWithError: row.endsWithError,
     hasFailureThrottle: row.throttleSource !== null,
     producedArtifact: row.producedArtifact,
-    state: row.state,
+    status: row.status,
     wallClockMinutes: row.hasWallClock ? Number(row.minutes ?? 0) : 0,
   };
 }

@@ -1,10 +1,10 @@
 /**
  * @file boot-maintenance.ts
  * @description The desktop store's background boot-maintenance chain, extracted
- * from `openSqliteAgentDatabase` (ISS-5064) to shrink the grandfathered
- * sqlite.ts. One fire-and-forget promise chain of idempotent heal/backfill
- * passes, started right after the Prisma layer is built and deliberately NOT
- * awaited — db open must never block on maintenance.
+ * from `openSqliteAgentDatabase` (ISS-5064) to shrink sqlite.ts. One
+ * fire-and-forget promise chain of idempotent heal/backfill passes, started
+ * right after the Prisma layer is built and deliberately NOT awaited — db open
+ * must never block on maintenance.
  *
  * Two properties of the chain are load-bearing and must survive any edit:
  *  - **Order.** Several passes read what an earlier pass writes (the comments at
@@ -22,8 +22,13 @@
  */
 
 import { repairPollutedRepoFullNames } from "../enrichment/repo-fullname-repair.js";
+import { repairStrandedComponentTombstones } from "../packs/component-tombstone-repair.js";
 import { backfillActivityMetrics } from "./activity-metrics.js";
+import { healSweptAgentEndedAt } from "./agent-ended-at-heal.js";
+import { requeueBackfilledAuthoritativeCosts } from "./authoritative-cost-resync-heal.js";
 import { healUnknownBillingModes } from "./billing-mode-heal.js";
+import { requeueTruncatedComponentUsage } from "./component-usage-resync-heal.js";
+import { healFallbackCostSourceStamps } from "./cost-source-provenance-heal.js";
 import type { DesktopPrisma } from "./prisma-client.js";
 import {
   backfillSessionAnalytics,
@@ -31,7 +36,10 @@ import {
   recomputeHeadlessSessionAnalytics,
   recomputeHeadlessTurnBuckets,
   recomputeImportedAgentTurnAnalytics,
+  recomputeLegacyMessageAgentTurnBuckets,
+  recomputeLegacySessionAnalyticsCost,
 } from "./session-analytics-maintenance.js";
+import { healStrandedSubagents } from "./stranded-subagent-heal.js";
 import { runCostRollupHealPasses } from "./token-cost-maintenance.js";
 
 /**
@@ -66,6 +74,13 @@ export function startBootMaintenance(
       // blocks db open.
       .then(() => runCostRollupHealPasses(prisma, log))
       .catch(() => undefined)
+      // ISS-7762: re-stamp rows a pre-fix build wrote as `genai_prices_v1` when
+      // the price actually came from the unknown-model fallback tier. Runs AFTER
+      // the cost-rollup sequence so it re-rolls session snapshots those passes
+      // have already settled. Touches provenance only, never a cost value.
+      // Background; never blocks db open, .catch-isolated.
+      .then(() => healFallbackCostSourceStamps(prisma, log))
+      .catch(() => undefined)
       // FEA-2870: re-derive the analytics rollup for headless/autonomous sessions
       // that a pre-fix rollup marked human-steered, so the autonomy trend + heatmap
       // heal for existing data. Background; never blocks db open, .catch-isolated.
@@ -76,6 +91,15 @@ export function startBootMaintenance(
       // dashboard turn counts heal for existing data without a DATA_REVISION
       // re-import. Background; never blocks db open, .catch-isolated.
       .then(() => recomputeImportedAgentTurnAnalytics(prisma, log))
+      .catch(() => undefined)
+      // ISS-7820: re-derive `session_analytics.est_cost` for the legacy rows
+      // migration 0072 copied across verbatim, so an UPGRADED install converges
+      // on the widened column's "unknown" instead of keeping the pre-fix
+      // confident number forever (the analytics backfill above only covers
+      // sessions with NO rollup row, which an upgrade has none of). Runs after
+      // the cost-rollup heal sequence so the pricing it reads is already
+      // settled. Background; never blocks db open, .catch-isolated.
+      .then(() => recomputeLegacySessionAnalyticsCost(prisma, log))
       .catch(() => undefined)
       // ISS-4869: re-queue sessions frozen at an `unknown` billing mode past the
       // durable sync cursor. Convergent; see billing-mode-heal.ts for the why.
@@ -97,6 +121,15 @@ export function startBootMaintenance(
       // .catch-isolated.
       .then(() => recomputeHeadlessTurnBuckets(prisma, log))
       .catch(() => undefined)
+      // ISS-8259: re-derive turn buckets for sessions that synced no round-trip
+      // series and so have no `agent` bucket, now that the legacy `$.messages`
+      // Agent fallback is back. Neither pass above reaches them — the backfill
+      // takes only sessions with NO buckets, the headless recompute only headless
+      // ones — so without this the parity fix would be inert on an existing
+      // install. Runs after both so their rows are settled. Background; never
+      // blocks db open, .catch-isolated.
+      .then(() => recomputeLegacyMessageAgentTurnBuckets(prisma, log))
+      .catch(() => undefined)
       // FEA-2866: repair artifact rows whose repo_full_name is a bare cwd basename
       // (worktree/temp/plain-folder name) the parser recorded before the write
       // path was hardened — resolve to a validated owner/repo or null the junk, so
@@ -111,6 +144,76 @@ export function startBootMaintenance(
       // the cohort source rows it reads are settled. Background; never blocks db
       // open, .catch-isolated.
       .then(() => backfillActivityMetrics(prisma, log))
+      .catch(() => undefined)
+      // ISS-6906: re-enter uninstalls the PRE-ISS-6881 collector tombstoned into
+      // the component-sync keyset lane, which their unadvanced ordering key left
+      // permanently behind the durable cursor. Convergent and self-clearing — a
+      // repaired row stops matching the predicate — so it costs one indexed read on
+      // a device with nothing stranded. Order-independent of every pass above (it
+      // reads and writes only `agent_components`); it sits last so an unrelated
+      // failure above cannot delay the passes that DO have data dependencies.
+      // Background; never blocks db open, .catch-isolated.
+      .then(() => repairStrandedComponentTombstones(prisma, log))
+      .catch(() => undefined)
+      // ISS-7069: advance `agents.ended_at` for agents the PRE-ISS-6893 sweep
+      // ended EARLIER than their own last event, and re-queue their sessions so
+      // the correction reaches the cloud (the wrong values are already exported).
+      // Reimport cannot reach this population — `advanceTerminalEndedAt` touches
+      // the MAIN agent only and never re-derives from events — and the live sweep
+      // excludes terminal agents by construction. Convergent and self-clearing;
+      // see agent-ended-at-heal.ts. Order-independent of every pass above (no
+      // rollup derives from `agents.ended_at`), so it sits last for the same
+      // reason the tombstone repair does. `now` is read HERE, when the step runs,
+      // not when the chain was built. Background; never blocks db open,
+      // .catch-isolated.
+      .then(() => healSweptAgentEndedAt(prisma, new Date().toISOString(), log))
+      .catch(() => undefined)
+      // ISS-7474: close subagents the PRE-ISS-6902 terminal hook left at
+      // `working` on a session it had already flipped to `error`. No sweep can
+      // reach them — `sweepStaleActiveSessions` selects `active` sessions only —
+      // so they assert a running subagent to the cloud forever. Convergent and
+      // self-clearing; see stranded-subagent-heal.ts. Order-independent of every
+      // pass above (it reads and writes only `agents`, plus the sync bump on
+      // their sessions), so it sits at the tail of the chain for the same reason
+      // the two passes above do. `now` is read HERE, when the step runs, not when
+      // the chain was built. Background; never blocks db open, .catch-isolated.
+      .then(() => healStrandedSubagents(prisma, new Date().toISOString(), log))
+      .catch(() => undefined)
+      // ISS-6998: re-queue sessions whose component usage reached the cloud
+      // TRUNCATED at MAX_SYNCED_COMPONENT_USAGE, before ISS-6884 made it a
+      // paginated stream. Unlike every convergent pass above it selects on a
+      // count its own write does not change, so it is gated by the durable
+      // `component_usage_resync_seen` marker (migration 0065) rather than by the
+      // predicate draining — see component-usage-resync-heal.ts.
+      //
+      // ORDER IS A DATA DEPENDENCY, not convenience. It counts
+      // `agent_component_session_usage`, which is a DERIVED aggregate that
+      // `backfillSessionAnalytics` (the head of this chain) deletes and rebuilds
+      // from `agent_component_invocations` via
+      // `rebuildAgentComponentSessionUsageFromInvocations`. Running this pass
+      // before that rebuild would count a stale — or, for a session being
+      // re-derived, momentarily EMPTY — aggregate and mark the session as asked
+      // for on the strength of it. It must stay after the backfill.
+      // Background; never blocks db open, .catch-isolated.
+      .then(() => requeueTruncatedComponentUsage(prisma, log))
+      .catch(() => undefined)
+      // ISS-7229: re-queue sessions whose authoritative cost migration 0074
+      // filled locally and never offered to the cloud — it wrote the column
+      // without touching `updated_at`, and delivery selects on that cursor. Like
+      // the pass above it selects on something its own write does not change
+      // (`authoritative_cost_usd IS NOT NULL`), so it is gated by the durable
+      // `authoritative_cost_resync_seen` marker (migration
+      // 0077_iss7229_authoritative_cost_resync_seen) rather than by
+      // the predicate draining — see authoritative-cost-resync-heal.ts.
+      //
+      // ORDER-INDEPENDENT of every pass above: it reads `authoritative_cost_usd`,
+      // which only the OTel rollup writes, and writes `updated_at` plus its own
+      // marker table. Nothing in this chain derives from either, so it sits last
+      // for the same reason the tombstone repair does — an unrelated failure
+      // above must not delay the passes that DO have data dependencies.
+      // Background; never blocks db open, .catch-isolated.
+      .then(() => requeueBackfilledAuthoritativeCosts(prisma, log))
+      .then(() => undefined)
       .catch(() => undefined)
   );
 }

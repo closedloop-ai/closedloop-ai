@@ -1,8 +1,11 @@
 "use client";
 
 import type { SessionLinkedArtifact } from "@repo/api/src/types/agent-session";
+import { OnboardingAnalyticsPageName } from "@repo/api/src/types/onboarding-analytics";
 import { classifySessionDetailError } from "@repo/app/agents/components/detail/agent-session-detail-states";
 import { AgentSessionDetailView } from "@repo/app/agents/components/detail/agent-session-detail-view";
+import { AgentSessionShellView } from "@repo/app/agents/components/detail/agent-session-shell-view";
+import { SessionCommentsPaneToggle } from "@repo/app/agents/components/detail/session-comments-pane-toggle";
 import { useAgentSessionDetail } from "@repo/app/agents/hooks/use-agent-sessions";
 import {
   readTranscriptFileKey,
@@ -15,19 +18,21 @@ import {
 } from "@repo/app/documents/lib/document-navigation";
 import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import { useDocumentTitle } from "@repo/app/shared/hooks/use-document-title";
-import { SESSIONS_BRANCHES_TAB_TITLES_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
+import { readArtifactCommentThreadId } from "@repo/app/shared/lib/artifact-comment-href";
+import {
+  ARTIFACT_DETAIL_SHELL_FEATURE_FLAG_KEY,
+  SESSIONS_BRANCHES_TAB_TITLES_FEATURE_FLAG_KEY,
+} from "@repo/app/shared/lib/feature-flags";
 import {
   NavReferrerSurface,
   withNavReferrer,
 } from "@repo/app/shared/lib/nav-referrer";
+import { usePageViewedEvent } from "@repo/app/shared/observability/use-page-viewed-event";
 import { useRouteParams } from "@repo/navigation/use-route-params";
 import { useSearchParamsValue } from "@repo/navigation/use-search-params-value";
 import { useCallback, useState } from "react";
 import { Header } from "@/app/(authenticated)/components/header";
-import {
-  SessionDetailActions,
-  SessionDetailOverflowMenu,
-} from "@/app/(authenticated)/components/session-detail-header-controls";
+import { SessionDetailActions } from "@/components/agent-sessions/session-detail-header-controls";
 import { useOrgSlug } from "@/hooks/use-org-slug";
 
 export default function SessionDetailPage() {
@@ -35,11 +40,20 @@ export default function SessionDetailPage() {
   const params = useRouteParams();
   const sessionId = typeof params.id === "string" ? params.id : "";
   const detailQuery = useAgentSessionDetail(sessionId);
+  // PRD-736: the aha-moment anchor — first page_viewed[session_detail]. Gated
+  // on the detail read succeeding: a 404 or a failed read rendered an error
+  // state, not a session, and must not count as the activation moment.
+  usePageViewedEvent(OnboardingAnalyticsPageName.SessionDetail, {
+    ready: detailQuery.isSuccess,
+  });
   const session = detailQuery.data;
   const sessionsHref = `/${orgSlug}/sessions`;
   const searchParams = useSearchParamsValue();
   const transcriptFileKey = readTranscriptFileKey(searchParams);
   const invocationAnchor = readTranscriptInvocationAnchor(searchParams);
+  // ISS-11004: the Activity tab's comment rows link here with `?comment=`; the
+  // shell that owns the URL reads it, as it does the transcript deep links.
+  const selectedThreadId = readArtifactCommentThreadId(searchParams);
   const buildTranscriptFileHref = useCallback(
     (fileKey: string) =>
       withTranscriptFileParam(`/${orgSlug}/sessions/${sessionId}`, fileKey),
@@ -80,6 +94,12 @@ export default function SessionDetailPage() {
     SESSIONS_BRANCHES_TAB_TITLES_FEATURE_FLAG_KEY
   );
   useDocumentTitle(tabTitlesEnabled ? sessionTitle : null);
+  const shellEnabled = useFeatureFlagEnabled(
+    ARTIFACT_DETAIL_SHELL_FEATURE_FLAG_KEY
+  );
+  const SessionDetailBody = shellEnabled
+    ? AgentSessionShellView
+    : AgentSessionDetailView;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -88,21 +108,22 @@ export default function SessionDetailPage() {
           { label: "Sessions", href: sessionsHref },
           { label: sessionTitle },
         ]}
-        moreMenu={<SessionDetailOverflowMenu sessionId={sessionId} />}
         suppressPageHeading
       >
-        <SessionDetailActions
-          commentsRailOpen={commentsRailOpen}
-          isRefreshing={detailQuery.isFetching}
-          onRefresh={() => {
-            detailQuery.refetch().catch(() => undefined);
-          }}
-          onToggleCommentsRail={() =>
-            setCommentsRailOpen((current) => !current)
-          }
-        />
+        {/* ISS-12300 D3: the shell's pane keeps its own saved state, and its
+            button shows on the Session tab only. */}
+        {shellEnabled ? (
+          <SessionCommentsPaneToggle />
+        ) : (
+          <SessionDetailActions
+            commentsRailOpen={commentsRailOpen}
+            onToggleCommentsRail={() =>
+              setCommentsRailOpen((current) => !current)
+            }
+          />
+        )}
       </Header>
-      <AgentSessionDetailView
+      <SessionDetailBody
         backHref={sessionsHref}
         buildArtifactHref={buildArtifactHref}
         buildTranscriptFileHref={buildTranscriptFileHref}
@@ -112,6 +133,8 @@ export default function SessionDetailPage() {
         invocationAnchor={invocationAnchor}
         isError={detailQuery.isError}
         isLoading={detailQuery.isLoading}
+        onRevealCommentsRail={() => setCommentsRailOpen(true)}
+        selectedThreadId={selectedThreadId}
         session={session}
         transcriptFileKey={transcriptFileKey}
       />

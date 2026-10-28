@@ -1,8 +1,8 @@
 /**
  * @file collector-manager-import-pause.ts
  * @description Pause/resume gate for the long first-launch historical backfill,
- * extracted from collector-manager.ts (grandfathered shrink-only under the root
- * AGENTS.md line-count contract) alongside the sibling IngestProgressTracker and
+ * extracted from collector-manager.ts (under the root AGENTS.md line-count
+ * contract) alongside the sibling IngestProgressTracker and
  * BootImportLifecycle extractions.
  *
  * Behavior-preserving: the state is in-memory, so it resets on app restart and

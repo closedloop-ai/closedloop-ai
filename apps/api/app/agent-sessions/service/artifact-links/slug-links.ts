@@ -7,10 +7,15 @@ import {
   roleFromMethod,
   SessionArtifactLinkKind,
 } from "@repo/api/src/types/session-artifact-link";
-import { getPrismaErrorCode } from "@/lib/db-utils";
-import { parseJsonObject } from "@/lib/json-schema";
+import { chunksOf } from "@/lib/chunks-of";
+import { parseProtoSafeJsonObject } from "@/lib/json-schema";
+import {
+  SessionPrLinkAudience,
+  sessionPrLinkKindWhere,
+} from "@/lib/session-pr-links";
 import { normalizeNullableString } from "../coercion";
 import type { AgentSessionUpsertTx } from "../records";
+import { bindParameterChunkSize } from "../write-chunking";
 
 /**
  * Batch-resolve Closedloop artifact slugs across all sessions in a sync
@@ -65,14 +70,8 @@ export async function resolveArtifactSlugMap(
  */
 export function mergeArtifactRefsBySlug(
   refs: readonly SyncedArtifactRef[]
-): Map<
-  string,
-  { isPrimary: boolean; method: string; role: string; relation?: string }
-> {
-  const merged = new Map<
-    string,
-    { isPrimary: boolean; method: string; role: string; relation?: string }
-  >();
+): Map<string, MergedSlugRef> {
+  const merged = new Map<string, MergedSlugRef>();
   for (const ref of refs) {
     // Only closedloop-slug refs resolve through the slug map; branch/PR kinds
     // are handled by their own ingest lanes.
@@ -93,6 +92,7 @@ export function mergeArtifactRefsBySlug(
         role,
         // FEA-2729: carry the extractor's honest relation when supplied.
         ...(ref.relation ? { relation: ref.relation } : {}),
+        ...(ref.observedAt ? { observedAt: ref.observedAt } : {}),
       });
       continue;
     }
@@ -106,22 +106,19 @@ export function mergeArtifactRefsBySlug(
     if (ref.relation && !existing.relation) {
       existing.relation = ref.relation;
     }
+    mergeRefObservedAt(existing, ref.observedAt);
   }
   return merged;
 }
 
-/**
- * Create ArtifactLink edges from a session artifact to referenced Closedloop
- * artifacts. Unresolved slugs are accumulated into SessionDetail.metadata
- * under `_unresolvedArtifactRefs`.
- */
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: slug resolution + link upsert + metadata merge is inherently branchy
+/** Preserve existing metadata and advance contribution time only from session evidence. */
 export async function persistArtifactLinks(
   tx: AgentSessionUpsertTx,
   organizationId: string,
   sessionArtifactId: string,
   artifactRefs: SyncedArtifactRef[] | undefined,
-  slugMap: Map<string, string>
+  slugMap: Map<string, string>,
+  sessionContributedAt: Date
 ): Promise<void> {
   // `undefined` means the client didn't send refs (older Desktop builds,
   // chunked/partial payloads) — leave existing links untouched. An explicit
@@ -161,16 +158,22 @@ export async function persistArtifactLinks(
       linkType: LinkType.RelatesTo,
       NOT: {
         OR: [
-          {
-            metadata: {
-              path: ["linkKind"],
-              equals: SessionArtifactLinkKind.SessionPr,
-            },
-          },
+          // ISS-5823 Evidence: this NOT-guard must cover prose-derived rows too,
+          // or the slug lane's replacement sweep would delete them.
+          sessionPrLinkKindWhere(SessionPrLinkAudience.Evidence),
           {
             metadata: {
               path: ["linkKind"],
               equals: SessionArtifactLinkKind.SessionBranch,
+            },
+          },
+          // ISS-12552: evidence links belong to the evidence lane. The match is
+          // on a value those rows always carry, so a row with no linkKind is
+          // treated exactly as before (ISS-10088 tracks that sweep).
+          {
+            metadata: {
+              path: ["linkKind"],
+              equals: SessionArtifactLinkKind.SessionEvidence,
             },
           },
         ],
@@ -181,52 +184,63 @@ export async function persistArtifactLinks(
     },
   });
 
-  for (const [slug, ref] of merged) {
-    const resolvedId = slugMap.get(slug);
-    if (!resolvedId) {
-      continue;
-    }
-
-    // Skip self-links (session referencing itself)
-    if (resolvedId === sessionArtifactId) {
-      continue;
-    }
-
-    const existing = await tx.artifactLink.findFirst({
-      where: {
-        sourceId: sessionArtifactId,
-        targetId: resolvedId,
-        linkType: LinkType.RelatesTo,
-      },
-      select: { id: true },
-    });
-
-    if (!existing) {
-      try {
-        await tx.artifactLink.create({
-          data: {
-            organizationId,
-            sourceId: sessionArtifactId,
-            targetId: resolvedId,
-            linkType: LinkType.RelatesTo,
-            metadata: {
-              role: ref.role,
-              method: ref.method,
-              isPrimary: ref.isPrimary,
-              // FEA-2729: carry the extractor's honest relation when present.
-              ...(ref.relation ? { relation: ref.relation } : {}),
+  const rows = [...merged]
+    .flatMap(([slug, ref]) => {
+      const targetId = slugMap.get(slug);
+      return !targetId || targetId === sessionArtifactId
+        ? []
+        : [
+            {
+              organizationId,
+              sourceId: sessionArtifactId,
+              targetId,
+              linkType: LinkType.RelatesTo,
+              lastContributedAt: toRefContributedAt(
+                ref.observedAt,
+                sessionContributedAt
+              ),
+              metadata: {
+                role: ref.role,
+                method: ref.method,
+                isPrimary: ref.isPrimary,
+                ...(ref.relation ? { relation: ref.relation } : {}),
+              },
             },
-          },
-        });
-      } catch (e: unknown) {
-        // P2002: unique constraint violation from concurrent sync — swallow
-        if (getPrismaErrorCode(e) === "P2002") {
-          /* swallow */
-        } else {
-          throw e;
-        }
-      }
-    }
+          ];
+    })
+    .sort((left, right) => left.targetId.localeCompare(right.targetId));
+  // Same set-write pattern as branch-materialization-retry: deterministic insert
+  // order prevents overlapping batches taking unique-key locks in reverse order.
+  for (const chunk of chunksOf(rows, bindParameterChunkSize(9, 0))) {
+    await tx.artifactLink.createMany({ data: chunk, skipDuplicates: true });
+    // ISS-12552: one statement also merges the slug lane's legacy role,
+    // method and relation onto a pair the evidence lane linked first, so the
+    // legacy classification of the pair matches a store without evidence links.
+    await tx.$executeRaw`
+      UPDATE artifact_links AS link
+      SET last_contributed_at = CASE
+            WHEN link.last_contributed_at IS NULL
+              OR link.last_contributed_at < incoming.contributed_at
+            THEN incoming.contributed_at
+            ELSE link.last_contributed_at
+          END,
+          metadata = CASE
+            WHEN link.metadata ->> 'linkKind' = ${SessionArtifactLinkKind.SessionEvidence}
+            THEN link.metadata || incoming.metadata
+            ELSE link.metadata
+          END
+      FROM unnest(${chunk.map((row) => row.targetId)}::uuid[],
+                  ${chunk.map((row) => row.lastContributedAt.toISOString())}::timestamp[],
+                  ${chunk.map((row) => JSON.stringify(row.metadata))}::jsonb[])
+        AS incoming(target_id, contributed_at, metadata)
+      WHERE link.organization_id = ${organizationId}::uuid
+        AND link.source_id = ${sessionArtifactId}::uuid
+        AND link.target_id = incoming.target_id
+        AND link.link_type = ${LinkType.RelatesTo}::"LinkType"
+        AND (link.last_contributed_at IS NULL
+          OR link.last_contributed_at < incoming.contributed_at
+          OR link.metadata ->> 'linkKind' = ${SessionArtifactLinkKind.SessionEvidence})
+    `;
   }
 
   // Persist unresolved slugs in session metadata for debugging/future resolution
@@ -235,7 +249,10 @@ export async function persistArtifactLinks(
       where: { artifactId: sessionArtifactId },
       select: { metadata: true },
     });
-    const currentMetadata = parseJsonObject(detail?.metadata) ?? {};
+    // ISS-10177: proto-safe, because the update below rewrites this blob whole.
+    // The lossy parser would drop an own `__proto__` key ingest preserved, on
+    // the first session that also carries an unresolved slug.
+    const currentMetadata = parseProtoSafeJsonObject(detail?.metadata) ?? {};
     const existingUnresolved = Array.isArray(
       currentMetadata._unresolvedArtifactRefs
     )
@@ -252,6 +269,66 @@ export async function persistArtifactLinks(
           _unresolvedArtifactRefs: mergedUnresolved,
         },
       },
+      select: { artifactId: true },
     });
+  }
+}
+
+/**
+ * One session's merged view of the refs naming a single slug: the winning role
+ * and the evidence behind it, plus the LATEST instant any of them was observed.
+ *
+ * `observedAt` is the wire string verbatim rather than a `Date`, so the merge
+ * compares what the desktop actually sent and a ref carrying no instant stays
+ * distinguishable from one carrying an unparseable one.
+ */
+type MergedSlugRef = {
+  isPrimary: boolean;
+  method: string;
+  role: string;
+  relation?: string;
+  observedAt?: string;
+};
+
+/**
+ * The instant to record for one edge: the ref's own `observedAt` when the
+ * desktop stated a usable one, else the session-grain fallback.
+ *
+ * An unparseable string falls back rather than persisting `Invalid Date` — a
+ * timestamp column is valid-or-absent, and the fallback is a real session
+ * instant, so nothing here can write a value that is not a time.
+ */
+function toRefContributedAt(
+  observedAt: string | undefined,
+  sessionContributedAt: Date
+): Date {
+  if (observedAt === undefined) {
+    return sessionContributedAt;
+  }
+  const parsed = new Date(observedAt);
+  return Number.isNaN(parsed.getTime()) ? sessionContributedAt : parsed;
+}
+
+/**
+ * Fold one ref's `observedAt` into the slug's merged view, LATEST-wins.
+ *
+ * The opposite rule to the role/relation fields beside it, which are
+ * precedence- and first-wins: several refs can name the same slug within one
+ * session, and the contribution time is the newest of them, not the first seen.
+ * The sibling branch lane (`branch-links.ts`) merges its own `observedAt` by
+ * exactly this rule, so the two recency facts cannot drift.
+ */
+function mergeRefObservedAt(
+  existing: MergedSlugRef,
+  observedAt: string | undefined
+): void {
+  if (!observedAt) {
+    return;
+  }
+  if (
+    !existing.observedAt ||
+    Date.parse(observedAt) > Date.parse(existing.observedAt)
+  ) {
+    existing.observedAt = observedAt;
   }
 }

@@ -36,7 +36,6 @@ describe("GET /desktop/identity", () => {
       firstName: "Kerensa",
       lastName: "Whitlock",
       organizationName: "Acme Inc",
-      sessionSyncPolicyEnabled: true,
     });
 
     const response = await GET(request(), { params: Promise.resolve({}) });
@@ -51,7 +50,6 @@ describe("GET /desktop/identity", () => {
       firstName: "Kerensa",
       lastName: "Whitlock",
       organizationName: "Acme Inc",
-      sessionSyncPolicyEnabled: true,
     });
   });
 

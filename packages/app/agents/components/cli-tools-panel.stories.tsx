@@ -1,4 +1,4 @@
-import { cliTools } from "@repo/app/agents/lib/session-mock-data";
+import { cliTools } from "@repo/app/agents/lib/cli-tools-mock-data";
 import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
 import { CliToolsPanel } from "./cli-tools-panel";
@@ -24,9 +24,9 @@ function CliToolsPanelStory() {
 }
 
 const meta = {
-  title: "App Core/Agents/Cli Tools Panel",
+  title: "Composites v1.0/Agents/General/CLI Tools Panel",
   component: CliToolsPanelStory,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
 } satisfies Meta<typeof CliToolsPanelStory>;
 

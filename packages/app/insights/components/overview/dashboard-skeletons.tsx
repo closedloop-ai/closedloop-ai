@@ -1,4 +1,5 @@
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
+import type { DashboardRow } from "./dashboard-tiles";
 
 /**
  * Per-section loading placeholders for the overview dashboard, sized to the real
@@ -94,4 +95,55 @@ export function DashboardDistributionRowSkeleton() {
       />
     </div>
   );
+}
+
+/** The section-matched skeleton for a single dashboard row. */
+export function DashboardRowSkeleton({ row }: { row: DashboardRow }) {
+  switch (row.tour) {
+    case "stats":
+      return <DashboardStatsRowSkeleton />;
+    case "activity":
+      return <DashboardActivityRowSkeleton />;
+    case "models":
+      return <DashboardModelsRowSkeleton />;
+    case "agent-pipeline":
+      // Reuses the models skeleton because the agent-pipeline card is the same
+      // shape — a single full-width chart card at h-[340px] (dashboard-rows.tsx
+      // `agent-pipeline` case) — so the placeholder matches the real graph and
+      // nothing flash-resizes on load. If that card's height ever changes, give
+      // this case its own skeleton so the two stay in sync (kept as reuse for
+      // now since the heights are identical).
+      return <DashboardModelsRowSkeleton />;
+    case "autonomy":
+      return <DashboardAutonomyRowSkeleton />;
+    case "frustration":
+      // FEA-4022: the frustration card is the same shape as autonomy — a single
+      // full-width h-[300px] trend card (dashboard-rows.tsx `frustration` case) —
+      // so it reuses the autonomy skeleton and nothing flash-resizes on load.
+      return <DashboardAutonomyRowSkeleton />;
+    case "prs":
+      return <DashboardPrsRowSkeleton />;
+    case "distribution":
+      return <DashboardDistributionRowSkeleton />;
+    default:
+      return <DashboardPrsRowSkeleton />;
+  }
+}
+
+// Mirrors the resolved card at `lg` and above, where its metric grid is a single
+// four-up row: the framed header (title + description) over one row of
+// `OverviewMetric` (label/value/caption) inside the card's 24px gutter.
+const AI_IMPACT_CARD_HEIGHT = 176;
+
+/**
+ * The AI Impact card's placeholder, for the window where one of the two sections
+ * it reads (`AI_IMPACT_SECTIONS`) is still in flight.
+ *
+ * ISS-10486: the card used to be withheld entirely until both landed, so a
+ * dashboard whose other rows had settled simply had nothing where it sits, and
+ * in-flight was indistinguishable from failed. A placeholder says which one it
+ * is and holds the slot's footprint.
+ */
+export function DashboardAiImpactSkeleton() {
+  return <ChartCardSkeleton height={AI_IMPACT_CARD_HEIGHT} />;
 }

@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { OperationDispatcher } from "../operation-dispatcher.js";
-import { resolveRepoFullName } from "./git-helpers.js";
+import { resolveRepoFullNameAsync } from "./git-helpers.js";
 import { loadReposConfig } from "./repos-config-utils.js";
 import { json } from "./response-utils.js";
 import { expandHome, SymphonyDirNotConfiguredError } from "./symphony-utils.js";
@@ -26,7 +26,7 @@ export function registerGitRepoPathRoutes(
 
       for (const repo of config.repos) {
         const expandedRepoPath = expandHome(repo.path);
-        const fullName = resolveRepoFullName(expandedRepoPath);
+        const fullName = await resolveRepoFullNameAsync(expandedRepoPath);
         if (fullName !== repoFullName) {
           continue;
         }

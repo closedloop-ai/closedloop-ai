@@ -1,32 +1,32 @@
-import {
-  DISPLAYED_SESSION_STATUS,
-  RECOGNIZED_SESSION_STATUS_VALUES,
-  SESSION_STATUS,
-  STALE_SESSION_DISPLAY_THRESHOLD_HOURS,
-} from "@repo/api/src/types/session-status";
+import { splitPriorityFilter } from "@repo/api/src/types/priority-filter";
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
+import { SESSIONS_SURFACE_DATE_WINDOW_FIELD } from "../../shared/session-date-window-contract.js";
+import { UNKNOWN_HARNESS_BUCKET } from "../../shared/shared-agent-sessions-contract.js";
 import {
   type AgentSessionCountFilters,
   type AgentSessionUsageAggregateFilters,
+  type SessionListCursorFacets,
   type SessionListCursorPageRequest,
   SessionListCursorSortKey,
 } from "../agent-sync/agent-session-read-model.js";
-import {
-  SESSION_LAST_ACTIVITY_AT_TS_EXPR,
-  SESSIONS_SURFACE_DATE_WINDOW_FIELD,
-  sessionDateWindowTsExpr,
-} from "../agent-sync/session-date-window.js";
-import { isDisplayedStatusParityEnabled } from "../session/displayed-status-parity-gate.js";
+import { sessionDateWindowTsExpr } from "../agent-sync/session-date-window.js";
 import {
   canonicalSharedStatus,
   TERMINAL_SHARED_STATUSES,
 } from "../session/session-status-filter-match.js";
-import { HIGH_CONFIDENCE_BRANCH_METHOD_VALUES } from "./db-constants.js";
+import {
+  BRANCH_WRITE_METHOD_VALUES,
+  REPOSITORY_PAIR_KEY_EXPR,
+} from "./db-constants.js";
 import { escapeSqliteLikePattern } from "./db-helpers.js";
 import type { DesktopPrisma } from "./prisma-client.js";
 import { countSqliteSessions } from "./session-count.js";
+import { sessionQualitySqlPredicate } from "./session-quality-sql.js";
+import { canonicalRankingKeySql } from "./session-timestamp-form.js";
+import { assertValidSessionWorkOperands } from "./session-work-operand-validation.js";
 
-// FEA-2038 / FEA-4142: the metadata-only session aggregates — usage/analytics
-// and the count-only badge read — share these SQLite `WHERE`-clause builders.
+// FEA-2038 / FEA-4142: grouped usage/analytics and the count-only badge read
+// share these SQLite `WHERE`-clause builders.
 // Extracted from sync-source.ts (a grandfathered over-ceiling file) to keep it
 // shrinking; the SQL is SQLite (libSQL) dialect — see
 // src/main/database/AGENTS.md.
@@ -56,24 +56,47 @@ export function buildUsageFilterClause(
 }
 
 /**
- * FEA-4142: metadata-only session `COUNT(*)`. A single grouped read over the
+ * FEA-4142: session `COUNT(*)`. A single read rooted at the
  * `sessions` table — never a corpus hydrate — backing the count-only badge
  * read. Reuses the {@link countSqliteSessions} SSOT count helper (which the
  * Sessions-list pagination total shares), so the count can never diverge from
- * the list's own count. The `(status, ended_at)` partial index (migration 0038)
- * covers the badge's predicate.
+ * the list's own count.
+ *
+ * ISS-6787: this used to claim the `(status, ended_at)` partial index covered
+ * the badge's predicate, under the wrong migration number besides — the index
+ * is migration 0039 (`idx_sessions_status_ended_at`). It cannot cover this
+ * predicate: `buildUsageStatusPredicate` compares `lower(s.status)` and the
+ * completion bound compares `julianday(s.ended_at)`, so BOTH indexed columns
+ * reach the planner wrapped in a function and neither is seekable. Until an
+ * expression index over those exact expressions exists, this count scans.
  */
 export function countSqliteSessionsForFilters(
   prisma: DesktopPrisma,
   filters: AgentSessionCountFilters
 ): Promise<number> {
   const { clause, params } = buildSessionCountFilterClause(filters);
-  return prisma.read((reader) => countSqliteSessions(reader, clause, params));
+  if (!filters.quality || filters.quality === "all") {
+    return prisma.read((reader) => countSqliteSessions(reader, clause, params));
+  }
+  const validation = buildSessionCountFilterClause({
+    ...filters,
+    quality: "all",
+  });
+  return prisma.read((reader) =>
+    reader.$transaction(async (snapshot) => {
+      await assertValidSessionWorkOperands(
+        snapshot,
+        validation.clause,
+        validation.params
+      );
+      return countSqliteSessions(snapshot, clause, params);
+    })
+  );
 }
 
 /**
- * The shared date-window / status / ownership WHERE conditions for the
- * metadata-only session aggregates. Returned unjoined so callers can append
+ * The shared date-window / status / ownership / quality WHERE conditions for
+ * grouped session aggregates. Returned unjoined so callers can append
  * their own predicates before rendering the clause — `buildUsageFilterClause`
  * (usage/analytics) renders it as-is; `buildSessionCountFilterClause`
  * (FEA-4142 count-only) appends the `ended_at` completion bound.
@@ -98,11 +121,34 @@ function buildUsageFilterConditions(
   const windowTs = sessionDateWindowTsExpr(
     filters.dateWindowField ?? SESSIONS_SURFACE_DATE_WINDOW_FIELD
   );
+  if (filters.componentSessionIds !== undefined) {
+    conditions.push(`s.id IN (SELECT value FROM json_each(${placeholder()}))`);
+    params.push(JSON.stringify(filters.componentSessionIds));
+  }
 
-  if (filters.harness) {
+  const qualityPredicate = sessionQualitySqlPredicate(filters.quality ?? "all");
+  if (qualityPredicate) {
+    conditions.push(qualityPredicate);
+  }
+
+  if (filters.repositoryPairKeys !== undefined) {
+    conditions.push(
+      `${REPOSITORY_PAIR_KEY_EXPR} IN (SELECT value FROM json_each(${placeholder()}))`
+    );
+    params.push(JSON.stringify(filters.repositoryPairKeys));
+  }
+
+  const hasHarnessFacet = pushAggregateValueFacet(
+    filters.harnesses,
+    "s.harness",
+    conditions,
+    params
+  );
+  if (!hasHarnessFacet && filters.harness) {
     conditions.push(`s.harness = ${placeholder()}`);
     params.push(filters.harness);
   }
+  pushAggregateValueFacet(filters.models, "s.model", conditions, params);
   if (filters.userIds && filters.userIds.length > 0) {
     const userPlaceholders: string[] = [];
     for (const userId of filters.userIds) {
@@ -149,9 +195,10 @@ function buildSessionCountFilterClause(filters: AgentSessionCountFilters): {
 } {
   const { conditions, params } = buildUsageFilterConditions(filters);
   if (filters.completedAfter) {
-    // `ended_at` holds whatever ISO string the harness transcript carried —
-    // Claude's `isoTs` stores string timestamps unchanged, so a row can be
-    // offset-form (`...-05:00`) or malformed. A lexical `s.ended_at >= ?` would
+    // `ended_at` holds whatever the harness transcript carried at the time it
+    // was written. Since ISS-6738 `toIso` canonicalizes to UTC 'Z' and drops
+    // unreadable text, but rows persisted before that are untouched, so an
+    // existing row can still be offset-form (`...-05:00`) or malformed. A lexical `s.ended_at >= ?` would
     // compare an offset timestamp by wall-clock text and sort malformed text
     // after the bound, diverging from the hydrated `matchesDateBounds`
     // (`new Date(endedAt)` instant compare). `julianday()` parses each side to an
@@ -169,49 +216,6 @@ function buildSessionCountFilterClause(filters: AgentSessionCountFilters): {
     clause: conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "",
     params,
   };
-}
-
-const MS_PER_HOUR = 60 * 60 * 1000;
-
-/**
- * ISS-5366: the SQL half of the display staleness cutoff — "this row's
- * staleness anchor is older than the threshold".
- *
- * The JS half is `isSessionDisplayStale` (`@repo/api/src/types/session-status`),
- * which the hydrated `matchesStatusFilter` mirror calls; cloud's half is
- * `buildStaleAnchorBranches` (`query-builder.ts`). All three read the SAME
- * {@link STALE_SESSION_DISPLAY_THRESHOLD_HOURS} constant, so the cutoff is one
- * definition and the Active/Stale partition cannot drift between the SQL
- * aggregate, the hydrate fold, and the cloud facet — which is exactly the drift
- * the FEA-1834 §4 parity test caught when only the fold learned the cutoff.
- *
- * The anchor is the BARE `last_activity_at` column rather than a
- * `COALESCE(last_activity_at, started_at)` (the two branches cloud needs, since
- * Prisma has no COALESCE in `where`). That is not a shortcut: on desktop the
- * column is `NOT NULL` with an epoch default and is only ever written a
- * `toISOString()` value, and the hydrate path reads that same column through
- * `resolveSessionLastActivityAt` — so the fallback cloud needs is unreachable
- * here, and a row still carrying the epoch DEFAULT reads as stale on BOTH
- * paths. See `session-date-window.ts`, which windows on the bare column for the
- * same reason (and to keep `idx_sessions_last_activity` covering).
- *
- * Computed per call, not at module load, so a long-lived main process does not
- * pin a cutoff that itself goes stale.
- */
-function buildStaleAnchorSql(
-  placeholder: () => string,
-  params: unknown[]
-): string {
-  const cutoffPlaceholder = placeholder();
-  params.push(
-    new Date(
-      Date.now() - STALE_SESSION_DISPLAY_THRESHOLD_HOURS * MS_PER_HOUR
-    ).toISOString()
-  );
-  // Lexicographic `<` is an instant comparison here: every persisted value is a
-  // fixed-width UTC `toISOString()` string, so string order IS chronological
-  // order. Strict `<` mirrors `isSessionDisplayStale`'s strict `elapsedMs >`.
-  return `(${SESSION_LAST_ACTIVITY_AT_TS_EXPR} < ${cutoffPlaceholder})`;
 }
 
 function buildUsageStatusPredicate(
@@ -260,27 +264,14 @@ function buildUsageStatusPredicate(
     .join(", ");
   const awaiting = `(${canonical} NOT IN (${terminalList}) AND s.awaiting_input_since IS NOT NULL)`;
   // ISS-4556 / ISS-4559: the SQL statement of "this row DISPLAYS as Waiting" —
-  // the same condition the hydrated `projectDisplayedSharedStatus` encodes.
-  // Selected by the Waiting branch, negated by the Active branch, so this fast
-  // path partitions the awaiting-input rows exactly as the JS fold does.
-  const displaysAsWaiting = `(${awaiting} AND s.ended_at IS NULL)`;
-  // ISS-4559: ON, a row leaves the Active population EXACTLY when it DISPLAYS as
-  // Waiting; OFF (the closed-by-default rollout state), the pre-ISS-4559
-  // predicate dropped EVERY awaiting-input row regardless of `ended_at`.
+  // the same condition the hydrated `matchesStatusFilter` derives. Declared ONCE
+  // and read by the branches that subtract it, so this fast path partitions the
+  // awaiting-input rows exactly as the JS fold does.
   //
-  // Resolved ONCE and read by the ACTIVE and STALE branches alike. Leaving STALE
-  // on the ungated `NOT ${awaiting}` while ACTIVE widened would stop the two
-  // partitioning: an ended + awaiting + long-silent row would be excluded from
-  // ACTIVE by the stale anchor and from STALE by the awaiting test, and so be
-  // counted by NEITHER — the invisible-row defect this batch exists to remove,
-  // one dimension over.
-  // ISS-4556: the gate is read ONCE per predicate build and reused by every
-  // branch below. Re-reading it per branch let a single build mix gated and
-  // ungated clauses if the settings-store resolver answered differently mid-build
-  // (it swallows its own errors to `false`), which would emit a predicate that
-  // matches no coherent population at all.
-  const parityEnabled = isDisplayedStatusParityEnabled();
-  const excludedAsWaiting = parityEnabled ? displaysAsWaiting : awaiting;
+  // ISS-10629 retired the WAITING branch that SELECTED it; what remains is the
+  // subtraction on the stored-status fallback below, which is why it is still
+  // declared here.
+  const displaysAsWaiting = `(${awaiting} AND s.ended_at IS NULL)`;
   // ISS-4985: fold the RETIRED spellings off the REQUEST before bucketing, so a
   // caller counting `completed`/`abandoned` counts the Inactive population that
   // absorbed them. Without it those values matched no branch below and fell to
@@ -299,83 +290,21 @@ function buildUsageStatusPredicate(
   // ISS-5592 removed the retired fold, so the request passes through unchanged
   // and there is no retired spelling to union back in.
   const normalized = canonicalSharedStatus(status);
-  if (normalized === DISPLAYED_SESSION_STATUS.WAITING) {
-    // The `s.ended_at IS NULL` guard mirrors the cloud facet/projection
-    // (FEA-3149): an ended row must not surface as Waiting even if its status is
-    // not yet canonicalized to a terminal value.
-    if (!parityEnabled) {
-      return displaysAsWaiting;
-    }
-    // ISS-4559: `waiting` is also a LEGACY PERSISTED status (kept for
-    // version-skew), and the hydrated matcher returns such a row because it
-    // displays as Waiting. Union it in so this fast path buckets the row the same
-    // way — otherwise the table would list it under Waiting while the cards above
-    // it, and the FEA-4142 count badge, left it out.
-    return `(${displaysAsWaiting} OR ${canonical} = '${DISPLAYED_SESSION_STATUS.WAITING}')`;
-  }
+  // ISS-9939 / ISS-10629 (operator ruling, 2026-09-18): the WAITING, STALE and
+  // UNKNOWN branches are GONE, in lockstep with the hydrated
+  // `matchesStatusFilter` twin — these two must move together or the cards
+  // above the list stop counting the list. Those values are display-only
+  // projections the ruling retired as FILTER values on both surfaces. The
+  // FIRST-PARTY UI path cannot send one (`SessionStatusFacetValue` plus
+  // `dedupeSessionStatusFacetValues` at the parse boundary), but that seam is on
+  // the PLURAL `statuses` only and the singular `status` folded in above has
+  // none — see the hydrated twin for the full narrowing. A request carrying one
+  // falls to the stored-status equality at the bottom.
   if (normalized === SESSION_STATUS.ACTIVE) {
-    // ISS-5366: a live-looking row silent past the display cutoff BADGES as
-    // Stale on this very surface, so it must leave the Active bucket — otherwise
-    // the KPI cards count rows the grid beside them labels Stale. `NOT` over the
-    // same anchor test the STALE branch uses keeps the two exactly
-    // complementary, so the old Active population partitions with no row lost
-    // between the facets and none in both.
-    //
-    // ISS-4559: the awaiting-input exclusion is gated with the hydrated matcher,
-    // because these two must agree — the SQL aggregate feeds the usage/count
-    // cards over the SAME cohort the hydrated fold lists. Leaving this branch on
-    // the old `NOT ${awaiting}` while the list widened would make an ended +
-    // awaiting row appear in the table under Active but go uncounted by the
-    // cards above it.
-    return `(${canonical} = '${SESSION_STATUS.ACTIVE}' AND NOT ${excludedAsWaiting} AND NOT ${buildStaleAnchorSql(placeholder, params)})`;
-  }
-  if (normalized === DISPLAYED_SESSION_STATUS.STALE) {
-    // Exactly the rows the ACTIVE branch now excludes, plus a row that literally
-    // persists `stale` (which the equality fallback used to answer). Reads the
-    // SAME gated `excludedAsWaiting` the ACTIVE branch negates, so the two stay
-    // exact complements over the `active` population under either gate state.
-    //
-    // ISS-5656: the literal-`stale` arm carries the equality fallback's
-    // waiting-exclusion too, through the same {@link buildStoredStatusMatchSql}
-    // that fallback uses. `stale` folds to `active` (non-terminal), so the
-    // Waiting projection fires for a `stale` row awaiting input and it BADGES
-    // "Waiting" — unconditional, this arm counted it under Stale as well, the
-    // same double-count the UNKNOWN branch below already subtracts.
-    const literalStale = buildStoredStatusMatchSql(
-      `${canonical} = '${DISPLAYED_SESSION_STATUS.STALE}'`,
-      displaysAsWaiting,
-      parityEnabled
-    );
-    return `((${canonical} = '${SESSION_STATUS.ACTIVE}' AND NOT ${excludedAsWaiting} AND ${buildStaleAnchorSql(placeholder, params)}) OR ${literalStale})`;
-  }
-  if (normalized === DISPLAYED_SESSION_STATUS.UNKNOWN) {
-    // A status the display fold does not RECOGNIZE renders "Unknown", as does a
-    // row literally storing `unknown`. Matching by EXCLUSION — rather than
-    // listing the unknown values, which by definition cannot be listed — is what
-    // lets the facet reach a version-skewed row a future producer writes.
-    // Mirrors the hydrated `matchesStatusFilter` UNKNOWN branch and cloud's
-    // `UNKNOWN_EXCLUDED_STATUS_VALUES`.
-    const excluded = RECOGNIZED_SESSION_STATUS_VALUES.filter(
-      (value) => value !== DISPLAYED_SESSION_STATUS.UNKNOWN
-    );
-    // `placeholder()` renders from `params.length`, so each placeholder must be
-    // taken and its param pushed in lockstep — batching the pushes would emit
-    // the same index N times (mirrors the `userIds IN (...)` loop above).
-    const placeholders: string[] = [];
-    for (const value of excluded) {
-      placeholders.push(placeholder());
-      params.push(value);
-    }
-    const unrecognized = `${canonical} NOT IN (${placeholders.join(", ")})`;
-    if (!parityEnabled) {
-      return unrecognized;
-    }
-    // ISS-4559: the awaiting-input projection runs AHEAD of the unrecognized
-    // fold, so a version-skewed row that is also awaiting input DISPLAYS as
-    // Waiting, not Unknown. Subtract it here or the Waiting and Unknown facets
-    // both return it — the same double-count the hydrated matcher's UNKNOWN
-    // branch now excludes.
-    return `(${unrecognized} AND NOT ${displaysAsWaiting})`;
+    // ISS-10741 / ISS-11239: the stored status alone, matching cloud (ISS-9939).
+    // No display subtraction, and no end-instant subtraction either: a row
+    // storing `active` beside a recorded end matches Active here.
+    return `(${canonical} = '${SESSION_STATUS.ACTIVE}')`;
   }
   if (normalized === SESSION_STATUS.INACTIVE) {
     /* ISS-4654: this SQL count predicate is the twin of the hydrated
@@ -393,45 +322,41 @@ function buildUsageStatusPredicate(
      * migrated Inactive population without losing a row that still stores that
      * spelling — byte-for-byte the hydrated matcher's INACTIVE branch, which is
      * the only way the count above the list keeps matching the list. */
-    return `${canonical} = '${SESSION_STATUS.INACTIVE}'`;
+    return `(${canonical} = '${SESSION_STATUS.INACTIVE}')`;
   }
   const nextPlaceholder = placeholder();
   params.push(normalized);
-  // ISS-4559: the hydrated matcher is `displayed === requested`, so a row that
-  // DISPLAYS as Waiting belongs to the Waiting facet and to no other — even
-  // though its raw status is something else. `displaysAsWaiting` already carries
-  // the non-terminal test, so a terminal row holding a stale awaiting-input
-  // timestamp is untouched by this and still matches its own status.
+  // The stored-status equality, minus a row that DISPLAYS as Waiting over a
+  // retired spelling — the same fallback as the hydrated matcher.
+  // `displaysAsWaiting` already carries the non-terminal test, so a terminal
+  // row (ERROR lands here) holding a stale awaiting-input timestamp is
+  // untouched by this and still matches its own status.
   return buildStoredStatusMatchSql(
     `${canonical} = ${nextPlaceholder}`,
-    displaysAsWaiting,
-    parityEnabled
+    displaysAsWaiting
   );
 }
 
 /**
  * ISS-5656: a match on the row's OWN stored status, minus the rows that DISPLAY
- * as Waiting — the subtraction every stored-status arm of this predicate owes,
- * because a row belongs to the facet its badge names and to no other.
+ * as Waiting. Only the raw-status fallback above calls it: ERROR, and any
+ * retired spelling a request still carries. ACTIVE and INACTIVE match the
+ * stored status alone (ISS-11239 owner ruling, 2026-09-26), so a row can sit in
+ * a facet its badge does not name. `displaysAsWaiting` carries the non-terminal
+ * test, so for ERROR the subtraction removes nothing.
  *
- * One helper rather than one spelling per arm. The raw-status fallback carried
- * this condition and the literal-`stale` arm of the STALE branch did not, so a
- * row storing `stale` while awaiting input badged "Waiting" and was still
- * counted under Stale. Routing both through here means a third stored-status arm
- * cannot be added without it.
- *
- * Ungated it is the bare equality, byte-for-byte the pre-ISS-4559 behavior:
- * `sessions-displayed-status-parity` is closed by default and this changes
- * nothing while it is off.
+ * ISS-10629: with the WAITING/STALE/UNKNOWN branches gone, this subtraction is
+ * what drops a row STORING a retired spelling that is ALSO awaiting input from
+ * its own spelling, leaving it in no facet. That verdict is PINNED, not
+ * incidental (marisolashgrove, #7663): `session-aggregate-status-parity.test.ts`
+ * sweeps every oracle row against its own raw status on this predicate and on
+ * the hydrated twin at once. The hydrated twin carries the full statement and
+ * the reason both were left as they are.
  */
 function buildStoredStatusMatchSql(
   equality: string,
-  displaysAsWaiting: string,
-  parityEnabled: boolean
+  displaysAsWaiting: string
 ): string {
-  if (!parityEnabled) {
-    return equality;
-  }
   return `(${equality} AND NOT ${displaysAsWaiting})`;
 }
 
@@ -456,8 +381,22 @@ function buildStoredStatusMatchSql(
 export function buildListCursorFilterClause(
   request: Pick<
     SessionListCursorPageRequest,
-    "startDate" | "endDate" | "search" | "statuses"
-  >
+    | "startDate"
+    | "endDate"
+    | "search"
+    | "statuses"
+    | "userIds"
+    | "harness"
+    | "harnesses"
+    | "models"
+    | "priorities"
+    | "componentSessionIds"
+    | "quality"
+  > & {
+    repositoryPairKeys?: readonly string[];
+    searchMatchPairKeys?: readonly string[];
+    searchFallbackSessionIds?: readonly string[];
+  }
 ): {
   clause: string;
   params: unknown[];
@@ -466,6 +405,21 @@ export function buildListCursorFilterClause(
   const params: unknown[] = [];
   const placeholder = () => `$${params.length + 1}`;
   const windowTs = sessionDateWindowTsExpr(SESSIONS_SURFACE_DATE_WINDOW_FIELD);
+  if (request.componentSessionIds !== undefined) {
+    conditions.push(`s.id IN (SELECT value FROM json_each(${placeholder()}))`);
+    params.push(JSON.stringify(request.componentSessionIds));
+  }
+
+  const qualityPredicate = sessionQualitySqlPredicate(request.quality ?? "all");
+  if (qualityPredicate) {
+    conditions.push(qualityPredicate);
+  }
+  if (request.repositoryPairKeys !== undefined) {
+    conditions.push(
+      `${REPOSITORY_PAIR_KEY_EXPR} IN (SELECT value FROM json_each(${placeholder()}))`
+    );
+    params.push(JSON.stringify(request.repositoryPairKeys));
+  }
 
   if (request.startDate) {
     conditions.push(`${windowTs} >= ${placeholder()}`);
@@ -488,10 +442,15 @@ export function buildListCursorFilterClause(
     );
     conditions.push(`(${statusPredicates.join(" OR ")})`);
   }
+  pushListFacetConditions(request, conditions, params);
   if (request.search) {
     const searchPlaceholder = placeholder();
     params.push(`%${escapeSqliteLikePattern(request.search.toLowerCase())}%`);
-    const branchMethodPlaceholders = HIGH_CONFIDENCE_BRANCH_METHOD_VALUES.map(
+    const pairPlaceholder = placeholder();
+    params.push(JSON.stringify(request.searchMatchPairKeys ?? []));
+    const fallbackPlaceholder = placeholder();
+    params.push(JSON.stringify(request.searchFallbackSessionIds ?? []));
+    const branchMethodPlaceholders = BRANCH_WRITE_METHOD_VALUES.map(
       (method) => {
         const methodPlaceholder = placeholder();
         params.push(method);
@@ -505,28 +464,20 @@ export function buildListCursorFilterClause(
         OR LOWER(s.id) LIKE ${searchPlaceholder} ESCAPE '\\'
         OR LOWER(COALESCE(s.harness, '')) LIKE ${searchPlaceholder} ESCAPE '\\'
         OR LOWER(COALESCE(s.cwd, '')) LIKE ${searchPlaceholder} ESCAPE '\\'
-        OR LOWER(COALESCE(
-          CASE
-            WHEN s.metadata IS NOT NULL AND json_valid(s.metadata)
-              THEN json_extract(s.metadata, '$.gitBranch')
-            ELSE NULL
-          END,
-          ''
-        )) LIKE ${searchPlaceholder} ESCAPE '\\'
-        OR EXISTS (
-          SELECT 1
+        OR ${REPOSITORY_PAIR_KEY_EXPR} IN (SELECT value FROM json_each(${pairPlaceholder}))
+        OR s.id IN (SELECT value FROM json_each(${fallbackPlaceholder}))
+        OR LOWER(COALESCE((
+          SELECT a.branch_name
           FROM session_artifact_links sal
           JOIN artifacts a ON a.id = sal.artifact_id
           WHERE sal.session_id = s.id
-            AND (
-              LOWER(COALESCE(a.repo_full_name, '')) LIKE ${searchPlaceholder} ESCAPE '\\'
-              OR (
-                a.kind = 'branch'
-                AND sal.method IN (${branchMethodPlaceholders.join(", ")})
-                AND LOWER(COALESCE(a.branch_name, '')) LIKE ${searchPlaceholder} ESCAPE '\\'
-              )
-            )
-        )
+            AND a.kind = 'branch'
+            AND a.branch_name IS NOT NULL AND a.branch_name <> ''
+            AND sal.method IN (${branchMethodPlaceholders.join(", ")})
+          ORDER BY ${canonicalRankingKeySql("sal.observed_at")} DESC,
+                   ${canonicalRankingKeySql("sal.created_at")} ASC, sal.id ASC
+          LIMIT 1
+        ), '')) LIKE ${searchPlaceholder} ESCAPE '\\'
       )
     `);
   }
@@ -535,6 +486,88 @@ export function buildListCursorFilterClause(
     clause: conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "",
     params,
   };
+}
+
+/**
+ * ISS-12439: the Owner, Harness, Model and Priority facets over the `sessions`
+ * columns the hydrated row reads them from — `user_id`, `harness`, `model`,
+ * `priority` — each the SQL statement of the `matchesQuery` predicate it twins.
+ * A null harness or model is the "unknown" option on the hydrated side, so
+ * selecting it matches NULL; the priority unset option is the same NULL arm
+ * (`splitPriorityFilter`).
+ */
+function pushListFacetConditions(
+  request: SessionListCursorFacets,
+  conditions: string[],
+  params: unknown[]
+): void {
+  const placeholder = () => `$${params.length + 1}`;
+  const inList = (column: string, values: readonly string[]): string => {
+    const marks = values.map((value) => {
+      const mark = placeholder();
+      params.push(value);
+      return mark;
+    });
+    return `${column} IN (${marks.join(", ")})`;
+  };
+  if (request.userIds && request.userIds.length > 0) {
+    conditions.push(inList("s.user_id", request.userIds));
+  }
+  if (request.harnesses && request.harnesses.length > 0) {
+    conditions.push(
+      nullableFacetCondition("s.harness", request.harnesses, inList)
+    );
+  } else if (request.harness) {
+    conditions.push(`s.harness = ${placeholder()}`);
+    params.push(request.harness);
+  }
+  if (request.models && request.models.length > 0) {
+    conditions.push(nullableFacetCondition("s.model", request.models, inList));
+  }
+  if (request.priorities && request.priorities.length > 0) {
+    const { members, includesUnset } = splitPriorityFilter(request.priorities);
+    const arms = [
+      ...(members.length > 0 ? [inList("s.priority", members)] : []),
+      ...(includesUnset ? ["s.priority IS NULL"] : []),
+    ];
+    // A selection of only values outside the vocabulary matches nothing, as in
+    // `matchesPriorityFilter`.
+    conditions.push(arms.length > 0 ? `(${arms.join(" OR ")})` : "0");
+  }
+}
+
+function nullableFacetCondition(
+  column: string,
+  values: readonly string[],
+  inList: (column: string, values: readonly string[]) => string
+): string {
+  const inValues = inList(column, values);
+  return values.includes(UNKNOWN_HARNESS_BUCKET)
+    ? `(${inValues} OR ${column} IS NULL)`
+    : inValues;
+}
+
+function pushAggregateValueFacet(
+  values: readonly string[] | undefined,
+  column: string,
+  conditions: string[],
+  params: unknown[]
+): boolean {
+  if (!values || values.length === 0) {
+    return false;
+  }
+  const marks = values.map((value) => {
+    params.push(value);
+    return `$${params.length}`;
+  });
+  conditions.push(
+    nullableFacetCondition(
+      column,
+      values,
+      (name) => `${name} IN (${marks.join(", ")})`
+    )
+  );
+  return true;
 }
 
 /**
@@ -572,3 +605,70 @@ const LIST_CURSOR_PAGE_SORT_EXPRESSIONS: Record<
   [SessionListCursorSortKey.Started]: "sort_started_at",
   [SessionListCursorSortKey.Updated]: "updated_at",
 };
+
+/**
+ * ISS-9584: the FROM source and the full ORDER BY of the Sessions cursor page.
+ * The id closes a tie DESC in both directions, as on the cloud (FEA-4329). A
+ * last-activity tie is first narrowed by `tie_started_at`, the bare
+ * `started_at` column of the `activity` CTE.
+ *
+ * The last-activity sort pins `idx_sessions_last_activity_started`. DESC is
+ * then served whole. ASC cannot be: one index cannot give `last_activity_at
+ * ASC` with `started_at DESC, id DESC`. Pinned, SQLite walks the index in
+ * reverse and sorts only the tied rows ("TEMP B-TREE FOR LAST 2 TERMS").
+ * Unpinned, SQLite 3.53 picks a full scan plus a full sort instead.
+ *
+ * ISS-12439 (tamsinb review): that pin is skipped when `hydratedTies` is set
+ * — a request carrying an Owner/Harness/Model/Priority facet. Pinned
+ * unconditionally, a selective facet (a model in 20 of 7,872 rows) still
+ * walked the whole last-activity index testing the facet predicate on every
+ * row — `SCAN s USING INDEX idx_sessions_last_activity_started`. Unpinned, the
+ * planner is free to seek the facet's own index (`idx_sessions_harness` /
+ * `_model` / `_priority` / `_user_id`) and sort only the matched rows.
+ */
+export function listCursorPageSortSql(
+  sortBy: SessionListCursorSortKey,
+  direction: "ASC" | "DESC",
+  hydratedTies = false
+): { source: string; orderBy: string } {
+  const source =
+    sortBy === SessionListCursorSortKey.LastActivity && !hydratedTies
+      ? `sessions s INDEXED BY ${LAST_ACTIVITY_SORT_INDEX}`
+      : "sessions s";
+  return {
+    source,
+    orderBy: `${listCursorPageSortExpression(sortBy)} ${direction}, ${hydratedTies ? hydratedTieOrder(sortBy) : `${lastActivityTieNarrowing(sortBy, "tie_started_at")}id DESC`}`,
+  };
+}
+
+/**
+ * ISS-12439: the tie order of a read that carries an Owner, Harness, Model or
+ * Priority facet. Those reads were served by the hydrated sort, which is stable
+ * over the `updated_at DESC, id DESC` cursor sequence, so a tie on the sort key
+ * keeps that sequence and is NOT narrowed by start time (the declared
+ * `hydratedTieByCursorOrder` divergence). The rows a facet read returns stay
+ * what they were; the Updated sort is already that sequence.
+ */
+function hydratedTieOrder(sortBy: SessionListCursorSortKey): string {
+  return sortBy === SessionListCursorSortKey.Updated
+    ? "id DESC"
+    : "updated_at DESC, id DESC";
+}
+
+/**
+ * ISS-9584: the term that narrows a last-activity tie by start time DESC in
+ * both directions, before the id, as the cloud's `SESSION_DEFAULT_ORDER_BY`
+ * does (owner ruling on PR #7961, item 4). Only the last-activity sort takes
+ * it; the Started and Updated sorts do not. Empty or ends in `, `.
+ */
+export function lastActivityTieNarrowing(
+  sortBy: SessionListCursorSortKey | undefined,
+  startedAtColumn: string
+): string {
+  return sortBy === SessionListCursorSortKey.LastActivity
+    ? `${startedAtColumn} DESC, `
+    : "";
+}
+
+/** Migration 20260926091934_iss9584_sessions_last_activity_started_index. */
+const LAST_ACTIVITY_SORT_INDEX = "idx_sessions_last_activity_started";

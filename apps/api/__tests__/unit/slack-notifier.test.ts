@@ -366,14 +366,18 @@ describe("buildAlertText", () => {
     expect(text).toContain("ts=2026-01-01T00:00:00.000Z");
   });
 
-  it("keeps the historical headline when no title is supplied", () => {
+  // ISS-5869 replaced the invariant this case used to pin. It asserted that a
+  // title-less caller inherits the fixed `Preview schema cleanup failure`
+  // headline; that default is retired, and what holds now is that a title-less
+  // caller gets a headline derived from its OWN route.
+  it("derives the headline from the route when no title is supplied", () => {
     const text = buildAlertText({
       route: "cleanup-preview-schemas:daily",
       message: "something broke",
       correlationId: "sha=abc12345",
     });
 
-    expect(text).toContain("*Preview schema cleanup failure*");
+    expect(text).toContain("*Cleanup preview schemas failure*");
   });
 
   it("uses the caller's title so an alert cannot mislabel its own route", () => {
@@ -488,5 +492,103 @@ describe("buildCorrelationId", () => {
 
     const id = buildCorrelationId();
     expect(id).toMatch(CORRELATION_ID_REGEX);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ISS-5869 — every caller's headline names its own job
+// ---------------------------------------------------------------------------
+
+/**
+ * Every `notifySlack` route in this repo that passes no `title`, with the
+ * headline a responder must see. Both columns are written out by hand rather
+ * than imported from the routes or from `deriveAlertTitle`: a fixture derived
+ * from the thing it polices cannot fail when that thing is deleted.
+ */
+const CALL_SITE_HEADLINES: ReadonlyArray<readonly [string, string]> = [
+  ["backfill-orphan-transcripts:daily", "Backfill orphan transcripts failure"],
+  ["cleanup-expired-sessions:daily", "Cleanup expired sessions failure"],
+  ["cleanup-phantom-sessions:daily", "Cleanup phantom sessions failure"],
+  ["reconcile-attachments:daily", "Reconcile attachments failure"],
+  ["reconcile-stale-sessions:hourly", "Reconcile stale sessions failure"],
+  ["cleanup-preview-schemas:daily", "Cleanup preview schemas failure"],
+  ["cleanup-preview-schemas:pr-close", "Cleanup preview schemas failure"],
+  [
+    "sweep-orphaned-chunk-markers:daily",
+    "Sweep orphaned chunk markers failure",
+  ],
+];
+
+/** The two routes that pass their own `title`, with the literal each passes. */
+const EXPLICIT_TITLE_CALL_SITES: ReadonlyArray<readonly [string, string]> = [
+  ["reconcile-attachment-rows:daily", "Attachment row reconcile failure"],
+  ["sample-session-ingestion-health", "Session ingestion health check failure"],
+];
+
+/** The headline five of those call sites used to inherit from the old default. */
+const RETIRED_DEFAULT_TITLE = "Preview schema cleanup failure";
+
+describe("notifySlack headlines (ISS-5869)", () => {
+  afterEach(() => {
+    delete process.env.SLACK_BOT_TOKEN;
+  });
+
+  it.each(CALL_SITE_HEADLINES)(
+    "route %s posts under the headline %s",
+    async (route, expectedHeadline) => {
+      process.env.SLACK_BOT_TOKEN = TEST_TOKEN;
+      const globalFetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: vi.fn().mockResolvedValue({ ok: true }),
+      } as unknown as Response);
+
+      await notifySlack({
+        route,
+        message: "sweep failed",
+        correlationId: "ts=2026-01-01T00:00:00.000Z",
+      });
+
+      // The emitted wire payload, not the fact that a mock was called.
+      const body = JSON.parse(
+        String(globalFetchSpy.mock.calls[0]?.[1]?.body)
+      ) as { text: string };
+      expect(body.text.split("\n")[0]).toBe(
+        `*${expectedHeadline}* — route: \`${route}\``
+      );
+      expect(body.text).not.toContain(RETIRED_DEFAULT_TITLE);
+
+      globalFetchSpy.mockRestore();
+    }
+  );
+
+  it.each(EXPLICIT_TITLE_CALL_SITES)(
+    "route %s keeps its own headline %s",
+    (route, title) => {
+      const text = buildAlertText({
+        route,
+        message: "sweep failed",
+        correlationId: "ts=2026-01-01T00:00:00.000Z",
+        title,
+      });
+
+      expect(text.split("\n")[0]).toBe(`*${title}* — route: \`${route}\``);
+      expect(text).not.toContain(RETIRED_DEFAULT_TITLE);
+    }
+  );
+
+  it("a route that names no job gets a neutral headline, never another job's", () => {
+    // The bad-data half: `route` is a free-form string, so a caller can hand it
+    // an empty or separator-only value. Naming SOME job would be the ISS-5869
+    // defect with a different literal.
+    for (const route of ["", ":daily", "-", "   "]) {
+      expect(
+        buildAlertText({
+          route,
+          message: "sweep failed",
+          correlationId: "ts=2026-01-01T00:00:00.000Z",
+        }).split("\n")[0]
+      ).toBe(`*Scheduled job failure* — route: \`${route}\``);
+    }
   });
 });

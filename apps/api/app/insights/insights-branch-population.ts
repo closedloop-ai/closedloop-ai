@@ -1,5 +1,17 @@
-import type { CategoryBucket, DonutSlice } from "@repo/api/src/types/insights";
+import { insightsPeriodDays } from "@closedloop-ai/loops-api/insights";
+import { branchCoverageBuckets } from "@closedloop-ai/loops-api/insights-branch-coverage";
+import { stableUtcListWindow } from "@closedloop-ai/loops-api/stable-utc-window";
+import type {
+  CategoryBucket,
+  DonutSlice,
+  InsightsPeriod,
+} from "@repo/api/src/types/insights";
 import { ChecksStatus, type Prisma, withDb } from "@repo/database";
+import { getBranchCandidateIds } from "@/app/branches/branch-candidate-read";
+import {
+  branchHasAnyPullRequestWhere,
+  branchHasNoPullRequestWhere,
+} from "@/app/branches/branch-canonical-pull-request";
 
 /**
  * The two branch-population donut charts ("Check status", "Branch coverage")
@@ -12,111 +24,126 @@ import { ChecksStatus, type Prisma, withDb } from "@repo/database";
  * history of either attribute, so windowing the attribute is not expressible and
  * would not be meaningful. The section reads "of the branches active in the last
  * N days, here is where they stand now".
+ *
+ * ISS-11915 (operator ruling, Marisol Ashgrove 2026-10-08): "We need the windowing
+ * for 7 day, 30 day, 90 day to match what is on the branches listing page - so
+ * that the Dashboard for 7 days has the same # of branches as the branches
+ * listing page for 7 days." The population is therefore the Branches list's own
+ * candidate read (`getBranchCandidateIds`): the same Product eligibility, the
+ * same Last-active instant (atom, else linked sessions), and the same window
+ * predicate, which keeps a Branch with no trustworthy or a future Last active
+ * the way the list does. This supersedes the broader ISS-4634/ISS-8148
+ * `branch_detail.last_activity_at` population and its flag-gated push-evidence
+ * filter; the list's verified-publication gate now always applies.
  */
+export type DashboardBranchPopulationWindow = {
+  period: InsightsPeriod;
+  now: Date;
+};
 
 /**
- * ISS-4634: the period predicate for the two branch-population charts.
- *
- * Both charts previously aggregated the ENTIRE org branch population regardless
- * of the selected range, so they sat under the "Last N days" caption reading as
- * windowed while never re-scoping — byte-identical between 30d and all-time
- * while their sibling KPIs moved. This is the population filter that fixes that.
- *
- * The activity instant is `COALESCE(lastActivityAt, artifact.createdAt)` — the
- * SAME documented bounded fallback the Branches list windows and sorts on
- * (`branchCandidateActivityExpr`, FEA-4311) and the same value the branch read
- * projects as `lastActivityAt`. `BranchDetail.lastActivityAt` is nullable for
- * pre-backfill and session-only branches, and a raw `gte`/`lte` on a nullable
- * column DROPS those rows entirely; the artifact `createdAt` fallback (`@default
- * (now())`, never null) retains them under the window that actually applies to
- * them, rather than silently shrinking the population. Same null-safety
- * rationale as countClosedPrs (FEA-3208).
- *
- * ISS-4634 (review): soft-deleted branches are excluded (`deletedAt: null`) to
- * match the Branches list population (`branchCandidateWhereClause` in
- * `branch-read-service.ts` applies the same `b.deleted_at IS NULL`). A
- * tombstoned branch must not sit in a "health" donut the list would never show.
- * The list additionally requires a valid linked session
- * (`branchCandidateMembershipClause`); this donut deliberately counts EVERY
- * known non-deleted active branch (the broader, defensible health population),
- * and the tooltip copy in `packages/app/insights/lib/metric-info.ts` says so
- * ("every branch we've observed active…") rather than promising the list's
- * narrower session-linked filter.
+ * The Branch ids the Branches list selects for this Dashboard period. The
+ * bounds are the ones the list sends for the same range (`stableUtcListWindow`).
  */
-export function branchActivityWindow(
-  start: Date,
-  end: Date
-): Prisma.BranchDetailWhereInput {
-  return {
-    deletedAt: null,
-    OR: [
-      { lastActivityAt: { gte: start, lte: end } },
-      {
-        lastActivityAt: null,
-        artifact: { is: { createdAt: { gte: start, lte: end } } },
-      },
-    ],
-  };
+export function readDashboardBranchPopulationIds(
+  organizationId: string,
+  window: DashboardBranchPopulationWindow
+): Promise<string[]> {
+  const bounds = stableUtcListWindow(
+    insightsPeriodDays(window.period),
+    window.now
+  );
+  return readBranchListPopulationIds(organizationId, {
+    evaluationNow: window.now,
+    ...(bounds.startDate ? { startDate: new Date(bounds.startDate) } : {}),
+    ...(bounds.endDate ? { endDate: new Date(bounds.endDate) } : {}),
+  });
 }
 
-export function fetchCheckStatusBuckets(
+/**
+ * The Branch ids the Branches list selects for one window, read through the
+ * list's own candidate SQL (`getBranchCandidateIds`). The Org scope counts this
+ * population exactly; `artifactScope` narrows the Me and Team scopes after it
+ * is fixed.
+ */
+export async function readBranchListPopulationIds(
   organizationId: string,
-  start: Date,
-  end: Date
-): Promise<DonutSlice[]> {
-  return withDb((db) =>
-    db.branchDetail.groupBy({
-      by: ["checksStatus"],
-      where: {
-        artifact: { organizationId },
-        ...branchActivityWindow(start, end),
-      },
-      _count: { _all: true },
+  window: { startDate?: Date; endDate?: Date; evaluationNow: Date }
+): Promise<string[]> {
+  return await withDb((db) =>
+    getBranchCandidateIds(db, organizationId, {
+      limit: 1,
+      offset: 0,
+      ...window,
     })
-  ).then((rows) =>
-    rows.map((row) => ({
-      key: row.checksStatus,
-      label: CHECK_STATUS_LABELS[row.checksStatus],
-      value: row._count._all,
-    }))
   );
 }
 
+/** The check-status donut over the population {@link readDashboardBranchPopulationIds} read. */
+export async function fetchCheckStatusBuckets(
+  organizationId: string,
+  populationIds: readonly string[]
+): Promise<DonutSlice[]> {
+  const counts = new Map<ChecksStatus, number>();
+  await withDb(async (db) => {
+    for (const ids of chunkIds(populationIds)) {
+      const rows = await db.branchDetail.groupBy({
+        by: ["checksStatus"],
+        where: { organizationId, artifactId: { in: ids } },
+        _count: { _all: true },
+      });
+      for (const row of rows) {
+        counts.set(
+          row.checksStatus,
+          (counts.get(row.checksStatus) ?? 0) + row._count._all
+        );
+      }
+    }
+  });
+  return [...counts].map(([status, value]) => ({
+    key: status,
+    label: CHECK_STATUS_LABELS[status],
+    value,
+  }));
+}
+
 /**
- * The branch-coverage donut ("has a PR" vs "no PR") over the windowed
- * population. `artifactScope` is the caller-resolved artifact-relation scope
+ * The branch-coverage donut ("has a PR" vs "no PR") over the population
+ * {@link readDashboardBranchPopulationIds} read. `artifactScope` is the caller-resolved artifact-relation scope
  * predicate (org-wide, or authored by the user) — resolved in the composition
  * root and passed in so this module stays free of the scope-context type.
  */
-export function fetchBranchesWithoutPrBuckets(
-  artifactScope: Prisma.ArtifactWhereInput,
-  start: Date,
-  end: Date
+export async function fetchBranchesWithoutPrBuckets(
+  populationIds: readonly string[],
+  artifactScope: Prisma.ArtifactWhereInput
 ): Promise<CategoryBucket[]> {
-  return withDb(async (db) => {
-    // ISS-4634: windowed population, current-state "has a PR" attribute.
-    const activeInRange = branchActivityWindow(start, end);
-    const [withPr, withoutPr] = await Promise.all([
-      db.branchDetail.count({
-        where: {
-          artifact: artifactScope,
-          currentPullRequestDetailId: { not: null },
-          ...activeInRange,
-        },
-      }),
-      db.branchDetail.count({
-        where: {
-          artifact: artifactScope,
-          currentPullRequestDetailId: null,
-          ...activeInRange,
-        },
-      }),
-    ]);
-    return [
-      { key: "has-pr", label: "Has a pull request", value: withPr },
-      { key: "no-pr", label: "No pull request", value: withoutPr },
-    ];
+  let withPr = 0;
+  let withoutPr = 0;
+  await withDb(async (db) => {
+    for (const ids of chunkIds(populationIds)) {
+      // ISS-8153: "has a PR" keys on OWNED rows via the canonical predicates,
+      // never the pointer (see branchHasAnyPullRequestWhere).
+      const [chunkWithPr, chunkWithoutPr] = await Promise.all([
+        db.branchDetail.count({
+          where: {
+            artifactId: { in: ids },
+            artifact: artifactScope,
+            AND: [branchHasAnyPullRequestWhere()],
+          },
+        }),
+        db.branchDetail.count({
+          where: {
+            artifactId: { in: ids },
+            artifact: artifactScope,
+            AND: [branchHasNoPullRequestWhere()],
+          },
+        }),
+      ]);
+      withPr += chunkWithPr;
+      withoutPr += chunkWithoutPr;
+    }
   });
+  return branchCoverageBuckets(withPr, withoutPr);
 }
 
 const CHECK_STATUS_LABELS: Record<ChecksStatus, string> = {
@@ -125,3 +152,20 @@ const CHECK_STATUS_LABELS: Record<ChecksStatus, string> = {
   [ChecksStatus.PENDING]: "Running",
   [ChecksStatus.UNKNOWN]: "Unknown",
 };
+
+/** Bounded `IN` lists, well under PostgreSQL's bind-parameter limit. */
+const DASHBOARD_BRANCH_POPULATION_CHUNK_SIZE = 5000;
+
+function chunkIds(ids: readonly string[]): string[][] {
+  const chunks: string[][] = [];
+  for (
+    let offset = 0;
+    offset < ids.length;
+    offset += DASHBOARD_BRANCH_POPULATION_CHUNK_SIZE
+  ) {
+    chunks.push(
+      ids.slice(offset, offset + DASHBOARD_BRANCH_POPULATION_CHUNK_SIZE)
+    );
+  }
+  return chunks;
+}

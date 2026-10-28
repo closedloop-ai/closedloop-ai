@@ -15,13 +15,14 @@ import {
 } from "@repo/api/src/types/document-version.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
+import { operationReceiptOutputShape } from "../tool-call-receipts.js";
 import {
   asRecord,
-  describeIdOrSlug,
   encodePathSegment,
   type McpUrlBuilder,
   readNumber,
   readString,
+  requiredIdOrSlug,
   withErrorHandling,
 } from "./tool-utils.js";
 
@@ -33,7 +34,13 @@ type CreateDocumentVersionOutput = Record<string, unknown> & {
   title?: string;
   type?: string;
   status?: string;
-  priority?: string;
+  /**
+   * ISS-9665: `null` is "no priority", a real state. Omitted means the server
+   * sent no priority at all — a pre-ISS-9665 build, or a shape this tool did
+   * not recognize. Collapsing the two would re-fold the distinction this
+   * response exists to carry.
+   */
+  priority?: string | null;
   latestVersion?: number;
   fileName?: string | null;
   createdById?: string;
@@ -130,13 +137,15 @@ export function registerCreateDocumentVersion(
     "create-document-version",
     {
       description:
-        "Append a new version to a document by UUID or slug (PRD-*, PLN-*, FEA-*). Older versions stay in history. Pass the user's slug verbatim.",
+        "Append a new version to a document by UUID or slug (PRD-*, PLN-*, ISS-*). `content` replaces the whole body; older versions stay in history. " +
+        "Nothing detects versions written since you last read the document, so run list-document-versions first to avoid burying another author's edit. " +
+        "Pass the user's slug verbatim.",
       inputSchema: {
-        documentId: z
-          .string()
-          .describe(
-            describeIdOrSlug("Document", ["PRD-7", "PLN-12", "FEA-42"])
-          ),
+        documentId: requiredIdOrSlug(
+          "Document",
+          ["PRD-7", "PLN-12", "ISS-42"],
+          "Use list-documents to find one."
+        ),
         content: z.string().describe("Full content for the new version"),
         inlineImages: z
           .array(
@@ -184,7 +193,10 @@ export function registerCreateDocumentVersion(
         title: z.string().optional(),
         type: z.string().optional(),
         status: z.string().optional(),
-        priority: z.string().optional(),
+        // ISS-9665: nullable, not merely optional. `Document.priority` is a
+        // REQUIRED response field that can now be `null`; a bare `.optional()`
+        // would make the shaper drop the key and report "unset" as "absent".
+        priority: z.string().nullable().optional(),
         latestVersion: z.number().int().optional(),
         fileName: z.string().nullable().optional(),
         createdById: z.string().optional(),
@@ -207,6 +219,7 @@ export function registerCreateDocumentVersion(
         versionContent: z.string().optional(),
         version: documentVersionOutputSchema.optional(),
         inlineImages: z.array(createdInlineImageOutputSchema).optional(),
+        ...operationReceiptOutputShape,
       },
     },
     ({ documentId, content, inlineImages }) =>
@@ -252,7 +265,7 @@ function shapeCreateDocumentVersionOutput(
     ...readOptionalStringProp("title", row.title),
     ...readOptionalStringProp("type", row.type),
     ...readOptionalStringProp("status", row.status),
-    ...readOptionalStringProp("priority", row.priority),
+    ...readNullableStringProp("priority", row.priority),
     ...readOptionalNumberProp("latestVersion", row.latestVersion),
     ...readNullableStringProp("fileName", row.fileName),
     ...readOptionalStringProp("createdById", row.createdById),

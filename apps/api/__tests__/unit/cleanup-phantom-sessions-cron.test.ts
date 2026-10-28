@@ -2,7 +2,7 @@
  * FEA-3286: unit tests for GET /api/cron/cleanup-phantom-sessions.
  *
  * Verifies the route's auth gate and the alert integration:
- * (a) exitCode: 0 (clean sweep) returns 200 and does NOT alert
+ * (a) exitCode: 0 (clean sweep) returns 200, logs swept ids, and does NOT alert
  * (b) exitCode: 1 (sweep error) returns 500 and alerts notifySlack with route
  *     identifier "cleanup-phantom-sessions:daily"
  * (c) Slack-never-throws — notifySlack rejecting does not prevent the 500
@@ -15,21 +15,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Hoisted mocks — must precede all imports
 // ---------------------------------------------------------------------------
 
-const { mockRunPhantomSweep, mockNotifySlack, mockBuildCorrelationId } =
-  vi.hoisted(() => ({
-    mockRunPhantomSweep: vi.fn(),
-    mockNotifySlack: vi.fn().mockResolvedValue(undefined),
-    mockBuildCorrelationId: vi
-      .fn()
-      .mockReturnValue("ts=2026-01-01T00:00:00.000Z"),
-  }));
+const {
+  mockRunPhantomSweep,
+  mockNotifySlack,
+  mockBuildCorrelationId,
+  mockLogInfo,
+} = vi.hoisted(() => ({
+  mockRunPhantomSweep: vi.fn(),
+  mockNotifySlack: vi.fn(async () => undefined),
+  mockBuildCorrelationId: vi.fn(() => "ts=2026-01-01T00:00:00.000Z"),
+  mockLogInfo: vi.fn(),
+}));
 
 vi.mock("@repo/observability/log", () => ({
   log: {
-    info: vi.fn(),
+    info: mockLogInfo,
     warn: vi.fn(),
     error: vi.fn(),
-    flush: vi.fn().mockResolvedValue(undefined),
+    flush: vi.fn(async () => undefined),
   },
 }));
 
@@ -67,6 +70,9 @@ const cleanResult = {
   cutoff: "2026-06-25T00:00:00.000Z",
   retentionDays: 1,
   deleted: 7,
+  spared: 2,
+  deletedSessionIds: ["session-1", "session-2"],
+  deletedSessionIdsComplete: true,
   exitCode: 0 as const,
 };
 
@@ -75,6 +81,9 @@ const failedResult = {
   cutoff: "2026-06-25T00:00:00.000Z",
   retentionDays: 1,
   deleted: 0,
+  spared: 0,
+  deletedSessionIds: [],
+  deletedSessionIdsComplete: true,
   exitCode: 1 as const,
 };
 
@@ -95,6 +104,17 @@ describe("GET /api/cron/cleanup-phantom-sessions", () => {
 
     expect(response.status).toBe(200);
     expect(mockNotifySlack).not.toHaveBeenCalled();
+    expect(mockLogInfo).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        deleted: 7,
+        // ISS-10171: the operator-facing shortfall counter is pinned here, so
+        // dropping the route's `spared` field reddens this case.
+        spared: 2,
+        deletedSessionIds: ["session-1", "session-2"],
+        deletedSessionIdsComplete: true,
+      })
+    );
   });
 
   it("(b) exitCode 1 returns 500 and alerts with the route identifier", async () => {

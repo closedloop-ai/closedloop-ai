@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
+import { describe, test } from "vitest";
 import { SessionListCursorSortKey } from "../src/main/agent-sync/agent-session-read-model.js";
-import { setDisplayedStatusParityResolver } from "../src/main/session/displayed-status-parity-gate.js";
 import { getSharedAgentSessions } from "../src/main/session/shared-agent-sessions-api.js";
 import {
   createFakeSource,
@@ -47,7 +46,6 @@ describe("shared agent sessions status facet on the cursor page", () => {
   }
 
   test("a status-filtered list read is served by the SQL cursor page, not full-corpus hydration", async () => {
-    setDisplayedStatusParityResolver(() => false);
     const source = activeAndInactiveSource();
 
     const active = await getSharedAgentSessions(source, {
@@ -84,7 +82,6 @@ describe("shared agent sessions status facet on the cursor page", () => {
   });
 
   test("the single back-compat `status` param rides the cursor page too", async () => {
-    setDisplayedStatusParityResolver(() => false);
     const source = activeAndInactiveSource();
 
     const active = await getSharedAgentSessions(source, {
@@ -104,59 +101,21 @@ describe("shared agent sessions status facet on the cursor page", () => {
     ]);
   });
 
-  test("with the displayed-status parity gate ON, a status read keeps the hydrated fallback", async () => {
-    // whitlockk, PR #4835: `listSessionCursorPage` is a `syncSource.*` op forwarded
-    // to the DB-host CHILD (FEA-2038), which never registers a parity resolver
-    // and so builds the predicate with the fail-closed `false` — while the
-    // hydrated matcher in MAIN reads the real, enabled gate. The two stop being
-    // twins, and an ended row still carrying `awaitingInputSince` displays as
-    // Active but vanishes from the SQL page. Until the pinned decision travels
-    // with the request, a status read under the gate must not take this path.
-    setDisplayedStatusParityResolver(() => true);
-    try {
-      const source = activeAndInactiveSource();
-
-      // The sort MUST be the production one: every other admission condition has
-      // to be satisfied, so the parity gate is the only reason this falls back.
-      await getSharedAgentSessions(source, {
-        statuses: [SESSION_STATUS.ACTIVE],
-        sortBy: SessionListCursorSortKey.LastActivity,
-      });
-
-      const kinds = source.calls.map((call) => call.kind);
-      assert.ok(
-        !kinds.includes("listSessionCursorPage"),
-        "the SQL status page must stay off while the parity gate is on"
-      );
-      assert.ok(
-        kinds.includes("listAllSessionCursorRows"),
-        "the read must fall back to the hydrated matcher"
-      );
-    } finally {
-      setDisplayedStatusParityResolver(() => false);
-    }
-  });
-
   test("an unfiltered read still pages in SQL while the parity gate is ON", async () => {
     // The carve-out above must be scoped to a STATUS selection. If it widened to
     // every read, the gate would silently put the whole list back on full-corpus
     // hydration — a much bigger regression than the one it prevents.
-    setDisplayedStatusParityResolver(() => true);
-    try {
-      const source = activeAndInactiveSource();
+    const source = activeAndInactiveSource();
 
-      await getSharedAgentSessions(source, {
-        sortBy: SessionListCursorSortKey.LastActivity,
-      });
+    await getSharedAgentSessions(source, {
+      sortBy: SessionListCursorSortKey.LastActivity,
+    });
 
-      const kinds = source.calls.map((call) => call.kind);
-      assert.ok(
-        kinds.includes("listSessionCursorPage"),
-        "an unfiltered read must still page in SQL under the gate"
-      );
-    } finally {
-      setDisplayedStatusParityResolver(() => false);
-    }
+    const kinds = source.calls.map((call) => call.kind);
+    assert.ok(
+      kinds.includes("listSessionCursorPage"),
+      "an unfiltered read must still page in SQL under the gate"
+    );
   });
 
   test("a row that leaves the facet between selection and hydration is dropped from the page", async () => {
@@ -165,7 +124,6 @@ describe("shared agent sessions status facet on the cursor page", () => {
     // selected dimension that changes on its own while the user is looking at
     // the list, so model exactly that: SQL selects the row as Active, and by the
     // time it hydrates the session has ended.
-    setDisplayedStatusParityResolver(() => false);
     const base = createFakeSource({
       cursorRows: [cursor("transitioning-session"), cursor("live-session")],
       sessions: {

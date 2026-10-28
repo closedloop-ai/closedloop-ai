@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import http from "node:http";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   type AgentHookLifecycle,
   AgentHookListener,
@@ -176,6 +176,40 @@ test("listener: payload provider hints are rejected before writes", async () => 
     });
     await assertNoWritesOrEmits(db, diagnostics);
   });
+});
+
+test("listener: Session Mesh route delivers canonical-provider facts without Agent Monitor writes", async () => {
+  const diagnostics: ListenerDiagnostics = { emits: [], logs: [] };
+  const lifecycle = new InMemoryHookLifecycle(diagnostics);
+  const received: Array<{ hookType: string; sessionId: string }> = [];
+  const listener = new AgentHookListener({
+    lifecycle,
+    port: 0,
+    onSessionMeshHookEvent: (event) => {
+      received.push({
+        hookType: event.hookType,
+        sessionId: String(event.data.session_id),
+      });
+    },
+  });
+  await listener.start();
+  const url = listener.getUrl();
+  assert.ok(url);
+  try {
+    const res = await request(`${url}/api/session-mesh/hook`, "POST", {
+      harness: "claude",
+      hook_type: "SessionStart",
+      data: { session_id: "canonical-agent-session-id", cwd: "/work/project" },
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body, { ok: true });
+    assert.deepEqual(received, [
+      { hookType: "SessionStart", sessionId: "canonical-agent-session-id" },
+    ]);
+    await assertNoWritesOrEmits(lifecycle, diagnostics);
+  } finally {
+    await listener.stop();
+  }
 });
 
 test("listener: malformed, invalid, and oversized payloads fail soft without writes", async () => {

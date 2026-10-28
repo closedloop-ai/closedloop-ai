@@ -57,7 +57,7 @@ export function failure(
 
 /**
  * Wire shape for 409 conflict responses that carry a typed discriminant body
- * (e.g. multi-target compute, backend mismatch, loop already active).
+ * (e.g. multi-target compute, backend mismatch).
  *
  * Extends the failure variant of `ApiResult` with a typed `data` field.
  * This is intentionally a separate type rather than a second generic on

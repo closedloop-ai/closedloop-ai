@@ -3,9 +3,13 @@ import {
   TokenCostBasis,
   type TokenCostLane,
 } from "@repo/api/src/types/token-cost-provenance";
+import { PARENT_AGENT_EXTERNAL_ID } from "@repo/api/src/types/token-event-agent-owner";
+import { emitTelemetryMetric } from "@repo/observability/telemetry/metrics";
+import { isAttributionEvidenceReadOnForOrganization } from "@/lib/attribution-evidence-policy-feature";
 import { TokenEventTransportIdentityCollisionError } from "@/lib/desktop-agent-sessions-errors";
 import { roundCost } from "./coercion";
 import type { AgentSessionUpsertTx } from "./records";
+import { SessionSyncMetric } from "./session-sync-metrics";
 
 const TOKEN_EVENT_WRITE_CHUNK_SIZE = 500;
 
@@ -28,6 +32,14 @@ export async function persistSessionTokenEvents(
     return;
   }
 
+  // ISS-12552 (PRD-800 "Rollout"): read once, from the answer the sync
+  // request read before this transaction opened. Off, a new event stores the
+  // owner it was sent with and a stored owner is never corrected, as before
+  // PRD-800. Either way the main-agent marker is stored as no owner: it names
+  // no agent, so it is never a value to persist.
+  const correctsOwners =
+    isAttributionEvidenceReadOnForOrganization(organizationId);
+  const storedOwners = new Map<string, string | null>();
   for (
     let start = 0;
     start < tokenEvents.length;
@@ -41,7 +53,7 @@ export async function persistSessionTokenEvents(
       data: chunk.map((event) => ({
         agentSessionId: artifactId,
         externalEventId: event.externalEventId,
-        agentExternalId: event.agentExternalId ?? null,
+        agentExternalId: ownerToStore(event.agentExternalId) ?? null,
         model: event.model,
         inputTokens: event.inputTokens,
         outputTokens: event.outputTokens,
@@ -55,17 +67,24 @@ export async function persistSessionTokenEvents(
 
     // Verify each bounded insert so a concurrent winner on the unique transport
     // key cannot be silently accepted with different immutable content.
-    await assertPersistedImmutableContent(
+    const owners = await assertPersistedImmutableContent(
       tx,
       artifactId,
       organizationId,
       chunk
     );
+    for (const [externalEventId, owner] of owners) {
+      storedOwners.set(externalEventId, owner);
+    }
   }
 
   if (!shouldUpdateMutableEvidence) {
     return;
   }
+  // ISS-12779: the Branch analytics rollup finds the cost edits below only
+  // through the `last_synced_at` this slice's detail write already stamped
+  // (`branchSessionSyncedSinceMaterializedSql`). Moved out of the sync slice,
+  // they would leave the rollup serving the old cost.
   await updateSourceIdentity(
     tx,
     artifactId,
@@ -81,6 +100,14 @@ export async function persistSessionTokenEvents(
         event.costSummary !== undefined || event.estimatedCostUsd !== undefined
     )
   );
+  if (correctsOwners) {
+    await updateAgentOwner(tx, {
+      artifactId,
+      organizationId,
+      events: tokenEvents,
+      storedOwners,
+    });
+  }
 }
 
 /** Maps validated cost evidence without coercing omission to zero. */
@@ -145,12 +172,17 @@ function toInitialEvidence(event: TokenEvent) {
   };
 }
 
+/**
+ * Rejects a different event under a known transport id, and returns each
+ * row's stored owner. The owner is mutable evidence, not identity (PRD-800
+ * version 19), so it is never part of the comparison.
+ */
 async function assertPersistedImmutableContent(
   tx: AgentSessionUpsertTx,
   artifactId: string,
   organizationId: string,
   events: readonly TokenEvent[]
-): Promise<void> {
+): Promise<Map<string, string | null>> {
   const persisted = await tx.agentSessionTokenEvent.findMany({
     where: {
       agentSessionId: artifactId,
@@ -175,7 +207,6 @@ async function assertPersistedImmutableContent(
     const stored = byTransportId.get(event.externalEventId);
     if (
       !stored ||
-      stored.agentExternalId !== (event.agentExternalId ?? null) ||
       stored.model !== event.model ||
       stored.inputTokens !== BigInt(event.inputTokens) ||
       stored.outputTokens !== BigInt(event.outputTokens) ||
@@ -186,6 +217,9 @@ async function assertPersistedImmutableContent(
       throw new TokenEventTransportIdentityCollisionError();
     }
   }
+  return new Map(
+    persisted.map((event) => [event.externalEventId, event.agentExternalId])
+  );
 }
 
 async function updateSourceIdentity(
@@ -309,7 +343,6 @@ async function updateCostEvidence(
 
 function hasSameImmutableContent(left: TokenEvent, right: TokenEvent): boolean {
   return (
-    (left.agentExternalId ?? null) === (right.agentExternalId ?? null) &&
     left.model === right.model &&
     left.inputTokens === right.inputTokens &&
     left.outputTokens === right.outputTokens &&
@@ -335,6 +368,9 @@ function mergeMutableEvidence(
       : {}),
     ...(current.costSummary === undefined && previous.costSummary !== undefined
       ? { costSummary: previous.costSummary }
+      : {}),
+    ...(current.agentExternalId == null && previous.agentExternalId != null
+      ? { agentExternalId: previous.agentExternalId }
       : {}),
   };
 }
@@ -367,4 +403,84 @@ function quantizeLaneCosts(
       byBasis.get(TokenCostBasis.SubscriptionEquivalent) ?? null,
     apiEstimated: byBasis.get(TokenCostBasis.ApiEstimated) ?? null,
   };
+}
+
+/**
+ * The owner a claim asks to store: the parent marker is no owner, a subagent
+ * id is itself, and omission or `null` (Desktop builds that predate owners)
+ * claim nothing.
+ */
+function ownerToStore(
+  claim: string | null | undefined
+): string | null | undefined {
+  if (claim == null) {
+    return;
+  }
+  return claim === PARENT_AGENT_EXTERNAL_ID ? null : claim;
+}
+
+/**
+ * ISS-12552 (PRD-800 "Agent ownership of usage is correctable"):
+ * the owner is snapshot evidence. A claimed owner replaces the stored one, the
+ * parent marker clears it, and an omitted owner leaves it. Every owner change
+ * on a stored event is reported to the sync monitor, a fill from no owner
+ * included, because each one means the Desktop re-attributed usage it had
+ * already sent (PRD-800: "Every change is logged").
+ */
+async function updateAgentOwner(
+  tx: AgentSessionUpsertTx,
+  input: {
+    artifactId: string;
+    organizationId: string;
+    events: readonly TokenEvent[];
+    storedOwners: ReadonlyMap<string, string | null>;
+  }
+): Promise<void> {
+  const changes = input.events.flatMap((event) => {
+    const owner = ownerToStore(event.agentExternalId);
+    const stored = input.storedOwners.get(event.externalEventId);
+    return owner === undefined || stored === undefined || stored === owner
+      ? []
+      : [{ externalEventId: event.externalEventId, owner, stored }];
+  });
+  for (
+    let start = 0;
+    start < changes.length;
+    start += TOKEN_EVENT_WRITE_CHUNK_SIZE
+  ) {
+    const chunk = changes.slice(start, start + TOKEN_EVENT_WRITE_CHUNK_SIZE);
+    const values = chunk
+      .map((_, index) => {
+        const base = index * 2 + 2;
+        return `($${base}::text, $${base + 1}::text)`;
+      })
+      .join(", ");
+    const orgParam = chunk.length * 2 + 2;
+    await tx.$executeRawUnsafe(
+      `UPDATE agent_session_token_events AS t
+          SET agent_external_id = v.agent_external_id
+         FROM (VALUES ${values}) AS v(external_event_id, agent_external_id)
+        WHERE t.agent_session_id = $1::uuid
+          AND t.external_event_id = v.external_event_id
+          AND t.agent_external_id IS DISTINCT FROM v.agent_external_id
+          AND EXISTS (
+            SELECT 1 FROM artifacts
+             WHERE artifacts.id = $1::uuid
+               AND artifacts.organization_id = $${orgParam}::uuid
+          )`,
+      input.artifactId,
+      ...chunk.flatMap((change) => [change.externalEventId, change.owner]),
+      input.organizationId
+    );
+  }
+  if (changes.length > 0) {
+    emitTelemetryMetric({
+      metric: SessionSyncMetric.TokenEventAgentOwnerChanged,
+      level: "info",
+      status: "info",
+      organizationId: input.organizationId,
+      agentSessionId: input.artifactId,
+      count: changes.length,
+    });
+  }
 }

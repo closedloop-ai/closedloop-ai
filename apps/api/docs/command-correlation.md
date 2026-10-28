@@ -22,7 +22,7 @@ The minting sequence is:
 
 **Invariant:** `commandId` is NEVER minted elsewhere. All other files receive and propagate an existing `commandId`.
 
-**Security requirement:** `commandId` MUST be generated using a cryptographically secure pseudo-random number generator (CSPRNG). The current implementation uses Prisma's `@default(uuid(7))` on the `DesktopCommand.id` column (`packages/database/prisma/schema.prisma`), which generates UUID v7 values with a 48-bit timestamp prefix and ~74 random bits per value. Sequential IDs (e.g., auto-increment integers) and schemes with low unpredictability such as UUIDv1 (which embeds the MAC address) are **prohibited**; UUID v7 is acceptable because its ~74 random bits make individual values unguessable despite the timestamp prefix. `commandId` appears in the events endpoint URL (`/compute-targets/:id/commands/:commandId/events`) and must be unguessable to prevent unauthorized clients from polling or injecting events for a command they did not create.
+**Security requirement:** `commandId` MUST be generated using a cryptographically secure pseudo-random number generator (CSPRNG). The current implementation uses Prisma's `@default(uuid(7))` on the `DesktopCommand.id` column (`packages/database/prisma/schema.prisma`), which generates UUID v7 values with a 48-bit timestamp prefix and ~74 random bits per value. Sequential IDs (e.g., auto-increment integers) and schemes with low unpredictability such as UUIDv1 (which embeds the MAC address) are **prohibited**; UUID v7 is acceptable because its ~74 random bits make individual values unguessable despite the timestamp prefix. `commandId` appears in the command read URL (`/compute-targets/:id/commands/:commandId`) and must be unguessable to prevent unauthorized clients from polling a command they did not create.
 
 ## Propagation Path
 
@@ -52,9 +52,7 @@ The route calls `relayEventBus.publishOperation(target.id, relayOperation)` (def
 
 ### Leg 3 — Event ingestion (desktop → API)
 
-Desktop executes the command and streams result/error/done events back through the gateway WebSocket. [`/apps/api/lib/desktop-gateway-socket-server.ts`](/apps/api/lib/desktop-gateway-socket-server.ts) receives these events and calls `desktopCommandStore.ingestCommandEvent(commandId, event)` (in [`/apps/api/lib/desktop-command-store.ts`](/apps/api/lib/desktop-command-store.ts)), which updates the event sequence and notifies subscribers. [`/apps/api/lib/desktop-relay-event-bridge.ts`](/apps/api/lib/desktop-relay-event-bridge.ts) bridges events to the relay event bus via `operationId` lookup.
-
-Note: [`/apps/api/app/compute-targets/[id]/commands/[commandId]/events/route.ts`](/apps/api/app/compute-targets/[id]/commands/[commandId]/events/route.ts) is the SSE read path (API → browser), not the event write path.
+Desktop executes the command and streams result/error/done events back through the gateway WebSocket. [`/apps/api/lib/desktop-gateway-socket-server.ts`](/apps/api/lib/desktop-gateway-socket-server.ts) receives these events and calls `desktopCommandStore.ingestCommandEvent(commandId, event)` (in [`/apps/api/lib/desktop-command-store.ts`](/apps/api/lib/desktop-command-store.ts)), which updates the event sequence and notifies subscribers.
 
 ## Correlation Context Contract
 

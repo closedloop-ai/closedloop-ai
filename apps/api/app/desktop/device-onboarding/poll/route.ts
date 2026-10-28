@@ -5,6 +5,11 @@ import {
   desktopContractError,
   desktopContractSuccess,
 } from "@/app/desktop/contract";
+import {
+  DESKTOP_HANDSHAKE_REQUEST_MAX_BYTES,
+  readBoundedJsonBody,
+} from "@/app/desktop/route-helpers";
+import { withRequestCompleted } from "@/lib/observability/with-request-completed";
 import { desktopDeviceOnboardingService } from "../service";
 
 const pollRequestValidator = z
@@ -14,8 +19,11 @@ const pollRequestValidator = z
   })
   .strict();
 
-export async function POST(request: Request) {
-  const rawBody = await request.json().catch(() => null);
+async function handlePost(request: Request) {
+  const { rawBody } = await readBoundedJsonBody(
+    request,
+    DESKTOP_HANDSHAKE_REQUEST_MAX_BYTES
+  );
   const parsedBody = pollRequestValidator.safeParse(rawBody);
   if (!parsedBody.success) {
     return desktopContractError(400, "INVALID_DEVICE_SESSION_POLL", false);
@@ -33,3 +41,5 @@ export async function POST(request: Request) {
 
   return desktopContractSuccess(result);
 }
+
+export const POST = withRequestCompleted(handlePost);

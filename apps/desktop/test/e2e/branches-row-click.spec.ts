@@ -22,12 +22,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
+import { BRANCHES_LINKED_SESSION_CHIPS_FLAG_KEY } from "@repo/api/src/types/branches-linked-session-chips-flag.ts";
 import {
   breadcrumbParentLink,
+  clickDesktopDateRange,
+  DesktopDateRangeLabel,
   gotoNav,
   launchDesktopApp,
+  seedDesktopFeatureFlags,
 } from "./helpers/desktop-app";
-import { startFakeGitHubAuthorityServer } from "./helpers/fake-github-authority-server";
 import {
   seedNoPullRequestBranch,
   waitForBranchesSchema,
@@ -50,13 +53,7 @@ const SESSIONS_TAB_NAME = /sessions & timeline/i;
 // The seeded branch links exactly one session, so the count chip's accessible
 // name is the singular form.
 const LINKED_SESSION_COUNT_NAME = "1 linked session";
-let authorityServer: Awaited<ReturnType<typeof startFakeGitHubAuthorityServer>>;
-
 test.describe("Branches row click → detail (FEA-2939)", () => {
-  test.beforeAll(async () => {
-    authorityServer = await startFakeGitHubAuthorityServer([SEED.repoFullName]);
-  });
-  test.afterAll(async () => authorityServer.close());
   test("clicking a branch row opens its detail view", async () => {
     test.setTimeout(180_000);
 
@@ -76,7 +73,6 @@ test.describe("Branches row click → detail (FEA-2939)", () => {
         env: {
           CLAUDE_HOME: claudeHome,
           CODEX_HOME: codexHome,
-          ...authorityServer.env,
         },
         keepUserDataDir: true,
         userDataDir,
@@ -94,7 +90,6 @@ test.describe("Branches row click → detail (FEA-2939)", () => {
         env: {
           CLAUDE_HOME: claudeHome,
           CODEX_HOME: codexHome,
-          ...authorityServer.env,
         },
         keepUserDataDir: true,
         userDataDir,
@@ -105,13 +100,15 @@ test.describe("Branches row click → detail (FEA-2939)", () => {
         await expect(
           page.locator("header").getByText("Branches", { exact: true })
         ).toBeVisible({ timeout: 30_000 });
-        await expect(page.getByText("AI spend", { exact: true })).toBeVisible({
+        await expect(
+          page.getByText("Active branches", { exact: true })
+        ).toBeVisible({
           timeout: 30_000,
         });
 
         // The seeded activity is fixed in the past for deterministic fixtures.
         // Widen the list window so the row is present regardless of run date.
-        await page.locator('[aria-label="All time"]:visible').click();
+        await clickDesktopDateRange(page, DesktopDateRangeLabel.AllTime);
 
         const branchLink = page
           .locator('a[href^="#/branches/"]')
@@ -173,7 +170,6 @@ test.describe("Branches row click → detail (FEA-2939)", () => {
         env: {
           CLAUDE_HOME: claudeHome,
           CODEX_HOME: codexHome,
-          ...authorityServer.env,
         },
         keepUserDataDir: true,
         userDataDir,
@@ -190,10 +186,14 @@ test.describe("Branches row click → detail (FEA-2939)", () => {
 
       // Launch 2: the real Branches source reads the seeded local branch.
       const { page, pageErrors, cleanup } = await launchDesktopApp({
+        beforeLaunch: (launchUserDataDir) => {
+          seedDesktopFeatureFlags(launchUserDataDir, {
+            [BRANCHES_LINKED_SESSION_CHIPS_FLAG_KEY]: true,
+          });
+        },
         env: {
           CLAUDE_HOME: claudeHome,
           CODEX_HOME: codexHome,
-          ...authorityServer.env,
         },
         keepUserDataDir: true,
         userDataDir,
@@ -204,13 +204,15 @@ test.describe("Branches row click → detail (FEA-2939)", () => {
         await expect(
           page.locator("header").getByText("Branches", { exact: true })
         ).toBeVisible({ timeout: 30_000 });
-        await expect(page.getByText("AI spend", { exact: true })).toBeVisible({
+        await expect(
+          page.getByText("Active branches", { exact: true })
+        ).toBeVisible({
           timeout: 30_000,
         });
 
         // The seeded activity is fixed in the past for deterministic fixtures.
         // Widen the list window so the row is present regardless of run date.
-        await page.locator('[aria-label="All time"]:visible').click();
+        await clickDesktopDateRange(page, DesktopDateRangeLabel.AllTime);
 
         // Wait for the seeded row to be present via its branch-name link, then
         // click the Linked Sessions count chip (an accessible-named link).
@@ -228,6 +230,26 @@ test.describe("Branches row click → detail (FEA-2939)", () => {
           "href",
           BRANCH_SESSIONS_HASH
         );
+        // Local SQLite cannot provide canonical membership summaries, so the
+        // flag-on V2 surface must retain this count instead of inventing a chip.
+        //
+        // `:visible` is load-bearing, and `main` would not have been: the
+        // desktop shell keeps every visited route MOUNTED and hides it with
+        // `display:none`, inside the same `<main>`. `toHaveCount` does not
+        // filter on visibility, so the page-wide locator was also matching the
+        // Dashboard's Recent Sessions card in the hidden sibling route — a card
+        // no reader of this screen can see.
+        //
+        // It read zero only because the Dashboard happened to be held in its
+        // Loading state by pending analytics, rendering no rows at all.
+        // ISS-11204 deliberately stopped doing that: a dashboard with rows
+        // reaches Ready while analytics are still arriving. So the old locator
+        // was passing for a reason that had nothing to do with this surface.
+        // "Does the Branches row invent a chip" is a question about what is on
+        // screen, and this now asks exactly that.
+        await expect(
+          page.locator('a[href^="#/sessions/"]:visible')
+        ).toHaveCount(0);
         await sessionCountLink.click();
 
         // The hash navigated to the branch detail route WITH the Sessions-tab

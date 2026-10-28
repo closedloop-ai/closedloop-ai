@@ -17,7 +17,7 @@
  */
 
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { afterAll, test } from "vitest";
 import {
   queryComponentModelTrend,
   queryIsSkillLoaded,
@@ -31,7 +31,7 @@ import { openTestPrisma } from "./prisma-test-utils.js";
 // previous TZ so a co-located runner mode doesn't leak it.
 const originalTz = process.env.TZ;
 process.env.TZ = "America/Chicago";
-after(() => {
+afterAll(() => {
   if (originalTz === undefined) {
     Reflect.deleteProperty(process.env, "TZ");
   } else {
@@ -42,7 +42,7 @@ after(() => {
 // Each test opens its own ephemeral store; collect the close fns and dispose
 // them all in a single `after` so a per-test try/finally isn't needed.
 const openStores: Array<() => Promise<void>> = [];
-after(async () => {
+afterAll(async () => {
   for (const close of openStores) {
     await close();
   }

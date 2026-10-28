@@ -60,14 +60,16 @@
 import {
   ArtifactRefConfidence,
   ArtifactRefMethod,
+  parsePullRequestNumber,
+  REPOSITORY_FULL_NAME_MAX_LENGTH,
 } from "@repo/api/src/types/session-artifact-link";
+import type { IndexedToolUse } from "@repo/lib/harness/session-tool-uses";
 import { DELEGATION_TOOL_NAMES } from "../../database/subagent-dedup.js";
 import { isValidBranchName } from "../../enrichment/branch-validation.js";
 import type { NormalizedSession } from "../types.js";
 import { resolveRefObservedAt } from "./artifact-ref-observed-at.js";
 import type { ArtifactRefRecord } from "./artifact-ref-record.js";
-import { flattenTextValues, SHELL_TOOL_NAMES } from "./parser-utils.js";
-import type { IndexedToolUse } from "./session-tool-uses.js";
+import { flattenTextValues, isShellCommandToolUse } from "./parser-utils.js";
 
 /**
  * PR vocabulary. `PR`/`PRs`/`pull request`/`pull requests`, case-insensitive.
@@ -86,12 +88,11 @@ const BRANCH_VOCABULARY_RE =
 /**
  * A `#<digits>` token, optionally repo-qualified (`owner/repo#123`).
  *
- * The digit run is DELIBERATELY UNBOUNDED. A width cap (e.g. `\d{1,4}`) would
- * silently stop matching the day the repository's PR counter crosses it — the
- * bug is invisible because the pass simply returns fewer refs. The same
- * reasoning already governs `CLOSEDLOOP_SLUG_RE` in the extractor.
+ * The regex deliberately avoids a digit-count width cap; the semantic PR-number
+ * domain is enforced after parsing against the shared Prisma Int bound.
  */
-const PROSE_PR_REF_RE = /(?:\b([\w.-]+\/[\w.-]+))?#(\d+)\b/g;
+const PROSE_PR_REF_RE =
+  /(?:\b([\w.-]+\/[\w.-]+))?#(\d+)(?=$|[\s)\]}"'<>*]|[.,;:!?](?:\s|$)|\/(?=#\d+))/g;
 
 /** A full `owner/repo` slug — mirrors the extractor's `OWNER_REPO_SLUG_RE`. */
 const OWNER_REPO_SLUG_RE = /^[\w.-]+\/[\w.-]+$/;
@@ -137,12 +138,32 @@ const PROSE_BRANCH_CANDIDATE_RE = new RegExp(
   "g"
 );
 
-/**
- * Trailing punctuation that is not part of the branch name. `/` is included so
- * a sentence-final `feat/x/` trims to a valid name rather than being discarded
- * by `isValidBranchName`'s trailing-slash rule.
- */
-const TRAILING_PUNCTUATION_RE = /[./,;:!?)\]}'"`]+$/;
+const TRAILING_PUNCTUATION_CHARS = new Set([
+  ".",
+  "/",
+  ",",
+  ";",
+  ":",
+  "!",
+  "?",
+  ")",
+  "]",
+  "}",
+  "'",
+  '"',
+  "`",
+]);
+
+function trimTrailingPunctuation(s: string): string {
+  let end = s.length;
+  while (end > 0 && TRAILING_PUNCTUATION_CHARS.has(s[end - 1])) {
+    end--;
+  }
+  return s.slice(0, end);
+}
+
+/** A terminal hyphen means prose ended mid-slug, as in `fix/iss-7864-`. */
+const TRAILING_BRANCH_FRAGMENT_RE = /-$/;
 
 /** A file-extension suffix — proof the token is a path, not a branch. */
 const FILE_EXTENSION_RE = /\.[A-Za-z0-9]{1,6}$/;
@@ -376,15 +397,14 @@ export function findProsePrMentions(
   const mentions: ProsePrMention[] = [];
   for (const fragment of vocabularyScopedFragments(blocks, PR_VOCABULARY_RE)) {
     for (const match of fragment.matchAll(PROSE_PR_REF_RE)) {
-      const prNumber = Number.parseInt(match[2], 10);
-      // Not a width cap: an unbounded digit run can exceed the safe-integer
-      // range, and a lossy number is worse than no ref. `#0` is not a PR.
-      if (!Number.isSafeInteger(prNumber) || prNumber <= 0) {
+      const prNumber = parsePullRequestNumber(match[2]);
+      if (prNumber === null) {
         continue;
       }
-      const qualifier = match[1];
-      const repoFullName =
-        qualifier && OWNER_REPO_SLUG_RE.test(qualifier) ? qualifier : undefined;
+      const repoFullName = proseMentionRepo(match[1]);
+      if (repoFullName === null) {
+        continue;
+      }
       const key = `${repoFullName ?? ""}#${prNumber}`;
       if (seen.has(key)) {
         continue;
@@ -416,7 +436,7 @@ export function findProseBranchNames(blocks: readonly string[]): string[] {
     BRANCH_VOCABULARY_RE
   )) {
     for (const match of fragment.matchAll(PROSE_BRANCH_CANDIDATE_RE)) {
-      const candidate = match[1].replace(TRAILING_PUNCTUATION_RE, "");
+      const candidate = trimTrailingPunctuation(match[1]);
       if (!isProseBranchCandidate(candidate)) {
         continue;
       }
@@ -437,6 +457,9 @@ function isProseBranchCandidate(candidate: string): boolean {
     return false;
   }
   if (!DESCRIBED_BRANCH_SLUG_RE.test(segments[1])) {
+    return false;
+  }
+  if (TRAILING_BRANCH_FRAGMENT_RE.test(segments[1])) {
     return false;
   }
   if (FILE_EXTENSION_RE.test(candidate)) {
@@ -475,10 +498,11 @@ type ProseScanEntry = {
  *  1. `session.messages[]` — the session's own authored prose (both roles),
  *     exactly the surface `extractBareSlugRefs` already reads slugs from.
  *  2. NON-SHELL tool INPUT, over the parent's tool uses AND every sidecar
- *     sub-agent's. Shell tool inputs are excluded on purpose: a shell command
- *     is the COMMAND passes' territory, and re-reading it as prose would both
- *     duplicate their refs at a weaker tier and blur the line this change is
- *     explicitly not allowed to blur.
+ *     sub-agent's. Shell tool inputs — per `isShellCommandToolUse`, the
+ *     builtin set plus shell-through-MCP tools (ISS-8268) — are excluded on
+ *     purpose: a shell command is the COMMAND passes' territory, and
+ *     re-reading it as prose would both duplicate their refs at a weaker tier
+ *     and blur the line this change is explicitly not allowed to blur.
  *  3. DELEGATION tool OUTPUT (`Task`/`Agent`). A sub-agent's final report is
  *     assistant prose, and it reaches the parent ONLY here — a sidecar file
  *     carries the sub-agent's tool uses but no messages, so this is the single
@@ -505,7 +529,7 @@ function collectProseEntries(
 
   for (const { tu, toolIndex, agentId } of toolUses) {
     const provenance = agentId ? { toolIndex, agentId } : { toolIndex };
-    if (!SHELL_TOOL_NAMES.has(tu.name)) {
+    if (!isShellCommandToolUse(tu)) {
       for (const text of flattenTextValues(tu.input)) {
         entries.push({
           text,
@@ -607,7 +631,7 @@ export function extractProseMentionRefs(
  * is preserved here, but the naive reading of it silently discards almost
  * everything: `session.artifacts.repo` is derived from the session CWD
  * (`path.basename`), so on a real local corpus it is the bare directory name
- * (`example-repo`) rather than `owner/example-repo` for the overwhelming
+ * (`closedloop-ai`) rather than `owner/closedloop-ai` for the overwhelming
  * majority of sessions. Gating on it alone dropped 6,761 measured prose
  * mentions across 36 of 40 sampled sessions — the ticket's whole symptom,
  * reintroduced one layer down.
@@ -686,11 +710,11 @@ function resolveSessionRepo(
     // The basename named no candidate. It is EITHER a worktree/pool directory
     // whose session is genuinely working in the one repo it attested
     // (`west-monroe`, `lyon`, `atlanta`, `tmp`, `testuser5` — all real dossiers
-    // in the frozen corpus, all working in `closedloop-ai/example-repo`), OR
+    // in the frozen corpus, all working in `closedloop-ai/closedloop-ai`), OR
     // the session's own repo produced no ref at all and every candidate is one
     // it merely READ. The two are textually indistinguishable — a basename is
     // not a repo name, so nothing here can tell `west-monroe` from
-    // `example-repo`-alongside-a-foreign-candidate — so returning `null` on
+    // `closedloop-ai`-alongside-a-foreign-candidate — so returning `null` on
     // the mismatch is NOT the answer: measured on the corpus it deletes 27
     // correct rows across three worktree dossiers to remove 1 wrong one.
     //
@@ -745,4 +769,23 @@ const MIN_UNNAMED_REPO_ATTESTATIONS = 2;
 /** The repo half of an `owner/repo` slug, lower-cased for comparison. */
 function repoNameOf(fullName: string): string {
   return fullName.slice(fullName.indexOf("/") + 1).toLowerCase();
+}
+
+/**
+ * The repo a prose PR qualifier names: the slug itself, `undefined` when the
+ * text wrote no usable qualifier (a bare `#N`), or `null` to drop the mention.
+ * ISS-8882: a qualifier past the wire bound names a repo that can never sync,
+ * and demoting it to a bare `#N` would attribute the PR to the session's own
+ * repo, which the text did not name — so that mention is dropped whole.
+ */
+function proseMentionRepo(
+  qualifier: string | undefined
+): string | null | undefined {
+  if (!qualifier) {
+    return undefined;
+  }
+  if (qualifier.length > REPOSITORY_FULL_NAME_MAX_LENGTH) {
+    return null;
+  }
+  return OWNER_REPO_SLUG_RE.test(qualifier) ? qualifier : undefined;
 }

@@ -1,9 +1,12 @@
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import type { SqlClient } from "../scripts/db-utils";
+import { readMigrationSql, type SqlClient } from "../scripts/db-utils";
+import { PREVIEW_PLAIN_BUILD_CONCURRENT_INDEX_MIGRATIONS } from "../scripts/preview-heavy-migrations";
 import {
   parsePlainIndexBuilds,
   plainBuildPreviewConcurrentIndexes,
 } from "../scripts/preview-plain-index";
+import { migrationFileReaders } from "../scripts/prisma-cli";
 
 const PREVIEW_SCHEMA = "preview_my_branch_abc12345";
 const FEA3857_MIGRATION_NAME =
@@ -38,6 +41,24 @@ const NOT_UNIQUE_RE = /\(not unique\)/;
 const INVALID_RE = /\(invalid\)/;
 const DEFINITION_MISMATCH_RE = /\(definition mismatch\)/;
 const BUILD_ERROR_RE = /boom building index/;
+const ROUTINE_RUNS_RE = /"routine_runs"/;
+const ROUTINE_RUNS_MISSING_RE = /relation "routine_runs" does not exist/;
+const UNQUOTED_TABLE_RE = /cannot parse a quoted table name/;
+const SILENT = { log: () => undefined, warn: () => undefined };
+const MIGRATIONS_DIR = join(import.meta.dirname, "..", "prisma", "migrations");
+
+// ISS-12752: a plain-build entry whose table a later migration dropped. The SQL
+// is the ISS-9671 migration's, and `20261020030000_drop_routines` drops its table.
+const ISS9671_MIGRATION_NAME =
+  "20260907120000_iss9671_routine_runs_routine_scoped_source_unique";
+const ISS9671_SQL = `CREATE UNIQUE INDEX CONCURRENTLY "routine_runs_organization_id_routine_id_source_run_id_key"
+  ON "routine_runs" ("organization_id", "routine_id", "source_run_id");`;
+const DROP_ROUTINES_MIGRATION_NAME = "20261020030000_drop_routines";
+const DROP_ROUTINES_SQL = `-- DropTable
+DROP TABLE "routines";
+
+-- DropTable
+DROP TABLE "routine_runs";`;
 
 type ValidityRow = {
   name: string;
@@ -73,10 +94,13 @@ function makeMockClient(
     beforeRows?: ValidityRow[];
     afterRows?: ValidityRow[];
     failBuild?: boolean;
+    /** Tables the schema does not have; a CREATE INDEX on one fails as in Postgres. */
+    missingTables?: string[];
   } = {}
 ) {
   const before = opts.beforeRows ?? [];
   const after = opts.afterRows ?? FEA3857_INDEX_NAMES.map(usableRow);
+  const missingTables = opts.missingTables ?? [];
   const queries: { text: string; values?: unknown[] }[] = [];
   let validityCalls = 0;
   const client: SqlClient = {
@@ -87,6 +111,14 @@ function makeMockClient(
       if (VALIDITY_RE.test(text)) {
         validityCalls += 1;
         return Promise.resolve({ rows: validityCalls === 1 ? before : after });
+      }
+      const missingTarget = missingTables.find((table) =>
+        text.includes(`ON "${table}"`)
+      );
+      if (missingTarget && CREATE_INDEX_RE.test(text)) {
+        return Promise.reject(
+          new Error(`relation "${missingTarget}" does not exist`)
+        );
       }
       if (opts.failBuild && CREATE_INDEX_RE.test(text)) {
         return Promise.reject(new Error("boom building index"));
@@ -141,6 +173,19 @@ describe("parsePlainIndexBuilds", () => {
 DROP INDEX "b_idx";`
       )
     ).toThrow(NON_INDEX_STATEMENT_RE);
+  });
+
+  it("takes the table from the ON clause and throws when it is unquoted (ISS-12752)", () => {
+    expect(parsePlainIndexBuilds(FEA3857_SQL).map((b) => b.table)).toEqual([
+      "search_document",
+      "search_document",
+      "search_document",
+    ]);
+    expect(() =>
+      parsePlainIndexBuilds(
+        `CREATE INDEX CONCURRENTLY "a_idx" ON routine_runs ("a", "b");`
+      )
+    ).toThrow(UNQUOTED_TABLE_RE);
   });
 
   it("throws (fail-closed) on a CONCURRENTLY-index statement whose name cannot be parsed", () => {
@@ -316,6 +361,94 @@ describe("plainBuildPreviewConcurrentIndexes", () => {
     ).rejects.toThrow(DEFINITION_MISMATCH_RE);
   });
 
+  it("skips an index whose table a later migration drops and still builds and verifies the rest (ISS-12752)", async () => {
+    const { client, queries } = makeMockClient({
+      missingTables: ["routine_runs"],
+    });
+    await plainBuildPreviewConcurrentIndexes("postgres://x", PREVIEW_SCHEMA, {
+      createClient: () => client,
+      readMigrationSql: fixtureMigrationSql({
+        [DROP_ROUTINES_MIGRATION_NAME]: DROP_ROUTINES_SQL,
+      }),
+      listMigrationDirs: () => [
+        FEA3857_MIGRATION_NAME,
+        ISS9671_MIGRATION_NAME,
+        DROP_ROUTINES_MIGRATION_NAME,
+      ],
+      logger: SILENT,
+    });
+
+    const buildQueries = queries.filter((q) => CREATE_INDEX_RE.test(q.text));
+    expect(buildQueries).toHaveLength(FEA3857_INDEX_NAMES.length);
+    expect(buildQueries.some((q) => ROUTINE_RUNS_RE.test(q.text))).toBe(false);
+    const verify = queries.filter((q) => VALIDITY_RE.test(q.text)).at(-1);
+    expect(verify?.values).toEqual([PREVIEW_SCHEMA, FEA3857_INDEX_NAMES]);
+  });
+
+  // The schema lacks the table in each case, but no later migration drops it, so
+  // the table should exist at head and the build fails closed (ISS-12752).
+  it.each([
+    ["no migration drops it", []],
+    [
+      "the drop is only in a comment",
+      [
+        [
+          DROP_ROUTINES_MIGRATION_NAME,
+          `-- Rollback is DROP TABLE "routine_runs";`,
+        ],
+      ],
+    ],
+    [
+      "the drop is in an earlier migration",
+      [["20260801000000_drop_routine_runs_earlier", DROP_ROUTINES_SQL]],
+    ],
+  ] as const)(
+    "builds and fails closed on a missing table when %s",
+    async (_case, extra) => {
+      const { client } = makeMockClient({ missingTables: ["routine_runs"] });
+      const extraSql = Object.fromEntries(extra);
+      await expect(
+        plainBuildPreviewConcurrentIndexes("postgres://x", PREVIEW_SCHEMA, {
+          createClient: () => client,
+          readMigrationSql: fixtureMigrationSql(extraSql),
+          listMigrationDirs: () => [
+            FEA3857_MIGRATION_NAME,
+            ISS9671_MIGRATION_NAME,
+            ...Object.keys(extraSql),
+          ],
+          logger: SILENT,
+        })
+      ).rejects.toThrow(ROUTINE_RUNS_MISSING_RE);
+    }
+  );
+
+  it("never builds on routine_runs from the real migration set, and verifies the rest (ISS-12752)", async () => {
+    const declared = PREVIEW_PLAIN_BUILD_CONCURRENT_INDEX_MIGRATIONS.flatMap(
+      (name) => parsePlainIndexBuilds(readMigrationSql(name, MIGRATIONS_DIR))
+    );
+    const { client, queries } = makeMockClient({
+      missingTables: ["routine_runs"],
+      afterRows: declared.map((b) => ({
+        name: b.name,
+        valid: true,
+        ready: true,
+        unique: b.unique,
+        def: `USING btree (${b.columns.join(", ")})`,
+      })),
+    });
+    await plainBuildPreviewConcurrentIndexes("postgres://x", PREVIEW_SCHEMA, {
+      createClient: () => client,
+      ...migrationFileReaders({ migrationsDir: MIGRATIONS_DIR }),
+      logger: SILENT,
+    });
+
+    const buildQueries = queries.filter((q) => CREATE_INDEX_RE.test(q.text));
+    expect(buildQueries.some((q) => ROUTINE_RUNS_RE.test(q.text))).toBe(false);
+    expect(buildQueries).toHaveLength(
+      declared.filter((b) => b.table !== "routine_runs").length
+    );
+  });
+
   it("propagates a build error (fail-closed) and still closes the connection", async () => {
     const { client } = makeMockClient({ failBuild: true });
     await expect(
@@ -327,6 +460,17 @@ describe("plainBuildPreviewConcurrentIndexes", () => {
     expect(client.end).toHaveBeenCalledTimes(1);
   });
 });
+
+/** The FEA-3857 and ISS-9671 fixtures, plus `extra` migrations by name. */
+function fixtureMigrationSql(
+  extra: Record<string, string>
+): (migrationName: string) => string {
+  return (migrationName) =>
+    extra[migrationName] ??
+    (migrationName === ISS9671_MIGRATION_NAME
+      ? ISS9671_SQL
+      : readFea3857MigrationSql(migrationName));
+}
 
 function readFea3857MigrationSql(migrationName: string): string {
   return migrationName === FEA3857_MIGRATION_NAME

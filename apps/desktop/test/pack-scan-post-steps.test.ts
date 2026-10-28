@@ -16,11 +16,11 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
 import {
   AgentComponentKind,
   Harness,
 } from "@repo/api/src/types/agent-component";
+import { test } from "vitest";
 import { runPackScanPostSteps } from "../src/main/packs/pack-scan-post-steps.js";
 import { openTestPrisma } from "./prisma-test-utils.js";
 

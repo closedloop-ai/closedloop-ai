@@ -10,12 +10,13 @@ import {
   GitHubPRState,
   withDb,
 } from "@repo/database";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { branchReadService } from "@/app/branches/branch-read-service";
 import { branchService } from "@/app/branches/branch-service";
 import { persistedGitHubRepositoryAuthority } from "../fixtures/repository-default-authority";
 import {
   autoRollbackTransaction,
+  createCommittedTestOrganizationTracker,
   createTestOrganization,
   createTestProject,
   createTestUser,
@@ -36,6 +37,11 @@ import {
  */
 
 const hasDatabase = Boolean(process.env.DATABASE_URL);
+const committedOrganizations = createCommittedTestOrganizationTracker();
+
+afterEach(async () => {
+  await committedOrganizations.cleanup();
+});
 
 async function seedRepo(organizationId: string): Promise<{
   providerRepositoryId: string;
@@ -153,8 +159,8 @@ describe.skipIf(!hasDatabase)("branch org-SSOT (FR13) invariant", () => {
   });
 
   it("returns persisted active and historical PRs through Branch detail", async () => {
-    await autoRollbackTransaction(async () => {
-      const organizationId = await createTestOrganization();
+    await committedOrganizations.run(async () => {
+      const organizationId = await committedOrganizations.create();
       const user = await createTestUser(organizationId);
       const projectId = await createTestProject(organizationId, user.id);
       const { providerRepositoryId, repositoryId, repositoryFullName } =
@@ -191,6 +197,8 @@ describe.skipIf(!hasDatabase)("branch org-SSOT (FR13) invariant", () => {
               isCurrent: true,
               closedAt: new Date("2026-08-01T00:00:00.000Z"),
               lastVerifiedAt: new Date("2026-08-01T00:01:00.000Z"),
+              headRefName: "FEA-4313-associated-history",
+              headRefOid: "a".repeat(40),
               ...persistedPullRequestHeadAuthority(
                 providerRepositoryId,
                 repositoryFullName
@@ -207,6 +215,8 @@ describe.skipIf(!hasDatabase)("branch org-SSOT (FR13) invariant", () => {
               prState: GitHubPRState.OPEN,
               isCurrent: false,
               lastVerifiedAt: new Date("2026-08-02T00:01:00.000Z"),
+              headRefName: "FEA-4313-associated-history",
+              headRefOid: "b".repeat(40),
               ...persistedPullRequestHeadAuthority(
                 providerRepositoryId,
                 repositoryFullName

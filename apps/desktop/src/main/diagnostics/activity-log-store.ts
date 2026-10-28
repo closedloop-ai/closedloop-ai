@@ -1,12 +1,11 @@
 import { randomUUID } from "node:crypto";
 import Store from "electron-store";
+import type { ActivityEvent } from "../../shared/activity-panel-contract.js";
 
 // ActivityEvent is defined once in the renderer-safe contract module and
 // re-exported here so existing importers keep their `activity-log-store.js`
 // import path.
 export type { ActivityEvent } from "../../shared/activity-panel-contract.js";
-
-import type { ActivityEvent } from "../../shared/activity-panel-contract.js";
 
 type ActivityStoreSchema = {
   events: ActivityEvent[];

@@ -28,15 +28,16 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, test } from "node:test";
 import { ComponentResolvedState } from "@repo/api/src/types/agent-component";
 import { AgentComponentInvocationKind } from "@repo/api/src/types/agent-component-invocation";
-import {
-  DATA_REVISION,
-  DATA_REVISION_MAINTENANCE_STALE,
-} from "../src/main/collectors/engine/data-revision.js";
+import { describe, test } from "vitest";
+import { DATA_REVISION_MAINTENANCE_STALE } from "../src/main/collectors/engine/data-revision.js";
+import { effectiveDataRevision } from "../src/main/collectors/engine/effective-data-revision.js";
+import type { PrismaClient } from "../src/main/database/generated/client.js";
+import type { DesktopPrisma } from "../src/main/database/prisma-client.js";
 import { repairSkillShadowedCommandInventory } from "../src/main/database/skill-shadow-inventory-maintenance.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
+import type { WriteQueueRunOptions } from "../src/main/database/write-queue.js";
 import { makeSession } from "./normalized-session-test-utils.js";
 
 const NOW = "2026-08-05T17:00:00.000Z";
@@ -69,7 +70,7 @@ describe("ISS-5260 phantom inventory rows on an already-populated store", () => 
       assert.deepEqual(await componentKeys(db, Kind.Command), [SLASH_KEY]);
       assert.equal(
         await sessionRevision(db, "session-preexisting"),
-        DATA_REVISION
+        effectiveDataRevision()
       );
 
       // The definition collector then captures SKILL.md and promotes the row.
@@ -91,6 +92,57 @@ describe("ISS-5260 phantom inventory rows on an already-populated store", () => 
         await sessionRevision(db, "session-preexisting"),
         DATA_REVISION_MAINTENANCE_STALE
       );
+    });
+  });
+
+  // The delete is the pass's SECOND write; `markSessionsStale` is the first and
+  // has already committed by the time it rejects. So this is not a no-op bail-out
+  // — it is a PARTIAL repair, and the swallowed error makes the returned tally
+  // under-report it. Both halves are asserted here, because a test that checked
+  // only the return value would read as "nothing was mutated" and stay green if
+  // the stale marking were moved after the delete, which would break convergence.
+  test("a phantom delete failure returns no repair but keeps the session it already parked", async () => {
+    await withDb("aci-inv-repair-delete-fail-", async (db) => {
+      await insertSkillComponent(
+        db,
+        SKILL_KEY,
+        ComponentResolvedState.Unresolved
+      );
+      await db.importer.importSession(
+        slashSession("session-delete-fail"),
+        "claude"
+      );
+      await promoteSkillToResolved(db, SKILL_KEY);
+
+      const failing = failSecondWrite(db.prisma);
+      const logs: string[] = [];
+      const repair = await repairSkillShadowedCommandInventory(
+        failing.prisma,
+        (message) => logs.push(message)
+      );
+
+      assert.equal(failing.attempts(), 2);
+      assert.deepEqual(repair, { deletedComponents: 0, markedSessions: 0 });
+      assert.deepEqual(await componentKeys(db, Kind.Command), [SLASH_KEY]);
+      assert.equal(logs.length, 1);
+      assert.match(logs[0], PHANTOM_DELETE_FAILURE_RE);
+      assert.equal(
+        await sessionRevision(db, "session-delete-fail"),
+        DATA_REVISION_MAINTENANCE_STALE,
+        "the stale marking committed before the delete rejected"
+      );
+
+      // Why the partial state is safe: the pass is evidence-driven, so the next
+      // boot re-reads the surviving phantom and finishes. `markedSessions` is 0
+      // the second time because the `data_revision != $stale` guard does not
+      // re-count a session this pass did not newly park.
+      const second = await repairSkillShadowedCommandInventory(
+        db.prisma,
+        () => undefined
+      );
+
+      assert.deepEqual(second, { deletedComponents: 1, markedSessions: 0 });
+      assert.deepEqual(await componentKeys(db, Kind.Command), []);
     });
   });
 
@@ -208,7 +260,7 @@ describe("ISS-5260 a skill that resolves after its sessions were sealed", () => 
       await repairSkillShadowedCommandInventory(db.prisma, () => undefined);
       const rebuilt = await db.rebuildComponentInvocationsFromStoredRows(
         "session-late-resolve",
-        DATA_REVISION
+        effectiveDataRevision()
       );
 
       // The parked revision is what made the session selectable at all — the
@@ -349,3 +401,30 @@ function sessionRevision(db: Db, sessionId: string): Promise<number> {
     )
     .then((rows) => Number(rows[0]?.data_revision));
 }
+
+function failSecondWrite(prisma: DesktopPrisma): {
+  prisma: DesktopPrisma;
+  attempts: () => number;
+} {
+  let attempts = 0;
+  return {
+    prisma: {
+      ...prisma,
+      write: async <T>(
+        fn: (client: PrismaClient) => Promise<T>,
+        token?: string,
+        opts?: WriteQueueRunOptions
+      ): Promise<T> => {
+        attempts += 1;
+        if (attempts === 2) {
+          throw new Error("phantom delete failed");
+        }
+        return await prisma.write(fn, token, opts);
+      },
+    },
+    attempts: () => attempts,
+  };
+}
+
+const PHANTOM_DELETE_FAILURE_RE =
+  /inventory repair failed: phantom delete failed/;

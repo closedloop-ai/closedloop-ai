@@ -7,13 +7,17 @@ import {
   AgentSessionViewerScope,
   SessionPrLifecycleStatus,
 } from "@repo/api/src/types/agent-session";
-import { DocumentType } from "@repo/api/src/types/document";
+import type { CustomFieldWithOptions } from "@repo/api/src/types/custom-field";
 import {
-  DISPLAYED_SESSION_STATUS,
-  SESSION_STATUS,
-} from "@repo/api/src/types/session-status";
-import type { SessionTableRow } from "@repo/app/agents/components/sessions/sessions-table";
+  CustomFieldEntityType,
+  CustomFieldType,
+  NumberFormat,
+} from "@repo/api/src/types/custom-field";
+import { DocumentType } from "@repo/api/src/types/document";
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
+import type { BasicUser } from "@repo/api/src/types/user";
 import { CostAvailability } from "@repo/app/agents/lib/cost-availability";
+import type { SessionTableRow } from "@repo/app/agents/lib/session-list-row";
 import type { SessionSummaryDeltas } from "@repo/app/agents/lib/session-summary-deltas";
 import { MetricPolarity } from "@repo/design-system/components/ui/primitives/metric-polarity";
 
@@ -41,7 +45,7 @@ export function createAgentSessionListItemFixture(
       lastSeenAt: new Date("2026-06-01T15:00:00.000Z"),
       machineName: "MacBook Pro",
     },
-    cwd: "/workspace/example-repo",
+    cwd: "/workspace/closedloop-ai",
     endedAt: new Date("2026-06-01T14:45:00.000Z"),
     errorCount: 0,
     estimatedCost: 4.25,
@@ -68,7 +72,7 @@ export function createAgentSessionListItemFixture(
     ],
     prsMerged: 1,
     project: null,
-    repositoryFullName: "closedloop-ai/example-repo",
+    repositoryFullName: "closedloop-ai/closedloop-ai",
     sourceArtifact: {
       documentType: DocumentType.Feature,
       id: "artifact-1",
@@ -95,7 +99,7 @@ export function createAgentSessionListItemFixture(
       id: "user-1",
       lastName: "Oakhurst",
     },
-    worktreePath: "/workspace/example-repo-fea-1515",
+    worktreePath: "/workspace/closedloop-ai-fea-1515",
     ...overrides,
   } as AgentSessionListItem;
 }
@@ -112,7 +116,7 @@ export const populatedAgentSessionListFixtures: AgentSessionListItem[] = [
     name: null,
     repositoryFullName: "closedloop-ai/desktop",
     startedAt: new Date("2026-06-02T09:00:00.000Z"),
-    status: DISPLAYED_SESSION_STATUS.WAITING,
+    status: "waiting",
     updatedAt: new Date("2026-06-02T10:05:00.000Z"),
     worktreePath: "/workspace/closedloop-electron",
   }),
@@ -126,12 +130,20 @@ export const mixedAgentSessionListFixtures: AgentSessionListItem[] = [
   createAgentSessionListItemFixture({
     awaitingInputSince: new Date("2026-06-03T12:00:00.000Z"),
     cwd: null,
+    // ISS-10364 (operator ruling, 2026-09-23/24) retired the Waiting badge
+    // outright: this row, and `awaitingInputSince` generally, no longer
+    // produce a distinct display word — it folds to Active like any other
+    // non-terminal status. `endedAt: null` and the legacy `waiting` status
+    // literal are kept so this fixture still exercises a row carrying BOTH an
+    // awaiting-input anchor and a retired stored spelling, now asserting the
+    // single ACTIVE outcome rather than a Waiting chip.
+    endedAt: null,
     externalSessionId: "external-name-fallback",
     branch: null,
     id: "session-external",
     model: null,
     name: null,
-    status: DISPLAYED_SESSION_STATUS.WAITING,
+    status: "waiting",
   }),
   createAgentSessionListItemFixture({
     cwd: null,
@@ -240,7 +252,7 @@ export function createAgentSessionAnalyticsFixture(
         estimatedCost: 3.25,
         inputTokens: 1200,
         outputTokens: 800,
-        repositoryFullName: "closedloop-ai/example-repo",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
         sessionCount: 2,
       },
     ],
@@ -283,6 +295,20 @@ export function createAgentSessionAnalyticsFixture(
  * way drifts ("2h ago" → "3 months ago") with no code change. `SyncedSessionsTable`
  * exercises that mapper on the DTO fixtures; this covers the presentational
  * contract, which is display-ready strings.
+ *
+ * ISS-8013 (codex, PR #6009): the four raw values below are the ONE exception to
+ * the leave-optionals-undefined rule above, and they do not weaken it. That rule
+ * exists so a row cannot inherit an IDENTITY — an owner, a repo, an open PR — it
+ * never asked for; these are not an identity, they are the number the label on
+ * the line above them was formatted from, and the default already asserts every
+ * one of those labels. Left undefined, the five value-sorted columns read `null`
+ * on every fixture row, so the V2 story's Cost, Duration and Last active
+ * controls lit their header arrow and moved nothing.
+ *
+ * `updatedAtMs` is deliberately NOT among them: `updatedLabel` is undefined here
+ * too, and a row that carries an instant for a column it renders no label in is
+ * the sideways-pointed reader this ticket exists to stop. A caller that sets one
+ * sets both.
  */
 export function createSessionTableRowFixture(
   overrides: Partial<SessionTableRow> = {}
@@ -290,15 +316,19 @@ export function createSessionTableRowFixture(
   return {
     costAvailability: CostAvailability.Available,
     costLabel: "$4.12",
+    costValue: 4.12,
     durationLabel: "12m",
+    durationMs: 12 * MINUTE_MS,
     harness: "claude",
     id: "ses-1",
     lastActivityLabel: "5m ago",
+    lastActivityAtMs: SESSION_FIXTURE_NOW_MS - 5 * MINUTE_MS,
     mergeStatusLabel: null,
     name: "agent/refactor-auth-guard",
     pullRequestSummaryLabel: null,
     pullRequests: [],
     startedLabel: "2h ago",
+    startedAtMs: SESSION_FIXTURE_NOW_MS - 2 * HOUR_MS,
     status: SESSION_STATUS.ACTIVE,
     ...overrides,
   };
@@ -327,10 +357,10 @@ export function createSessionTableRowFixture(
  *
  * A "whole strip" assertion built on a Sessions+Tokens-only object can only ever
  * observe the two cards already covered card-by-card, so it would pass without
- * saying anything about Cost or the delivery pair (whitlockk, #4907). `apiCost` and
- * `meteredCost` are BOTH populated because `costDeltaKey` picks the basis the
- * headline actually resolved to, and `deliveryCompared` is set because the
- * delivery pair's participation is opt-in and its absence yields no chip at all.
+ * saying anything about Cost or the delivery pair (whitlockk, #4907). `totalCost` is
+ * populated because that is the basis `costDeltaKey` resolves to for every mode,
+ * and `deliveryCompared` is set because the delivery pair's participation is
+ * opt-in and its absence yields no chip at all.
  *
  * Shared rather than hand-built at each call site (per `agents/AGENTS.md`) so the
  * delta-treatment story and its test cannot drift onto different fixtures and
@@ -340,13 +370,12 @@ export function createSessionSummaryDeltasFixture(
   overrides: Partial<SessionSummaryDeltas> = {}
 ): SessionSummaryDeltas {
   return {
-    apiCost: { delta: 0, deltaPolarity: MetricPolarity.LowerIsBetter },
     deliveryCompared: true,
     label: "vs. prior 30 days",
-    meteredCost: { delta: 0, deltaPolarity: MetricPolarity.LowerIsBetter },
     prsShipped: { delta: 0, deltaPolarity: MetricPolarity.HigherIsBetter },
     sessions: { delta: 0, deltaPolarity: MetricPolarity.HigherIsBetter },
     tokens: { delta: -52, deltaPolarity: MetricPolarity.Neutral },
+    totalCost: { delta: 0, deltaPolarity: MetricPolarity.LowerIsBetter },
     ...overrides,
   };
 }
@@ -375,3 +404,87 @@ export function createFullyPopulatedSessionsUsageFixture(): AgentSessionUsageSum
     }
   );
 }
+
+/**
+ * Duration units for the fixture rows and the stories built on them, exported
+ * together so a story spelling "18m" states `18 * MINUTE_MS` rather than a bare
+ * `1_080_000` a reader has to divide back.
+ */
+export const MINUTE_MS = 60_000;
+export const HOUR_MS = 60 * MINUTE_MS;
+export const DAY_MS = 24 * HOUR_MS;
+
+/**
+ * The instant every relative label in {@link createSessionTableRowFixture} and
+ * in the Sessions stories is written against.
+ *
+ * A FIXED instant, never `Date.now()`: these rows carry display-ready strings
+ * ("2h ago"), so a value derived from the wall clock would drift away from the
+ * label beside it on every run and quietly re-order the story's own columns.
+ * Exported so a story overriding a label can state the matching instant in the
+ * same terms rather than inventing a second epoch.
+ */
+export const SESSION_FIXTURE_NOW_MS = Date.parse("2026-06-01T15:00:00.000Z");
+
+/**
+ * A session custom field that shows in the table, for suites that need a
+ * `custom-field:*` COLUMN to exist and do not care what is in it.
+ *
+ * Its own module rather than a fourth inline copy: the shape is 20 fields of
+ * which one or two ever matter to a case, and every copy of it is a copy that
+ * stops compiling on its own schedule.
+ */
+export function createSessionCustomFieldFixture(
+  overrides: Partial<CustomFieldWithOptions> = {}
+): CustomFieldWithOptions {
+  return {
+    createdAt: new Date(SESSION_FIXTURE_NOW_MS),
+    createdById: "user-fixture",
+    currencyCode: null,
+    customLabel: null,
+    customLabelPosition: null,
+    description: null,
+    entityTypes: [CustomFieldEntityType.Session],
+    enumOptions: [],
+    fieldType: CustomFieldType.Text,
+    id: "summary",
+    isGlobalToOrg: false,
+    isSearchable: true,
+    isSortable: true,
+    name: "Summary",
+    numberFormat: NumberFormat.None,
+    organizationId: "org-fixture",
+    precision: null,
+    referenceTargetSources: [],
+    showInTable: true,
+    updatedAt: new Date(SESSION_FIXTURE_NOW_MS),
+    ...overrides,
+  };
+}
+
+/**
+ * Three different people for a session's assignee, recording user (`user`) and
+ * creator (`createdBy`), so an Owner reader still on `user` or `createdBy`
+ * names the wrong person (ISS-12251 D-1).
+ */
+export const SESSION_ASSIGNEE_FIXTURE: BasicUser = {
+  avatarUrl: null,
+  email: "ada@example.test",
+  firstName: "Ada",
+  id: "user-assignee",
+  lastName: "Lovelace",
+};
+export const SESSION_UPLOADER_FIXTURE: BasicUser = {
+  avatarUrl: null,
+  email: "sam@example.test",
+  firstName: "Sam",
+  id: "user-uploader",
+  lastName: "Uploader",
+};
+export const SESSION_CREATOR_FIXTURE: BasicUser = {
+  avatarUrl: null,
+  email: "grace@example.test",
+  firstName: "Grace",
+  id: "user-creator",
+  lastName: "Hopper",
+};

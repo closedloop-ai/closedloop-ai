@@ -18,6 +18,12 @@
  * the ground would simply stay dark forever with no rejection and no log. That
  * ground only becomes reachable once Desktop builds carrying the ISS-5029 packer
  * roll out, so there is no production signal that would notice either.
+ *
+ * ISS-7560 adds the second describe: the failure half. Every case above enters
+ * through `parseOneComponent`, which throws on `!result.ok`, so the suite could
+ * not reach a single rejecting branch — the `reason` strings this entry point
+ * produces were asserted only for the SESSION lane. These drive the entry point
+ * directly and assert the exact reason.
  */
 import { AgentSessionSyncMode } from "@repo/api/src/types/agent-session";
 import {
@@ -194,5 +200,114 @@ describe("parseDesktopAgentComponentsPayload — ISS-5164 marker reachability", 
     expect(parsed.variantsTruncatedReason).toBe(
       SyncedComponentVariantsTruncatedReason.FamilyCap
     );
+  });
+});
+
+describe("parseDesktopAgentComponentsPayload — ISS-7560 rejection branches", () => {
+  /** A valid batch, so each case below varies exactly one thing. */
+  function validPayload(overrides: Record<string, unknown> = {}) {
+    return { ...payloadWith(markerAwareComponent()), ...overrides };
+  }
+
+  /** The reason this entry point rejected, or a hard failure if it accepted. */
+  function reasonFor(payload: unknown) {
+    const result = parseDesktopAgentComponentsPayload(payload);
+    if (result.ok) {
+      throw new Error("entry point accepted a payload it should have rejected");
+    }
+    return result.reason;
+  }
+
+  it("rejects a pathologically deep body before the schema sees it", () => {
+    // The sanitizer is depth-bounded so an abusive body cannot exhaust the call
+    // stack on the way to the database. 250 mirrors the bound-exceeding depth
+    // the sanitizer's own suite uses; the bound itself is module-private.
+    let deep: unknown = "leaf";
+    for (let index = 0; index < 250; index += 1) {
+      deep = { nested: deep };
+    }
+
+    expect(reasonFor(validPayload({ desktopLocalTree: deep }))).toBe(
+      "payload_nested_too_deeply"
+    );
+  });
+
+  it("rethrows an unrecognised sanitizer failure UNCHANGED rather than reporting it as invalid", () => {
+    // The catch narrows on one error class; anything else is a bug in this
+    // process, not a bad payload, and must not be laundered into a 400 that
+    // tells the desktop to stop retrying. Identity — not just "it threw" — is
+    // the contract: rewrapping would lose the original stack.
+    const unrecognised = new Error("sanitizer exploded");
+    const hostile = {};
+    Object.defineProperty(hostile, "schemaVersion", {
+      enumerable: true,
+      get() {
+        throw unrecognised;
+      },
+    });
+
+    let thrown: unknown;
+    try {
+      parseDesktopAgentComponentsPayload(hostile);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBe(unrecognised);
+  });
+
+  it("names schemaVersion when a desktop sends a version this cloud does not speak", () => {
+    expect(
+      reasonFor(
+        validPayload({ schemaVersion: AGENT_COMPONENT_SYNC_SCHEMA_VERSION + 1 })
+      )
+    ).toBe("schema_version_invalid");
+  });
+
+  it("names batchId when the batch identifier is not a uuid", () => {
+    expect(reasonFor(validPayload({ batchId: "not-a-uuid" }))).toBe(
+      "batch_id_invalid"
+    );
+  });
+
+  it("names syncMode when the mode is not one this cloud recognises", () => {
+    expect(reasonFor(validPayload({ syncMode: "sideways" }))).toBe(
+      "sync_mode_invalid"
+    );
+  });
+
+  it("falls back to the generic reason for componentCount, which summarizeParseIssues has no arm for", () => {
+    // The session lane maps its `sessionCount` root to a dedicated reason; the
+    // components lane's equivalent field has no arm, so it lands on the generic
+    // fallback. Pinned so a later arm is a deliberate change, not a surprise.
+    expect(reasonFor(validPayload({ componentCount: -1 }))).toBe(
+      "payload_invalid"
+    );
+  });
+
+  it("falls back to the generic reason for a malformed components array", () => {
+    expect(
+      reasonFor(validPayload({ components: [{ componentKind: "agent" }] }))
+    ).toBe("payload_invalid");
+  });
+
+  it("does NOT reject a sanitized-key collision in a field the schema strips", () => {
+    // The FEA-2691 constraint, pinned on this lane because it BOUNDS the fix for
+    // the gap recorded in the entry point's docstring. A `components[].metadata`
+    // collision does lose a persisted field and should be rejected once a human
+    // rules on that contract change — but the assertion that closes it must be
+    // scoped to `metadata`, never run over the whole raw payload. Collisions in
+    // desktop-local / forward-compat keys like this one reach no column, and a
+    // batch must not 400 forever over a field the schema drops.
+    const collided = parseDesktopAgentComponentsPayload(
+      payloadWith(
+        markerAwareComponent({
+          [`desktopLocal${NUL_CHAR}`]: "second",
+          desktopLocal: "first",
+        })
+      )
+    );
+
+    expect(collided.ok).toBe(true);
   });
 });

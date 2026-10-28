@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const ORIGINAL_ENV = { ...process.env };
 
-describe.sequential("ApiClient", () => {
+describe("ApiClient", { concurrent: false }, () => {
   beforeEach(() => {
     vi.resetModules();
     process.env = {
@@ -327,30 +327,33 @@ describe.sequential("ApiClient", () => {
     ["fractional", "12.5"],
     ["negative", "-5000"],
     ["above the timer range", String(2 ** 31)],
-  ])("falls back to the default CRUD timeout when MCP_API_REQUEST_TIMEOUT_MS is %s", async (_label, value) => {
-    process.env.MCP_API_REQUEST_TIMEOUT_MS = value;
-    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
-    const fetchMock = vi.fn(
-      async () =>
-        new Response(JSON.stringify({ success: true, data: { id: "a1" } }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        })
-    );
-    vi.stubGlobal("fetch", fetchMock);
+  ])(
+    "falls back to the default CRUD timeout when MCP_API_REQUEST_TIMEOUT_MS is %s",
+    async (_label, value) => {
+      process.env.MCP_API_REQUEST_TIMEOUT_MS = value;
+      const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+      const fetchMock = vi.fn(
+        async () =>
+          new Response(JSON.stringify({ success: true, data: { id: "a1" } }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          })
+      );
+      vi.stubGlobal("fetch", fetchMock);
 
-    const { createApiClient } = await import("../api-client.js");
-    const client = createApiClient(
-      { userId: "u1", organizationId: "o1", scopes: ["read"] },
-      "sk_live_test"
-    );
+      const { createApiClient } = await import("../api-client.js");
+      const client = createApiClient(
+        { userId: "u1", organizationId: "o1", scopes: ["read"] },
+        "sk_live_test"
+      );
 
-    // A rejected env value must not make AbortSignal.timeout throw a
-    // RangeError before fetch starts; it falls back to the 30s default.
-    await expect(client.get("/artifacts")).resolves.toEqual({ id: "a1" });
-    expect(fetchMock.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
-    expect(timeoutSpy).toHaveBeenCalledWith(30_000);
-  });
+      // A rejected env value must not make AbortSignal.timeout throw a
+      // RangeError before fetch starts; it falls back to the 30s default.
+      await expect(client.get("/artifacts")).resolves.toEqual({ id: "a1" });
+      expect(fetchMock.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
+      expect(timeoutSpy).toHaveBeenCalledWith(30_000);
+    }
+  );
 
   it("throws during module initialization when INTERNAL_API_SECRET is not set", async () => {
     delete process.env.INTERNAL_API_SECRET;

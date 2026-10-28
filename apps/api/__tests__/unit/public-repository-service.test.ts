@@ -2,7 +2,7 @@ import { GitHubAccessDenialReason } from "@repo/api/src/types/github";
 import { RepositoryDefaultAvailability } from "@repo/api/src/types/repository-default-identity";
 import { Status } from "@repo/api/src/types/result";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { mockWithDbCall } from "../utils/db-helpers";
+import { mockWithDbAll, mockWithDbCall } from "../utils/db-helpers";
 
 const { mockGetGitHubClient } = vi.hoisted(() => ({
   mockGetGitHubClient: vi.fn(),
@@ -18,6 +18,7 @@ vi.mock("@/lib/github/github-client-resolver", () => ({
 
 import {
   AddPublicRepositoryErrorCode,
+  PUBLIC_BRANCHES_MAX_PAGES,
   publicRepositoryService,
 } from "@/app/integrations/github/public-repositories/service";
 import { GitHubAccessIntent } from "@/lib/github/github-access";
@@ -35,6 +36,18 @@ function mockGitHubApiResponse(
     ok: status >= 200 && status < 300,
     status,
     json: () => Promise.resolve(body),
+  } as Response);
+}
+
+// `fetch` resolves as soon as the headers arrive, so a body read can fail on a
+// response that already reported 200 OK.
+function mockGitHubApiBodyFailure(
+  bodyError: unknown
+): ReturnType<typeof global.fetch> {
+  return Promise.resolve({
+    ok: true,
+    status: 200,
+    json: () => Promise.reject(bodyError),
   } as Response);
 }
 
@@ -139,6 +152,52 @@ describe("publicRepositoryService.addPublicRepository", () => {
     expect(result).toEqual({ ok: false, error: Status.NotFound });
   });
 
+  it("returns Result.err(Status.Error) when the bounded lookup request aborts", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(
+      new DOMException("The operation was aborted", "TimeoutError")
+    );
+
+    const result = await publicRepositoryService.addPublicRepository(
+      ORG_ID,
+      USER_ID,
+      "https://github.com/acme/my-repo"
+    );
+
+    expect(result).toEqual({ ok: false, error: Status.Error });
+  });
+
+  it("returns Result.err(Status.Error) when the response body read aborts", async () => {
+    vi.spyOn(globalThis, "fetch").mockReturnValue(
+      mockGitHubApiBodyFailure(
+        new DOMException("The operation was aborted", "TimeoutError")
+      )
+    );
+
+    const result = await publicRepositoryService.addPublicRepository(
+      ORG_ID,
+      USER_ID,
+      "https://github.com/acme/my-repo"
+    );
+
+    expect(result).toEqual({ ok: false, error: Status.Error });
+  });
+
+  it("returns Result.err(Status.Error) when the response body is not valid JSON", async () => {
+    vi.spyOn(globalThis, "fetch").mockReturnValue(
+      mockGitHubApiBodyFailure(
+        new SyntaxError("Unexpected token < in JSON at position 0")
+      )
+    );
+
+    const result = await publicRepositoryService.addPublicRepository(
+      ORG_ID,
+      USER_ID,
+      "https://github.com/acme/my-repo"
+    );
+
+    expect(result).toEqual({ ok: false, error: Status.Error });
+  });
+
   it("returns Result.err(Status.Error) when GitHub returns a non-404 error", async () => {
     vi.spyOn(globalThis, "fetch").mockReturnValue(
       mockGitHubApiResponse(500, { message: "Internal Server Error" })
@@ -175,7 +234,7 @@ describe("publicRepositoryService.addPublicRepository", () => {
         create: vi.fn().mockResolvedValue(createdRepo),
       },
     };
-    mockWithDbCall(mockDb);
+    mockWithDbAll(mockDb);
 
     const result = await publicRepositoryService.addPublicRepository(
       ORG_ID,
@@ -217,10 +276,10 @@ describe("publicRepositoryService.addPublicRepository", () => {
 
     const mockDb = {
       publicRepository: {
-        create: vi.fn().mockResolvedValue({ id: REPO_ID } as any),
+        create: vi.fn().mockResolvedValue({ id: REPO_ID }),
       },
     };
-    mockWithDbCall(mockDb);
+    mockWithDbAll(mockDb);
 
     await publicRepositoryService.addPublicRepository(
       ORG_ID,
@@ -235,6 +294,9 @@ describe("publicRepositoryService.addPublicRepository", () => {
           Accept: "application/vnd.github+json",
           "X-GitHub-Api-Version": "2026-03-10",
         },
+        // boundedFetch bounds the unauthenticated lookup at
+        // GITHUB_REQUEST_TIMEOUT_MS so a hung github.com cannot stall the route.
+        signal: expect.any(AbortSignal),
       }
     );
   });
@@ -263,7 +325,7 @@ describe("publicRepositoryService.addPublicRepository", () => {
         create: vi.fn().mockResolvedValue(createdRepo),
       },
     };
-    mockWithDbCall(mockDb);
+    mockWithDbAll(mockDb);
 
     const result = await publicRepositoryService.addPublicRepository(
       ORG_ID,
@@ -375,7 +437,7 @@ describe("publicRepositoryService.removePublicRepository", () => {
         deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
     };
-    mockWithDbCall(mockDb);
+    mockWithDbAll(mockDb);
 
     await publicRepositoryService.removePublicRepository(ORG_ID, REPO_ID);
 
@@ -482,6 +544,59 @@ describe("publicRepositoryService.getBranches", () => {
         },
       ],
     });
+    // GitHub reported no further pages, so the exhaustive read carries neither
+    // marker — an older client reads exactly the shape it reads today.
+    expect(result.hasMore).toBeUndefined();
+    expect(result.truncated).toBeUndefined();
+  });
+
+  it("reports hasMore without truncated when the requested limit is satisfied mid-page", async () => {
+    vi.spyOn(globalThis, "fetch").mockReturnValue(
+      mockGitHubHtmlResponse(
+        200,
+        buildGitHubBranchesPageHtml({
+          hasMore: true,
+          defaultBranch: "main",
+          branches: [
+            {
+              name: "main",
+              authoredDate: "2026-05-10T10:00:00.000Z",
+              isDefault: true,
+            },
+            {
+              name: "feature",
+              authoredDate: "2026-05-12T10:00:00.000Z",
+              isDefault: false,
+            },
+          ],
+        })
+      )
+    );
+
+    const mockDb = {
+      publicRepository: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: REPO_ID,
+          organizationId: ORG_ID,
+          owner: "acme",
+          name: "my-repo",
+          fullName: "acme/my-repo",
+        }),
+      },
+    };
+    mockWithDbCall(mockDb);
+
+    const result = await publicRepositoryService.getBranches(
+      REPO_ID,
+      ORG_ID,
+      1
+    );
+
+    // A bounded read that returned everything the caller asked for is not
+    // truncated, even though GitHub still has pages behind it.
+    expect(result.hasMore).toBe(true);
+    expect(result.truncated).toBeUndefined();
+    expect(result.branches).toHaveLength(1);
   });
 
   it("fetches additional pages when the requested limit exceeds the first page", async () => {
@@ -554,6 +669,7 @@ describe("publicRepositoryService.getBranches", () => {
         headers: {
           Accept: "text/html,application/xhtml+xml",
         },
+        signal: expect.any(AbortSignal),
       }
     );
     expect(fetchSpy).toHaveBeenNthCalledWith(
@@ -563,6 +679,7 @@ describe("publicRepositoryService.getBranches", () => {
         headers: {
           Accept: "text/html,application/xhtml+xml",
         },
+        signal: expect.any(AbortSignal),
       }
     );
     expect(result.branches).toHaveLength(21);
@@ -570,6 +687,72 @@ describe("publicRepositoryService.getBranches", () => {
       name: "main",
       committedDate: "2026-05-01T10:00:00.000Z",
       isDefault: true,
+    });
+    // Paged to exhaustion: the last page reported no more, so neither marker.
+    expect(result.hasMore).toBeUndefined();
+    expect(result.truncated).toBeUndefined();
+  });
+
+  it("stops scraping at the page cap when GitHub keeps reporting more pages", async () => {
+    // Every page repeats the same branch name, so the collected list never
+    // grows toward `limit` and only the page cap can end the loop.
+    const runawayPageCount = PUBLIC_BRANCHES_MAX_PAGES * 2;
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockImplementation(() =>
+      mockGitHubHtmlResponse(
+        200,
+        buildGitHubBranchesPageHtml({
+          hasMore: fetchSpy.mock.calls.length < runawayPageCount,
+          defaultBranch: "main",
+          branches: [
+            {
+              name: "main",
+              authoredDate: "2026-05-10T10:00:00.000Z",
+              isDefault: true,
+            },
+          ],
+        })
+      )
+    );
+
+    const mockDb = {
+      publicRepository: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: REPO_ID,
+          organizationId: ORG_ID,
+          owner: "acme",
+          name: "my-repo",
+          fullName: "acme/my-repo",
+        }),
+      },
+    };
+    mockWithDbCall(mockDb);
+
+    const result = await publicRepositoryService.getBranches(REPO_ID, ORG_ID);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(PUBLIC_BRANCHES_MAX_PAGES);
+    // The loop paged forward and stopped on the ceiling, not on a repeated read.
+    expect(fetchSpy).toHaveBeenLastCalledWith(
+      `https://github.com/acme/my-repo/branches/active?page=${PUBLIC_BRANCHES_MAX_PAGES}`,
+      {
+        headers: {
+          Accept: "text/html,application/xhtml+xml",
+        },
+        signal: expect.any(AbortSignal),
+      }
+    );
+    // The capped read must not present itself as an ordinary complete result:
+    // one branch out of a requested 20 while GitHub still reports more pages.
+    expect(result).toEqual({
+      branches: [
+        {
+          name: "main",
+          committedDate: "2026-05-10T10:00:00.000Z",
+          isDefault: true,
+        },
+      ],
+      hasMore: true,
+      truncated: true,
     });
   });
 

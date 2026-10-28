@@ -2,10 +2,7 @@ import {
   BranchCommentsState,
   BranchPrCommentKind,
 } from "@repo/api/src/types/branch";
-import {
-  TraceCommentSurface,
-  TraceCommentTargetType,
-} from "@repo/api/src/types/comment";
+import { CommentSurface, CommentTargetType } from "@repo/api/src/types/comment";
 import type { Meta, StoryObj } from "@storybook/react";
 import { useRef, useState } from "react";
 import {
@@ -25,7 +22,8 @@ const meta = {
       </div>
     ),
   ],
-  title: "App Core/Branches/Comments Workspace",
+  title: "Surfaces v1.0/Branches/Comments Workspace",
+  tags: ["deprecated"],
 } satisfies Meta<typeof BranchCommentsWorkspace>;
 
 export default meta;
@@ -59,7 +57,7 @@ export const SessionsWithIncompleteCoverage: Story = {
     comments: makeSessionThreads(),
     composerTarget: {
       anchor: makeStoryAnchor("Session A, line 8", "session-anchor"),
-      target: { id: "session-a", type: TraceCommentTargetType.Session },
+      target: { id: "session-a", type: CommentTargetType.Session },
     },
     coverageNote:
       "Comments from Session B are unavailable because that Session did not render.",
@@ -70,6 +68,50 @@ export const SessionsWithIncompleteCoverage: Story = {
 
 export const Empty: Story = {
   args: makeArgs({ comments: [], composerTarget: null }),
+  render: (args) => <WorkspaceStory args={args} />,
+};
+
+/**
+ * Read {@link Loading}, {@link Unavailable}, and {@link Empty} together: three
+ * states one heading has to keep apart. A read in flight leaves the count slot
+ * to a skeleton and says "Loading comments…" once; only a failed read is
+ * allowed to put the word "Unavailable" where a count normally sits (ISS-7370).
+ */
+export const Loading: Story = {
+  args: makeArgs({ comments: [], composerTarget: null, isLoading: true }),
+  render: (args) => <WorkspaceStory args={args} />,
+};
+
+export const Unavailable: Story = {
+  args: makeArgs({ comments: [], composerTarget: null, hasError: true }),
+  render: (args) => <WorkspaceStory args={args} />,
+};
+
+/**
+ * The longer "Session Comments" title moves the skeleton's x position, and a
+ * coverage note is the busiest that header row ever gets — "N shown" is the
+ * widest thing the count slot holds, so this is where the skeleton's width has
+ * to still read as the missing count rather than as a chip.
+ */
+export const LoadingSessionsWithCoverageNote: Story = {
+  args: makeArgs({
+    activeTab: BranchCommentsTab.Sessions,
+    comments: [],
+    composerTarget: null,
+    coverageNote:
+      "Comments from Session B are unavailable because that Session did not render.",
+    isLoading: true,
+  }),
+  render: (args) => <WorkspaceStory args={args} />,
+};
+
+/**
+ * A refresh reloading over comments already on screen. Both flags are set and
+ * neither is allowed to speak: the real count stays, no skeleton appears, and
+ * the threads keep painting.
+ */
+export const RefreshOverVisibleComments: Story = {
+  args: makeArgs({ hasError: true, isLoading: true }),
   render: (args) => <WorkspaceStory args={args} />,
 };
 
@@ -111,7 +153,7 @@ function makeArgs(
     comments: [makeDetailsThread(), makeProviderThread()],
     composerTarget: {
       anchor: makeStoryAnchor("Branch trace, line 42", "detail-anchor"),
-      target: { id: "branch-1", type: TraceCommentTargetType.Branch },
+      target: { id: "branch-1", type: CommentTargetType.Branch },
     },
     onClose: () => undefined,
     onCreate: () => Promise.resolve(),
@@ -135,7 +177,7 @@ function makeSessionThreads(): BranchCommentThread[] {
   return [
     {
       ...detailsThread,
-      collectionQuery: { surface: TraceCommentSurface.BranchTimeline },
+      collectionQuery: { surface: CommentSurface.BranchTimeline },
       id: "timeline-thread",
       tab: BranchCommentsTab.Sessions,
     },
@@ -144,7 +186,7 @@ function makeSessionThreads(): BranchCommentThread[] {
       anchor: makeStoryAnchor("Session A, line 8", "session-anchor"),
       id: "session-thread",
       tab: BranchCommentsTab.Sessions,
-      target: { id: "session-a", type: TraceCommentTargetType.Session },
+      target: { id: "session-a", type: CommentTargetType.Session },
     },
   ];
 }
@@ -170,7 +212,7 @@ function makeDetailsThread(): BranchCommentThread {
     ],
     source: BranchCommentSource.Platform,
     tab: BranchCommentsTab.Details,
-    target: { id: "branch-1", type: TraceCommentTargetType.Branch },
+    target: { id: "branch-1", type: CommentTargetType.Branch },
   };
 }
 
@@ -220,7 +262,7 @@ function makeProviderThread(): BranchCommentThread {
     ],
     source: BranchCommentSource.Provider,
     tab: BranchCommentsTab.Details,
-    target: { id: "branch-1", type: TraceCommentTargetType.Branch },
+    target: { id: "branch-1", type: CommentTargetType.Branch },
   };
 }
 

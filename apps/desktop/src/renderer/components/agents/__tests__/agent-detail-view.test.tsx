@@ -42,15 +42,18 @@ vi.mock("@repo/app/agents/hooks/use-agent-component-detail", () => ({
 vi.mock("@repo/app/agents/components/workspace/agent-detail", () => ({
   AgentDetail: ({
     headerAction,
+    analytics,
     slug,
     backHref,
   }: {
     headerAction?: (c: AgentComponentDetail) => ReactNode;
+    analytics?: (c: AgentComponentDetail) => ReactNode;
     slug: string;
     backHref: string;
   }) => (
     <div data-back-href={backHref} data-slug={slug} data-testid="agent-detail">
       {headerAction?.(currentDetail)}
+      {analytics?.(currentDetail)}
     </div>
   ),
 }));
@@ -67,6 +70,11 @@ vi.mock("../../../navigation/detail-title-context", () => ({
   },
 }));
 
+import {
+  IPC_WRAPPER_PHRASE,
+  ipcWrappedError,
+  LEAKY_IPC_CHANNEL,
+} from "../../../__tests__/ipc-wrapper-error-fixture";
 import { AgentDetailView } from "../agent-detail-view";
 
 function makeDetail(
@@ -208,5 +216,24 @@ describe("AgentDetailView Install action (FEA-4017)", () => {
 
     expect(screen.queryByText(RE_INSTALL_STARTED)).toBeNull();
     expect(screen.getByRole("button", { name: RE_INSTALL })).toBeDefined();
+  });
+});
+
+/**
+ * ISS-7599: the install catch renders the caught message. A rejection from the
+ * catalog-install bridge arrives wrapped by Electron, so it has to be cleaned
+ * or the private channel name is what the user is told the install failure was.
+ */
+describe("AgentDetailView — Electron IPC wrapper never reaches the user", () => {
+  it("cleans a wrapped catalogInstall rejection", async () => {
+    catalogInstall.mockRejectedValueOnce(ipcWrappedError("disk full"));
+    render(<AgentDetailView agentSlug="skill::rtk" backHref="#" />);
+
+    fireEvent.click(screen.getByRole("button", { name: RE_INSTALL }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("disk full");
+    expect(alert.textContent).not.toContain(LEAKY_IPC_CHANNEL);
+    expect(alert.textContent).not.toContain(IPC_WRAPPER_PHRASE);
   });
 });

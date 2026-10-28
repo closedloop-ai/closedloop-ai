@@ -1,23 +1,10 @@
 import type { WebContents } from "electron";
+import { DesktopRendererEventChannel } from "../../shared/desktop-renderer-event-channel.js";
+import { RendererLifecycleIpcChannel } from "../../shared/renderer-lifecycle-ipc-channel.js";
 import {
-  type RendererReadyPhase,
+  RendererReadyPhase,
   toRendererReadyPhase,
 } from "../../shared/renderer-ready-phase.js";
-
-/**
- * Renderer lifecycle signals (fire-and-forget `ipcMain.on`, not request/response):
- * the renderer announcing it is ready, going idle on the live DB, or receiving
- * user input. These drive main-process window/DB-ready glue rather than returning
- * data, so they live apart from the `desktop:*` `.handle` data domains.
- */
-export const RendererLifecycleIpcChannel = {
-  RendererReady: "desktop:renderer-ready",
-  RendererLiveDbIdle: "desktop:renderer-live-db-idle",
-  RendererUserInput: "desktop:renderer-user-input",
-} as const;
-
-export type RendererLifecycleIpcChannel =
-  (typeof RendererLifecycleIpcChannel)[keyof typeof RendererLifecycleIpcChannel];
 
 type IpcMainLike = {
   on: (
@@ -35,6 +22,12 @@ type RendererLifecycleIpcDeps = {
    */
   handleRendererReady: (sender: WebContents, phase: RendererReadyPhase) => void;
   yieldToMainLoop: () => Promise<void>;
+  /**
+   * `DesktopWindow.sendToRenderer`: never throws, pre-checks a disposed render
+   * frame, and logs the channel it drops. The trust gate has already pinned
+   * the sender to that window's `webContents`.
+   */
+  sendToRenderer: (channel: string, ...args: unknown[]) => boolean;
   isShuttingDown: () => boolean;
   isLocalSessionSourceReady: () => boolean;
   notifyInitialRendererLiveDbIdle: () => void;
@@ -48,17 +41,33 @@ export function registerRendererLifecycleIpcHandlers(
   ipcMainLike.on(
     RendererLifecycleIpcChannel.RendererReady,
     async (event, phase) => {
-      deps.handleRendererReady(event.sender, toRendererReadyPhase(phase));
+      if (!deps.isTrustedSender(event.sender)) {
+        return;
+      }
+      const readyPhase = toRendererReadyPhase(phase);
+      deps.handleRendererReady(event.sender, readyPhase);
+      if (readyPhase === RendererReadyPhase.NavigationReady) {
+        return;
+      }
       // Fire-and-forget: ipcMain.on ignores the returned promise. Yield first so
       // the ready ack lands after the current main-loop turn drains.
       await deps.yieldToMainLoop();
-      if (deps.isShuttingDown() || event.sender.isDestroyed()) {
+      if (
+        deps.isShuttingDown() ||
+        event.sender.isDestroyed() ||
+        !deps.isTrustedSender(event.sender)
+      ) {
         return;
       }
-      if (deps.isLocalSessionSourceReady()) {
-        event.sender.send("desktop:db:ready", {});
-        event.sender.send("desktop:db:changed", {});
+      if (!deps.isLocalSessionSourceReady()) {
+        return;
       }
+      // ISS-9175: a render frame disposed during the yield makes a bare
+      // `event.sender.send` throw while `isDestroyed()` still reports false,
+      // and nothing awaits this listener. The guarded helper drops and logs
+      // instead; the renderer's next refresh re-sends renderer-ready.
+      deps.sendToRenderer(DesktopRendererEventChannel.DbReady, {});
+      deps.sendToRenderer(DesktopRendererEventChannel.DbChanged, {});
     }
   );
   ipcMainLike.on(RendererLifecycleIpcChannel.RendererLiveDbIdle, (event) => {

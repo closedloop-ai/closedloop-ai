@@ -18,7 +18,9 @@
  *   - P1 #4 read-cap alignment: a stored tiling ABOVE the per-payload wire cap
  *     (MAX_SYNCED_ACTIVITY_SEGMENTS) is read back IN FULL, proving the detail
  *     read bounds by MAX_STORED_ACTIVITY_SEGMENTS, not the wire cap (the old
- *     read would have clipped it).
+ *     read would have clipped it);
+ *   - ISS-7779: the legacy wire `activitySegmentRowsTruncated` is NOT relayed
+ *     onto the read shape — the like-named detail field is derived per read.
  */
 import {
   AgentSessionSyncMode,
@@ -29,9 +31,9 @@ import { withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
 import { describe, expect, it } from "vitest";
 import {
-  autoRollbackTransaction,
   createTestOrganization,
   createTestUser,
+  joinAmbientTransactionForSessionSyncWrites,
 } from "@/__tests__/utils/db-helpers";
 import { agentSessionsService } from "@/app/agent-sessions/service";
 import {
@@ -64,14 +66,17 @@ async function createComputeTarget(
   return target.id;
 }
 
-function segment(index: number): SyncedActivitySegmentRow {
+function segment(
+  index: number,
+  version: number = CLASSIFIER_VERSION
+): SyncedActivitySegmentRow {
   return {
     phase: index % 2 === 0 ? "implement" : "review",
     startMs: index * 1000,
     endMs: index * 1000 + 999,
     confidence: 0.9,
     evidenceLayers: ["structural"],
-    version: CLASSIFIER_VERSION,
+    version,
     workItemRef: null,
     subagentId: null,
   };
@@ -88,7 +93,15 @@ function tiling(count: number): SyncedActivitySegmentRow[] {
  */
 function sessionPayload(args: {
   activitySegmentRows: SyncedActivitySegmentRow[];
+  activitySegmentRowsTruncated?: boolean;
   chunk?: { index: number; total: number };
+  /**
+   * ISS-10259: the EVENTS stream. Defaulted to none, because every case before
+   * this ticket carried the tiling on chunk 0; the production shape is the
+   * opposite — `appendRequiredStreamChunks` packs the events first, so chunk 0
+   * is an event-bearing chunk whose tiling slice is the explicit empty clear.
+   */
+  events?: { externalEventId: string }[];
 }) {
   return {
     externalSessionId: EXTERNAL_SESSION_ID,
@@ -101,10 +114,18 @@ function sessionPayload(args: {
     updatedAt: "2026-06-10T11:00:00.000Z",
     metadata: {},
     agents: [],
-    events: [],
+    events: (args.events ?? []).map(({ externalEventId }) => ({
+      externalEventId,
+      eventType: "ToolUse",
+      toolName: "Read",
+      createdAt: "2026-06-10T10:30:00.000Z",
+    })),
     tokenUsageByModel: [],
     dataRevision: DATA_REVISION,
     activitySegmentRows: args.activitySegmentRows,
+    ...(args.activitySegmentRowsTruncated === undefined
+      ? {}
+      : { activitySegmentRowsTruncated: args.activitySegmentRowsTruncated }),
     ...(args.chunk ? { chunk: args.chunk } : {}),
   };
 }
@@ -168,7 +189,7 @@ async function readBackTiling(ctx: {
 
 describeIfDb("ISS-4578: chunked activity-segment sync DB round-trip", () => {
   it("merges a 3-part tiling into the full stored tiling and reads it back in order", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const organizationId = await createTestOrganization();
       const user = await createTestUser(organizationId);
       const computeTargetId = await createComputeTarget(
@@ -199,7 +220,7 @@ describeIfDb("ISS-4578: chunked activity-segment sync DB round-trip", () => {
   });
 
   it("version skew (OLD desktop): the whole tiling replicated in every chunk stays exactly-once", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const organizationId = await createTestOrganization();
       const user = await createTestUser(organizationId);
       const computeTargetId = await createComputeTarget(
@@ -237,7 +258,7 @@ describeIfDb("ISS-4578: chunked activity-segment sync DB round-trip", () => {
   });
 
   it("P1 #4: a stored tiling ABOVE the per-payload wire cap reads back in full (read-cap alignment)", async () => {
-    await autoRollbackTransaction(
+    await joinAmbientTransactionForSessionSyncWrites(
       async () => {
         const organizationId = await createTestOrganization();
         const user = await createTestUser(organizationId);
@@ -280,12 +301,12 @@ describeIfDb("ISS-4578: chunked activity-segment sync DB round-trip", () => {
         expect(starts.at(-1)).toBe((total - 1) * 1000);
         expect(truncated).toBe(false);
       },
-      { timeout: 30_000 }
+      { maxWait: 5000, timeout: 20_000 }
     );
-  }, 30_000);
+  });
 
   it("whitlockk P1: a RETRIED tail chunk survives the real unique constraint and reads back the complete tiling (exactly-once)", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const organizationId = await createTestOrganization();
       const user = await createTestUser(organizationId);
       const computeTargetId = await createComputeTarget(
@@ -335,5 +356,149 @@ describeIfDb("ISS-4578: chunked activity-segment sync DB round-trip", () => {
       // Complete tiling, each startMs exactly once — the retry inserted no dupes.
       expect(starts).toEqual(full.map((row) => row.startMs));
     });
-  }, 30_000);
+  });
+
+  it("ISS-10259: the desktop's paginated order — an EVENTS chunk 0 with an explicit empty tiling, the tiling on chunks 1..2 — reads back whole", async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
+      const organizationId = await createTestOrganization();
+      const user = await createTestUser(organizationId);
+      const computeTargetId = await createComputeTarget(
+        organizationId,
+        user.id
+      );
+      const ctx = { organizationId, userId: user.id, computeTargetId };
+
+      // The shape ISS-10259 is about, which no case above reaches: every one of
+      // them puts tiling rows on chunk 0, so the append lane always had a stored
+      // tiling to attest against. The desktop does the opposite when the tiling
+      // paginates — `appendRequiredStreamChunks` packs the EVENTS stream first
+      // and `createChunkBuilders.baseFor` stamps an explicit
+      // `activitySegmentRows: []` on every non-tiling chunk — so chunk 0 clears
+      // and stores NOTHING and the tiling's own rows ride chunks 1..N against an
+      // empty stored tiling. The refusal this ticket removed dropped every one
+      // of them, which is why 78 of 85 affected sessions still had zero stored
+      // segments a fortnight on.
+      //
+      // Driven through `parseDesktopAgentSessionsPayload` + `upsertSessions` to
+      // real Postgres, so the ingress contract, the sequence gate and the append
+      // lane all have to agree for this to pass (review, davetho P2). The
+      // PRODUCER half — that the chunker really emits the explicit `[]` rather
+      // than omitting the key — is pinned on the desktop side, in
+      // `apps/desktop/test/agent-session-sync-activity-segment-chunking.test.ts`;
+      // `apps/api` does not depend on `apps/desktop`, so the wire shape written
+      // out here is the seam between the two halves.
+      // Two tiling slices, one per chunk behind the events chunk.
+      const full = tiling(2);
+      const reason0 = await ingestOnePayload(
+        ctx,
+        sessionPayload({
+          activitySegmentRows: [],
+          events: [{ externalEventId: "evt-0" }],
+          chunk: { index: 0, total: 3 },
+        })
+      );
+      expect(reason0).toBeNull();
+      // Chunk 0 stored nothing — the state the append lane used to refuse.
+      expect((await readBackTiling(ctx)).starts).toEqual([]);
+
+      for (const [offset, slice] of full.entries()) {
+        const index = offset + 1;
+        const reason = await ingestOnePayload(
+          ctx,
+          sessionPayload({
+            activitySegmentRows: [slice],
+            chunk: { index, total: 3 },
+          })
+        );
+        expect(reason, `chunk ${index} failed the ingress contract`).toBeNull();
+      }
+
+      const { starts, found } = await readBackTiling(ctx);
+      expect(found).toBe(true);
+      expect(starts).toEqual(full.map((slice) => slice.startMs));
+    });
+  });
+
+  it("ISS-10259: a slice at a DIFFERENT classifier version than the sequence established is still refused", async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
+      const organizationId = await createTestOrganization();
+      const user = await createTestUser(organizationId);
+      const computeTargetId = await createComputeTarget(
+        organizationId,
+        user.id
+      );
+      const ctx = { organizationId, userId: user.id, computeTargetId };
+
+      // Admitting the EMPTY stored tiling must not admit a MIXED-version one.
+      // Chunk 1 establishes the sequence's classifier version against nothing
+      // stored; chunk 2 arrives from a re-tile at another version and is dropped,
+      // so the stored tiling holds chunk 1's span alone rather than interleaving
+      // two derivations (review, davetho P2).
+      const reason0 = await ingestOnePayload(
+        ctx,
+        sessionPayload({
+          activitySegmentRows: [],
+          events: [{ externalEventId: "evt-0" }],
+          chunk: { index: 0, total: 3 },
+        })
+      );
+      expect(reason0).toBeNull();
+      const reason1 = await ingestOnePayload(
+        ctx,
+        sessionPayload({
+          activitySegmentRows: [segment(1)],
+          chunk: { index: 1, total: 3 },
+        })
+      );
+      expect(reason1).toBeNull();
+      const reason2 = await ingestOnePayload(
+        ctx,
+        sessionPayload({
+          activitySegmentRows: [segment(2, CLASSIFIER_VERSION + 1)],
+          chunk: { index: 2, total: 3 },
+        })
+      );
+      expect(reason2).toBeNull();
+
+      const { starts, found } = await readBackTiling(ctx);
+      expect(found).toBe(true);
+      expect(starts).toEqual([segment(1).startMs]);
+    });
+  });
+
+  it("ISS-7779: a legacy wire activitySegmentRowsTruncated=true is NOT relayed onto the read shape", async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
+      const organizationId = await createTestOrganization();
+      const user = await createTestUser(organizationId);
+      const computeTargetId = await createComputeTarget(
+        organizationId,
+        user.id
+      );
+      const ctx = { organizationId, userId: user.id, computeTargetId };
+
+      // A version-skewed FEA-3779..ISS-4578 desktop flagging its tiling partial.
+      // Nothing persists or forwards that wire key, so the like-named read-shape
+      // field is not that value relayed: it is derived per read from
+      // MAX_STORED_ACTIVITY_SEGMENTS, and a well-under-ceiling tiling reads back
+      // whole and unflagged no matter what the producer claimed. Both docstrings
+      // now say so; this is what stops the next reader wiring one to the other.
+      // (The schema's round-trip of the key itself is
+      // `desktop-agent-sessions-handler.test.ts`; the ingress is non-strict, so
+      // `reason === null` here only proves the payload was not rejected.)
+      const full = tiling(4);
+      const reason = await ingestOnePayload(
+        ctx,
+        sessionPayload({
+          activitySegmentRows: full,
+          activitySegmentRowsTruncated: true,
+        })
+      );
+      expect(reason).toBeNull();
+
+      const { starts, truncated, found } = await readBackTiling(ctx);
+      expect(found).toBe(true);
+      expect(starts).toEqual(full.map((row) => row.startMs));
+      expect(truncated).toBe(false);
+    });
+  });
 });

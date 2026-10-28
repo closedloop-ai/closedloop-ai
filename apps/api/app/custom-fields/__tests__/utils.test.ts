@@ -24,6 +24,8 @@ vi.mock("@repo/database", () => ({
 import {
   CustomFieldEntityType,
   CustomFieldType,
+  type CustomFieldWithOptions,
+  MAX_CUSTOM_FIELDS_PER_ORG,
   NumberFormat,
 } from "@repo/api/src/types/custom-field";
 import { withDb } from "@repo/database";
@@ -31,7 +33,6 @@ import {
   checkFieldLimit,
   checkOptionLimit,
   computeDisplayValue,
-  MAX_CUSTOM_FIELDS_PER_ORG,
   MAX_ENUM_OPTIONS_PER_FIELD,
   ReservedNameError,
   validateFieldNameNotReserved,
@@ -47,7 +48,9 @@ const TEST_OPTION_ID = "opt-1";
 // Shared field fixture builder
 // ---------------------------------------------------------------------------
 
-function buildField(overrides: Record<string, unknown> = {}) {
+function buildField(
+  overrides: Partial<CustomFieldWithOptions> = {}
+): CustomFieldWithOptions {
   return {
     id: TEST_FIELD_ID,
     organizationId: TEST_ORG_ID,
@@ -63,6 +66,11 @@ function buildField(overrides: Record<string, unknown> = {}) {
     customLabel: null,
     customLabelPosition: null,
     isGlobalToOrg: false,
+    entityTypes: [],
+    referenceTargetSources: [],
+    showInTable: false,
+    isSearchable: false,
+    isSortable: false,
     enumOptions: [],
     ...overrides,
   };
@@ -83,7 +91,7 @@ describe("checkFieldLimit", () => {
 
   it("throws when the organization already has 500 custom fields", async () => {
     // Arrange
-    mockWithDb.mockImplementation((callback: any) =>
+    mockWithDb.mockImplementation((callback: (client: unknown) => unknown) =>
       callback({
         customField: {
           count: vi.fn().mockResolvedValue(MAX_CUSTOM_FIELDS_PER_ORG),
@@ -99,7 +107,7 @@ describe("checkFieldLimit", () => {
 
   it("does not throw when the organization has fewer than 500 custom fields", async () => {
     // Arrange
-    mockWithDb.mockImplementation((callback: any) =>
+    mockWithDb.mockImplementation((callback: (client: unknown) => unknown) =>
       callback({
         customField: {
           count: vi.fn().mockResolvedValue(MAX_CUSTOM_FIELDS_PER_ORG - 1),
@@ -127,7 +135,7 @@ describe("checkOptionLimit", () => {
 
   it("throws when the custom field already has 100 enum options", async () => {
     // Arrange
-    mockWithDb.mockImplementation((callback: any) =>
+    mockWithDb.mockImplementation((callback: (client: unknown) => unknown) =>
       callback({
         customFieldEnumOption: {
           count: vi.fn().mockResolvedValue(MAX_ENUM_OPTIONS_PER_FIELD),
@@ -143,7 +151,7 @@ describe("checkOptionLimit", () => {
 
   it("does not throw when the field has fewer than 100 enum options", async () => {
     // Arrange
-    mockWithDb.mockImplementation((callback: any) =>
+    mockWithDb.mockImplementation((callback: (client: unknown) => unknown) =>
       callback({
         customFieldEnumOption: {
           count: vi.fn().mockResolvedValue(MAX_ENUM_OPTIONS_PER_FIELD - 1),
@@ -171,7 +179,7 @@ describe("computeDisplayValue", () => {
     });
 
     // Act
-    const result = await computeDisplayValue(field as any, 50_000);
+    const result = await computeDisplayValue(field, 50_000);
 
     // Assert
     expect(result).toBe("$50,000.00");
@@ -193,7 +201,7 @@ describe("computeDisplayValue", () => {
     });
 
     // Act
-    const result = await computeDisplayValue(field as any, TEST_OPTION_ID);
+    const result = await computeDisplayValue(field, TEST_OPTION_ID);
 
     // Assert
     expect(result).toBe("High");
@@ -207,7 +215,7 @@ describe("computeDisplayValue", () => {
     });
 
     // Act
-    const result = await computeDisplayValue(field as any, "nonexistent-opt");
+    const result = await computeDisplayValue(field, "nonexistent-opt");
 
     // Assert
     expect(result).toBe("");
@@ -218,7 +226,7 @@ describe("computeDisplayValue", () => {
     const field = buildField({ fieldType: CustomFieldType.Text });
 
     // Act
-    const result = await computeDisplayValue(field as any, null);
+    const result = await computeDisplayValue(field, null);
 
     // Assert
     expect(result).toBe("");
@@ -233,7 +241,7 @@ describe("computeDisplayValue", () => {
     });
 
     // Act
-    const result = await computeDisplayValue(field as any, 75);
+    const result = await computeDisplayValue(field, 75);
 
     // Assert
     expect(result).toBe("75.0%");
@@ -265,7 +273,7 @@ describe("computeDisplayValue", () => {
     });
 
     // Act
-    const result = await computeDisplayValue(field as any, ["opt-a", "opt-b"]);
+    const result = await computeDisplayValue(field, ["opt-a", "opt-b"]);
 
     // Assert
     expect(result).toBe("Alpha, Beta");

@@ -26,11 +26,11 @@
  * double in that slot — every entry must arrive at the spawn boundary, with its
  * own tsconfig, in inventory order.
  *
- * The five projects have no `references` and no `composite`, so tsc imposes no
+ * The projects have no `references` and no `composite`, so tsc imposes no
  * build order between them — they are safe to run concurrently. They are not
  * fully DISJOINT, though: `tsconfig.json` and `tsconfig.type-tests.json` share
  * every file under `src/shared/`, so the parallel win is bounded by the largest
- * single project rather than by the sum divided by five.
+ * single project rather than by the sum divided by the project count.
  */
 
 /**
@@ -68,6 +68,11 @@ const WHOLE_POSITIVE_INTEGER_RE = /^\d+$/;
  * `tests` alone is half the chain, so it is the bound any parallel arrangement
  * can reach and it must start first.
  *
+ * `scripts` (ISS-12115) was added later and measured 2026-10-06 under 1-min
+ * load ~49, so only its rank is usable: 5.4s user CPU and 1.05 GB peak RSS
+ * against `main`'s 7.0s and 1.27 GB in the same run, which places it after
+ * `main`.
+ *
  * @type {readonly TypecheckProject[]}
  */
 export const TYPECHECK_PROJECTS = [
@@ -85,6 +90,11 @@ export const TYPECHECK_PROJECTS = [
     name: "main",
     project: "tsconfig.json",
     tsBuildInfoFile: "./tsconfig.tsbuildinfo",
+  },
+  {
+    name: "scripts",
+    project: "tsconfig.scripts.json",
+    tsBuildInfoFile: "./tsconfig.scripts.tsbuildinfo",
   },
   {
     name: "type-tests",
@@ -111,7 +121,7 @@ export const TYPECHECK_PROJECTS = [
  * `--concurrency=1` as a laptop OOM guard whose arithmetic ("workers x lanes x
  * ~4GB must fit in RAM") this dial silently enters.
  *
- * 2 is what the measurements support, and it costs nothing. The five projects'
+ * 2 is what the measurements support, and it costs nothing. The projects'
  * peak RSS is 1.70 / 1.00 / 1.02 GB for the three that matter, so a 2-wide worst
  * case is `tests` + `renderer` ≈ 2.7 GB — BELOW the 4 GB `--max-old-space-size`
  * ceiling the old serial chain already granted a single tsc, which is what keeps
@@ -122,7 +132,8 @@ export const TYPECHECK_PROJECTS = [
  * And 2 is not slower than 3: `tests` runs 37s while the other four total ~35s,
  * so a second worker clears the entire remainder inside the first worker's
  * single project. Measured wall clock is the same ~37s either way, so 3 would
- * buy no time in exchange for a third concurrent ceiling.
+ * buy no time in exchange for a third concurrent ceiling. (Measured before
+ * `scripts` joined; its few seconds have not been re-measured against this.)
  *
  * `DESKTOP_TYPECHECK_CONCURRENCY` overrides it, mirroring the existing
  * `TURBO_TYPECHECK_CONCURRENCY` spelling. `=1` restores the old serial behavior

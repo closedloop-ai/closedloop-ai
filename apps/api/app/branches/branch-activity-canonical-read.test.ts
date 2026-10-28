@@ -7,6 +7,7 @@ import {
 import { describe, expect, it } from "vitest";
 import {
   type CanonicalCloudBranchActivityAtom,
+  canonicalBranchActivitySources,
   latestEligibleCloudBranchActivityAtom,
 } from "./branch-activity-canonical-read";
 
@@ -45,6 +46,32 @@ describe("latestEligibleCloudBranchActivityAtom", () => {
     expect(
       latestEligibleCloudBranchActivityAtom(row([foreign, older]))
     ).toEqual(older);
+  });
+
+  // ISS-10009 part 1's whole invariant: capturing pushes must move no published
+  // number. Both halves of the canonical read — the in-memory eligibility here
+  // and the SQL predicate the Last-active aggregate and the Branches list share
+  // — key on this one list, so a `push_loc` row it excludes can reach neither
+  // `last_activity_at` nor the list's default sort.
+  it("excludes push_loc from canonical activity, however recent it is", () => {
+    const older = atom({
+      sourceEventId: "older-head",
+      occurredAt: new Date("2026-08-01T00:00:00.000Z"),
+    });
+    const push = atom({
+      source: BranchActivitySource.PushLoc,
+      sourceEventId: "push-delivery-1",
+      occurredAt: new Date("2099-01-01T00:00:00.000Z"),
+    });
+
+    expect(latestEligibleCloudBranchActivityAtom(row([push, older]))).toEqual(
+      older
+    );
+    // Literals, not the const members, so a renamed or deleted member cannot
+    // make the list agree with its own mistake.
+    expect(canonicalBranchActivitySources).not.toContain("push_loc");
+    // Sibling positive, so the absence above cannot pass against an empty list.
+    expect(canonicalBranchActivitySources).toContain("git_head");
   });
 });
 

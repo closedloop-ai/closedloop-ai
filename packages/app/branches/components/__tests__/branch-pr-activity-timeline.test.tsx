@@ -4,14 +4,16 @@ import {
   BranchTraceSessionHydrationState,
   BranchTraceUnavailableReason,
 } from "@repo/api/src/types/branch-trace";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import {
   makeBranchDetail,
   makeBranchSession,
 } from "../../__tests__/branch-fixtures";
+import { BranchTimelineGrouping } from "../../lib/branch-session-buckets";
 import { BranchPrActivityTimeline } from "../branch-pr-activity-timeline";
+import { costStat } from "./branch-timeline-header-stats.test-helpers";
 
 const SESSIONS_RE = /2 sessions/;
 const NO_SESSIONS_RE = /no sessions on this branch yet/i;
@@ -31,9 +33,17 @@ const LATE_ACTIVITY_OMITTED_RE = /90-day timeline limit.*late-session/;
 const LONG_RUNNING_ACTIVITY_OMITTED_RE = /90-day timeline limit.*long-running/;
 const UNTIMED_TIMING_UNAVAILABLE_RE = /Timing is unavailable for untimed/;
 const COSIMO_PARTIAL_COST_RE = /Cosimo \$5\.00\*/;
+const GROUP_BY_NAME_RE = /group by/i;
+const PHASE_BAR_LABEL_RE = /Implement \$5\.00.*Review \$5\.00/;
 
 function bars(container: HTMLElement): HTMLElement[] {
   return Array.from(container.querySelectorAll<HTMLElement>(".bq-bar"));
+}
+
+function activeBars(container: HTMLElement): HTMLElement[] {
+  return Array.from(
+    container.querySelectorAll<HTMLElement>('.bq-bar:not([data-gap="true"])')
+  );
 }
 
 // FEA-3576 — bars segment by the human user and size by cost, so fixtures carry
@@ -110,7 +120,8 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
     const stats = container.querySelector(".bq-stats");
     expect(stats).toHaveTextContent("$25.00");
     expect(stats).not.toHaveTextContent("$100.00");
-    expect(stats).toHaveTextContent("LOC/$");
+    // Deletions are unset, so the ratio reads "—"; ISS-12207 drops the unit after it.
+    expect(stats).not.toHaveTextContent("LOC/$");
   });
 
   it("does not fall back from explicit null or zero attributed cost", () => {
@@ -129,7 +140,7 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
       />
     );
     expect(container.querySelector(".bq-stats")).toHaveTextContent(
-      "Unavailablecost"
+      "Unavailable cost"
     );
 
     rerender(
@@ -184,6 +195,79 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
     expect(segments?.[1]?.style.height).toBe("40%");
   });
 
+  it("switches Branch timeline grouping without changing the bar total", () => {
+    const start = Date.parse("2026-06-10T10:00:00.000Z");
+    const detail = makeBranchDetail({
+      estimatedCostUsd: 10,
+      sessions: [
+        makeBranchSession({
+          sessionId: "s1",
+          startedAt: "2026-06-10T10:00:00.000Z",
+          endedAt: "2026-06-10T11:00:00.000Z",
+          estimatedCostUsd: 10,
+          ownerUserName: "Cosimo",
+          activitySegments: [
+            {
+              confidence: 1,
+              costUsd: 5,
+              inputTokens: 500,
+              outputTokens: 0,
+              phase: "implement",
+              startMs: start,
+              endMs: start + 30 * 60_000,
+            },
+            {
+              confidence: 1,
+              costUsd: 5,
+              inputTokens: 500,
+              outputTokens: 0,
+              phase: "review",
+              startMs: start + 30 * 60_000,
+              endMs: start + 60 * 60_000,
+            },
+          ],
+        }),
+      ],
+    });
+    const onGroupingChange = vi.fn();
+    const onScrubHour = vi.fn();
+    const { container, rerender } = render(
+      <BranchPrActivityTimeline
+        detail={detail}
+        grouping={BranchTimelineGrouping.SessionOwner}
+        onGroupingChange={onGroupingChange}
+        onScrubHour={onScrubHour}
+      />
+    );
+
+    expect(
+      screen.getByRole("combobox", { name: GROUP_BY_NAME_RE })
+    ).toHaveTextContent("Session owner");
+    expect(activeBars(container)[0]).toHaveAttribute(
+      "aria-label",
+      expect.stringContaining("Cosimo $10.00")
+    );
+
+    rerender(
+      <BranchPrActivityTimeline
+        detail={detail}
+        grouping={BranchTimelineGrouping.ActivityPhase}
+        onGroupingChange={onGroupingChange}
+        onScrubHour={onScrubHour}
+      />
+    );
+
+    expect(
+      screen.getByRole("combobox", { name: GROUP_BY_NAME_RE })
+    ).toHaveTextContent("Activity phase");
+    expect(container.querySelector(".bq-stats")).toHaveTextContent("$10.00");
+    expect(activeBars(container)[0]).toHaveAttribute(
+      "aria-label",
+      expect.stringMatching(PHASE_BAR_LABEL_RE)
+    );
+    expect(container.querySelectorAll("[data-actor-key]")).toHaveLength(2);
+  });
+
   it("uses the rendered subtotal when Branch-level cost is unavailable", () => {
     const detail = makeBranchDetail({
       additions: 60,
@@ -202,7 +286,7 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
 
     render(<BranchPrActivityTimeline detail={detail} />);
 
-    expect(screen.getByText("$6.00")).toBeInTheDocument();
+    expect(within(costStat()).getByText("$6.00")).toBeInTheDocument();
     expect(screen.getByText("—", { exact: true })).toBeInTheDocument();
   });
 
@@ -319,7 +403,7 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
     const { container } = render(<BranchPrActivityTimeline detail={detail} />);
 
     expect(bars(container)).toHaveLength(1);
-    const chartableCost = screen.getByText("$5.00*");
+    const chartableCost = within(costStat()).getByText("$5.00*");
     expect(chartableCost).toHaveAccessibleDescription(
       SES_2_TIMING_UNAVAILABLE_RE
     );
@@ -358,7 +442,7 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
       <BranchPrActivityTimeline detail={detail} onScrubHour={vi.fn()} />
     );
 
-    expect(screen.getByText("$5.00*")).toHaveAccessibleDescription(
+    expect(within(costStat()).getByText("$5.00*")).toHaveAccessibleDescription(
       LATE_ACTIVITY_OMITTED_RE
     );
     expect(screen.getByText("129600m 0s*")).toHaveAccessibleDescription(
@@ -388,7 +472,7 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
       <BranchPrActivityTimeline detail={detail} onScrubHour={vi.fn()} />
     );
 
-    expect(screen.getByText("$90.00*")).toHaveAccessibleDescription(
+    expect(within(costStat()).getByText("$90.00*")).toHaveAccessibleDescription(
       LONG_RUNNING_ACTIVITY_OMITTED_RE
     );
     expect(screen.getByText("129600m 0s*")).toHaveAccessibleDescription(
@@ -433,7 +517,7 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
       <BranchPrActivityTimeline detail={detail} onScrubHour={vi.fn()} />
     );
 
-    const chartableCost = screen.getByText("$5.00*");
+    const chartableCost = within(costStat()).getByText("$5.00*");
     expect(chartableCost).toHaveAccessibleDescription(
       UNTIMED_TIMING_UNAVAILABLE_RE
     );
@@ -651,7 +735,7 @@ describe("BranchPrActivityTimeline (E1, per-user cost)", () => {
       />
     );
 
-    expect(screen.getByText("$2.00*")).toBeInTheDocument();
+    expect(within(costStat()).getByText("$2.00*")).toBeInTheDocument();
     expect(screen.getByText("10*")).toBeInTheDocument();
     expect(screen.getByText("LOC/$")).toBeInTheDocument();
   });

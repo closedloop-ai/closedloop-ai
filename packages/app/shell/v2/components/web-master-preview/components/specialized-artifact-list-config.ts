@@ -1,0 +1,498 @@
+import type { ArtifactCreationConfig } from "@repo/app/shared/components/generic-artifact-surface/preview/components/artifact-creation";
+import type { ArtifactListSummaryMetric } from "@repo/app/shared/components/generic-artifact-surface/preview/components/artifact-shells";
+import {
+  ArtifactKind,
+  ArtifactStatus,
+  type GenericArtifact,
+} from "@repo/app/shared/components/generic-artifact-surface/preview/fixtures";
+import { MetricPolarity } from "@repo/design-system/components/ui/primitives/metric-polarity";
+import { sessionRows } from "../../../../../agents/components/sessions/web-master-legacy-preview/mock"; // Cross-slice: preview shell hosts the Sessions preview (ISS-12938).
+import {
+  agentColumns,
+  agentSummaryMetricDefinitions,
+  buildAgentSummaryMetrics,
+} from "./agent-artifact-specialization";
+import {
+  buildPrototypeSummaryMetrics,
+  prototypeColumns,
+  prototypeSummaryMetricDefinitions,
+} from "./prototype-artifact-specialization";
+import { columnsForKind } from "./specialized-artifact-columns";
+import type { SpecializedArtifactKind } from "./specialized-artifact-kinds";
+
+export function creationConfigForKind(
+  kind: SpecializedArtifactKind
+): ArtifactCreationConfig {
+  if (kind === "documents") {
+    return {
+      description:
+        "Create the document record and metadata, then continue authoring in the document editor.",
+      fields: [
+        {
+          id: "document-type",
+          label: "Document type",
+          options: ["PRD", "Product brief", "Technical design", "Reference"],
+          required: true,
+          type: "select",
+        },
+        {
+          id: "approval",
+          label: "Review state",
+          options: ["Draft", "Ready for feedback", "Approved"],
+          type: "select",
+        },
+      ],
+      kind: ArtifactKind.Document,
+      noun: "document",
+      slugPrefix: "DOC",
+    };
+  }
+  if (kind === "issues" || kind === "issues-v2") {
+    return {
+      description:
+        "Create a unit of work with planning metadata. The work definition can be expanded after creation.",
+      fields: [
+        {
+          id: "priority",
+          label: "Priority",
+          options: ["P0", "P1", "P2", "P3"],
+          required: true,
+          type: "select",
+        },
+        {
+          id: "sprint",
+          label: "Sprint",
+          options: ["Current sprint", "August strategic", "Backlog"],
+          type: "select",
+        },
+        {
+          id: "estimate",
+          label: "Estimate",
+          options: ["1 point", "2 points", "3 points", "5 points", "8 points"],
+          type: "select",
+        },
+        {
+          id: "dependencies",
+          label: "Dependency notes",
+          placeholder: "Describe blockers or linked dependencies",
+          type: "text",
+        },
+      ],
+      includeRepository: true,
+      kind: ArtifactKind.Issue,
+      noun: "issue",
+      slugPrefix: "FEA",
+    };
+  }
+  if (kind === "agents") {
+    return {
+      description:
+        "Create a reusable agentic component definition. Runtime usage and related sessions are derived after creation.",
+      fields: [
+        {
+          id: "component-type",
+          label: "Component type",
+          options: [
+            "Agent",
+            "Command",
+            "Skill",
+            "Workflow",
+            "MCP tool",
+            "Hook",
+            "Memory & config",
+            "Plugin",
+            "Tool",
+            "Orchestration",
+          ],
+          required: true,
+          type: "select",
+        },
+        {
+          id: "harness",
+          label: "Harness",
+          options: ["Claude", "Codex", "Multiple harnesses"],
+          type: "select",
+        },
+        {
+          id: "source",
+          label: "Source path",
+          placeholder: ".codex/agents/example.md",
+          type: "text",
+        },
+        {
+          id: "definition",
+          label: "Initial definition",
+          placeholder: "Describe instructions, model, and allowed tools",
+          type: "textarea",
+        },
+      ],
+      includeRepository: true,
+      kind: ArtifactKind.Agent,
+      noun: "agentic component",
+      slugPrefix: "AGT",
+    };
+  }
+  if (kind === "prototypes") {
+    return {
+      description:
+        "Create a prototype record and preview target. Visual comment anchors are available after creation.",
+      fields: [
+        {
+          id: "prototype-version",
+          label: "Starting version",
+          placeholder: "1",
+          type: "text",
+        },
+        {
+          id: "preview",
+          label: "Preview URL",
+          placeholder: "https://prototypes.preview…",
+          type: "text",
+        },
+        {
+          id: "branch",
+          label: "Branch",
+          placeholder: "prototype/concept-name",
+          type: "text",
+        },
+      ],
+      includeRepository: true,
+      kind: ArtifactKind.Prototype,
+      noun: "prototype",
+      slugPrefix: "PRT",
+    };
+  }
+  return {
+    description:
+      "Sessions are generated by a harness and cannot be created manually.",
+    kind: ArtifactKind.Session,
+    noun: "session",
+    slugPrefix: "SES",
+  };
+}
+
+export function statusBoardForKind(kind: SpecializedArtifactKind) {
+  return {
+    editable: kind !== "sessions",
+    sourceLabel:
+      kind === "sessions" ? "Managed by the session runtime" : undefined,
+  };
+}
+
+export function routeKeyForArtifact(
+  kind: SpecializedArtifactKind,
+  artifact: GenericArtifact
+): string {
+  if (kind === "documents" || kind === "issues" || kind === "issues-v2") {
+    return artifact.slug;
+  }
+  return artifact.id;
+}
+
+export function listSpecializationForKind(kind: SpecializedArtifactKind) {
+  const standardColumns = [
+    "owner",
+    "collaborators",
+    "status",
+    "relatedSessions",
+    "comments",
+    "updated",
+    "currentVersion",
+    "tags",
+  ];
+  if (kind === "agents") {
+    return {
+      buildSummaryMetrics: buildAgentSummaryMetrics,
+      columns: agentColumns,
+      defaultVisibleColumnIds: [
+        ...standardColumns,
+        "component-type",
+        "harness",
+        "invocations",
+      ],
+      excludedColumnIds: [],
+      metricDefinitions: agentSummaryMetricDefinitions,
+    };
+  }
+  if (kind === "prototypes") {
+    return {
+      buildSummaryMetrics: buildPrototypeSummaryMetrics,
+      columns: prototypeColumns,
+      defaultVisibleColumnIds: [
+        ...standardColumns,
+        "prototype-version",
+        "open-comments",
+        "preview",
+      ],
+      excludedColumnIds: [],
+      metricDefinitions: prototypeSummaryMetricDefinitions,
+    };
+  }
+  const baseKind = kind === "issues-v2" ? "issues" : kind;
+  const metricDefinitions = specializedMetricDefinitions[baseKind];
+  let excludedColumnIds: string[] = [];
+  if (kind === "sessions") {
+    excludedColumnIds = ["currentVersion", "relatedSessions"];
+  } else if (kind === "issues-v2") {
+    excludedColumnIds = ["currentVersion"];
+  }
+  return {
+    buildSummaryMetrics: (artifacts: readonly GenericArtifact[]) =>
+      buildSpecializedSummaryMetrics(baseKind, artifacts),
+    columns: columnsForKind(kind),
+    defaultVisibleColumnIds:
+      kind === "issues-v2"
+        ? defaultVisibleColumns.issues.filter(
+            (columnId) => columnId !== "currentVersion"
+          )
+        : defaultVisibleColumns[baseKind],
+    excludedColumnIds,
+    metricDefinitions,
+  };
+}
+
+const defaultVisibleColumns = {
+  documents: [
+    "owner",
+    "collaborators",
+    "status",
+    "relatedSessions",
+    "comments",
+    "updated",
+    "currentVersion",
+    "tags",
+    "document-type",
+    "approval",
+  ],
+  issues: [
+    "owner",
+    "collaborators",
+    "status",
+    "relatedSessions",
+    "comments",
+    "updated",
+    "currentVersion",
+    "tags",
+    "priority",
+    "sprint",
+    "estimate",
+    "dependencies",
+  ],
+  sessions: [
+    "owner",
+    "collaborators",
+    "status",
+    "comments",
+    "updated",
+    "tags",
+    "harness",
+    "model",
+    "autonomy",
+    "related-branches",
+    "duration",
+    "api-cost",
+    "estimated-subscription-cost",
+    "total-estimated-cost",
+  ],
+} as const;
+
+const specializedMetricDefinitions = {
+  documents: [
+    summaryDefinition(
+      "documents",
+      "Documents",
+      "Matching documents",
+      "Count of documents in the current view.",
+      12
+    ),
+    summaryDefinition(
+      "total-cost",
+      "Est. Total",
+      "Known API costs plus estimated subscription costs",
+      "Adds direct API charges to the API-equivalent estimate of subscription-based token usage from writing and revision sessions.",
+      8,
+      MetricPolarity.LowerIsBetter
+    ),
+    summaryDefinition(
+      "median-cost",
+      "Median token cost",
+      "Typical document cost",
+      "Median attributed cost per document.",
+      -6,
+      MetricPolarity.LowerIsBetter
+    ),
+    summaryDefinition(
+      "metric-four",
+      "Metric #4",
+      "Artifact-specific metric",
+      "Reserved for a document metric selected by the implementing product team.",
+      -14
+    ),
+    summaryDefinition(
+      "metric-five",
+      "Metric #5",
+      "Artifact-specific outcome",
+      "Reserved for a document outcome selected by the implementing product team.",
+      6
+    ),
+  ],
+  issues: [
+    summaryDefinition(
+      "issues",
+      "Issues",
+      "Matching issues",
+      "Count of issues in the current view.",
+      12
+    ),
+    summaryDefinition(
+      "total-cost",
+      "Est. Total",
+      "Known API costs plus estimated subscription costs",
+      "Adds direct API charges to the API-equivalent estimate of subscription-based token usage from creation and revision sessions.",
+      8,
+      MetricPolarity.LowerIsBetter
+    ),
+    summaryDefinition(
+      "median-cost",
+      "Median token cost",
+      "Typical issue cost",
+      "Median attributed cost per issue.",
+      -6,
+      MetricPolarity.LowerIsBetter
+    ),
+    summaryDefinition(
+      "active-rate",
+      "Active work",
+      "Issues in progress",
+      "Share of matched issues that are active or in review.",
+      5
+    ),
+    summaryDefinition(
+      "median-score",
+      "Median outcome score",
+      "Issue outcome",
+      "Median outcome score for matched issues.",
+      7,
+      MetricPolarity.LowerIsBetter
+    ),
+  ],
+  sessions: [
+    summaryDefinition(
+      "sessions",
+      "Sessions",
+      "Matching sessions",
+      "Count of sessions in the current view.",
+      12
+    ),
+    summaryDefinition(
+      "api-cost",
+      "API cost",
+      "Usage billed through APIs",
+      "Sum of direct usage-based API charges for matched sessions.",
+      8,
+      MetricPolarity.LowerIsBetter
+    ),
+    summaryDefinition(
+      "estimated-subscription-cost",
+      "Estimated subscription cost",
+      "Subscription usage at API-equivalent rates",
+      "Estimated API-equivalent cost of subscription-based token usage for matched sessions.",
+      -6,
+      MetricPolarity.LowerIsBetter
+    ),
+    summaryDefinition(
+      "total-estimated-cost",
+      "Est. Total",
+      "Known API costs plus estimated subscription costs",
+      "Adds direct API charges to the API-equivalent estimate of subscription-based token usage for matched sessions.",
+      7,
+      MetricPolarity.LowerIsBetter
+    ),
+  ],
+} as const;
+
+// Polarity defaults to Neutral: for an inventory count a rise is neither a win
+// nor a loss, and the metric card must not claim a verdict the metric does not
+// carry. Cost metrics pass LowerIsBetter explicitly.
+export function summaryDefinition(
+  key: string,
+  label: string,
+  what: string,
+  how: string,
+  delta: number,
+  deltaPolarity: MetricPolarity = MetricPolarity.Neutral
+) {
+  return { delta, deltaPolarity, info: { how, what }, key, label };
+}
+
+/** Median of a numeric series; 0 for an empty one. */
+export function middle(values: readonly number[]): number {
+  if (values.length === 0) {
+    return 0;
+  }
+  const sorted = [...values].sort((left, right) => left - right);
+  const midpoint = Math.floor(sorted.length / 2);
+  return sorted.length % 2
+    ? (sorted[midpoint] ?? 0)
+    : ((sorted[midpoint - 1] ?? 0) + (sorted[midpoint] ?? 0)) / 2;
+}
+
+function buildSpecializedSummaryMetrics(
+  kind: "documents" | "issues" | "sessions",
+  artifacts: readonly GenericArtifact[]
+): ArtifactListSummaryMetric[] {
+  const costs = artifacts.map((artifact) => artifact.aiSpend);
+  const scores = artifacts.map((artifact) => artifact.outcomeScore);
+  const totalCost = artifacts.reduce(
+    (total, artifact) => total + artifact.aiSpend,
+    0
+  );
+  let values: readonly string[];
+  if (kind === "documents") {
+    values = [
+      String(artifacts.length),
+      `$${totalCost.toFixed(2)}`,
+      `$${middle(costs).toFixed(2)}`,
+      String(
+        Math.round(middle(artifacts.map((artifact) => artifact.activityCount)))
+      ),
+      `${Math.round(middle(scores))}%`,
+    ];
+  } else if (kind === "issues") {
+    const active = artifacts.filter((artifact) =>
+      (
+        [
+          ArtifactStatus.Active,
+          ArtifactStatus.InReview,
+        ] as readonly ArtifactStatus[]
+      ).includes(artifact.status)
+    ).length;
+    values = [
+      String(artifacts.length),
+      `$${totalCost.toFixed(2)}`,
+      `$${middle(costs).toFixed(2)}`,
+      `${artifacts.length ? Math.round((active / artifacts.length) * 100) : 0}%`,
+      `${Math.round(middle(scores))}%`,
+    ];
+  } else {
+    const matchedRows = artifacts.flatMap((artifact) => {
+      const row = sessionRows.find((candidate) => candidate.id === artifact.id);
+      return row ? [row] : [];
+    });
+    const apiCost = matchedRows.reduce((sum, row) => sum + row.cost, 0);
+    const subscriptionCost = matchedRows.reduce(
+      (sum, row) => sum + row.apiEquivalentCost,
+      0
+    );
+    values = [
+      String(artifacts.length),
+      `$${apiCost.toFixed(2)}`,
+      `$${subscriptionCost.toFixed(2)}`,
+      `$${(apiCost + subscriptionCost).toFixed(2)}`,
+    ];
+  }
+  return specializedMetricDefinitions[kind].map((definition, index) => ({
+    ...definition,
+    value: values[index] ?? "0",
+  }));
+}

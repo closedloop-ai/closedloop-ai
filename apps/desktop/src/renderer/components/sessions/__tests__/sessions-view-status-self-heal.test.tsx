@@ -1,4 +1,5 @@
-import { cleanup, fireEvent, screen } from "@testing-library/react";
+import { SESSIONS_LIST_LOADING_LABEL } from "@repo/app/agents/components/sessions/sessions-list-loading-labels";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   actAndFlush,
@@ -9,6 +10,23 @@ import {
   restoreDesktopApi,
 } from "./fixtures/sessions-view-render-fixture";
 
+// ISS-8909: `SessionsView` mounts the v2 surface unconditionally now, so the v1
+// body marker these cases read is no longer rendered. The
+// subject here is the HOST's decision — which read state and how many rows it
+// hands down — so the surface is stood down to the same marker, echoing the same
+// two signals. The real v2 surface is covered by its own suites.
+vi.mock("../sessions-v2-view", () => ({
+  SessionsV2View: (props: {
+    input: { isSessionsTableLoading?: boolean; items?: unknown[] };
+  }) => (
+    <div
+      data-is-loading={props.input.isSessionsTableLoading ? "true" : "false"}
+      data-item-count={props.input.items?.length ?? 0}
+      data-testid="sessions-table-body"
+    />
+  ),
+}));
+
 /**
  * ISS-4772 (Step 3): the local-source status latch self-heals on tab
  * visibility / window focus. The 500ms self-poll only runs while the status is
@@ -17,18 +35,17 @@ import {
  * This mounts SessionsView in LOCAL mode with the probe first stuck (never
  * resolving), then flips the probe to resolve "ready" and fires a
  * `visibilitychange` / `focus`. The bounded re-probe must re-read the status so
- * the latch flips to ready WITHOUT a remount — the full-body spinner clears once
- * the source reports ready (with the query still empty, the ready source shows
- * the honest empty state, not the "Loading sessions..." starting spinner).
+ * the latch flips to ready WITHOUT a remount. A settled current read already
+ * keeps the list visible over a stale "starting" label, so this suite proves
+ * the probe still fires while preserving the honest empty state.
  *
  * ISS-4837: the module mocks, hook baseline, `window.desktopApi` descriptor
  * handling and the render/flush helper live in the shared
  * `./fixtures/sessions-view-render-fixture` module, shared with
  * `sessions-view-data-wins-render`. Only this suite's own overrides stay here.
  * The fixture's default page-data read is the empty settled query this suite
- * needs: with a "starting" source the body spins; with a "ready" source the same
- * empty query yields the honest empty state, so the label flip is the observable
- * heal.
+ * needs: even with a "starting" source, current list data keeps the body on the
+ * honest empty state while the focus/visibility probes heal the source label.
  *
  * The transient-REJECTION half of the re-probe contract (ISS-4840 — a healthy
  * `ready` view must not flip to `unavailable` on one dropped call) is pinned
@@ -46,7 +63,7 @@ describe("SessionsView status latch self-heal (ISS-4772)", () => {
     restoreDesktopApi();
   });
 
-  it("re-probes the local source on window focus and flips a latched starting to ready without a remount", async () => {
+  it("re-probes the local source on window focus without returning to the starting spinner", async () => {
     // The probe is stuck (never resolves) on the initial mount call, so the
     // status stays latched on the initial "starting". A later call (fired by the
     // focus re-probe) resolves "ready".
@@ -58,8 +75,18 @@ describe("SessionsView status latch self-heal (ISS-4772)", () => {
 
     await renderSessionsView();
 
-    // Latched starting → full-body "Loading sessions..." spinner.
-    expect(screen.getByText("Loading sessions...")).toBeTruthy();
+    // The settled empty read keeps the list visible over the stale starting
+    // source label; the self-heal probe below must not regress it to a spinner.
+    // Awaited because ISS-11913 holds an empty default-window list on its
+    // loading treatment until the outside-window probe answers.
+    expect(screen.queryByText(SESSIONS_LIST_LOADING_LABEL)).toBeNull();
+    await waitFor(() =>
+      expect(
+        screen
+          .getByTestId("sessions-table-body")
+          .getAttribute("data-is-loading")
+      ).toBe("false")
+    );
     expect(getAgentMonitorUrl).toHaveBeenCalledTimes(1);
 
     // Return to the window: the bounded re-probe fires a fresh status read (the
@@ -71,7 +98,7 @@ describe("SessionsView status latch self-heal (ISS-4772)", () => {
 
     expect(getAgentMonitorUrl.mock.calls.length).toBeGreaterThan(1);
     // The latch healed to ready without a remount: the starting spinner is gone.
-    expect(screen.queryByText("Loading sessions...")).toBeNull();
+    expect(screen.queryByText(SESSIONS_LIST_LOADING_LABEL)).toBeNull();
     expect(
       screen.getByTestId("sessions-table-body").getAttribute("data-is-loading")
     ).toBe("false");
@@ -92,6 +119,6 @@ describe("SessionsView status latch self-heal (ISS-4772)", () => {
     });
 
     expect(getAgentMonitorUrl.mock.calls.length).toBeGreaterThan(1);
-    expect(screen.queryByText("Loading sessions...")).toBeNull();
+    expect(screen.queryByText(SESSIONS_LIST_LOADING_LABEL)).toBeNull();
   });
 });

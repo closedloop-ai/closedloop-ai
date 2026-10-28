@@ -5,16 +5,22 @@
  * table's arrangement — the caller decides what an arrangement *is* (its opaque
  * `arrangement` payload: column order + visibility + sort + filters, and — once
  * FEA-4168 lands — column widths), and this module owns only the collection
- * shape and the pure create/rename/switch/delete transforms plus a fail-soft
- * parser. Kept as pure functions over the collection so they unit-test in
- * isolation and stay shared by any table without pulling a feature slice into
- * the design system.
+ * shape and the pure create/rename/switch/delete transforms. Kept as pure
+ * functions over the collection so they unit-test in isolation and stay shared
+ * by any table without pulling a feature slice into the design system.
  *
  * The arrangement payload is intentionally opaque (`TArrangement`): the model
  * never inspects it, so a caller can widen it additively (e.g. slot
  * `columnWidths` into a saved view once FEA-4168 merges) without touching this
- * module. Version skew degrades gracefully — an unknown/malformed persisted
- * blob parses to an empty collection rather than throwing.
+ * module.
+ *
+ * PARSING AND STORAGE ARE NOT HERE, and this docstring used to say otherwise
+ * (corrected under ISS-9447). This module exports no parser and touches no
+ * storage: `packages/app/shared/hooks/use-persisted-saved-views.ts` owns the
+ * `localStorage` object, and the fail-soft parser that degrades an
+ * unknown/malformed blob to {@link emptySavedViewCollection} rather than
+ * throwing lives with the arrangement schema it validates, in
+ * `packages/app/<feature>/lib/*-saved-views.ts`.
  */
 
 /** A single named saved view: a stable id, a display name, and the opaque arrangement. */

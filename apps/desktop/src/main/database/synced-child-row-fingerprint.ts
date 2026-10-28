@@ -4,7 +4,7 @@
  * re-derived session actually differs from the stored one.
  *
  * Extracted from `sqlite.ts` (ISS-4591, PR #4115 review): that file is a
- * grandfathered god-object the root `AGENTS.md` marks shrink-only, and this
+ * god-object the root `AGENTS.md` file-size discipline applies to, and this
  * fingerprint is a cohesive unit with its own contract. Living here also lets it
  * be exercised directly instead of only through a full database open.
  *
@@ -33,7 +33,7 @@ export type FingerprintQueryable = {
  * A libSQL build lacking `sha3()` / in-aggregate `ORDER BY` reports itself
  * through one of these. Anything else (busy, I/O, adapter transport) is
  * TRANSIENT and must not be cached as "unsupported" — doing so would let one
- * blip permanently downgrade the process to the blind legacy checksum.
+ * blip permanently downgrade the process to the portable checksum.
  */
 const UNSUPPORTED_FEATURE_MARKERS = [
   "no such function",
@@ -53,13 +53,13 @@ export function isUnsupportedFeatureError(error: unknown): boolean {
  * (bundled `ext/misc/shathree.c`) plus in-aggregate `ORDER BY` (SQLite 3.44+).
  * Both ship in every `@libsql/*` platform binary we package, so this resolves
  * true in practice; the probe exists so a build that somehow lacks them degrades
- * to the legacy checksum instead of failing every rebuild.
+ * to the portable checksum instead of failing every rebuild.
  *
  * The result is cached ONLY when it is conclusive — a recognized
  * unsupported-feature error, or success. A transient failure is retried on the
  * next call rather than memoized, so a single busy/I/O blip cannot permanently
- * strand the process on the blind gate. The fallback logs loudly because it
- * silently reinstates the blindness ISS-4591 exists to remove.
+ * strand the process on the fallback gate. The fallback logs because it is
+ * slower than the packaged SHA3 path, even though it covers the same content.
  */
 export function createRowDigestProbe(
   reader: FingerprintQueryable,
@@ -76,14 +76,14 @@ export function createRowDigestProbe(
         const message = error instanceof Error ? error.message : String(error);
         if (isUnsupportedFeatureError(error)) {
           log(
-            `sqlite row-digest fingerprint unavailable on this build, falling back to the legacy child-row checksum (equal-length changes will not be detected): ${message}`
+            `sqlite row-digest fingerprint unavailable on this build, falling back to the portable child-row checksum: ${message}`
           );
           return false;
         }
         // Transient: drop the memo so the next rebuild probes again.
         cached = null;
         log(
-          `sqlite row-digest probe failed transiently, using the legacy child-row checksum for this attempt only: ${message}`
+          `sqlite row-digest probe failed transiently, using the portable child-row checksum for this attempt only: ${message}`
         );
         return false;
       });
@@ -94,14 +94,10 @@ export function createRowDigestProbe(
 /**
  * A deterministic fingerprint of the synced child-row projections of one session.
  *
- * `hasRowDigest` selects the REAL gate (a SHA3-256 digest per row, folded into
- * one digest per table) over the legacy fallback. The legacy checksum sums row
- * LENGTHS, counts rows, and samples only the FIRST character of the
- * concatenation, so ANY equal-length substitution past column one is invisible
- * to it — a spike over the frozen golden corpus recorded 971 blind observations
- * across 53 of 56 synced columns (`start_ms`/`end_ms` are uniformly 13-digit
- * epochs, `events.id` is 36 chars, `is_primary` is one). `refChecksum` was the
- * FEA-4010 (AA-10) point fix for exactly one column; the row digest subsumes it.
+ * `hasRowDigest` selects the packaged SHA3-256 digest per row. A build without
+ * that extension uses two portable modular rolling checksums over every
+ * character in the same injective row encoding. Unlike the pre-ISS-8876
+ * length/count fallback, an equal-length substitution changes this signal.
  *
  * `ORDER BY` inside the aggregate (SQLite 3.44+) is what makes the fold
  * order-independent: per-row digests are sorted before concatenation, so
@@ -114,13 +110,30 @@ export async function computeSyncedChildRowFingerprint(
 ): Promise<string> {
   const parts: string[] = [];
   for (const projection of SYNCED_CHILD_ROW_PROJECTIONS) {
-    const sql = hasRowDigest
-      ? rowDigestSql(projection)
-      : legacyChecksumSql(projection);
-    const [row] = await tx.$queryRawUnsafe<{ fp: string }[]>(sql, sessionId);
-    parts.push(row?.fp ?? "");
+    parts.push(
+      await computeProjectionFingerprint(
+        tx,
+        projection,
+        sessionId,
+        hasRowDigest
+      )
+    );
   }
   return parts.join("#");
+}
+
+/** One projection's fold, shared by the whole-session gate and the events-only one. */
+async function computeProjectionFingerprint(
+  tx: FingerprintQueryable,
+  projection: SyncedChildRowProjection,
+  sessionId: string,
+  hasRowDigest: boolean
+): Promise<string> {
+  const sql = hasRowDigest
+    ? rowDigestSql(projection)
+    : portableRowChecksumSql(projection);
+  const [row] = await tx.$queryRawUnsafe<{ fp: string }[]>(sql, sessionId);
+  return row?.fp ?? "";
 }
 
 /**
@@ -140,42 +153,74 @@ function rowDigestSql(projection: SyncedChildRowProjection): string {
                     FROM ${projection.table} WHERE session_id = $1)`;
 }
 
-/** The pre-ISS-4591 gate, retained only for a build without `sha3()`. */
-function legacyChecksumSql(projection: SyncedChildRowProjection): string {
-  const cols = projection.columns
-    .map((column) => `COALESCE(${column},'')`)
-    .join("||'|'||");
-  const checksum =
-    `COALESCE(SUM(LENGTH(${cols})), 0) || ':' || COUNT(*) || ':' || ` +
-    `COALESCE(SUM(UNICODE(SUBSTR(${cols} || 'x', 1, 1))), 0)`;
-  const refSupplement = projection.legacyRefColumn
-    ? ` || ':' || ${refChecksumSql(projection.legacyRefColumn)}`
-    : "";
-  return `SELECT ${checksum}${refSupplement} AS fp FROM ${projection.table} WHERE session_id = $1`;
-}
-
 /**
- * FEA-4010 (AA-10): a position-weighted character sum over a fixed 12-character
- * right-aligned window, so a same-width slug swap moves the legacy checksum.
- * Subsumed by the row digest; still applied on the legacy branch so a fallback
- * build keeps the behavior AA-10 shipped.
+ * The fallback for a SQLite build without SHA3 or aggregate-local ordering.
+ * It hashes every character of the same injective JSON row encoding with two
+ * independent 31-bit modular folds, then sorts the fixed-width row checksums in
+ * a subquery before concatenation. The sort makes physical row order irrelevant;
+ * repeated equal rows remain repeated in the final fingerprint.
+ *
+ * `rowid` is only a recursion key. All projected tables are ordinary SQLite
+ * rowid tables; it is deliberately excluded from the checksum so a replace-all
+ * import that preserves content remains a no-op. The arithmetic stays below
+ * 2^53 before each modulus, avoiding SQLite's integer-to-REAL overflow path.
  */
-function refChecksumSql(column: string): string {
-  const window = `SUBSTR('${" ".repeat(REF_CHECKSUM_WIDTH)}' || COALESCE(${column}, ''), -${REF_CHECKSUM_WIDTH})`;
-  const terms = REF_CHECKSUM_WEIGHTS.map(
-    (weight, index) => `${weight} * UNICODE(SUBSTR(${window}, ${index + 1}, 1))`
-  ).join(" + ");
-  return `COALESCE(SUM(${terms}), 0)`;
+function portableRowChecksumSql(projection: SyncedChildRowProjection): string {
+  const encoded = `json_array(${projection.columns.join(", ")})`;
+  return `WITH RECURSIVE
+            encoded_rows(row_key, encoded) AS (
+              SELECT rowid, ${encoded}
+                FROM ${projection.table} WHERE session_id = $1
+            ),
+            character_folds(row_key, character_index, checksum_a, checksum_b) AS (
+              SELECT row_key, 1, ${PORTABLE_CHECKSUM_SEED_A}, ${PORTABLE_CHECKSUM_SEED_B}
+                FROM encoded_rows
+              UNION ALL
+              SELECT folds.row_key,
+                     folds.character_index + 1,
+                     (folds.checksum_a * ${PORTABLE_CHECKSUM_MULTIPLIER_A} + UNICODE(SUBSTR(rows.encoded, folds.character_index, 1))) % ${PORTABLE_CHECKSUM_MODULUS_A},
+                     (folds.checksum_b * ${PORTABLE_CHECKSUM_MULTIPLIER_B} + UNICODE(SUBSTR(rows.encoded, folds.character_index, 1))) % ${PORTABLE_CHECKSUM_MODULUS_B}
+                FROM character_folds AS folds
+                JOIN encoded_rows AS rows ON rows.row_key = folds.row_key
+               WHERE folds.character_index <= LENGTH(rows.encoded)
+            ),
+            row_checksums(checksum) AS (
+              SELECT PRINTF('%08x%08x', folds.checksum_a, folds.checksum_b)
+                FROM character_folds AS folds
+                JOIN encoded_rows AS rows ON rows.row_key = folds.row_key
+               WHERE folds.character_index > LENGTH(rows.encoded)
+            )
+          SELECT COALESCE(GROUP_CONCAT(checksum, ''), '') AS fp
+            FROM (SELECT checksum FROM row_checksums ORDER BY checksum)`;
 }
-
-const REF_CHECKSUM_WIDTH = 12;
-const REF_CHECKSUM_WEIGHTS = [1, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37];
 
 type SyncedChildRowProjection = {
   table: string;
   columns: readonly string[];
-  /** Legacy-only supplement; subsumed by the row digest. */
-  legacyRefColumn?: string;
+};
+
+/**
+ * The `events` projection, named because TWO gates fold it: this module's
+ * whole-session fingerprint (the DATA_REVISION rebuild) and, through
+ * {@link computeSyncedEventRowFingerprint}, the events phase of the incremental
+ * import (ISS-8757). One declaration, so a column added to the sync payload
+ * reaches both gates or neither — a second copy here is the SSOT drift that
+ * would silently leave the incremental path blind to a field the rebuild sees.
+ *
+ * `created_at` is the event's transcript timestamp — it rides in the payload and
+ * a re-derivation can move it.
+ */
+const SYNCED_EVENT_ROW_PROJECTION: SyncedChildRowProjection = {
+  table: "events",
+  columns: [
+    "id",
+    "agent_id",
+    "event_type",
+    "tool_name",
+    "summary",
+    "data",
+    "created_at",
+  ],
 };
 
 /**
@@ -208,20 +253,7 @@ const SYNCED_CHILD_ROW_PROJECTIONS: readonly SyncedChildRowProjection[] = [
       "ended_at",
     ],
   },
-  {
-    table: "events",
-    // created_at is the event's transcript timestamp — it rides in the payload
-    // and a re-derivation can move it.
-    columns: [
-      "id",
-      "agent_id",
-      "event_type",
-      "tool_name",
-      "summary",
-      "data",
-      "created_at",
-    ],
-  },
+  SYNCED_EVENT_ROW_PROJECTION,
   {
     table: "token_usage",
     // baseline_* is the durable compaction ledger; the read sites fold it back
@@ -290,12 +322,12 @@ const SYNCED_CHILD_ROW_PROJECTIONS: readonly SyncedChildRowProjection[] = [
       "is_primary",
       "status",
       "observed_at",
-      "json_extract(evidence, '$.monitoredSessionActivity')",
+      "CASE WHEN json_valid(evidence) THEN json_extract(evidence, '$.monitoredSessionActivity') ELSE NULL END",
     ],
   },
   {
     table: "pull_requests",
-    columns: ["id", "repo_full_name", "pr_number", "branch_name", "state"],
+    columns: ["id", "repo_full_name", "pr_number", "branch_name"],
   },
   {
     table: "agent_component_session_usage",
@@ -326,6 +358,84 @@ const SYNCED_CHILD_ROW_PROJECTIONS: readonly SyncedChildRowProjection[] = [
       "work_item_ref",
       "subagent_id",
     ],
-    legacyRefColumn: "work_item_ref",
+  },
+  {
+    // ISS-10721: the activity-metrics rollup went onto the sync payload, so a
+    // rebuild that corrects ONLY this table (segments and everything else
+    // byte-identical — a coverage-formula bump is exactly that shape) is a real
+    // wire change the gate must see. Without the entry the rebuild computes
+    // `contentChanged = false`, the watermark never advances, and the corrected
+    // rollup is never re-selected by the sync cursor.
+    table: "session_activity_metrics",
+    columns: [
+      "autonomy_band",
+      "coverage",
+      "spend_low_conf_usd",
+      "spend_medium_conf_usd",
+      "spend_high_conf_usd",
+      "segment_count",
+      "covered_segment_count",
+      "version",
+      "metric_version",
+    ],
   },
 ];
+
+/**
+ * ISS-8757: the same fold as {@link computeSyncedChildRowFingerprint}, narrowed to
+ * the `events` projection, so the INCREMENTAL import path can bracket its events
+ * phase with a CONTENT signal instead of a population one.
+ *
+ * ISS-8699 bracketed that phase with the stored row COUNT, which answers only
+ * "were rows appended or removed". The reachable equal-cardinality case it cannot
+ * see is a tool call whose `tool_result` arrives on a later parse:
+ * `importToolEventData` then writes `isError` / `resultTimestamp` /
+ * `detail.tool_response` into `events.data`, while `deterministicEventId` — keyed
+ * on the tool_USE instant — keeps the row's id and the count stays put.
+ *
+ * WHAT THIS PROJECTION IS NOT: a list of the columns on the sync wire. It is the
+ * rebuild gate's projection, and it is a strict SUPERSET of them. FEA-2718
+ * removed `summary` and `data` from the cloud lane entirely — the drain hydrates
+ * with `omitEventData`, `sanitizeSessionForSync` rebuilds each event from five
+ * fields (`externalEventId`, `agentExternalId`, `eventType`, `toolName`,
+ * `createdAt`), the ingest schema accepts only those five, and
+ * `AgentSessionEvent` has no column to hold the rest. So a `data`-only change
+ * moves this digest and advances the watermark, and the re-upload it triggers
+ * carries a byte-identical event payload. Turn/tool detail reaches the cloud
+ * through the FEA-2717 transcript archive, on a lane this fold does not touch.
+ * ISS-8876 holds the open question of whether that re-selection is worth its cost.
+ *
+ * Directionality, stated exactly:
+ * - No false negative: every column the sync payload carries is in the digest, so
+ *   any durable change to a synced event column moves it.
+ * - False POSITIVES with respect to the wire, by the superset above: a change
+ *   confined to `summary`/`data` moves the digest without changing the payload.
+ * - No false positive with respect to the STORE: the projection excludes what
+ *   churns independently of content, and this phase re-derives events purely from
+ *   the parsed session (no clock, no `now`), so a byte-identical re-import folds
+ *   to the identical value and stays a true no-op. A signal that reported
+ *   "changed" every pass would re-sync the whole corpus forever.
+ *
+ * `hasRowDigest` false uses the ISS-8876 portable rolling checksum, NOT a silent
+ * return to the count. It folds every character of this same projection, so an
+ * equal-length substitution still moves the signal.
+ */
+export function computeSyncedEventRowFingerprint(
+  tx: FingerprintQueryable,
+  sessionId: string,
+  hasRowDigest: boolean
+): Promise<string> {
+  return computeProjectionFingerprint(
+    tx,
+    SYNCED_EVENT_ROW_PROJECTION,
+    sessionId,
+    hasRowDigest
+  );
+}
+
+const PORTABLE_CHECKSUM_SEED_A = 2_166_136_261;
+const PORTABLE_CHECKSUM_SEED_B = 5381;
+const PORTABLE_CHECKSUM_MULTIPLIER_A = 257;
+const PORTABLE_CHECKSUM_MULTIPLIER_B = 263;
+const PORTABLE_CHECKSUM_MODULUS_A = 2_147_483_647;
+const PORTABLE_CHECKSUM_MODULUS_B = 2_147_483_629;

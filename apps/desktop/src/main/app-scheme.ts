@@ -3,6 +3,16 @@ import type { CustomScheme } from "electron";
 /** The custom scheme the packaged renderer and prepared transcripts are served over. */
 export const APP_SCHEME = "app" as const;
 
+/** The host the packaged renderer document is served under. */
+export const APP_RENDERER_HOST = "renderer" as const;
+
+/**
+ * The `Origin` the packaged renderer's requests carry. The doc-sync service
+ * admits exactly this string (`DESKTOP_RENDERER_ORIGIN`, PLN-2189 T-4.5).
+ */
+export const APP_RENDERER_ORIGIN =
+  `${APP_SCHEME}://${APP_RENDERER_HOST}` as const;
+
 /**
  * Privileged-scheme registration for `app://` (FEA-3324 / FEA-3549 / FEA-3548).
  *

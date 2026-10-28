@@ -1,7 +1,6 @@
 import { TagEntityType } from "@repo/api/src/types/tag";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createWrapper } from "@repo/app/shared/test-utils";
 import { renderHook, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { useBatchApplyTag } from "../use-tags";
 
@@ -65,12 +64,3 @@ describe("useBatchApplyTag", () => {
     expect(result.current.error).toBe(error);
   });
 });
-
-function createWrapper() {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-  });
-  return ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-  );
-}

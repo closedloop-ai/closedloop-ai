@@ -54,8 +54,8 @@ export function resolveStageDependencySpec(
 }
 
 /**
- * Whether a workspace dependency is inlined into the bundle by electron-vite (or
- * Vite, for the renderer) and must therefore be dropped from the staged closure.
+ * Whether a workspace dependency is inlined into the bundle by Vite (the main
+ * build or the renderer) and must therefore be dropped from the staged closure.
  *
  * A member of the packed closure is NOT bundled — it is imported as an external
  * at runtime, so it is packed as a tarball and installed. Everything else that

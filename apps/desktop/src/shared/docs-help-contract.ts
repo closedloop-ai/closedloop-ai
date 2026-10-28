@@ -25,6 +25,15 @@
  */
 export const DOCS_HELP_VIEW_ONLINE_LABEL = "View online";
 
+/**
+ * The docs URL every Help state falls back to before `status` resolves.
+ *
+ * Beside the bundle it mirrors, and read by both flag branches: two copies can
+ * point the same "View online" label at two different destinations, and nothing
+ * but a reader would notice.
+ */
+export const DEFAULT_DOCS_SITE_URL = "https://closedloop.ai/docs";
+
 /** IPC channels for the docs-help bridge. */
 export const DocsHelpIpcChannel = {
   /** Full-text search over the local title/heading/body index. */

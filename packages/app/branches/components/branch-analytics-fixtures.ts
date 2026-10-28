@@ -1,8 +1,5 @@
-import type {
-  BranchAnalytics,
-  BranchBaselineScope,
-  BranchKpi,
-} from "@repo/api/src/types/branch";
+// gardener-support: test and story data, not shipped
+import type { BranchAnalytics, BranchKpi } from "@repo/api/src/types/branch";
 import { BranchKpiState, BranchViewerScope } from "@repo/api/src/types/branch";
 import {
   type BranchListMetricBundle,
@@ -84,33 +81,5 @@ export function makeBranchListMetrics(
     aiSpendUsd: unavailable,
     mergeRatePct: unavailable,
     ...overrides,
-  };
-}
-
-/**
- * An AVAILABLE KPI carrying a real 30-day baseline and the population it was
- * measured in (ISS-4686). The scope is required because `BranchKpiWithBaseline`
- * requires it — a fixture can no more build an unscoped baseline than a producer
- * can. `deltaPct` is settable independently of `value`/`baseline30d` so a suite
- * can pin the wire-vs-derived case: consumers derive the percentage themselves
- * and must ignore a contradictory one here.
- */
-export function baselinedKpi({
-  value,
-  baseline30d,
-  deltaPct,
-  comparisonScope,
-}: {
-  value: number;
-  baseline30d: number;
-  deltaPct: number | null;
-  comparisonScope: BranchBaselineScope;
-}): BranchKpi {
-  return {
-    value,
-    state: BranchKpiState.Available,
-    baseline30d,
-    deltaPct,
-    comparisonScope,
   };
 }

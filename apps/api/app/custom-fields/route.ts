@@ -1,13 +1,18 @@
+import { OperationKind } from "@repo/api/src/types/attribution-evidence";
 import type { CustomFieldWithOptions } from "@repo/api/src/types/custom-field";
-import { isOrgAdmin } from "@/lib/auth/org-admin";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { machineWriteReceipt } from "@/lib/machine-write-receipt";
+import {
+  withOperationReceipt,
+  withOperationReceipts,
+} from "@/lib/operation-receipts/operation-receipt-recorder";
 import {
   conflictResponse,
   errorResponse,
-  forbiddenResponse,
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
+import { requireCustomFieldsAdmin } from "./custom-fields-admin-gate";
 import { customFieldsService, DuplicateNameError } from "./service";
 import { ReservedNameError } from "./utils";
 import { createCustomFieldValidator } from "./validators";
@@ -29,38 +34,47 @@ export const GET = withAnyAuth<CustomFieldWithOptions[], "/custom-fields">(
 /**
  * POST /custom-fields - Create a new custom field definition (org admins only)
  */
-export const POST = withAnyAuth<CustomFieldWithOptions, "/custom-fields">(
-  async ({ user, clerkOrgId, clerkUserId }, request) => {
-    try {
-      const adminCheck = await isOrgAdmin(clerkOrgId, clerkUserId);
-      if (!adminCheck) {
-        return forbiddenResponse();
-      }
+export const POST = withAnyAuth(
+  withOperationReceipts<CustomFieldWithOptions, "/custom-fields">(
+    OperationKind.OrganizationWrite,
+    async ({ user, clerkOrgId, clerkUserId }, request, _params, receipts) => {
+      try {
+        const denial = await requireCustomFieldsAdmin(clerkOrgId, clerkUserId);
+        if (denial) {
+          return denial;
+        }
 
-      const { body, errorResponse: parseError } = await parseBody(
-        request,
-        createCustomFieldValidator
-      );
-      if (parseError) {
-        return parseError;
-      }
+        const { body, errorResponse: parseError } = await parseBody(
+          request,
+          createCustomFieldValidator
+        );
+        if (parseError) {
+          return parseError;
+        }
 
-      const field = await customFieldsService.createField(
-        user.organizationId,
-        user.id,
-        body
-      );
+        const field = await customFieldsService.createField(
+          user.organizationId,
+          user.id,
+          body,
+          receipts.whenRecording((tx) =>
+            receipts.record(
+              tx,
+              machineWriteReceipt(OperationKind.OrganizationWrite, true)
+            )
+          )
+        );
 
-      return successResponse(field);
-    } catch (error) {
-      if (error instanceof DuplicateNameError) {
-        return conflictResponse("Custom field with this name already exists");
+        return successResponse(withOperationReceipt(field, receipts));
+      } catch (error) {
+        if (error instanceof DuplicateNameError) {
+          return conflictResponse("Custom field with this name already exists");
+        }
+        if (error instanceof ReservedNameError) {
+          return conflictResponse(error.message);
+        }
+        return errorResponse("Failed to create custom field", error);
       }
-      if (error instanceof ReservedNameError) {
-        return conflictResponse(error.message);
-      }
-      return errorResponse("Failed to create custom field", error);
     }
-  },
+  ),
   { requiredScopes: ["write"] }
 );

@@ -23,6 +23,12 @@ export type MockRelaySocket = {
   conn: { transport: { name: string } };
   connected: boolean;
   on: ReturnType<typeof vi.fn>;
+  /**
+   * Socket.IO's catch-all registrar. Present so a suite can assert it was
+   * never called -- a catch-all is a distinct METHOD, so it can never show up
+   * among the event names passed to `on`.
+   */
+  onAny: ReturnType<typeof vi.fn>;
   emit: ReturnType<typeof vi.fn>;
   disconnect: ReturnType<typeof vi.fn>;
   handlers: Map<string, (...args: unknown[]) => Promise<void> | void>;
@@ -70,6 +76,7 @@ export function createGatewayHarness(namespace: GatewayHarnessNamespace): {
           handlers.set(event, handler);
         }
       ),
+      onAny: vi.fn(),
       emit: vi.fn(),
       disconnect: vi.fn(),
       handlers,

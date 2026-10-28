@@ -23,7 +23,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, test } from "node:test";
+import { afterEach, beforeEach, describe, test } from "vitest";
 import { SettingsStore } from "../src/main/settings/settings-store.js";
 import { DEFAULT_DESKTOP_SETTINGS } from "../src/shared/contracts.js";
 

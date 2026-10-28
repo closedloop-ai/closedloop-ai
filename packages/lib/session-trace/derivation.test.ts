@@ -481,6 +481,129 @@ describe("Session Trace derivation", () => {
     expect(result.phases[0]!.label).toBe("Code Review");
   });
 
+  it("falls back to updatedAt for the end anchor when endedAt is null", () => {
+    const result = deriveSessionTracePresentation({
+      startedAt: "2026-06-16T10:00:00.000Z",
+      updatedAt: "2026-06-16T10:20:00.000Z",
+      endedAt: null,
+      promptTimestamps: [],
+      agentActivityTimestamps: [],
+      throttleSources: [
+        {
+          sourceType: SessionTraceThrottleSourceType.ApiError,
+          provider: "codex",
+          observedAt: "2026-06-16T10:10:00.000Z",
+          statusCode: 429,
+        },
+      ],
+    });
+    expect(result.throttles[0]!.x0).toBe(50);
+  });
+
+  it("uses a 1ms span when the end anchor is unparseable, so an observation 1ms in sits at 100", () => {
+    const result = deriveSessionTracePresentation({
+      startedAt: "2026-06-16T10:00:00.000Z",
+      updatedAt: "not-a-date",
+      endedAt: null,
+      promptTimestamps: [],
+      agentActivityTimestamps: [],
+      throttleSources: [
+        {
+          sourceType: SessionTraceThrottleSourceType.ApiError,
+          provider: "codex",
+          observedAt: "2026-06-16T10:00:00.001Z",
+          statusCode: 429,
+        },
+      ],
+      correctionSources: [
+        {
+          kind: SessionTraceCorrectionKind.ManualRegression,
+          observedAt: "2026-06-16T10:00:00.001Z",
+          label: "fix",
+        },
+      ],
+    });
+    expect(result.throttles[0]!.x0).toBe(100);
+    expect(result.correctionMarkers[0]!.x).toBe(100);
+  });
+
+  it("collapses a throttle to zero length when neither retryAfter nor a parseable resetAt exists", () => {
+    const observedAt = "2026-06-16T10:15:00.000Z";
+    const result = deriveSessionTracePresentation({
+      startedAt: "2026-06-16T10:00:00.000Z",
+      updatedAt: "2026-06-16T10:30:00.000Z",
+      endedAt: "2026-06-16T10:30:00.000Z",
+      promptTimestamps: [],
+      agentActivityTimestamps: [],
+      throttleSources: [
+        {
+          sourceType: SessionTraceThrottleSourceType.ApiError,
+          provider: "codex",
+          observedAt,
+          statusCode: 429,
+        },
+        {
+          sourceType: SessionTraceThrottleSourceType.ApiError,
+          provider: "codex",
+          observedAt,
+          statusCode: 429,
+          resetAt: "garbage",
+        },
+      ],
+    });
+    expect(
+      result.throttles.map((throttle) => [throttle.durMin, throttle.t1])
+    ).toEqual([
+      [0, observedAt],
+      [0, observedAt],
+    ]);
+  });
+
+  it("labels a correction marker by its titleized kind when the label is blank", () => {
+    const result = deriveSessionTracePresentation({
+      startedAt: "2026-06-16T10:00:00.000Z",
+      updatedAt: "2026-06-16T10:30:00.000Z",
+      endedAt: "2026-06-16T10:30:00.000Z",
+      promptTimestamps: [],
+      agentActivityTimestamps: [],
+      correctionSources: [
+        {
+          kind: SessionTraceCorrectionKind.ManualRegression,
+          observedAt: "2026-06-16T10:15:00.000Z",
+          label: "   ",
+        },
+      ],
+    });
+    expect(result.correctionMarkers[0]!.label).toBe("Manual Regression");
+  });
+
+  it("gives a phase zero duration when its end is missing or its start is unparseable", () => {
+    const result = deriveSessionTracePresentation({
+      startedAt: "2026-06-16T10:00:00.000Z",
+      updatedAt: "2026-06-16T10:30:00.000Z",
+      endedAt: "2026-06-16T10:30:00.000Z",
+      promptTimestamps: [],
+      agentActivityTimestamps: [],
+      phaseSources: [
+        {
+          sourceType: SessionTracePhaseSourceType.LoopPerf,
+          phaseKey: "plan",
+          startedAt: "2026-06-16T10:00:00.000Z",
+          endedAt: null,
+        },
+        {
+          sourceType: SessionTracePhaseSourceType.LoopPerf,
+          phaseKey: "build",
+          startedAt: "bad-date",
+          endedAt: "2026-06-16T10:20:00.000Z",
+        },
+      ],
+    });
+    expect(
+      Object.fromEntries(result.phases.map((phase) => [phase.key, phase.dur]))
+    ).toEqual({ plan: "0m", build: "0m" });
+  });
+
   it("formats phase durations over 60 minutes as hours-and-minutes or exact hours", () => {
     const result = deriveSessionTracePresentation({
       startedAt: "2026-06-16T10:00:00.000Z",

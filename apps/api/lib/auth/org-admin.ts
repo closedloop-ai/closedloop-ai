@@ -1,11 +1,16 @@
+import type { ApiResult } from "@repo/api/src/types/common";
+import { isOrgAdminRole } from "@repo/api/src/types/org-admin-role";
 import { log } from "@repo/observability/log";
+import type { NextResponse } from "next/server";
 import { clerkService } from "@/lib/auth/clerk-service";
-
-const ADMIN_ROLES = new Set(["org:admin", "org:owner"]);
+import {
+  OrgAdminDenialReason,
+  orgAdminDenialResponse,
+} from "@/lib/auth/org-admin-denial";
 
 export type OrgAdminStatus =
   | { isAdmin: true; reason: "admin" }
-  | { isAdmin: false; reason: "not_admin" | "provider_error" };
+  | { isAdmin: false; reason: OrgAdminDenialReason };
 
 export async function getOrgAdminStatus(
   clerkOrgId: string,
@@ -17,10 +22,10 @@ export async function getOrgAdminStatus(
       clerkUserId
     );
     if (!role) {
-      return { isAdmin: false, reason: "not_admin" };
+      return { isAdmin: false, reason: OrgAdminDenialReason.NotAdmin };
     }
-    if (!ADMIN_ROLES.has(role)) {
-      return { isAdmin: false, reason: "not_admin" };
+    if (!isOrgAdminRole(role)) {
+      return { isAdmin: false, reason: OrgAdminDenialReason.NotAdmin };
     }
     return { isAdmin: true, reason: "admin" };
   } catch (error) {
@@ -29,14 +34,22 @@ export async function getOrgAdminStatus(
       clerkUserId,
       error,
     });
-    return { isAdmin: false, reason: "provider_error" };
+    return { isAdmin: false, reason: OrgAdminDenialReason.ProviderError };
   }
 }
 
-export async function isOrgAdmin(
+/**
+ * Gate a route on org-admin authority. Returns `null` when the caller is
+ * admitted, otherwise the refusal response the caller should return as-is.
+ *
+ * Prefer this over reading {@link getOrgAdminStatus} directly; reach for the
+ * status only where the gate also has to report the reason (denial telemetry)
+ * or needs the verdict as a capability rather than a stop.
+ */
+export async function requireOrgAdmin(
   clerkOrgId: string,
   clerkUserId: string
-): Promise<boolean> {
+): Promise<NextResponse<ApiResult<never>> | null> {
   const status = await getOrgAdminStatus(clerkOrgId, clerkUserId);
-  return status.isAdmin;
+  return status.isAdmin ? null : orgAdminDenialResponse(status.reason);
 }

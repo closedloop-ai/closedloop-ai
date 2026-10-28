@@ -1,13 +1,17 @@
 import { GitHubInstallationStatus, withDb } from "@repo/database";
 import type { GitHubSinglePullRequestResult } from "@repo/github/pull-request-rest";
+import { refilePullRequestUnderGitHubHead } from "./pull-request-github-head-refile";
 import {
   persistPullRequestHeadRepositoryAuthority,
   pullRequestHeadRepositoryObservation,
 } from "./pull-request-head-authority";
 import { pullRequestLocData } from "./pull-request-loc-data";
 
-/** Atomically settles a guarded branch refresh and its PR-head authority. */
-export function settleActiveBranchPullRequestRefresh(input: {
+/**
+ * Atomically settles a guarded branch refresh and its PR-head authority, then
+ * re-files the PR under the head this read reported (ISS-12344).
+ */
+export async function settleActiveBranchPullRequestRefresh(input: {
   organizationId: string;
   branchArtifactId: string;
   repositoryId: string;
@@ -15,7 +19,7 @@ export function settleActiveBranchPullRequestRefresh(input: {
   freshPr: GitHubSinglePullRequestResult;
   now: Date;
 }): Promise<boolean> {
-  return withDb.tx(async (tx) => {
+  const settled = await withDb.tx(async (tx) => {
     const result = await tx.pullRequestDetail.updateMany({
       where: {
         id: input.pullRequestDetailId,
@@ -74,4 +78,12 @@ export function settleActiveBranchPullRequestRefresh(input: {
     );
     return true;
   });
+  if (settled) {
+    await refilePullRequestUnderGitHubHead(
+      input.organizationId,
+      input.pullRequestDetailId,
+      input.freshPr
+    );
+  }
+  return settled;
 }

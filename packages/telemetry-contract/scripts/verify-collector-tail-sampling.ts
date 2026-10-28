@@ -1,11 +1,13 @@
 import { writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
+  BindMountNotVisibleError,
   DockerInfraError,
   dockerAvailable,
   runVerification,
   type VerificationReport,
 } from "../collector-verification/run-verification";
+import { InconclusiveVerificationError } from "../collector-verification/tail-sampling-metrics";
 
 /**
  * CLI for the collector tail-sampling mechanical verification (FEA-2182).
@@ -20,7 +22,9 @@ import {
  *
  * `--write` regenerates the committed `collector-verification/VERIFICATION.md`
  * evidence artifact. Exits 0 on pass (or when Docker is unavailable — the run is
- * skipped, not failed), 1 on a failing leg.
+ * skipped, not failed), 1 on a failing leg, on an inconclusive run whose
+ * export file never settled or did not parse cleanly, and when the daemon
+ * cannot see the bind-mount source.
  */
 
 const ARTIFACT_PATH = new URL(
@@ -40,8 +44,7 @@ function renderReportLines(report: VerificationReport): string[] {
       `  ${leg.pass ? "PASS" : "FAIL"}  ${leg.scenario}: ${leg.detail}`
     );
   }
-  lines.push("");
-  lines.push(`Overall: ${report.evaluation.pass ? "PASS" : "FAIL"}`);
+  lines.push("", `Overall: ${report.evaluation.pass ? "PASS" : "FAIL"}`);
   return lines;
 }
 
@@ -83,8 +86,7 @@ exporter's ground truth.
 | --- | --- | ---: | ---: | ---: | :---: |
 ${legRows}
 
-Errors, HTTP 5xx, and slow (> threshold) traces are retained at 100%; baseline
-(normal) traces are sampled to a strict subset by the probabilistic policy.
+${RETENTION_SEMANTICS}
 
 ## Raw decision metrics
 
@@ -123,9 +125,19 @@ async function main(): Promise<number> {
       log: (message) => console.error(`[verify] ${message}`),
     });
   } catch (error) {
+    if (error instanceof BindMountNotVisibleError) {
+      console.error(`REFUSED: ${error.message}`);
+      return 1;
+    }
     if (error instanceof DockerInfraError) {
       console.error(`${error.message} — skipping (nothing to do).`);
       return 0;
+    }
+    // Inconclusive, not a policy failure — but nothing was verified, so it
+    // cannot exit 0 either, and no record is written.
+    if (error instanceof InconclusiveVerificationError) {
+      console.error(`INCONCLUSIVE: ${error.message}`);
+      return 1;
     }
     throw error;
   }
@@ -158,4 +170,25 @@ if (process.argv[1]?.endsWith("verify-collector-tail-sampling.ts")) {
     });
 }
 
-export { renderArtifact, renderReportLines };
+/**
+ * What the per-leg table's numbers mean, emitted verbatim into the record. The
+ * slow leg's count is the one that needs saying: the parser scores a slow trace
+ * only when it arrived WHOLE, so the number is not a span count and a partial
+ * export cannot render as a pass.
+ */
+const RETENTION_SEMANTICS = `Errors, HTTP 5xx, and slow (> threshold) traces are retained at 100%; baseline
+(normal) traces are sampled to a strict subset by the probabilistic policy.
+
+**Retained (file)** counts whole traces, not spans. A \`slow\` trace is the
+two-span desktop shape, so it is scored only when BOTH \`ipc.list\` and its
+\`cl-desktop\` root reached the exporter — a child-only or root-only export
+counts that trace 0, not 1 (\`isCompleteRetainedTrace\` in
+\`collector-verification/tail-sampling-metrics.ts\`).
+
+The file is read only once its whole-trace counts hold still across consecutive
+reads, and that settled read must parse cleanly — an unparseable line fails the
+run as inconclusive instead of being skipped. So a short count here is a trace
+that never arrived: not one still sitting in the exporter's buffer, and not one
+whose record was corrupt.`;
+
+export { RETENTION_SEMANTICS, renderArtifact, renderReportLines };

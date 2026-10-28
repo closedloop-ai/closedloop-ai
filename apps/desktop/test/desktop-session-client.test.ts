@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import type {
   DesktopPopHeaders,
   DesktopPopSigningRequest,
@@ -234,4 +234,65 @@ test("revokeDesktopSession signs the revoke path and resolves ok", async () => {
 
   assert.equal(result.ok, true);
   assert.equal(pop.calls[0]?.pathname, "/desktop/session/revoke");
+});
+
+test("a malformed apiOrigin returns network error without calling the PoP signer", async () => {
+  const pop = popSignerStub();
+  const fetcher = fetchStub(jsonResponse(SAMPLE_TOKENS));
+  const result = await refreshDesktopSession({
+    apiOrigin: "not-a-url",
+    refreshToken: "old-refresh",
+    popSigner: pop.signer,
+    fetchImpl: fetcher.fetchImpl,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(!result.ok && result.error, "network");
+  assert.equal(!result.ok && result.retryable, false);
+  assert.equal(
+    pop.calls.length,
+    0,
+    "a bad origin must not consume a signature"
+  );
+  assert.equal(fetcher.calls.length, 0, "no fetch without a valid URL");
+});
+
+test("a 401 with a non-JSON body maps to invalid, not a crash", async () => {
+  const pop = popSignerStub();
+  const fetcher = fetchStub(
+    new Response("<html>WAF error page</html>", {
+      status: 401,
+      headers: { "Content-Type": "text/html" },
+    })
+  );
+  const result = await refreshDesktopSession({
+    apiOrigin: API_ORIGIN,
+    refreshToken: "old-refresh",
+    popSigner: pop.signer,
+    fetchImpl: fetcher.fetchImpl,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(!result.ok && result.error, "invalid");
+  assert.equal(!result.ok && result.retryable, false);
+});
+
+test("a 200 with a non-JSON body maps to invalid, not a crash", async () => {
+  const pop = popSignerStub();
+  const fetcher = fetchStub(
+    new Response("plain text", {
+      status: 200,
+      headers: { "Content-Type": "text/plain" },
+    })
+  );
+  const result = await refreshDesktopSession({
+    apiOrigin: API_ORIGIN,
+    refreshToken: "old-refresh",
+    popSigner: pop.signer,
+    fetchImpl: fetcher.fetchImpl,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(!result.ok && result.error, "invalid");
+  assert.equal(!result.ok && result.retryable, false);
 });

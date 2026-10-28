@@ -43,7 +43,7 @@ vi.mock("@repo/observability/log", () => ({
   log: {
     debug: mocks.logDebug,
     error: mocks.logError,
-    flush: vi.fn().mockResolvedValue(undefined),
+    flush: vi.fn(async () => undefined),
     info: mocks.logInfo,
     warn: mocks.logWarn,
   },

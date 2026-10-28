@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Write-receipt ledger read only by attribution reconciliation, the backfill and the accuracy report; no screen reads it."
+}

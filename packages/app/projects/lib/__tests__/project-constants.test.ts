@@ -66,9 +66,42 @@ describe("project completion copy (ISS-4636)", () => {
     expect(PROJECT_COMPLETION_POPULATION_NOUN).not.toContain("session");
   });
 
-  test("formats the ring summary from that noun, rounded", () => {
+  test("formats the ring summary from that noun, on the ring's own rule", () => {
+    // ISS-9922: the sentence shares the ring's display rule instead of
+    // re-rounding an already-rounded wire value, so the two channels cannot
+    // disagree. Per the 2026-09-18 ruling that rule ROUNDS the mid-range and
+    // only caps at the reserve, so 48.6 reads 49 — the number this sentence has
+    // always shown.
     expect(formatProjectCompletionSummary(48.6)).toBe(
       `49% of ${PROJECT_COMPLETION_POPULATION_NOUN} complete`
+    );
+  });
+
+  test("never says 100% while a document is outstanding (ISS-9922)", () => {
+    // 199/200 is 99.5%. The expected numbers here are literals, not derived
+    // from the ratio or from the formatter's own arithmetic.
+    expect(formatProjectCompletionSummary(99.5)).toBe(
+      `99% of ${PROJECT_COMPLETION_POPULATION_NOUN} complete`
+    );
+    expect(formatProjectCompletionSummary(99.9)).toBe(
+      `99% of ${PROJECT_COMPLETION_POPULATION_NOUN} complete`
+    );
+    // Positive sibling: 100 must still be reachable when it is true.
+    expect(formatProjectCompletionSummary(100)).toBe(
+      `100% of ${PROJECT_COMPLETION_POPULATION_NOUN} complete`
+    );
+  });
+
+  test("says 0% for a sub-1% fraction rather than inventing a 1% (ISS-9922)", () => {
+    // 1/250 is 0.4%. Per the 2026-09-18 ruling the low end is NOT reserved: a
+    // 1% nobody measured is the same overstatement this ticket is about,
+    // pointed the other way. The ring's ARC is what separates a started
+    // population from an unstarted one, not this sentence.
+    expect(formatProjectCompletionSummary(0.4)).toBe(
+      `0% of ${PROJECT_COMPLETION_POPULATION_NOUN} complete`
+    );
+    expect(formatProjectCompletionSummary(0)).toBe(
+      `0% of ${PROJECT_COMPLETION_POPULATION_NOUN} complete`
     );
   });
 

@@ -2,9 +2,9 @@
  * ISS-5464: the Sessions tab's truncation notice must state the TRUE session
  * total, not the length of the array that happened to arrive.
  *
- * `sessionsTab` is bounded twice on the way to this component — by
- * `MAX_DETAIL_SESSION_IN_IDS` server-side and, since ISS-5464, by
- * `AGENT_COMPONENT_DETAIL_SESSIONS_TAB_MAX_ROWS` — so `sessions.length` is a
+ * `sessionsTab` is bounded on the way to this component by
+ * `AGENT_COMPONENT_DETAIL_SESSIONS_TAB_MAX_ROWS` (ISS-5464; ISS-9855 removed
+ * the second bound, a 1,000-id fan-out above it) — so `sessions.length` is a
  * capped array length. Printing it as "of N" told a user with 1218 sessions
  * "Showing 50 of 1000" while the Sessions metric card directly above read 1218,
  * and after the payload bound it would have read "Showing 50 of 50", i.e. no
@@ -36,11 +36,28 @@ const BOUND_AS_TOTAL = new RegExp(
   `of ${AGENT_COMPONENT_DETAIL_SESSIONS_TAB_MAX_ROWS} sessions`
 );
 
+/**
+ * ISS-10750: rows carry no chips. Every assertion here reads the notice, which
+ * is a function of three counts and the producer's flag — never of what a row
+ * holds. The fixture's default PRs, repo, branch, source artifact, model and
+ * owner each mount a tooltip-wrapped chip, twice per row (grid and card
+ * layouts), so a 50-row mount was 3,235 DOM nodes and 1.3–1.5s under
+ * `test:coverage` here, 5.2s on the 2026-09-20 runner. Without them it is
+ * 1,785 nodes and ~0.45s. The nulls are the shapes the type already admits.
+ */
 function sessionsTab(count: number): AgentSessionListItem[] {
   return Array.from({ length: count }, (_, i) =>
     createAgentSessionListItemFixture({
+      branch: null,
       id: `session-${i + 1}`,
+      model: null,
       name: `Session ${i + 1}`,
+      prs: [],
+      prsMerged: 0,
+      repositoryFullName: null,
+      sourceArtifact: null,
+      sourceArtifactId: null,
+      user: null,
     })
   );
 }

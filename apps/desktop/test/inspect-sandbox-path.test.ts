@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import { inspectSandboxPath } from "../src/main/ipc/sandbox-inspect.js";
 import { createTempDirManager } from "./helpers/temp-dir.js";
 

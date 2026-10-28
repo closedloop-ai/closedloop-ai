@@ -16,9 +16,8 @@ import { getActivityPhaseDisplay } from "../activity-taxonomy-display";
  *
  * ISS-4790 — the branch-surface half of the one-source property: this map owns
  * the branch COLORS and takes every LABEL from the canonical
- * {@link ACTIVITY_PHASE_LABEL}. The session surface has the mirror assertions in
- * its own feature-owned test
- * (`packages/app/agents/lib/__tests__/session-activity-phases.test.ts`).
+ * {@link ACTIVITY_PHASE_LABEL}. ISS-7867 retired the session-side phase surface,
+ * so this is now the only per-surface resolver left to pin.
  */
 describe("getActivityPhaseDisplay", () => {
   it("resolves every canonical taxonomy phase label through the canonical map", () => {

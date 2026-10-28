@@ -20,10 +20,9 @@ export const DEFAULT_CLONE_STATEMENT_TIMEOUT_MS = 600_000;
 /**
  * Bounds how long a clone statement waits on a *lock* specifically. Much
  * tighter than the statement budget: waiting on a lock means `public` is
- * concurrently holding DDL (an api-stage deploy migrating the same tables), and
- * the clone is fail-soft, so giving up quickly and leaving the schema empty is
- * strictly better than stacking behind that DDL. Override with
- * CLONE_LOCK_TIMEOUT_MS.
+ * concurrently holding DDL (an api-stage deploy migrating the same tables), so
+ * failing the clone quickly (the caller fails the run, ISS-11785) is strictly
+ * better than stacking behind that DDL. Override with CLONE_LOCK_TIMEOUT_MS.
  */
 export const DEFAULT_CLONE_LOCK_TIMEOUT_MS = 60_000;
 
@@ -61,7 +60,7 @@ export const DEFAULT_CLONE_CONNECT_TIMEOUT_MS = 30_000;
  * `is_generated` / `is_identity` columns are derived from, and they preserve
  * the ALWAYS-vs-BY-DEFAULT distinction that `is_identity` flattens away.
  */
-const COLUMNS_SQL = `SELECT
+export const COLUMNS_SQL = `SELECT
      a.attname AS column_name,
      (t.typtype = 'e') AS is_enum,
      (el.typtype = 'e') AS is_enum_array,
@@ -78,7 +77,7 @@ const COLUMNS_SQL = `SELECT
      AND NOT a.attisdropped
    ORDER BY a.attnum`;
 
-type ColInfo = {
+export type ColInfo = {
   column_name: string;
   /** The column's own type is an enum. */
   is_enum: boolean;
@@ -114,16 +113,18 @@ export type CloneDeps = {
  * which turned this lookup from ~2 minutes into never-returning. Scoping by
  * `relnamespace` is an index lookup and is independent of the schema count.
  */
-async function getTablesInFkOrder(
-  client: pg.Client,
-  logger: Pick<Console, "warn">
+export async function getTablesInFkOrder(
+  client: Pick<pg.Client, "query">,
+  logger: Pick<Console, "warn">,
+  namespace = "public"
 ): Promise<string[]> {
   const { rows: tables } = await client.query(
     `SELECT c.relname AS table_name
      FROM pg_catalog.pg_class c
-     WHERE c.relnamespace = 'public'::regnamespace
+     WHERE c.relnamespace = to_regnamespace($1)
        AND c.relkind = 'r'
-     ORDER BY c.relname`
+     ORDER BY c.relname`,
+    [namespace]
   );
 
   const allTables: string[] = tables
@@ -147,8 +148,9 @@ async function getTablesInFkOrder(
      JOIN pg_catalog.pg_class child ON child.oid = con.conrelid
      JOIN pg_catalog.pg_class parent ON parent.oid = con.confrelid
      WHERE con.contype = 'f'
-       AND child.relnamespace = 'public'::regnamespace
-       AND parent.relnamespace = 'public'::regnamespace`
+       AND child.relnamespace = to_regnamespace($1)
+       AND parent.relnamespace = to_regnamespace($1)`,
+    [namespace]
   );
 
   const deps = new Map<string, Set<string>>();
@@ -207,22 +209,20 @@ async function getTablesInFkOrder(
 
 /**
  * Clones every table's data from `public` into `schema` (FK-topological order,
- * enum-aware casts). Fail-soft: on error it logs and swallows so a migrate never
- * fails on a bad clone. Returns `true` on a clean clone, `false` when the clone
- * was attempted but failed (schema left empty/partial) — callers that reset a
- * schema use this to avoid treating a failed restore as a success.
+ * enum-aware casts) in one transaction. Resolves on a clean clone; on any
+ * failure it rolls back and throws a `CloneFailedError` carrying the cause, and
+ * the caller fails the run (ISS-11785): a schema left empty must not read as a
+ * healthy preview.
  *
- * ISS-5285: the connection is opened INSIDE the try. It used to be opened
- * outside, so a connect failure — exactly what an expired RDS IAM token produces
- * after a long-running earlier step — escaped this function un-swallowed,
- * defeating the fail-soft contract above, and leaked the client because the
- * `finally` that ends it belonged to the try it never entered.
+ * ISS-5285: the connection is opened INSIDE the try, so a connect failure —
+ * exactly what an expired RDS IAM token produces after a long-running earlier
+ * step — still reaches the `finally` that ends the client.
  */
 export async function cloneDataFromPublic(
   databaseUrl: string,
   schema: string,
   deps: CloneDeps = {}
-): Promise<boolean> {
+): Promise<void> {
   const logger = deps.logger ?? console;
   const createClient = deps.createClient ?? createSslClient;
   const env = deps.env ?? process.env;
@@ -238,8 +238,8 @@ export async function cloneDataFromPublic(
     await client.connect();
 
     // Bound every statement below BEFORE issuing any of them, so a stalled
-    // catalog query or INSERT surfaces as a swallowed clone failure in seconds
-    // rather than a silent 45-minute build. Mirrors preview-plain-index.ts.
+    // catalog query or INSERT surfaces as a failed clone in seconds rather than
+    // a silent 45-minute build. Mirrors preview-plain-index.ts.
     await client.query(
       `SET lock_timeout = '${resolveCloneLockTimeoutMs(env, logger)}ms'`
     );
@@ -251,103 +251,83 @@ export async function cloneDataFromPublic(
 
     if (tableNames.length === 0) {
       logger.log("  No tables to clone.");
-      return true;
+      return;
     }
 
     const quoted = quoteIdentifier(schema);
 
-    await client.query("BEGIN");
+    await client.query(CLONE_BEGIN_SQL);
     try {
-      const { rows: targetFks } = await client.query(
-        `SELECT table_rel.relname AS table_name, con.conname AS constraint_name
-         FROM pg_catalog.pg_constraint con
-         JOIN pg_catalog.pg_class table_rel ON table_rel.oid = con.conrelid
-         WHERE con.contype = 'f'
-           AND table_rel.relnamespace = to_regnamespace($1)
-           AND NOT con.condeferrable
-         ORDER BY table_rel.relname, con.conname`,
-        [schema]
+      // ISS-12029: lock the source clone set before the first snapshot read.
+      // A concurrent table rewrite or TRUNCATE is not MVCC-safe; letting it
+      // complete first prevents a repeatable-read snapshot from seeing it empty.
+      await client.query(
+        `LOCK TABLE ${tableNames.map((table) => `"public".${quoteIdentifier(table)}`).join(", ")} IN ACCESS SHARE MODE`
       );
-      for (const { table_name, constraint_name } of targetFks as {
-        table_name: string;
-        constraint_name: string;
-      }[]) {
-        await client.query(
-          `ALTER TABLE ${quoted}.${quoteIdentifier(table_name)} ALTER CONSTRAINT ${quoteIdentifier(constraint_name)} DEFERRABLE INITIALLY IMMEDIATE`
-        );
-      }
-      await client.query("SET CONSTRAINTS ALL DEFERRED");
-
-      for (const table of tableNames) {
-        const quotedTable = quoteIdentifier(table);
-        // Query column names from both schemas and only clone columns that exist in both.
-        // This handles cases where migrations add new columns to the target schema
-        // that don't exist yet in the public (source) schema.
-        const { rows: targetCols } = await client.query(COLUMNS_SQL, [
-          schema,
-          table,
-        ]);
-        if (targetCols.length === 0) {
-          logger.warn(`  ${table}: skipped (missing in target schema)`);
-          continue;
+      const connected = client;
+      await withDeferredTargetConstraints(connected, schema, async () => {
+        for (const table of tableNames) {
+          const quotedTable = quoteIdentifier(table);
+          // Query column names from both schemas and only clone columns that exist in both.
+          // This handles cases where migrations add new columns to the target schema
+          // that don't exist yet in the public (source) schema.
+          const { rows: targetCols } = await connected.query(COLUMNS_SQL, [
+            schema,
+            table,
+          ]);
+          if (targetCols.length === 0) {
+            logger.warn(`  ${table}: skipped (missing in target schema)`);
+            continue;
+          }
+          const { rows: sourceCols } = await connected.query(COLUMNS_SQL, [
+            "public",
+            table,
+          ]);
+          const sourceColSet = new Set(
+            sourceCols.map((c: { column_name: string }) => c.column_name)
+          );
+          // Only clone columns that exist in both source and target, and that the
+          // server does not compute for itself. Filtering the TARGET column list is
+          // what matters and is sufficient: the INSERT list and the SELECT list are
+          // both derived from it below.
+          const cols = (targetCols as ColInfo[]).filter(
+            (c) => sourceColSet.has(c.column_name) && isCloneableColumn(c)
+          );
+          if (cols.length === 0) {
+            logger.warn(`  ${table}: skipped (no overlapping columns)`);
+            continue;
+          }
+          const insertCols = cols
+            .map((c: ColInfo) => quoteIdentifier(c.column_name))
+            .join(", ");
+          // Enums are schema-scoped types, so bridge them through text. An array of
+          // an enum bridges through `text[]` to the target schema's element type.
+          const selectCols = cols
+            .map((c: ColInfo) => {
+              const col = quoteIdentifier(c.column_name);
+              const enumType = `${quoted}.${quoteIdentifier(c.enum_type)}`;
+              if (c.is_enum) {
+                return `${col}::text::${enumType}`;
+              }
+              if (c.is_enum_array) {
+                return `${col}::text[]::${enumType}[]`;
+              }
+              return col;
+            })
+            .join(", ");
+          const tableStartedAt = now();
+          const { rowCount } = await connected.query(
+            `INSERT INTO ${quoted}.${quotedTable} (${insertCols}) SELECT ${selectCols} FROM "public".${quotedTable}`
+          );
+          logger.log(
+            `  ${table}: ${rowCount ?? 0} rows (${now() - tableStartedAt}ms)`
+          );
         }
-        const { rows: sourceCols } = await client.query(COLUMNS_SQL, [
-          "public",
-          table,
-        ]);
-        const sourceColSet = new Set(
-          sourceCols.map((c: { column_name: string }) => c.column_name)
-        );
-        // Only clone columns that exist in both source and target, and that the
-        // server does not compute for itself. Filtering the TARGET column list is
-        // what matters and is sufficient: the INSERT list and the SELECT list are
-        // both derived from it below.
-        const cols = (targetCols as ColInfo[]).filter(
-          (c) => sourceColSet.has(c.column_name) && isCloneableColumn(c)
-        );
-        if (cols.length === 0) {
-          logger.warn(`  ${table}: skipped (no overlapping columns)`);
-          continue;
-        }
-        const insertCols = cols
-          .map((c: ColInfo) => quoteIdentifier(c.column_name))
-          .join(", ");
-        // Enums are schema-scoped types, so bridge them through text. An array of
-        // an enum bridges through `text[]` to the target schema's element type.
-        const selectCols = cols
-          .map((c: ColInfo) => {
-            const col = quoteIdentifier(c.column_name);
-            const enumType = `${quoted}.${quoteIdentifier(c.enum_type)}`;
-            if (c.is_enum) {
-              return `${col}::text::${enumType}`;
-            }
-            if (c.is_enum_array) {
-              return `${col}::text[]::${enumType}[]`;
-            }
-            return col;
-          })
-          .join(", ");
-        const tableStartedAt = now();
-        const { rowCount } = await client.query(
-          `INSERT INTO ${quoted}.${quotedTable} (${insertCols}) SELECT ${selectCols} FROM "public".${quotedTable}`
-        );
-        logger.log(
-          `  ${table}: ${rowCount ?? 0} rows (${now() - tableStartedAt}ms)`
-        );
-      }
-      await client.query("SET CONSTRAINTS ALL IMMEDIATE");
-      for (const { table_name, constraint_name } of targetFks as {
-        table_name: string;
-        constraint_name: string;
-      }[]) {
-        await client.query(
-          `ALTER TABLE ${quoted}.${quoteIdentifier(table_name)} ALTER CONSTRAINT ${quoteIdentifier(constraint_name)} NOT DEFERRABLE`
-        );
-      }
+      });
       await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK").catch(() => {
-        // Preserve the original clone failure for the fail-soft log below.
+        // Preserve the original clone failure for the log below.
       });
       throw error;
     }
@@ -355,18 +335,17 @@ export async function cloneDataFromPublic(
     logger.log(
       `✓ Cloned ${tableNames.length} tables into ${schema} (${now() - startedAt}ms)`
     );
-    return true;
   } catch (error) {
     logger.error(
-      `⚠️  Data clone failed after ${now() - startedAt}ms (schema will start empty): ${
+      `⚠️  Data clone failed after ${now() - startedAt}ms: ${
         error instanceof Error ? error.message : String(error)
       }`
     );
-    return false;
+    throw new CloneFailedError(schema, error);
   } finally {
     // `client` is undefined only if createClient itself threw. `end()` on a
     // client whose `connect()` failed is what releases the half-open socket, and
-    // it must not turn a swallowed clone failure into a thrown one.
+    // its own failure must not replace the clone failure being thrown.
     if (client) {
       await client.end().catch(() => {
         // Intentionally ignored — see above.
@@ -461,3 +440,181 @@ function resolvePositiveIntEnv(
   );
   return fallback;
 }
+
+/**
+ * The target's enabled user triggers. Internal triggers (the FK checks) are
+ * excluded, so turning these off leaves FK enforcement to the deferred drain.
+ */
+const TARGET_USER_TRIGGERS_SQL = `SELECT c.relname AS "tableName", t.tgname AS "triggerName", t.tgenabled AS "enabled"
+   FROM pg_catalog.pg_trigger t
+   JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
+   WHERE c.relnamespace = to_regnamespace($1)
+     AND c.relkind = 'r'
+     AND NOT t.tgisinternal
+     AND t.tgenabled <> 'D'
+   ORDER BY c.relname, t.tgname`;
+
+/** `pg_trigger.tgenabled` → the clause that puts a trigger back in that mode. */
+const TRIGGER_ENABLE_CLAUSE = {
+  O: "ENABLE TRIGGER",
+  A: "ENABLE ALWAYS TRIGGER",
+  R: "ENABLE REPLICA TRIGGER",
+} as const;
+
+export type UserTrigger = {
+  tableName: string;
+  triggerName: string;
+  enabled: keyof typeof TRIGGER_ENABLE_CLAUSE;
+};
+
+/**
+ * ISS-11867: the copy runs with the target's user triggers off. A plpgsql
+ * trigger resolves unqualified names through this session's `search_path`,
+ * which is `public`, not `schema`: ISS-11212's anchor bridge failed every clone
+ * calling its function with the preview's row type, and
+ * `desktop_commands_queued_count_sync` would count each cloned queued command
+ * into `public.compute_targets`. The rows being copied already carry their
+ * triggers' effects.
+ */
+export async function disableUserTriggers(
+  client: pg.Client,
+  schema: string
+): Promise<UserTrigger[]> {
+  const { rows } = await client.query(TARGET_USER_TRIGGERS_SQL, [schema]);
+  const triggers = rows as UserTrigger[];
+  for (const { tableName, triggerName } of triggers) {
+    await client.query(
+      `ALTER TABLE ${quoteIdentifier(schema)}.${quoteIdentifier(tableName)} DISABLE TRIGGER ${quoteIdentifier(triggerName)}`
+    );
+  }
+  return triggers;
+}
+
+/** Must follow the FK drain: Postgres rejects `ALTER TABLE` with pending trigger events. */
+export async function restoreUserTriggers(
+  client: pg.Client,
+  schema: string,
+  triggers: UserTrigger[]
+): Promise<void> {
+  for (const { tableName, triggerName, enabled } of triggers) {
+    await client.query(
+      `ALTER TABLE ${quoteIdentifier(schema)}.${quoteIdentifier(tableName)} ${TRIGGER_ENABLE_CLAUSE[enabled]} ${quoteIdentifier(triggerName)}`
+    );
+  }
+}
+
+/**
+ * ISS-11867: a failed clone, carrying the error that failed it. The message
+ * names the cause and `code` holds its Postgres SQLSTATE (or Node error code),
+ * so the ensure route's failure log reports why, not only that, it failed.
+ */
+export class CloneFailedError extends Error {
+  readonly code: string | undefined;
+
+  constructor(schema: string, cause: unknown) {
+    super(
+      `The data clone from public into ${schema} failed (ISS-11785): ${
+        cause instanceof Error ? cause.message : String(cause)
+      }`,
+      { cause }
+    );
+    this.name = "CloneFailedError";
+    this.code =
+      typeof cause === "object" &&
+      cause !== null &&
+      "code" in cause &&
+      typeof cause.code === "string"
+        ? cause.code
+        : undefined;
+  }
+}
+
+/**
+ * The SQLSTATE (or Node error code) of the clone failure `error` reports, for the
+ * ensure route's structured failure log (ISS-11867); `null` for any other error.
+ */
+export function cloneFailureCodeOf(error: unknown): string | null {
+  return error instanceof CloneFailedError ? (error.code ?? null) : null;
+}
+
+/**
+ * Runs `body` with every foreign key in `schema` deferred and every user
+ * trigger disabled, then drains the deferred checks and restores both. The
+ * caller owns the transaction. Shared by the clone and by the vibe environment
+ * restore (ISS-12056), which load rows in an order the FKs cannot follow.
+ */
+export async function withDeferredTargetConstraints(
+  client: pg.Client,
+  schema: string,
+  body: () => Promise<void>
+): Promise<void> {
+  const quoted = quoteIdentifier(schema);
+  const { rows: targetFks } = await client.query(
+    `SELECT table_rel.relname AS table_name, con.conname AS constraint_name
+     FROM pg_catalog.pg_constraint con
+     JOIN pg_catalog.pg_class table_rel ON table_rel.oid = con.conrelid
+     WHERE con.contype = 'f'
+       AND table_rel.relnamespace = to_regnamespace($1)
+       AND NOT con.condeferrable
+     ORDER BY table_rel.relname, con.conname`,
+    [schema]
+  );
+  for (const { table_name, constraint_name } of targetFks as {
+    table_name: string;
+    constraint_name: string;
+  }[]) {
+    await client.query(
+      `ALTER TABLE ${quoted}.${quoteIdentifier(table_name)} ALTER CONSTRAINT ${quoteIdentifier(constraint_name)} DEFERRABLE INITIALLY IMMEDIATE`
+    );
+  }
+  await client.query("SET CONSTRAINTS ALL DEFERRED");
+  const userTriggers = await disableUserTriggers(client, schema);
+
+  await body();
+
+  // ISS-6424: drain the deferred checks ONE CONSTRAINT AT A TIME. A single
+  // `SET CONSTRAINTS ALL IMMEDIATE` fires every pending FK event in the
+  // schema from one statement, so the whole clone's validation had to fit
+  // inside one `statement_timeout` — and since it is the last step, blowing
+  // that budget rolled the entire clone back and left the preview empty. It
+  // also beats validating inside each `INSERT ... SELECT` (what ISS-5344
+  // replaced), because there the copy and the check share one budget.
+  //
+  // Two constraints drain together only if they share a name: `SET
+  // CONSTRAINTS` matches on schema plus name, and Postgres scopes
+  // constraint names per table. Prisma's names embed the table, so none do.
+  // The drain must fully precede the restore loop below: Postgres rejects
+  // `ALTER TABLE` on a relation that still has pending trigger events.
+  for (const { constraint_name } of targetFks as {
+    constraint_name: string;
+  }[]) {
+    await client.query(
+      `SET CONSTRAINTS ${quoted}.${quoteIdentifier(constraint_name)} IMMEDIATE`
+    );
+  }
+  // Sweeps whatever `SET CONSTRAINTS ALL DEFERRED` reached that the loop
+  // above does not name: constraints already deferrable before the clone,
+  // and deferrable UNIQUE/EXCLUDE constraints, which are not foreign keys.
+  // No migration in this repo declares either, so it fires nothing today —
+  // but it is the one statement here that is not bounded per constraint, so
+  // widen the loop above rather than lean on this if that ever changes.
+  await client.query("SET CONSTRAINTS ALL IMMEDIATE");
+  for (const { table_name, constraint_name } of targetFks as {
+    table_name: string;
+    constraint_name: string;
+  }[]) {
+    await client.query(
+      `ALTER TABLE ${quoted}.${quoteIdentifier(table_name)} ALTER CONSTRAINT ${quoteIdentifier(constraint_name)} NOT DEFERRABLE`
+    );
+  }
+  await restoreUserTriggers(client, schema, userTriggers);
+}
+
+/**
+ * ISS-12029: one snapshot for every table. Under the default READ COMMITTED
+ * each `INSERT ... SELECT` reads `public` at its own moment, so a parent and
+ * child written (or deleted) between two table copies leave the preview with a
+ * child whose parent it never copied, and the FK drain fails with 23503.
+ * Deferring the FKs cannot help: the copied rows themselves disagree.
+ */
+export const CLONE_BEGIN_SQL = "BEGIN ISOLATION LEVEL REPEATABLE READ";

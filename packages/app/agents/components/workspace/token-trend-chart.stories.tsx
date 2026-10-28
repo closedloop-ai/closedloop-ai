@@ -6,7 +6,10 @@ import type {
 import type { Decorator, Meta, StoryObj } from "@storybook/react";
 import type { ReactNode } from "react";
 import { CHART_DISTINGUISHABLE_SERIES_FEATURE_FLAG_KEY } from "../../../shared/lib/feature-flags";
-import { agentComponentTokenTrendKeys } from "../../hooks/use-agent-component-token-trend";
+import {
+  agentComponentTokenTrendKeys,
+  tokenTrendQueryData,
+} from "../../hooks/use-agent-component-token-trend";
 import { TokenTrendChart } from "./token-trend-chart";
 
 /**
@@ -26,10 +29,11 @@ import { TokenTrendChart } from "./token-trend-chart";
  * `TimeSeriesAreaChart`'s own story takes `emptyMessage` as a prop, so it covers
  * none of this.
  *
- * Reads resolve from the seeded QueryClient cache
- * (`queryData={[[agentComponentTokenTrendKeys.detail(slug), fixture]]}`), so no
- * hook mocking is needed. A story that seeds NOTHING leaves the query pending,
- * which is exactly the loading state.
+ * Reads resolve from the seeded QueryClient cache, seeded through
+ * `tokenTrendQueryData(fixture)` because the key holds an infinite query's
+ * pages (ISS-9851), not a bare response — so no hook mocking is needed. A story
+ * that seeds NOTHING leaves the query pending, which is exactly the loading
+ * state.
  */
 
 const SLUG = "subagent::orchestrator";
@@ -205,12 +209,18 @@ const storyDecorator: Decorator = (Story) => (
 );
 
 const meta = {
-  title: "App Core/Agents/Token Trend Chart",
+  title: "Composites v1.0/Agents/Workspace/Token Trend Chart",
+  tags: ["deprecated"],
   component: TokenTrendChart,
   parameters: {
     layout: "fullscreen",
     appCore: {
-      queryData: [[agentComponentTokenTrendKeys.detail(SLUG), populatedTrend]],
+      queryData: [
+        [
+          agentComponentTokenTrendKeys.detail(SLUG),
+          tokenTrendQueryData(populatedTrend),
+        ],
+      ],
     },
   },
   args: {
@@ -252,7 +262,12 @@ export const EmptyNoSessions: Story = {
   args: { sessions: 0, usageSessions: [] },
   parameters: {
     appCore: {
-      queryData: [[agentComponentTokenTrendKeys.detail(SLUG), emptyTrend]],
+      queryData: [
+        [
+          agentComponentTokenTrendKeys.detail(SLUG),
+          tokenTrendQueryData(emptyTrend),
+        ],
+      ],
     },
   },
 };
@@ -267,7 +282,12 @@ export const EmptyAttributed: Story = {
   args: { sessions: 14 },
   parameters: {
     appCore: {
-      queryData: [[agentComponentTokenTrendKeys.detail(SLUG), emptyTrend]],
+      queryData: [
+        [
+          agentComponentTokenTrendKeys.detail(SLUG),
+          tokenTrendQueryData(emptyTrend),
+        ],
+      ],
     },
   },
 };
@@ -281,7 +301,12 @@ export const EmptyUnknownSessionCount: Story = {
   args: { sessions: null, usageSessions: [] },
   parameters: {
     appCore: {
-      queryData: [[agentComponentTokenTrendKeys.detail(SLUG), emptyTrend]],
+      queryData: [
+        [
+          agentComponentTokenTrendKeys.detail(SLUG),
+          tokenTrendQueryData(emptyTrend),
+        ],
+      ],
     },
   },
 };
@@ -296,7 +321,10 @@ export const EmptyAttributedOnCostToggle: Story = {
   parameters: {
     appCore: {
       queryData: [
-        [agentComponentTokenTrendKeys.detail(SLUG), trendWithoutCost],
+        [
+          agentComponentTokenTrendKeys.detail(SLUG),
+          tokenTrendQueryData(trendWithoutCost),
+        ],
       ],
     },
   },
@@ -324,7 +352,12 @@ export const ManySeriesCapped: Story = {
   parameters: {
     appCore: {
       enabledFlags: [CHART_DISTINGUISHABLE_SERIES_FEATURE_FLAG_KEY],
-      queryData: [[agentComponentTokenTrendKeys.detail(SLUG), manyModelsTrend]],
+      queryData: [
+        [
+          agentComponentTokenTrendKeys.detail(SLUG),
+          tokenTrendQueryData(manyModelsTrend),
+        ],
+      ],
     },
   },
 };
@@ -344,7 +377,10 @@ export const CappedAtBoundary: Story = {
     appCore: {
       enabledFlags: [CHART_DISTINGUISHABLE_SERIES_FEATURE_FLAG_KEY],
       queryData: [
-        [agentComponentTokenTrendKeys.detail(SLUG), boundaryModelsTrend],
+        [
+          agentComponentTokenTrendKeys.detail(SLUG),
+          tokenTrendQueryData(boundaryModelsTrend),
+        ],
       ],
     },
   },

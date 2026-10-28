@@ -13,12 +13,11 @@ import { createAgentSessionDetailFixture } from "../agent-session-detail-fixture
 import {
   buildSessionDetailContent,
   computeSessionLocPerDollar,
-  deriveCacheWriteTtlBreakdown,
-  EVENT_RATE_UNAVAILABLE,
-  extractCodexRuntimeMetadata,
   formatSessionLocPerDollar,
-  sessionOutputDiffDisplay,
 } from "../detail-content";
+import { deriveCacheWriteTtlBreakdown } from "../session-cache-write-ttl";
+import { EVENT_RATE_UNAVAILABLE } from "../session-detail-captions";
+import { sessionOutputDiffDisplay } from "../session-output-diff-display";
 
 function detailDurationLabel(session: AgentSessionDetail): string | null {
   const content = buildSessionDetailContent(session);
@@ -35,19 +34,27 @@ function overviewDurationLabel(session: AgentSessionDetail): string | null {
   return buildSessionDetailContent(session).overview.durationLabel;
 }
 
-type KlocInput = Pick<
+/**
+ * ISS-9964 / ISS-9980 (RULED 2026-09-11): the client-fallback LOC/$ numerator is
+ * `mergedAuthoredPrLinesChanged` and nothing else, so the session's local
+ * working-tree scalars and `branchDiffStats` are no longer terms of it and are
+ * gone from this shape. They are not merely unused here — `computeSessionLocPerDollar`
+ * does not accept them, so a case that seeded one would fail `tsc`.
+ */
+type LocPerDollarInput = Pick<
   AgentSessionDetail,
-  "linesAdded" | "linesRemoved" | "authoredPrLinesChanged" | "branchDiffStats"
+  | "locPerDollar"
+  | "klocPerDollar"
+  | "mergedAuthoredPrLinesChanged"
+  | "authoredPrLinesChanged"
 > & {
   estimatedCost: number;
 };
 
-type SessionMetadata = AgentSessionDetail["metadata"];
-
-function klocInput(overrides: Partial<KlocInput>): KlocInput {
+function locPerDollarInput(
+  overrides: Partial<LocPerDollarInput>
+): LocPerDollarInput {
   return {
-    linesAdded: 0,
-    linesRemoved: 0,
     estimatedCost: 0,
     ...overrides,
   };
@@ -365,17 +372,23 @@ describe("deriveCacheWriteTtlBreakdown (FEA-3419)", () => {
 });
 
 describe("computeSessionLocPerDollar (FEA-3630)", () => {
-  it("computes LOC/$ for a normal session ((added+removed) / cost, no divide-by-1000)", () => {
-    // ISS-4667: 800 + 200 = 1000 lines / $2.00 = 500 LOC/$.
+  it("computes LOC/$ for a normal session (merged authored-PR lines / cost)", () => {
+    // ISS-4667: 1000 merged lines / $2.00 = 500 LOC/$.
     expect(
       computeSessionLocPerDollar(
-        klocInput({ linesAdded: 800, linesRemoved: 200, estimatedCost: 2 })
+        locPerDollarInput({
+          mergedAuthoredPrLinesChanged: 1000,
+          estimatedCost: 2,
+        })
       )
     ).toBeCloseTo(500, 10);
     // 5000 lines / $2.50 = 2000 LOC/$.
     expect(
       computeSessionLocPerDollar(
-        klocInput({ linesAdded: 3000, linesRemoved: 2000, estimatedCost: 2.5 })
+        locPerDollarInput({
+          mergedAuthoredPrLinesChanged: 5000,
+          estimatedCost: 2.5,
+        })
       )
     ).toBeCloseTo(2000, 10);
   });
@@ -383,28 +396,78 @@ describe("computeSessionLocPerDollar (FEA-3630)", () => {
   it("returns null (never Infinity/NaN) for a $0 or negative cost session", () => {
     expect(
       computeSessionLocPerDollar(
-        klocInput({ linesAdded: 500, linesRemoved: 500, estimatedCost: 0 })
+        locPerDollarInput({
+          mergedAuthoredPrLinesChanged: 1000,
+          estimatedCost: 0,
+        })
       )
     ).toBeNull();
     expect(
       computeSessionLocPerDollar(
-        klocInput({ linesAdded: 500, linesRemoved: 500, estimatedCost: -1 })
+        locPerDollarInput({
+          mergedAuthoredPrLinesChanged: 1000,
+          estimatedCost: -1,
+        })
       )
     ).toBeNull();
   });
 
-  it("returns null when no lines were delivered (0 lines)", () => {
+  // ISS-9980 (RULED 2026-09-11) moved the `null` OFF the numerator and ONTO the
+  // denominator. This case previously expected `null` here; the expectation
+  // changed because the RULING changed what a zero numerator MEANS, not because
+  // the assertion was inconvenient. A session that merged nothing is a session
+  // we measured: the honest answer to "lines delivered per dollar" is `0`, and
+  // suppressing it to a placeholder hid a real and unflattering fact.
+  it("divides a MEASURED zero merged population into a real 0, not a placeholder", () => {
     expect(
       computeSessionLocPerDollar(
-        klocInput({ linesAdded: 0, linesRemoved: 0, estimatedCost: 5 })
+        locPerDollarInput({ mergedAuthoredPrLinesChanged: 0, estimatedCost: 5 })
+      )
+    ).toBe(0);
+  });
+
+  // The other half of that ruling: a numerator nobody could resolve is NOT
+  // KNOWABLE, and stays `null`. `0` would report a measurement no one took.
+  it("returns null when the merged numerator is absent or explicitly null", () => {
+    expect(
+      computeSessionLocPerDollar(locPerDollarInput({ estimatedCost: 5 }))
+    ).toBeNull();
+    expect(
+      computeSessionLocPerDollar(
+        locPerDollarInput({
+          mergedAuthoredPrLinesChanged: null,
+          estimatedCost: 5,
+        })
       )
     ).toBeNull();
   });
 
-  it("treats missing/null line counts as zero (unpriced-lines session), not NaN", () => {
+  /**
+   * The cases above seed only the local-fallback numerator, so they never set
+   * `locPerDollar` and never reach the branch PRODUCTION actually takes: the
+   * server projects the field, so `session.locPerDollar !== undefined` and the
+   * value is read through `resolveLocPerDollar`. The ruled measured-zero was
+   * implemented on the producer alone and the resolver still rejected a `0`,
+   * which collapsed it back to the not-available placeholder at every consumer
+   * — beside a "Lines changed" row already rendering `0 in merged PRs`. These
+   * cases pin the WIRE path so that gap cannot reopen.
+   */
+  it("passes a server-projected MEASURED zero through instead of collapsing it", () => {
     expect(
       computeSessionLocPerDollar(
-        klocInput({ linesAdded: null, linesRemoved: null, estimatedCost: 5 })
+        locPerDollarInput({ locPerDollar: 0, estimatedCost: 5 })
+      )
+    ).toBe(0);
+  });
+
+  it("keeps a server-projected null as the producer's honest unavailable", () => {
+    expect(
+      computeSessionLocPerDollar(
+        locPerDollarInput({
+          locPerDollar: null,
+          mergedAuthoredPrLinesChanged: 1000,
+          estimatedCost: 5,
+        })
       )
     ).toBeNull();
   });
@@ -415,8 +478,11 @@ describe("computeSessionLocPerDollar (FEA-3630)", () => {
   it("prefers the server-projected locPerDollar over the local derivation", () => {
     expect(
       computeSessionLocPerDollar({
-        ...klocInput({ linesAdded: 800, linesRemoved: 200, estimatedCost: 2 }),
-        // Local derivation would yield 0.5; the server value must win.
+        ...locPerDollarInput({
+          mergedAuthoredPrLinesChanged: 1000,
+          estimatedCost: 2,
+        }),
+        // Local derivation would yield 500; the server value must win.
         locPerDollar: 0.42,
       })
     ).toBe(0.42);
@@ -427,7 +493,10 @@ describe("computeSessionLocPerDollar (FEA-3630)", () => {
   it("preserves a server-projected null locPerDollar", () => {
     expect(
       computeSessionLocPerDollar({
-        ...klocInput({ linesAdded: 800, linesRemoved: 200, estimatedCost: 2 }),
+        ...locPerDollarInput({
+          mergedAuthoredPrLinesChanged: 1000,
+          estimatedCost: 2,
+        }),
         locPerDollar: null,
       })
     ).toBeNull();
@@ -438,7 +507,10 @@ describe("computeSessionLocPerDollar (FEA-3630)", () => {
   it("falls back to the local derivation when the server omits locPerDollar", () => {
     expect(
       computeSessionLocPerDollar({
-        ...klocInput({ linesAdded: 800, linesRemoved: 200, estimatedCost: 2 }),
+        ...locPerDollarInput({
+          mergedAuthoredPrLinesChanged: 1000,
+          estimatedCost: 2,
+        }),
         locPerDollar: undefined,
       })
     ).toBeCloseTo(500, 10);
@@ -451,7 +523,10 @@ describe("computeSessionLocPerDollar (FEA-3630)", () => {
   it("scales a version-skewed producer's legacy klocPerDollar into LOC/$", () => {
     expect(
       computeSessionLocPerDollar({
-        ...klocInput({ linesAdded: 800, linesRemoved: 200, estimatedCost: 2 }),
+        ...locPerDollarInput({
+          mergedAuthoredPrLinesChanged: 1000,
+          estimatedCost: 2,
+        }),
         locPerDollar: undefined,
         klocPerDollar: 0.5,
       })
@@ -461,7 +536,10 @@ describe("computeSessionLocPerDollar (FEA-3630)", () => {
   it("preserves a version-skewed producer's explicit null klocPerDollar", () => {
     expect(
       computeSessionLocPerDollar({
-        ...klocInput({ linesAdded: 800, linesRemoved: 200, estimatedCost: 2 }),
+        ...locPerDollarInput({
+          mergedAuthoredPrLinesChanged: 1000,
+          estimatedCost: 2,
+        }),
         locPerDollar: undefined,
         klocPerDollar: null,
       })
@@ -473,18 +551,22 @@ describe("formatSessionLocPerDollar (FEA-3630)", () => {
   it("formats a normal ratio with the shared adaptive precision", () => {
     expect(
       formatSessionLocPerDollar(
-        klocInput({ linesAdded: 800, linesRemoved: 200, estimatedCost: 2 })
+        locPerDollarInput({
+          mergedAuthoredPrLinesChanged: 1000,
+          estimatedCost: 2,
+        })
       )
     ).toBe("500");
   });
 
   // ISS-4667, the reported session: 4,004 lines changed against $4,574.72 of
-  // cost must read a real 0.88, not the 0.00 the KLOC unit floored it to.
+  // cost must read a real 0.88, not the 0.00 the KLOC unit floored it to. The
+  // ISS-9964 numerator change re-seeds this on the merged key; the sub-cent
+  // precision contract it pins is untouched and still live.
   it("keeps the reported 4,004-line / $4,574.72 session off 0.00", () => {
     const rendered = formatSessionLocPerDollar(
-      klocInput({
-        linesAdded: 3315,
-        linesRemoved: 689,
+      locPerDollarInput({
+        mergedAuthoredPrLinesChanged: 4004,
         estimatedCost: 4574.72,
       })
     );
@@ -492,367 +574,140 @@ describe("formatSessionLocPerDollar (FEA-3630)", () => {
     expect(rendered).not.toBe("0.00");
   });
 
-  it("renders the not-applicable placeholder for the $0 / 0-line / unpriced edge cases", () => {
+  // Both placeholder reasons, which ISS-9980 separated: NOT COMPUTABLE (no cost
+  // to divide by) and NOT AVAILABLE (no resolvable merged numerator). Neither is
+  // a measured zero — that case is the next one.
+  it("renders the not-applicable placeholder for an unpriced or unknowable ratio", () => {
     expect(
       formatSessionLocPerDollar(
-        klocInput({ linesAdded: 500, linesRemoved: 500, estimatedCost: 0 })
+        locPerDollarInput({
+          mergedAuthoredPrLinesChanged: 1000,
+          estimatedCost: 0,
+        })
       )
     ).toBe("—");
     expect(
-      formatSessionLocPerDollar(
-        klocInput({ linesAdded: 0, linesRemoved: 0, estimatedCost: 5 })
-      )
+      formatSessionLocPerDollar(locPerDollarInput({ estimatedCost: 5 }))
     ).toBe("—");
     expect(
       formatSessionLocPerDollar(
-        klocInput({ linesAdded: null, linesRemoved: null, estimatedCost: 5 })
+        locPerDollarInput({
+          mergedAuthoredPrLinesChanged: null,
+          estimatedCost: 5,
+        })
       )
     ).toBe("—");
   });
+
+  // ISS-9980: the rendered counterpart of the measured-zero ruling. A session
+  // that merged nothing against real spend prints a number, not a dash — the
+  // dash would let an unflattering fact read as missing data.
+  it("renders a measured-zero merged population as a number, never the placeholder", () => {
+    const rendered = formatSessionLocPerDollar(
+      locPerDollarInput({ mergedAuthoredPrLinesChanged: 0, estimatedCost: 5 })
+    );
+    // `0.00` is the shared formatter's ordinary two-dp rendering of a real `0`,
+    // and it is the honest answer here. It is NOT the ISS-4667 floor defect,
+    // which was a NON-zero sub-cent ratio being crushed to the same string —
+    // that contract is pinned by the 4,004-line case above.
+    expect(rendered).toBe("0.00");
+    expect(rendered).not.toBe("—");
+  });
 });
 
-describe("computeSessionLocPerDollar authored-PR roll-up (FEA-4378)", () => {
-  // The reported case: a tiny local working-tree diff (136 lines) alongside a
-  // large authored-PR LOC sum. The client fallback (server omits locPerDollar)
-  // must use max(localDiff, authoredPrLinesChanged) so LOC/$ is not ~0.
-  it("prefers the authored-PR LOC over a tiny local diff in the client fallback", () => {
+describe("computeSessionLocPerDollar merged-PR numerator (ISS-9964)", () => {
+  it("derives the ratio from the merged authored-PR LOC in the client fallback", () => {
     const value = computeSessionLocPerDollar(
-      klocInput({
-        linesAdded: 134,
-        linesRemoved: 2,
-        authoredPrLinesChanged: 8000,
+      locPerDollarInput({
+        // ISS-6114: the CANONICAL key, and since ISS-9964 the ONLY one. Dropping
+        // `mergedAuthoredPrLinesChanged` from the read in
+        // `resolveSessionMergedAuthoredPrLoc` (@repo/api), which
+        // `locPerDollarNumeratorLines` delegates to, reds this case.
+        //
+        // It does NOT guard the `Pick` type above: a key typo'd out of that
+        // annotation is a `tsc` failure, not a test failure, because vitest does
+        // not typecheck.
+        mergedAuthoredPrLinesChanged: 8000,
         estimatedCost: 434.69,
         // No server-projected locPerDollar → local fallback path.
       })
     );
-    // ISS-4667: 8000 LINES / 434.69, NOT the 0.31 the 136-line diff would yield.
+    // ISS-4667: 8000 LINES / 434.69, raw lines per dollar.
     expect(value).toBeCloseTo(8000 / 434.69, 12);
     expect(value ?? 0).toBeGreaterThan(0.01);
   });
 
-  it("keeps the local diff when it exceeds the authored-PR LOC", () => {
-    const value = computeSessionLocPerDollar(
-      klocInput({
-        linesAdded: 9000,
-        linesRemoved: 1000,
-        authoredPrLinesChanged: 400,
-        estimatedCost: 100,
-      })
-    );
-    // max(10000, 400) = 10000 lines / $100 = 100 LOC/$.
-    expect(value).toBeCloseTo(100, 10);
+  // EXPECTATION INVERTED by ISS-9980 (RULED 2026-09-11). This case previously
+  // asserted that the deprecated `authoredPrLinesChanged` still answered the
+  // numerator under version skew. It cannot: that field predates the merge gate
+  // and counted OPEN PRs too, so a producer sending only it cannot answer "how
+  // many lines did this session LAND". The honest answer is NOT KNOWABLE.
+  //
+  // The field itself is untouched — still accepted, still emitted, still on the
+  // read contract (Compatibility Guardrail). It is no longer a NUMERATOR.
+  it("treats a legacy-only producer as NOT KNOWABLE, not as a merged total", () => {
+    expect(
+      computeSessionLocPerDollar(
+        locPerDollarInput({
+          authoredPrLinesChanged: 8000,
+          estimatedCost: 434.69,
+        })
+      )
+    ).toBeNull();
   });
 
-  it("still defers to a server-projected locPerDollar over the roll-up", () => {
+  it("still defers to a server-projected locPerDollar over the local numerator", () => {
     expect(
       computeSessionLocPerDollar({
-        ...klocInput({
-          linesAdded: 134,
-          linesRemoved: 2,
-          authoredPrLinesChanged: 8000,
+        ...locPerDollarInput({
+          mergedAuthoredPrLinesChanged: 8000,
           estimatedCost: 434.69,
         }),
         locPerDollar: 0.42,
       })
     ).toBe(0.42);
   });
-
-  // ISS-4448 (codex P1): the LOC/$ numerator must weigh the branch-level diff too,
-  // matching the "Lines changed" row. A merged 88-PR session with a 4,004-line
-  // branch diff (3315 + 689) but a tiny 56-line working-tree residual and no
-  // authored-PR LOC previously computed the ratio off the 56 lines while the row
-  // read "4,004 lines changed" — the two disagreed. Now both use 4,004.
-  it("uses the branch diff in the LOC/$ numerator when it is the largest signal", () => {
-    const value = computeSessionLocPerDollar(
-      klocInput({
-        linesAdded: 51,
-        linesRemoved: 5,
-        authoredPrLinesChanged: 0,
-        branchDiffStats: {
-          linesAdded: 3315,
-          linesRemoved: 689,
-          filesChanged: 42,
-          source: "git",
-        },
-        estimatedCost: 100,
-      })
-    );
-    // ISS-4667: 4004 LINES / $100 = 40.04 — NOT the 0.56 the residual gives.
-    expect(value).toBeCloseTo(4004 / 100, 10);
-  });
 });
 
-describe("sessionOutputDiffDisplay (FEA-4378)", () => {
-  // The pills-row LOC must surface the authored-PR delivered code — NOT the bare
-  // session working-tree diff — when the roll-up exceeds the local diff, so the
-  // number adjacent to the PR pills is not misread as "LOC for those PRs".
-  it("returns the authored-PR total when it exceeds the local diff", () => {
+// ISS-9964 / ISS-9980 (RULED 2026-09-11): the rendered "Lines changed" row and
+// the LOC/$ numerator are now ONE derivation — this helper delegates to
+// `locPerDollarNumeratorLines`. Before this change it independently
+// re-implemented a largest-wins precedence over the working-tree diff, the
+// branch diff, and the authored-PR roll-up, which is exactly how the row and the
+// ratio beside it could disagree. The `working-tree`, `branch-diff`, and
+// unmerged `authored-pr` result shapes are RETIRED, not re-homed: their
+// populations are not code this session delivered. Per the Re-homing Guardrail,
+// deleting the cases that pinned them is the complete and correct outcome.
+describe("sessionOutputDiffDisplay (ISS-9964)", () => {
+  it("reports the merged authored-PR total", () => {
     expect(
-      sessionOutputDiffDisplay({
-        linesAdded: 134,
-        linesRemoved: 2,
-        authoredPrLinesChanged: 8000,
-      })
-    ).toEqual({ kind: "authored-pr", linesChanged: 8000 });
+      sessionOutputDiffDisplay({ mergedAuthoredPrLinesChanged: 8000 })
+    ).toEqual({ kind: "merged-pr", linesChanged: 8000 });
   });
 
-  it("returns the working-tree diff when no larger authored-PR roll-up exists", () => {
+  // The measured zero, on the row rather than the ratio. "0 lines changed" is a
+  // fact about a session that merged nothing; it must not degrade to the
+  // unavailable shape, which claims we could not look.
+  it("reports a measured zero as a merged total of 0, not as unavailable", () => {
     expect(
-      sessionOutputDiffDisplay({
-        linesAdded: 200,
-        linesRemoved: 40,
-        authoredPrLinesChanged: 0,
-      })
-    ).toEqual({ kind: "working-tree", linesAdded: 200, linesRemoved: 40 });
+      sessionOutputDiffDisplay({ mergedAuthoredPrLinesChanged: 0 })
+    ).toEqual({ kind: "merged-pr", linesChanged: 0 });
   });
 
-  // Version skew / desktop-local: authoredPrLinesChanged omitted → working-tree
-  // shape from the local diff (never NaN, never the authored-pr shape).
-  it("falls back to the working-tree diff when authoredPrLinesChanged is absent", () => {
+  it("is unavailable when no merged count was resolved", () => {
+    expect(sessionOutputDiffDisplay({})).toEqual({ kind: "unavailable" });
     expect(
-      sessionOutputDiffDisplay({
-        linesAdded: 50,
-        linesRemoved: 10,
-        authoredPrLinesChanged: undefined,
-      })
-    ).toEqual({ kind: "working-tree", linesAdded: 50, linesRemoved: 10 });
+      sessionOutputDiffDisplay({ mergedAuthoredPrLinesChanged: null })
+    ).toEqual({ kind: "unavailable" });
   });
 
-  // ISS-4448: the branch-level diff wins when it is materially larger than both
-  // the local residual and the authored-PR roll-up — the 88-merged-PR case that
-  // otherwise collapses to the tiny working-tree residual.
-  it("returns the branch diff when it is the largest real signal (ISS-4448)", () => {
-    expect(
-      sessionOutputDiffDisplay({
-        linesAdded: 51,
-        linesRemoved: 5,
-        authoredPrLinesChanged: 0,
-        branchDiffStats: {
-          linesAdded: 3315,
-          linesRemoved: 689,
-          filesChanged: 42,
-          source: "git",
-        },
-      })
-    ).toEqual({ kind: "branch-diff", linesAdded: 3315, linesRemoved: 689 });
-  });
-});
-
-function codexMetadata(overrides: Record<string, unknown>): SessionMetadata {
-  return { branch: "fea-3703", ...overrides } as SessionMetadata;
-}
-
-function tokenSnapshot(usage: unknown): unknown {
-  return {
-    timestamp: "2026-07-22T00:00:00.000Z",
-    model: "gpt-5",
-    lastTokenUsage: usage,
-  };
-}
-
-describe("extractCodexRuntimeMetadata (FEA-3703)", () => {
-  it("returns null for non-Codex sessions (no signal present)", () => {
-    expect(extractCodexRuntimeMetadata(null)).toBeNull();
-    expect(extractCodexRuntimeMetadata(codexMetadata({}))).toBeNull();
-  });
-
-  it("surfaces a fully populated snapshot (context window, latest usage, both rate-limit windows) with utilization", () => {
-    const result = extractCodexRuntimeMetadata(
-      codexMetadata({
-        modelContextWindow: 200_000,
-        codexLastTokenUsage: [
-          tokenSnapshot({
-            input: 40_000,
-            output: 8000,
-            cacheRead: 10_000,
-            cacheWrite: 2000,
-          }),
-        ],
-        codexRateLimits: {
-          // resets_at values are absolute Unix epoch-seconds, matching the raw
-          // Codex payload shape (see golden-sessions fixtures).
-          primary: {
-            used_percent: 42.6,
-            window_minutes: 300,
-            resets_at: 1_780_960_632,
-          },
-          secondary: {
-            used_percent: 5,
-            window_minutes: 10_080,
-            resets_at: 1_782_423_905,
-          },
-        },
-      })
-    );
-    expect(result).not.toBeNull();
-    expect(result?.modelContextWindow).toBe(200_000);
-    expect(result?.latestTokenUsage).toEqual({
-      input: 40_000,
-      output: 8000,
-      cacheRead: 10_000,
-      cacheWrite: 2000,
-      total: 60_000,
+  // Version skew, matching the ratio's ruling above: the deprecated key cannot
+  // answer the merged question, so the row says so rather than printing a total
+  // that includes open PRs.
+  it("is unavailable when only the deprecated key answers", () => {
+    expect(sessionOutputDiffDisplay({ authoredPrLinesChanged: 8000 })).toEqual({
+      kind: "unavailable",
     });
-    // 60000 / 200000 = 30%
-    expect(result?.contextWindowUtilizationPercent).toBeCloseTo(30);
-    expect(result?.rateLimits?.primary).toEqual({
-      usedPercent: 42.6,
-      windowMinutes: 300,
-      // resets_at is passed through verbatim as an absolute epoch-seconds value.
-      resetsAtEpochSeconds: 1_780_960_632,
-    });
-    expect(result?.rateLimits?.secondary?.usedPercent).toBe(5);
-  });
-
-  it("preserves the PARTIAL case: only a context window, no usage, no rate limits", () => {
-    const result = extractCodexRuntimeMetadata(
-      codexMetadata({ modelContextWindow: 128_000 })
-    );
-    expect(result).toEqual({
-      modelContextWindow: 128_000,
-      latestTokenUsage: null,
-      // utilization is undefined without a latest snapshot
-      contextWindowUtilizationPercent: null,
-      rateLimits: null,
-    });
-  });
-
-  it("preserves the PARTIAL case: only rate limits (one window), no context window / usage", () => {
-    const result = extractCodexRuntimeMetadata(
-      codexMetadata({
-        codexRateLimits: {
-          primary: { used_percent: 90, window_minutes: null, resets_at: null },
-          secondary: null,
-        },
-      })
-    );
-    expect(result?.modelContextWindow).toBeNull();
-    expect(result?.latestTokenUsage).toBeNull();
-    expect(result?.contextWindowUtilizationPercent).toBeNull();
-    expect(result?.rateLimits?.primary).toEqual({
-      usedPercent: 90,
-      windowMinutes: null,
-      resetsAtEpochSeconds: null,
-    });
-    expect(result?.rateLimits?.secondary).toBeNull();
-  });
-
-  it("returns null for the RESET snapshot: rate_limits present but every window null", () => {
-    const result = extractCodexRuntimeMetadata(
-      codexMetadata({ codexRateLimits: { primary: null, secondary: null } })
-    );
-    expect(result).toBeNull();
-  });
-
-  it("reads defensively against a MALFORMED synced blob (no throw, no bad values)", () => {
-    // wrong-typed context window + non-array usage + non-object rate limits
-    expect(
-      extractCodexRuntimeMetadata(
-        codexMetadata({
-          modelContextWindow: "200000",
-          codexLastTokenUsage: "nope",
-          codexRateLimits: 42,
-        })
-      )
-    ).toBeNull();
-    // negative context window is dropped
-    expect(
-      extractCodexRuntimeMetadata(codexMetadata({ modelContextWindow: -5 }))
-    ).toBeNull();
-    // malformed used_percent is clamped/dropped, not leaked
-    const clamped = extractCodexRuntimeMetadata(
-      codexMetadata({
-        codexRateLimits: {
-          primary: { used_percent: 150, window_minutes: -1, resets_at: "x" },
-          secondary: null,
-        },
-      })
-    );
-    expect(clamped?.rateLimits?.primary).toEqual({
-      usedPercent: 100,
-      windowMinutes: null,
-      resetsAtEpochSeconds: null,
-    });
-  });
-
-  it("falls back to the last GOOD snapshot when the freshest entry is malformed/zero (staleness/last-good)", () => {
-    const result = extractCodexRuntimeMetadata(
-      codexMetadata({
-        modelContextWindow: 100_000,
-        codexLastTokenUsage: [
-          tokenSnapshot({
-            input: 1000,
-            output: 500,
-            cacheRead: 0,
-            cacheWrite: 0,
-          }),
-          tokenSnapshot({
-            input: 9000,
-            output: 1000,
-            cacheRead: 0,
-            cacheWrite: 0,
-          }),
-          // trailing garbage / zero-only entries must not blank the reading
-          tokenSnapshot({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }),
-          tokenSnapshot("garbage"),
-        ],
-      })
-    );
-    // last GOOD = the {9000,1000} snapshot, total 10000 -> 10% of 100000
-    expect(result?.latestTokenUsage?.total).toBe(10_000);
-    expect(result?.contextWindowUtilizationPercent).toBeCloseTo(10);
-  });
-
-  it("clamps utilization to 100% when a turn exceeds the reported window (never a >100% lie)", () => {
-    const result = extractCodexRuntimeMetadata(
-      codexMetadata({
-        modelContextWindow: 1000,
-        codexLastTokenUsage: [
-          tokenSnapshot({
-            input: 2000,
-            output: 500,
-            cacheRead: 0,
-            cacheWrite: 0,
-          }),
-        ],
-      })
-    );
-    expect(result?.contextWindowUtilizationPercent).toBe(100);
-  });
-
-  it("never surfaces raw reasoning content — only aggregate COUNTS are read from the snapshot", () => {
-    const result = extractCodexRuntimeMetadata(
-      codexMetadata({
-        codexLastTokenUsage: [
-          {
-            timestamp: "2026-07-22T00:00:00.000Z",
-            model: "gpt-5",
-            // an attacker-shaped blob carrying prose alongside the counts
-            reasoning:
-              "SECRET private chain of thought that must never surface",
-            text: "raw assistant message body",
-            lastTokenUsage: {
-              input: 5,
-              output: 3,
-              cacheRead: 0,
-              cacheWrite: 0,
-              reasoningText: "also secret",
-            },
-          },
-        ],
-      })
-    );
-    expect(result?.latestTokenUsage).toEqual({
-      input: 5,
-      output: 3,
-      cacheRead: 0,
-      cacheWrite: 0,
-      total: 8,
-    });
-    // The view model has ONLY numeric count fields — no reasoning/text leak.
-    expect(JSON.stringify(result)).not.toContain("SECRET");
-    expect(JSON.stringify(result)).not.toContain("secret");
-    expect(JSON.stringify(result)).not.toContain("raw assistant message");
   });
 });
 

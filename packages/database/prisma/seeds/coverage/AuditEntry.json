@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Hash-chained audit ledger read only by ledger verification (API and the MCP verify-audit-ledger tool); no screen renders it."
+}

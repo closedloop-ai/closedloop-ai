@@ -50,37 +50,38 @@ describe("canonical Branch projection HTTP parity", () => {
     expect(result.items[0]).not.toHaveProperty("canonicalProjection");
   });
 
-  it.each(
-    canonicalBranchProjectionVariants
-  )("preserves alternate typed projection states through list and detail", async (canonicalProjection) => {
-    const listResponse: BranchListResponse = {
-      ...canonicalBranchListResponseFixture,
-      items: [
-        {
-          ...canonicalBranchListResponseFixture.items[0]!,
-          canonicalProjection,
-        },
-      ],
-    };
-    const detailResponse = {
-      ...canonicalBranchDetailResponseFixture,
-      canonicalProjection,
-    };
-    const source = createHttpBranchesDataSource({
-      get: <T>(path: string) =>
-        Promise.resolve(
-          (path === "/branches/branch-artifact-1"
-            ? detailResponse
-            : listResponse) as T
-        ),
-    });
+  it.each(canonicalBranchProjectionVariants)(
+    "preserves alternate typed projection states through list and detail",
+    async (canonicalProjection) => {
+      const listResponse: BranchListResponse = {
+        ...canonicalBranchListResponseFixture,
+        items: [
+          {
+            ...canonicalBranchListResponseFixture.items[0]!,
+            canonicalProjection,
+          },
+        ],
+      };
+      const detailResponse = {
+        ...canonicalBranchDetailResponseFixture,
+        canonicalProjection,
+      };
+      const source = createHttpBranchesDataSource({
+        get: <T>(path: string) =>
+          Promise.resolve(
+            (path.split("?")[0] === "/branches/branch-artifact-1"
+              ? detailResponse
+              : listResponse) as T
+          ),
+      });
 
-    const list = await source.list({ limit: 1 });
-    const detail = await source.detail("branch-artifact-1");
+      const list = await source.list({ limit: 1 });
+      const detail = await source.detail("branch-artifact-1");
 
-    expect(list.items[0]?.canonicalProjection).toEqual(canonicalProjection);
-    expect(detail.canonicalProjection).toEqual(canonicalProjection);
-  });
+      expect(list.items[0]?.canonicalProjection).toEqual(canonicalProjection);
+      expect(detail.canonicalProjection).toEqual(canonicalProjection);
+    }
+  );
 
   it("does not coerce an unknown future projection generation", async () => {
     const futureProjection = { version: "v2", opaque: { retained: true } };

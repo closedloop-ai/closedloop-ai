@@ -1,14 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import { useIsomorphicLayoutEffect } from "@closedloop-ai/design-system/hooks/use-isomorphic-layout-effect";
+import { useCallback, useState } from "react";
 
 // Measure BEFORE the browser paints, so a layout that adapts to its container
 // adapts in the first painted frame instead of shifting one frame later. React
 // never runs a layout effect on the server, so fall back to `useEffect` there —
 // the measurement is a no-op without a DOM anyway, and this avoids React's
 // "useLayoutEffect does nothing on the server" warning during SSR.
-const useMeasureEffect =
-  globalThis.window === undefined ? useEffect : useLayoutEffect;
+const useMeasureEffect = useIsomorphicLayoutEffect;
 
 // Wide default for every state that has no real measurement — SSR, and a
 // container that measures zero (detached, `display:none`, a keep-alive view
@@ -32,13 +32,10 @@ const DEFAULT_WIDTH = 1024;
  * The returned `ref` is a CALLBACK ref, and the observed element is held in
  * state rather than in a `useRef`, so the measure effect keys off the element
  * itself instead of running once on mount. That is what makes late attachment
- * and replacement work: a caller that renders the measured wrapper
- * conditionally — `GridTable` only wraps when `cardRender` or
- * `snapFoldToColumns` is on — attaches the node AFTER the first commit, and a
- * mount-only effect would have already run against a null ref, so no observer
- * would ever be created and the width would sit at the default forever. Keying
- * on the element also disconnects the old observer and re-measures when the
- * node is swapped for a different one.
+ * and replacement work: a caller may render the measured wrapper conditionally
+ * and attach the node AFTER the first commit, when a mount-only effect would
+ * already have run against a null ref. Keying on the element also disconnects
+ * the old observer and re-measures when the node is swapped for a different one.
  */
 export function useContainerWidth<T extends HTMLElement>(): {
   ref: (node: T | null) => void;
@@ -89,9 +86,8 @@ export function useContainerWidth<T extends HTMLElement>(): {
       // box is not a measurement. The observer fires with `width: 0` for a
       // container that is detached or parked off-screen (a keep-alive view),
       // and reporting that zero would do more than leave `measured` false — a
-      // caller picking between layouts on a breakpoint (`GridTable`'s card
-      // fallback tests `containerWidth < CARD_FALLBACK_BREAKPOINT`) would read
-      // 0, fall below every breakpoint, and render the NARROW layout for a
+      // caller picking between layouts on a breakpoint would read 0, fall below
+      // every breakpoint, and render the NARROW layout for a
       // container that is merely hidden, then visibly swap back when it is
       // shown again. Holding the last real width — the wide default until one
       // exists — is what makes the zero-box contract above true on this path

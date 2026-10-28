@@ -15,9 +15,10 @@
  */
 
 import assert from "node:assert/strict";
-import { afterEach, describe, test } from "node:test";
 import type { BasicUser } from "@repo/api/src/types/user";
+import { afterEach, describe, test } from "vitest";
 import {
+  buildByUserFromCounts,
   buildByUserRollup,
   configureOrgDirectoryPersistence,
   ensureOrgDirectory,
@@ -212,6 +213,72 @@ describe("buildByUserRollup", () => {
     assert.deepEqual(
       rollup.map((r) => r.userId),
       ["u2", "u1"]
+    );
+  });
+});
+
+/**
+ * ISS-10851 — a session-count TIE, on both desktop byUser producers.
+ *
+ * The cloud `buildUsageByUser` this facet is meant to agree with now breaks
+ * ties on `userId`. The case above ties on nothing (2 vs 1), so without these
+ * the desktop comparator could stay bare and the two surfaces would list tied
+ * owners differently for the same facet — the FEA-3452 divergence, relocated
+ * rather than closed. Owners are fed in reverse of the published order, which
+ * for `buildByUserRollup` is also the accumulator's insertion order, so a
+ * missing tiebreak leaves the input order standing and reddens these.
+ */
+describe("ISS-10851 — tied owners order by userId on both desktop paths", () => {
+  const TIE_SNAPSHOT = new Map<string, BasicUser>([
+    ["u-a", user({ id: "u-a", firstName: "Test", lastName: "User" })],
+    ["u-b", user({ id: "u-b", firstName: "Test", lastName: "User" })],
+    ["u-c", user({ id: "u-c", firstName: "Test", lastName: "User" })],
+  ]);
+
+  test("buildByUserRollup breaks a tie on userId", () => {
+    const rollup = buildByUserRollup(
+      [
+        { userId: "u-c", totals: ZERO },
+        { userId: "u-b", totals: ZERO },
+        { userId: "u-a", totals: ZERO },
+      ],
+      TIE_SNAPSHOT
+    );
+    assert.deepEqual(
+      rollup.map((r) => r.userId),
+      ["u-a", "u-b", "u-c"]
+    );
+    // One display name across all three: a name-keyed tiebreak would have left
+    // the input order standing, so this assertion pins the KEY, not just order.
+    assert.equal(new Set(rollup.map((r) => r.userName)).size, 1);
+  });
+
+  test("buildByUserFromCounts breaks a tie on userId", () => {
+    const rollup = buildByUserFromCounts(
+      [
+        { userId: "u-c", sessionCount: 3 },
+        { userId: "u-a", sessionCount: 3 },
+        { userId: "u-b", sessionCount: 3 },
+      ],
+      TIE_SNAPSHOT
+    );
+    assert.deepEqual(
+      rollup.map((r) => r.userId),
+      ["u-a", "u-b", "u-c"]
+    );
+  });
+
+  test("session count still outranks the tiebreak", () => {
+    const rollup = buildByUserFromCounts(
+      [
+        { userId: "u-a", sessionCount: 1 },
+        { userId: "u-c", sessionCount: 2 },
+      ],
+      TIE_SNAPSHOT
+    );
+    assert.deepEqual(
+      rollup.map((r) => r.userId),
+      ["u-c", "u-a"]
     );
   });
 });
@@ -485,6 +552,47 @@ describe("org-directory persistence (FEA-3457)", () => {
     // A failed background refresh does not wipe the rehydrated snapshot.
     assert.deepEqual(resolveOwner("u1", getOrgDirectorySnapshot()), ADA);
     assert.ok(fetchCalls <= 1);
+  });
+
+  test("a transient boot Loading state preserves the durable account snapshot", async () => {
+    const admission = {
+      userId: "user-a",
+      organizationId: "org-a",
+      generation: 1,
+    };
+    const store = makePersistence();
+    configureOrgDirectoryPersistence(store);
+    await ensureOrgDirectory(
+      {
+        getApiOrigin: () => "https://api.test",
+        getAccountAdmission: () => admission,
+        getAccessToken: () => Promise.resolve("session-token"),
+        isAuthoritativelySignedOut: () => false,
+        fetchImpl: okUsersResponse([ADA]),
+      },
+      NOW
+    );
+    const persisted = store.record;
+    assert.ok(persisted);
+    resetOrgDirectoryCacheForTest();
+    const coldStore = makePersistence(persisted);
+    configureOrgDirectoryPersistence(coldStore);
+    let currentAdmission: typeof admission | null = null;
+    const options = {
+      getApiOrigin: () => "https://api.test",
+      getAccountAdmission: () => currentAdmission,
+      getAccessToken: () => Promise.resolve(null),
+      isAuthoritativelySignedOut: () => false,
+      fetchImpl: (() =>
+        Promise.reject(new Error("offline"))) as unknown as typeof fetch,
+    };
+
+    await ensureOrgDirectory(options, NOW + 1000);
+    assert.equal(coldStore.clears, 0);
+    currentAdmission = admission;
+    await ensureOrgDirectory(options, NOW + 2000);
+
+    assert.deepEqual(resolveOwner("u1", getOrgDirectorySnapshot()), ADA);
   });
 
   test("does NOT rehydrate a persisted snapshot from a different identity", async () => {

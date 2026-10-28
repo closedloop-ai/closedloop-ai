@@ -4,16 +4,23 @@ import type {
   DocumentThreadAnchorStatus as DocumentThreadAnchorStatusType,
 } from "@repo/api/src/types/comment.js";
 import {
+  DocumentThreadAnchorStatus,
   resolveAnchorStatusKernel,
   ThreadSource,
   ThreadStatus,
 } from "@repo/api/src/types/comment.js";
+import {
+  CommentAnchorState,
+  commentAnchorKindSchema,
+  commentAnchorStateSchema,
+} from "@repo/api/src/types/comment-anchor.js";
+import { CommentAnchorKind } from "@repo/api/src/types/comment-anchor-kind.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import {
   buildQuery,
-  describeIdOrSlug,
   encodePathSegment,
+  requiredIdOrSlug,
   withErrorHandling,
 } from "./tool-utils.js";
 
@@ -31,11 +38,11 @@ export function registerGetDocumentComments(
       description:
         "Get comment threads and their comments for a document by UUID or slug (PRD-*, PLN-*, FEA-*). Pass the user's slug verbatim.",
       inputSchema: {
-        documentId: z
-          .string()
-          .describe(
-            describeIdOrSlug("Document", ["PRD-7", "PLN-12", "FEA-42"])
-          ),
+        documentId: requiredIdOrSlug(
+          "Document",
+          ["PRD-7", "PLN-12", "FEA-42"],
+          "Use list-documents to find one."
+        ),
         status: z
           .enum(ThreadStatus)
           .optional()
@@ -51,24 +58,24 @@ export function registerGetDocumentComments(
           query
         );
 
-        const mappedThreads = threads
-          .filter((thread) => thread.source !== ThreadSource.Native)
-          .map((thread) => ({
-            id: thread.id,
-            status: thread.status,
-            // `source` identifies the backing system. `anchorStatus` identifies
-            // whether a document comment is anchored to text or artifact-level.
-            source: thread.source,
-            anchorStatus: deriveDocumentCommentAnchorStatus(thread),
-            artifactId: thread.artifactId,
-            createdAt: thread.createdAt,
-            comments: thread.comments.map((c) => ({
-              id: c.id,
-              plainText: c.plainText,
-              createdAt: c.createdAt,
-              author: c.authorId,
-            })),
-          }));
+        // PLN-2187 Q-003: NATIVE document threads are real comments and are
+        // listed alongside synced ones.
+        const mappedThreads = threads.map((thread) => ({
+          id: thread.id,
+          status: thread.status,
+          // `source` identifies the backing system. `anchorStatus` identifies
+          // whether a document comment is anchored to text or artifact-level.
+          source: thread.source,
+          anchorStatus: deriveDocumentCommentAnchorStatus(thread),
+          artifactId: thread.artifactId,
+          createdAt: thread.createdAt,
+          comments: thread.comments.map((c) => ({
+            id: c.id,
+            plainText: c.plainText,
+            createdAt: c.createdAt,
+            author: c.authorId,
+          })),
+        }));
 
         return {
           content: [
@@ -85,6 +92,12 @@ export function registerGetDocumentComments(
 function deriveDocumentCommentAnchorStatus(
   thread: CommentThreadWithComments
 ): DocumentThreadAnchorStatusType | null {
+  return deriveTypedAnchorStatus(thread) ?? deriveMetadataAnchorStatus(thread);
+}
+
+function deriveMetadataAnchorStatus(
+  thread: CommentThreadWithComments
+): DocumentThreadAnchorStatusType | null {
   // Non-Liveblocks threads carry no legacy `anchorPreview` signal, so restrict
   // the `anchorPreview`-based inference to Liveblocks sources by withholding
   // `anchorPreview` from the shared kernel. An explicit, validated
@@ -99,3 +112,42 @@ function deriveDocumentCommentAnchorStatus(
         : undefined,
   });
 }
+
+/**
+ * PLN-2187 T-7.3: the status a typed anchor states, or `null` when the thread
+ * carries none this build understands (an older API, an unknown kind, or a
+ * text anchor's unknown state), which sends the caller to the metadata path.
+ * The kind is read apart from the state: an artifact anchor is artifact-level
+ * whatever state a newer API pairs it with.
+ */
+function deriveTypedAnchorStatus(
+  thread: CommentThreadWithComments
+): DocumentThreadAnchorStatusType | null {
+  const anchor = typedAnchorKindSchema.safeParse(thread.anchor);
+  if (!anchor.success) {
+    return null;
+  }
+  if (anchor.data?.kind === CommentAnchorKind.Artifact) {
+    return DocumentThreadAnchorStatus.ArtifactLevel;
+  }
+  if (anchor.data?.kind !== CommentAnchorKind.Text) {
+    return null;
+  }
+  const anchorState = commentAnchorStateSchema.safeParse(thread.anchorState);
+  if (!anchorState.success) {
+    return null;
+  }
+  switch (anchorState.data) {
+    case CommentAnchorState.Anchored:
+    case CommentAnchorState.Moved:
+      return DocumentThreadAnchorStatus.Anchored;
+    case CommentAnchorState.Orphaned:
+      return DocumentThreadAnchorStatus.Floating;
+    default:
+      return null;
+  }
+}
+
+const typedAnchorKindSchema = z
+  .object({ kind: commentAnchorKindSchema })
+  .nullish();

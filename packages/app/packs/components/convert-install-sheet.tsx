@@ -41,7 +41,7 @@ import type {
 } from "@repo/api/src/types/convert-install";
 import type { ConversionCapability } from "@repo/api/src/types/harness-conversion";
 import { resolveConversionCapability } from "@repo/api/src/types/harness-conversion";
-import type { HarnessName } from "@repo/crewd/model";
+import type { HarnessName } from "@repo/api/src/types/harness-name";
 import {
   Alert,
   AlertDescription,
@@ -92,7 +92,7 @@ import { InstallStateStatus } from "./install-state-status";
  * `Omit` rather than hand-mirroring the fields means a new required field added
  * to `ConvertInstallRequest` breaks this seam at compile time instead of silently
  * diverging (whitlockk review). The owning surface resolves a pack's `Harness` to a
- * concrete crewd `HarnessName` before it reaches here.
+ * concrete `HarnessName` before it reaches here.
  */
 export type ConvertInstallTarget = Omit<ConvertInstallRequest, "cwd">;
 

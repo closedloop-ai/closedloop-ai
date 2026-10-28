@@ -112,6 +112,24 @@ describe("WebInsightsDataSourceProvider", () => {
     ).toBeInTheDocument();
   });
 
+  // ISS-7514: the read is gated, so "nobody asked" is now a reachable state and
+  // must not be published as "this org has no teams". Both rows, so neither
+  // reading can drift into the other.
+  it.each([
+    { expected: "teams:unread", label: "unread", teamsData: undefined },
+    { expected: "teams:none", label: "genuinely empty", teamsData: [] },
+  ])(
+    "publishes availableTeams as $label rather than collapsing the two",
+    ({ expected, teamsData }) => {
+      useGitHubIntegrationStatusMock.mockReturnValue({ data: undefined });
+      useTeamsMock.mockReturnValue({ data: teamsData });
+
+      renderWithProvider(<TeamOptionsProbe />);
+
+      expect(screen.getByText(expected)).toBeInTheDocument();
+    }
+  );
+
   it("does not invalidate insights for the initial cached GitHub status", () => {
     useGitHubIntegrationStatusMock.mockReturnValue({
       data: { connected: true },
@@ -172,7 +190,7 @@ describe("WebInsightsDataSourceProvider", () => {
     });
   });
 
-  it("uses the install connect href when the App is absent", () => {
+  it("keeps the personal authorize href when the org has no App installation (ISS-5958)", () => {
     useGitHubIntegrationStatusMock.mockReturnValue({
       data: {
         connected: false,
@@ -191,13 +209,11 @@ describe("WebInsightsDataSourceProvider", () => {
     renderWithProvider(<ConnectHrefProbe />, undefined, {
       githubAuthorizeHref:
         "/api/integrations/github?returnTo=%2Facme%2Finsights",
-      githubInstallHref:
-        "/api/integrations/github?install=true&returnTo=%2Facme%2Finsights",
     });
 
     expect(
       screen.getByText(
-        "href:/api/integrations/github?install=true&returnTo=%2Facme%2Finsights"
+        "href:/api/integrations/github?returnTo=%2Facme%2Finsights"
       )
     ).toBeInTheDocument();
   });
@@ -221,8 +237,6 @@ describe("WebInsightsDataSourceProvider", () => {
     renderWithProvider(<ConnectHrefProbe />, undefined, {
       githubAuthorizeHref:
         "/api/integrations/github?returnTo=%2Facme%2Finsights",
-      githubInstallHref:
-        "/api/integrations/github?install=true&returnTo=%2Facme%2Finsights",
     });
 
     expect(
@@ -232,7 +246,7 @@ describe("WebInsightsDataSourceProvider", () => {
     ).toBeInTheDocument();
   });
 
-  it("preserves the install href fallback for old disconnected status responses", () => {
+  it("keeps the authorize href for an old disconnected status response", () => {
     useGitHubIntegrationStatusMock.mockReturnValue({
       data: { connected: false },
     });
@@ -241,14 +255,27 @@ describe("WebInsightsDataSourceProvider", () => {
     renderWithProvider(<ConnectHrefProbe />, undefined, {
       githubAuthorizeHref:
         "/api/integrations/github?returnTo=%2Facme%2Finsights",
-      githubInstallHref:
-        "/api/integrations/github?install=true&returnTo=%2Facme%2Finsights",
     });
 
     expect(
       screen.getByText(
-        "href:/api/integrations/github?install=true&returnTo=%2Facme%2Finsights"
+        "href:/api/integrations/github?returnTo=%2Facme%2Finsights"
       )
+    ).toBeInTheDocument();
+  });
+
+  it("falls back to the generic connect href when no authorize href is given", () => {
+    useGitHubIntegrationStatusMock.mockReturnValue({
+      data: { connected: false },
+    });
+    useTeamsMock.mockReturnValue({ data: [] });
+
+    renderWithProvider(<ConnectHrefProbe />, undefined, {
+      githubConnectHref: "/api/integrations/github",
+    });
+
+    expect(
+      screen.getByText("href:/api/integrations/github")
     ).toBeInTheDocument();
   });
 });
@@ -277,9 +304,17 @@ function AvailabilityProbe({
   return <div>availability:{availability?.state}</div>;
 }
 
+function TeamOptionsProbe() {
+  const { availableTeams } = useInsightsDataSource();
+  if (availableTeams === undefined) {
+    return <div>teams:unread</div>;
+  }
+  return <div>teams:{availableTeams.length === 0 ? "none" : "some"}</div>;
+}
+
 function ConnectHrefProbe() {
   const source = useInsightsDataSource();
-  return <div>href:{source.githubConnectHref}</div>;
+  return <div>href:{source.githubConnect?.href}</div>;
 }
 
 function renderWithProvider(
@@ -287,7 +322,7 @@ function renderWithProvider(
   queryClient = createQueryClient(),
   props: Pick<
     Parameters<typeof WebInsightsDataSourceProvider>[0],
-    "githubAuthorizeHref" | "githubConnectHref" | "githubInstallHref"
+    "githubAuthorizeHref" | "githubConnectHref"
   > = {}
 ) {
   return render(providerTree(children, queryClient, props));
@@ -298,7 +333,7 @@ function providerTree(
   queryClient: QueryClient,
   props: Pick<
     Parameters<typeof WebInsightsDataSourceProvider>[0],
-    "githubAuthorizeHref" | "githubConnectHref" | "githubInstallHref"
+    "githubAuthorizeHref" | "githubConnectHref"
   > = {}
 ) {
   return (

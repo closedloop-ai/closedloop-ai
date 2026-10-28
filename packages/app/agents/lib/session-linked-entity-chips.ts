@@ -5,15 +5,13 @@ import type {
 import { DocumentType } from "@repo/api/src/types/document";
 
 /**
- * FEA-4209 / FEA-4210: one display-ready chip in a Sessions-row LINKED-ENTITY
- * cell — the `Owning project` column and the `Linked issues` column both render a
- * list of these through the same cell (`SessionLinkedChipsCell`).
+ * FEA-4210: one display-ready chip in the Sessions `Linked issues` cell
+ * (`SessionLinkedChipsCell`). `Owning project` rendered these too until
+ * ISS-12454 made it an editable picker.
  *
- * Display-ready on purpose. The presentational table receives
- * `SessionTableRow`s, not raw session records, and the two columns differ only
- * in what they resolve and whether the chip carries an icon — so the shared
- * shape is what stops the second column from growing its own copy of the fit,
- * overflow, and accessible-name rules.
+ * Display-ready on purpose: the presentational table receives
+ * `SessionTableRow`s, not raw session records, so the resolution happens before
+ * the cell and the cell owns only the fit, overflow and accessible-name rules.
  */
 export type SessionLinkedEntityChip = Readonly<{
   /** Stable React key AND the dedupe identity — the linked entity's id. */
@@ -36,11 +34,13 @@ export type SessionLinkedEntityChip = Readonly<{
 }>;
 
 /**
- * Test hooks for the two linked-entity overflow controls.
+ * Test hook for the linked-ISSUES overflow control, the only linked-entity
+ * column that still renders chips (ISS-12454 made `Owning project` an editable
+ * control).
  *
- * Exported constants rather than literals retyped at each site: the same string
- * is needed by the production cell, its story, and its test, and this package
- * has already been through that review once —
+ * An exported constant rather than a literal retyped at each site: the same
+ * string is needed by the production cell, its story, and its test, and this
+ * package has already been through that review once —
  * `synced-sessions-table.test-helpers.tsx` re-exports the production
  * `SESSION_STATUS_SYNC_BADGE_TEST_ID` with the note "never retyped (PR review)".
  * A hand-typed copy in the test is what lets a renamed production hook leave the
@@ -49,16 +49,12 @@ export type SessionLinkedEntityChip = Readonly<{
 export const SESSION_LINKED_ISSUES_OVERFLOW_TEST_ID =
   "session-linked-issues-overflow" as const;
 
-/** @see SESSION_LINKED_ISSUES_OVERFLOW_TEST_ID */
-export const SESSION_LINKED_PROJECTS_OVERFLOW_TEST_ID =
-  "session-linked-projects-overflow" as const;
-
 /**
  * Test hook for the chips TRACK itself — the flex row the chips sit in, as
  * against the `+N` control inside it.
  *
- * Derived from the column's overflow id rather than declared as a second pair of
- * constants, so a renamed column cannot leave the two hooks naming different
+ * Derived from the column's overflow id rather than declared as a second
+ * constant, so a renamed column cannot leave the two hooks naming different
  * columns. Needed because the capped (grid) and uncapped (card) tracks differ
  * ONLY in their layout rules — one clips to a single line and hands the rest to
  * `+N`, the other wraps because it has no `+N` to hand anything to — and jsdom
@@ -66,38 +62,6 @@ export const SESSION_LINKED_PROJECTS_OVERFLOW_TEST_ID =
  */
 export function sessionLinkedChipsTrackTestId(overflowTestId: string): string {
   return `${overflowTestId}-track`;
-}
-
-/**
- * FEA-4209: the session's linked PROJECT(s), as chips.
- *
- * The cloud contract carries at most ONE project per session
- * (`AgentSessionListItem.project`, resolved server-side by
- * `project-resolution.ts` from the session's source artifact or loop), so today
- * this returns 0 or 1 chip. It returns a LIST anyway because the column is
- * rendered by the shared multi-chip cell that the `Linked issues` column also
- * uses: one fit rule, one `+N` overflow, one accessible name. That is reuse of a
- * cell the other column exercises, not speculative machinery for a cardinality
- * this contract does not have — see the ticket comment on FEA-4209.
- *
- * No href: the project detail page is routed at
- * `/{orgSlug}/teams/{teamId}/projects/{projectId}`, and `teamId` is not on
- * `AgentSessionProjectSummary` (`{id, name, slug}`). Linking would require a
- * contract addition, so the chip names the project and stays inert rather than
- * guessing a route.
- */
-export function resolveSessionProjectChips(
-  item: AgentSessionListItem
-): readonly SessionLinkedEntityChip[] {
-  const project = item.project;
-  if (!project) {
-    return [];
-  }
-  const label = project.name.trim();
-  if (label.length === 0) {
-    return [];
-  }
-  return [{ key: project.id, label, href: null, title: null }];
 }
 
 /**
@@ -111,7 +75,7 @@ export function resolveSessionProjectChips(
  * added here.
  *
  * Filtered to {@link DocumentType.Feature} because that is what this product
- * calls an issue: `TYPE_ROUTE_PREFIX` routes a FEATURE to `/issues/{slug}`, and
+ * calls an issue: `TYPE_ROUTE_PREFIX` routes a FEATURE to `/documents/{slug}`, and
  * `getDocumentTypeLabel` names it "Issue". A PRD or plan riding in a column
  * headed "Linked issues" would be a mislabel, so the other document types this
  * projection carries are deliberately dropped rather than relabelled.

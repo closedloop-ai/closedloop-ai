@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import { SyncReason } from "@closedloop-ai/telemetry-contract/sync";
-import { vi } from "vitest";
+import { describe, test, vi } from "vitest";
 import {
   handlePreparationFailures,
   prepareCandidatePayloadsIsolated,

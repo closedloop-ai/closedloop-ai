@@ -1,4 +1,3 @@
-import type { BranchPageDetail } from "@repo/api/src/types/branch";
 import { BRANCH_DETAIL_TAB_PARAM } from "@repo/api/src/types/notification-routes";
 import {
   type BranchCommentsControl,
@@ -6,14 +5,17 @@ import {
   classifyBranchDetailError,
   resolveBranchDetailTab,
 } from "@repo/app/branches/components/branch-detail-page";
-import { ConnectGitHubIndicator } from "@repo/app/branches/components/connect-github-indicator";
+import { BranchShellView } from "@repo/app/branches/components/branch-shell-view";
+import { BranchDetailSignalRefresh } from "@repo/app/branches/components/detail/branch-detail-signal-refresh";
 import { useBranchDetail } from "@repo/app/branches/hooks/use-branches";
 import type { BranchBackLabel } from "@repo/app/branches/lib/branch-back-href";
-import { resolveBranchListBanner } from "@repo/app/branches/lib/branch-list-banner";
 import {
   getRouteForSlug,
   withOrgSlug,
 } from "@repo/app/documents/lib/document-navigation";
+import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { readArtifactCommentThreadId } from "@repo/app/shared/lib/artifact-comment-href";
+import { ARTIFACT_DETAIL_SHELL_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { useSearchParamsValue } from "@repo/navigation/use-search-params-value";
 import { useCallback } from "react";
 import {
@@ -24,13 +26,12 @@ import { sessionDetailHref } from "../../navigation/route-table";
 import { useDesktopAuth } from "../../shared-agent-sessions/desktop-auth-provider";
 import { useDesktopIdentity } from "../../shared-agent-sessions/use-desktop-identity";
 import { useWebAppOrigin } from "../../shared-agent-sessions/use-web-app-origin";
+import { useDesktopBranchesConsumption } from "../../shared-branches/desktop-branches-consumption";
 import { DesktopBranchesSource } from "../../shared-branches/desktop-branches-source";
-import { resolveCloudHydrationStatusContent } from "../../shared-branches/desktop-cloud-hydration-status-content";
-import { DesktopConnectStatus } from "../../shared-branches/desktop-connect-status";
-import { DesktopStatusBanner } from "../../shared-branches/desktop-status-banner";
-import { useDesktopGitHubConnect } from "./use-desktop-github-connect";
-
-const DESKTOP_BRANCH_DETAIL_STALE_TIME_MS = 30_000;
+import {
+  BranchDetailWorkspaceOnlyState,
+  isCloudBranchArtifactId,
+} from "./branch-detail-workspace-only-state";
 
 /**
  * Desktop wrapper for the shared Branch Detail body (FEA-1949 / Epic C — C3).
@@ -78,8 +79,6 @@ function BranchDetailViewContent({
   backLabel: BranchBackLabel;
   commentsControl?: BranchCommentsControl;
 }) {
-  const { connectState, connectGitHub: handleConnectGitHub } =
-    useDesktopGitHubConnect(`/branches/${branchId}`);
   // FEA-4259: honor a `?tab=` deep-link (e.g. the Linked Sessions count links
   // to `?tab=sessions-timeline`) so the Sessions tab is on screen on arrival,
   // mirroring the web branch-detail route. The desktop adapter surfaces the
@@ -102,9 +101,25 @@ function BranchDetailViewContent({
   const initialTab = resolveBranchDetailTab(
     searchParams.get(BRANCH_DETAIL_TAB_PARAM)
   );
+  // ISS-10980: the Activity tab's comment rows link here with `?comment=`; the
+  // host that owns the URL reads it, as the Session renderer view does.
+  const selectedThreadId = readArtifactCommentThreadId(searchParams);
+  // ISS-6972 follow-up: connectivity moves BOTH surfaces to this device's store,
+  // and a cloud-minted branch id names nothing there — the local source decodes
+  // it as a branch name it has no row for and answers 404, which the shared page
+  // renders as "Branch not found" over a branch the user was reading a second
+  // earlier. The source stays local (offline IS local); what changes is that the
+  // page says where the branch actually is. Read from the consumption context
+  // rather than re-derived, so this can never disagree with the source
+  // `DesktopBranchesSource` selects (the rule `SessionDetailView` also follows).
+  const { useCanonicalCloudSource } = useDesktopBranchesConsumption();
+  const branchIsWorkspaceOnly =
+    !useCanonicalCloudSource && isCloudBranchArtifactId(branchId);
   const detailQuery = useBranchDetail(branchId, {
-    refetchOnWindowFocus: true,
-    staleTime: DESKTOP_BRANCH_DETAIL_STALE_TIME_MS,
+    // Do not ask a store a question it cannot answer: the doomed read would only
+    // produce the 404 this state exists to stop mistranslating. Reconnecting
+    // flips the source back and re-enables it against the untouched cloud cache.
+    enabled: !branchIsWorkspaceOnly,
   });
   const { state: authState } = useDesktopAuth();
   const { identity } = useDesktopIdentity(authState.status, authState.userId);
@@ -130,36 +145,33 @@ function BranchDetailViewContent({
     !detailQuery.isLoading
   );
 
-  // Gate the standalone connect bar on the SAME shared rule the Branches list
-  // uses (`resolveBranchListBanner` → "connect-github"): show it when this
-  // branch carries no repo identity (GitHub enrichment can never populate), not
-  // whenever a repo is known. Otherwise already-connected users see a permanent
-  // duplicate of the CTA the shared `BranchDetailPage` already gates.
-  //
-  // PLN-1535 M3.2: this deliberately does NOT also fire on a `CredentialMissing`
-  // overlay. That status means the Desktop holds no cloud credential at all —
-  // connecting GitHub cannot fix it, and offering that CTA sent a signed-out
-  // user down a path that could never resolve their problem. The honest remedy
-  // (sign in) is what `DesktopDetailCloudHydrationStatus` now states. Hydration
-  // reports `NotConnected` only when NO row carries repo identity, which the
-  // shared banner rule above already covers from `repoFullName`.
-  const showConnectGitHub =
-    detailQuery.data != null &&
-    resolveBranchListBanner([detailQuery.data]) === "connect-github";
+  // ONE read per shell, at the mount, swapping two whole pages. Optional
+  // reader because the renderer has no flag provider in every mount context;
+  // absent resolves false, which is the closed-by-default answer.
+  const shellEnabled = useFeatureFlagEnabledOptional(
+    ARTIFACT_DETAIL_SHELL_FEATURE_FLAG_KEY
+  );
+  const BranchDetailBody = shellEnabled ? BranchShellView : BranchDetailPage;
 
+  if (branchIsWorkspaceOnly) {
+    return (
+      <BranchDetailWorkspaceOnlyState
+        backHref={backHref}
+        backLabel={backLabel}
+      />
+    );
+  }
+
+  // The Topbar breadcrumb ("<Back destination> / <name>") is the back
+  // affordance; backHref/backLabel also feed the shared error state's back
+  // link, and both derive from the same resolved destination (FEA-4262).
   return (
-    // The Topbar breadcrumb ("<Back destination> / <name>") is the back
-    // affordance; backHref/backLabel also feed the shared error state's back
-    // link, and both derive from the same resolved destination (FEA-4262).
     <div className="flex min-h-0 flex-1 flex-col">
-      <DesktopConnectStatus state={connectState} variant="detail" />
-      <DesktopDetailCloudHydrationStatus detail={detailQuery.data} />
-      {showConnectGitHub ? (
-        <div className="border-b px-4 py-2">
-          <ConnectGitHubIndicator compact onConnect={handleConnectGitHub} />
-        </div>
-      ) : null}
-      <BranchDetailPage
+      <BranchDetailSignalRefresh branchId={branchId} />
+      {/* ISS-11274: no connect-GitHub control here. The approved Branch detail
+          design places none — connecting GitHub is owned by the dashboard card,
+          Settings → Integrations, and the onboarding checklist. */}
+      <BranchDetailBody
         backHref={backHref}
         backLabel={backLabel}
         branchId={branchId}
@@ -175,29 +187,14 @@ function BranchDetailViewContent({
         // same-branch navigation the AppShell would otherwise keep mounted. See
         // the initialTab comment above. `branchId` stays in the key so a plain
         // branch→branch navigation (already a remount) keeps a stable identity.
-        key={`${branchId}::${initialTab ?? ""}`}
+        // The legacy page takes its tab from `initialTab`, so a tab change must
+        // remount it. The shell reads the tab from the URL itself, and keeping
+        // `initialTab` in its key remounted it on every tab click — dropping the
+        // selected pull request and the kept-mounted Artifact canvas, and doing
+        // it again on Back (tamsinb, #8514).
+        key={shellEnabled ? branchId : `${branchId}::${initialTab ?? ""}`}
+        selectedThreadId={selectedThreadId}
       />
     </div>
-  );
-}
-
-function DesktopDetailCloudHydrationStatus({
-  detail,
-}: {
-  detail?: BranchPageDetail;
-}) {
-  // Tone + copy resolve from the shared per-variant map so this banner and the
-  // list banner cannot drift apart as statuses are added (PLN-1535 M3.2).
-  const state = resolveCloudHydrationStatusContent(
-    detail?.cloudHydrationStatus,
-    "detail"
-  );
-  if (!state) {
-    return null;
-  }
-  return (
-    <DesktopStatusBanner tone={state.tone} variant="detail">
-      {state.message}
-    </DesktopStatusBanner>
   );
 }

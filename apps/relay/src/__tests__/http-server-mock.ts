@@ -17,6 +17,12 @@ export type MockHttpServer = {
   on: (evt: string, fn: Listener) => MockHttpServer;
   once: (evt: string, fn: Listener) => MockHttpServer;
   off: (evt: string, fn: Listener) => MockHttpServer;
+  /**
+   * Test-only: dispatch to the listeners currently registered for `evt` and
+   * report how many ran. Lets a suite drive a server event (e.g. a post-bind
+   * "error") instead of only asserting that a listener was registered.
+   */
+  emitServerEvent: (evt: string, ...args: unknown[]) => number;
 };
 
 export function createMockHttpServerFactory(): () => MockHttpServer {
@@ -63,6 +69,13 @@ export function createMockHttpServerFactory(): () => MockHttpServer {
         listeners.get(evt)?.delete(fn);
         return mockServer;
       }),
+      emitServerEvent: (evt: string, ...args: unknown[]) => {
+        const registered = [...(listeners.get(evt) ?? [])];
+        for (const fn of registered) {
+          fn(...args);
+        }
+        return registered.length;
+      },
     };
     return mockServer;
   };

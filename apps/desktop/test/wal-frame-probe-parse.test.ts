@@ -12,7 +12,7 @@
  * be read as an empty WAL, which would silently disable the ceiling backstop.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   SQLITE_DEFAULT_PAGE_SIZE_BYTES,
   WAL_FILE_HEADER_BYTES,

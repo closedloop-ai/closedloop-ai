@@ -1,0 +1,446 @@
+{
+  "_comment": "SYNTHETIC fixture in the shape of a GET https://pensero.ai/api/v1/delivery?start_date=2026-08-01&end_date=2026-08-04&team_identifiers=Engineering response. People, emails, usernames, titles and scores are invented; each row exists because it demonstrates a named extraction/matching hazard (see _hazards). This file is the parser's hazard suite, not a volume sample.",
+  "_hazards": {
+    "H1_creator_row_has_no_pr_number": "item_type=pull_request rows carry only the bare PR title. Only pull_request_review rows embed '<owner>/<repo>#<number>'.",
+    "H2_url_is_the_intra_feed_join_key": "creator and reviewer rows for one PR share url=/interactions/pull_request/<id>. That is the ONLY way to get a creator row's PR number.",
+    "H3_creator_with_no_reviewer_counterpart": "some creator rows have no review row in the window, so no number is recoverable from this segment at all.",
+    "H4_repo_is_not_constant": "example-infrastructure rows appear alongside closedloop-ai.",
+    "H5_title_not_unique": "two distinct PRs share a byte-identical creator title.",
+    "H6_title_is_lossy": "markup is stripped, leaving a double space where <main> was. Pensero title != GitHub title.",
+    "H7_nested_quotes_in_title": "the review title wraps the PR title in single quotes while the PR title itself contains apostrophes and quotes.",
+    "H8_zero_is_a_measured_value": "delivery: 0 is real, and must stay distinct from unmatched and from not-yet-backfilled.",
+    "H9_points_split_across_roles_and_people": "one PR yields a creator row plus N reviewer rows to different users; the creator may also appear as their own reviewer.",
+    "H10_non_pr_item_types": "messaging (url null) and ticket (/ticketing/ticket/<id>) carry real points with no PR to attach to.",
+    "H11_no_github_login": "user object has only id/name/email/username; username is email-shaped and differs in case from email. Person identity must bridge on email, case-insensitively.",
+    "H12_empty_deliveries_is_present_not_absent": "a user with deliveries: [] is in the payload.",
+    "H13_delivery_date_is_not_the_pr_date": "a window returns rows for PRs created well before it, so points accrete across windows; upsert on item_id, never sum on re-read.",
+    "H14_multi_slug_titles_are_truncated": "'+ N more' and slash-runs under-report which tickets a PR touches; the artifact set must come from our own links, not this string.",
+    "H15_legacy_slugs": "FEA- slugs appear and must resolve via legacy_slug.",
+    "H16_partial_credit_markers": "(item 1), (Part 1), (PR1) mark a PR that addresses only part of its ticket. A link is not a completion claim.",
+    "H17_hash_in_title_that_is_not_a_pr_ref": "'#team-ci-alerts' is a Slack channel, not a PR number."
+  },
+  "start_date": "2026-08-01",
+  "end_date": "2026-08-04",
+  "users": [
+    {
+      "user": {
+        "id": 2950,
+        "name": "Daveth Oakhurst",
+        "email": "daveth.oakhurst@closedloop.ai",
+        "username": "Daveth.Oakhurst@closedloop.ai"
+      },
+      "deliveries": [
+        {
+          "date": "2026-08-02",
+          "item_id": "2656228",
+          "item_type": "pull_request",
+          "role": "creator",
+          "title": "ISS-4881: Add a widget export contract",
+          "url": "/interactions/pull_request/1539716",
+          "delivery": 3
+        },
+        {
+          "date": "2026-08-02",
+          "item_id": "2656344",
+          "item_type": "pull_request_review",
+          "role": "reviewer",
+          "title": "Review pull_request: closedloop-ai/closedloop-ai#4228 with title 'ISS-4881: Add a widget export contract'",
+          "url": "/interactions/pull_request/1539716",
+          "delivery": 0.75
+        },
+        {
+          "date": "2026-08-02",
+          "item_id": "2428735",
+          "item_type": "pull_request",
+          "role": "creator",
+          "title": "FEA-3753: Fix widget owner attribution",
+          "url": "/interactions/pull_request/1455999",
+          "delivery": 0
+        },
+        {
+          "date": "2026-08-02",
+          "item_id": "2656500",
+          "item_type": "pull_request_review",
+          "role": "reviewer",
+          "title": "Review pull_request: closedloop-ai/closedloop-ai#3525 with title 'FEA-3753: Fix widget owner attribution'",
+          "url": "/interactions/pull_request/1455999",
+          "delivery": 5
+        },
+        {
+          "date": "2026-08-02",
+          "item_id": "2656365",
+          "item_type": "pull_request",
+          "role": "creator",
+          "title": "ISS-4884: Adapt widget id provenance",
+          "url": "/interactions/pull_request/1539978",
+          "delivery": 1.25
+        },
+        {
+          "date": "2026-08-02",
+          "item_id": "2656386",
+          "item_type": "pull_request",
+          "role": "creator",
+          "title": "ISS-4884: Fix widget replay edges",
+          "url": "/interactions/pull_request/1540005",
+          "delivery": 7
+        },
+        {
+          "date": "2026-08-01",
+          "item_id": "2655212",
+          "item_type": "pull_request_review",
+          "role": "reviewer",
+          "title": "Review pull_request: closedloop-ai/closedloop-ai#4085 with title 'ISS-4573: Quarantine 'widgets couldn't be read' caveat — launched-app E2E'",
+          "url": "/interactions/pull_request/1505024",
+          "delivery": 0.4
+        },
+        {
+          "date": "2026-08-01",
+          "item_id": "2653774",
+          "item_type": "pull_request_review",
+          "role": "reviewer",
+          "title": "Review pull_request: closedloop-ai/closedloop-ai#4155 with title 'ISS-4673: collapse nested/duplicate  panels to one per page'",
+          "url": "/interactions/pull_request/1533506",
+          "delivery": 12
+        },
+        {
+          "date": "2026-08-03",
+          "item_id": "2670502",
+          "item_type": "messaging",
+          "role": "creator",
+          "title": "Slack Message related to: closedloop-ai/closedloop-ai#4159: PLN-1525 step 4: widget read signatures.",
+          "url": null,
+          "delivery": 2.75
+        }
+      ]
+    },
+    {
+      "user": {
+        "id": 2954,
+        "name": "Kerensa Whitlock",
+        "email": "kerensa.whitlock@closedloop.ai",
+        "username": "kerensa.whitlock@closedloop.ai"
+      },
+      "deliveries": [
+        {
+          "date": "2026-08-02",
+          "item_id": "2656357",
+          "item_type": "pull_request_review",
+          "role": "reviewer",
+          "title": "Review pull_request: closedloop-ai/closedloop-ai#4228 with title 'ISS-4881: Add a widget export contract'",
+          "url": "/interactions/pull_request/1539716",
+          "delivery": 1.5
+        },
+        {
+          "date": "2026-08-03",
+          "item_id": "2666774",
+          "item_type": "pull_request",
+          "role": "creator",
+          "title": "PLN-1562: share the widget queue mechanics across both sync lanes",
+          "url": "/interactions/pull_request/1543518",
+          "delivery": 0
+        },
+        {
+          "date": "2026-08-03",
+          "item_id": "2666775",
+          "item_type": "pull_request",
+          "role": "creator",
+          "title": "PLN-1562: share the widget queue mechanics across both sync lanes",
+          "url": "/interactions/pull_request/1543521",
+          "delivery": 8
+        },
+        {
+          "date": "2026-08-03",
+          "item_id": "2666790",
+          "item_type": "pull_request_review",
+          "role": "reviewer",
+          "title": "Review pull_request: closedloop-ai/closedloop-ai#4298 with title 'PLN-1562: share the widget queue mechanics across both sync lanes'",
+          "url": "/interactions/pull_request/1543518",
+          "delivery": 0.6
+        },
+        {
+          "date": "2026-08-03",
+          "item_id": "2670601",
+          "item_type": "pull_request_review",
+          "role": "reviewer",
+          "title": "Review pull_request: closedloop-ai/closedloop-ai#4301 with title 'PLN-1562: share the widget queue mechanics across both sync lanes'",
+          "url": "/interactions/pull_request/1543521",
+          "delivery": 4
+        },
+        {
+          "date": "2026-08-02",
+          "item_id": "2656511",
+          "item_type": "pull_request_review",
+          "role": "reviewer",
+          "title": "Review pull_request: closedloop-ai/closedloop-ai#3525 with title 'FEA-3753: Fix widget owner attribution'",
+          "url": "/interactions/pull_request/1455999",
+          "delivery": 1.75
+        },
+        {
+          "date": "2026-08-03",
+          "item_id": "2674723",
+          "item_type": "pull_request_review",
+          "role": "reviewer",
+          "title": "Review pull_request: closedloop-ai/closedloop-ai#4295 with title 'ISS-4662 (item 1): carry widget variants to the server; ISS-4649 (item 1) reconciliation correction'",
+          "url": "/interactions/pull_request/1543154",
+          "delivery": 11
+        },
+        {
+          "date": "2026-08-03",
+          "item_id": "2677113",
+          "item_type": "pull_request_review",
+          "role": "reviewer",
+          "title": "Review pull_request: closedloop-ai/closedloop-ai#4260 with title 'ISS-4891 + 9 more: widget regression coverage'",
+          "url": "/interactions/pull_request/1540129",
+          "delivery": 0.2
+        }
+      ]
+    },
+    {
+      "user": {
+        "id": 2894,
+        "name": "Marisol Ashgrove",
+        "email": "marisol.ashgrove@closedloop.ai",
+        "username": "marisol.ashgrove@closedloop.ai"
+      },
+      "deliveries": [
+        {
+          "date": "2026-08-01",
+          "item_id": "2650276",
+          "item_type": "pull_request",
+          "role": "creator",
+          "title": "ISS-4642/4643/4644/4645/4646: refresh the widget docs",
+          "url": "/interactions/pull_request/1533162",
+          "delivery": 3.5
+        },
+        {
+          "date": "2026-08-01",
+          "item_id": "2655498",
+          "item_type": "pull_request_review",
+          "role": "reviewer",
+          "title": "Review pull_request: closedloop-ai/closedloop-ai#4147 with title 'ISS-4642/4643/4644/4645/4646: refresh the widget docs'",
+          "url": "/interactions/pull_request/1533162",
+          "delivery": 0.35
+        },
+        {
+          "date": "2026-08-03",
+          "item_id": "2670417",
+          "item_type": "pull_request",
+          "role": "creator",
+          "title": "Add a summary to widget reports",
+          "url": "/interactions/pull_request/1543980",
+          "delivery": 2
+        },
+        {
+          "date": "2026-08-03",
+          "item_id": "2685160",
+          "item_type": "ticket",
+          "role": "creator",
+          "title": "[FEAT] Keep widget tables visible when a summary read fails",
+          "url": "/ticketing/ticket/2608131",
+          "delivery": 14
+        },
+        {
+          "date": "2026-08-03",
+          "item_id": "2685155",
+          "item_type": "ticket",
+          "role": "assignee",
+          "title": "[FEAT] Keep widget tables visible when a summary read fails",
+          "url": "/ticketing/ticket/2608131",
+          "delivery": 0
+        },
+        {
+          "date": "2026-08-03",
+          "item_id": "2685218",
+          "item_type": "ticket",
+          "role": "creator",
+          "title": "[FEAT] Enforce widget boundaries and clear the findings",
+          "url": "/ticketing/ticket/2665541",
+          "delivery": 0.65
+        },
+        {
+          "date": "2026-08-01",
+          "item_id": "2652087",
+          "item_type": "pull_request",
+          "role": "creator",
+          "title": "ISS-4673: collapse nested/duplicate  panels to one per page",
+          "url": "/interactions/pull_request/1533506",
+          "delivery": 9.5
+        },
+        {
+          "date": "2026-08-03",
+          "item_id": "2656523",
+          "item_type": "pull_request",
+          "role": "creator",
+          "title": "ISS-4891 + 9 more: widget regression coverage",
+          "url": "/interactions/pull_request/1540129",
+          "delivery": 1.05
+        },
+        {
+          "date": "2026-08-04",
+          "item_id": "2676893",
+          "item_type": "pull_request",
+          "role": "creator",
+          "title": "ISS-4997/4998/4996/5000: stop the widget surface asserting what it does not know",
+          "url": "/interactions/pull_request/1544559",
+          "delivery": 5.5
+        },
+        {
+          "date": "2026-08-02",
+          "item_id": "2655645",
+          "item_type": "pull_request",
+          "role": "creator",
+          "title": "ISS-4723: batch widget writes into one transaction (PR2)",
+          "url": "/interactions/pull_request/1539420",
+          "delivery": 0.45
+        },
+        {
+          "date": "2026-08-01",
+          "item_id": "2655491",
+          "item_type": "pull_request",
+          "role": "creator",
+          "title": "ISS-4723 (PR1): count-based widget checkpoint cadence",
+          "url": "/interactions/pull_request/1539282",
+          "delivery": 6.5
+        }
+      ]
+    },
+    {
+      "user": {
+        "id": 5520,
+        "name": "Perrin Upcott",
+        "email": "perrin.upcott@closedloop.ai",
+        "username": "perrin.upcott@closedloop.ai"
+      },
+      "deliveries": [
+        {
+          "date": "2026-08-03",
+          "item_id": "2670452",
+          "item_type": "pull_request",
+          "role": "creator",
+          "title": "ISS-5023: bound widget log spend in IaC (scoped index + usage monitors)",
+          "url": "/interactions/pull_request/1544074",
+          "delivery": 0.85
+        },
+        {
+          "date": "2026-08-03",
+          "item_id": "2676985",
+          "item_type": "pull_request_review",
+          "role": "reviewer",
+          "title": "Review pull_request: example-org/infrastructure#148 with title 'ISS-5023: bound widget log spend in IaC (scoped index + usage monitors)'",
+          "url": "/interactions/pull_request/1544074",
+          "delivery": 2.4
+        },
+        {
+          "date": "2026-08-03",
+          "item_id": "2679727",
+          "item_type": "pull_request_review",
+          "role": "reviewer",
+          "title": "Review pull_request: example-org/infrastructure#147 with title 'feat(widgets/api): set the widget trace endpoint and sample rate (ISS-4659)'",
+          "url": "/interactions/pull_request/1543988",
+          "delivery": 13
+        },
+        {
+          "date": "2026-08-03",
+          "item_id": "2678996",
+          "item_type": "pull_request",
+          "role": "creator",
+          "title": "ISS-5023: route the widget alerts to #team-ci-alerts",
+          "url": "/interactions/pull_request/1544848",
+          "delivery": 0.3
+        },
+        {
+          "date": "2026-08-04",
+          "item_id": "2678999",
+          "item_type": "pull_request",
+          "role": "creator",
+          "title": "ISS-5025: require `widget-gate` instead of `widget` on main",
+          "url": "/interactions/pull_request/1544847",
+          "delivery": 4.25
+        },
+        {
+          "date": "2026-08-04",
+          "item_id": "2702246",
+          "item_type": "pull_request",
+          "role": "creator",
+          "title": "ISS-5100: assert widget store integrity on every teardown",
+          "url": "/interactions/pull_request/1547831",
+          "delivery": 1.9
+        },
+        {
+          "date": "2026-08-04",
+          "item_id": "2707874",
+          "item_type": "pull_request_review",
+          "role": "reviewer",
+          "title": "Review pull_request: closedloop-ai/closedloop-ai#4359 with title 'ISS-5100: assert widget store integrity on every teardown'",
+          "url": "/interactions/pull_request/1547831",
+          "delivery": 7.5
+        }
+      ]
+    },
+    {
+      "user": {
+        "id": 2952,
+        "name": "Tamsin Bramley",
+        "email": "tamsin.bramley@closedloop.ai",
+        "username": "tamsin.bramley@closedloop.ai"
+      },
+      "deliveries": [
+        {
+          "date": "2026-08-04",
+          "item_id": "2707888",
+          "item_type": "pull_request_review",
+          "role": "reviewer",
+          "title": "Review pull_request: closedloop-ai/closedloop-ai#4359 with title 'ISS-5100: assert widget store integrity on every teardown'",
+          "url": "/interactions/pull_request/1547831",
+          "delivery": 0.55
+        },
+        {
+          "date": "2026-08-02",
+          "item_id": "2656505",
+          "item_type": "pull_request_review",
+          "role": "reviewer",
+          "title": "Review pull_request: closedloop-ai/closedloop-ai#3525 with title 'FEA-3753: Fix widget owner attribution'",
+          "url": "/interactions/pull_request/1455999",
+          "delivery": 10.5
+        },
+        {
+          "date": "2026-08-03",
+          "item_id": "2677037",
+          "item_type": "messaging",
+          "role": "creator",
+          "title": "Slack Message related to: closedloop-ai/closedloop-ai#4160: docs: widget release notes.",
+          "url": null,
+          "delivery": 0
+        }
+      ]
+    },
+    {
+      "user": {
+        "id": 2958,
+        "name": "Jory Hollingsworth",
+        "email": "jory.hollingsworth@closedloop.ai",
+        "username": "jory.hollingsworth@closedloop.ai"
+      },
+      "deliveries": []
+    },
+    {
+      "user": {
+        "id": 3213,
+        "name": "Pascoe Birchall",
+        "email": "pascoe.birchall@closedloop.ai",
+        "username": "pascoe.birchall@closedloop.ai"
+      },
+      "deliveries": [
+        {
+          "date": "2026-08-01",
+          "item_id": "2489006",
+          "item_type": "pull_request",
+          "role": "creator",
+          "title": "feat(widgets): scope widget comments by tab",
+          "url": "/interactions/pull_request/1462627",
+          "delivery": 0
+        }
+      ]
+    }
+  ]
+}

@@ -48,6 +48,7 @@ const RE_SESSION_NAME = /^divider-session-\d+$/;
 const CURRENT_VERSION_LABEL = "Current";
 const OLDER_VERSION_LABEL = "Rev 1";
 const UNATTRIBUTED_VERSION_CELL = "—";
+const VERSION_COLUMN_LABEL = "Version";
 // The agent-detail "Version" column renders as the shared table's trailing
 // `extra` column, tagged `data-column-id="extra"` on each cell.
 const VERSION_COLUMN_SELECTOR = '[data-column-id="extra"]';
@@ -152,7 +153,7 @@ describe("agent-detail Sessions tab version impact — desktop renderer (FEA-426
     // history exist. `getByText` throws when absent, so a successful call is the
     // assertion (the desktop renderer vitest config does not load jest-dom's
     // `toBeInTheDocument`).
-    expect(screen.getByText("Version")).toBeTruthy();
+    expect(screen.getByText(VERSION_COLUMN_LABEL)).toBeTruthy();
     // The current revision and the one earlier revision both surface a label.
     expect(screen.getAllByText(CURRENT_VERSION_LABEL).length).toBeGreaterThan(
       0
@@ -194,7 +195,7 @@ describe("agent-detail Sessions tab version impact — desktop renderer (FEA-426
     );
 
     // The column still renders (one attributed session), and both rows survive.
-    expect(screen.getByText("Version")).toBeTruthy();
+    expect(screen.getByText(VERSION_COLUMN_LABEL)).toBeTruthy();
     expect(screen.getAllByText(RE_SESSION_NAME)).toHaveLength(2);
     // The Version-column body cells: session-0 shows "Current"; the
     // unattributed session-1 shows the em-dash "version unknown" cell rather
@@ -221,7 +222,7 @@ describe("agent-detail Sessions tab version impact — desktop renderer (FEA-426
       navigation
     );
 
-    expect(screen.queryByText("Version")).toBeNull();
+    expect(screen.queryByText(VERSION_COLUMN_LABEL)).toBeNull();
     expect(screen.getAllByText(RE_SESSION_NAME)).toHaveLength(3);
   });
 });

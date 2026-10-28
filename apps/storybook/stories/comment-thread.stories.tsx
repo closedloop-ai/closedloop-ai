@@ -137,9 +137,9 @@ function CommentThreadStory() {
 }
 
 const meta = {
-  title: "Design System/Documents & Conversation/Comment Thread",
+  title: "Composites v1.0/Documents/Comment Thread",
   component: CommentThreadStory,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
 } satisfies Meta<typeof CommentThreadStory>;
 

@@ -21,22 +21,6 @@ The `self-learning` plugin turns individual run patterns into organizational kno
 - `toon-format` — TOON syntax spec (tabular arrays, quoting, flag semantics `[REVIEW]`, `[STALE]`, `[UNTESTED]`, `[PRUNE]`).
 - `learning-quality` — 5-step decision tree with hard rejection criteria, used by agents that capture learnings.
 
-## Post-iteration pipeline
-
-The `code` plugin's `run-loop.sh` calls into self-learning through an 11-step pipeline after each iteration:
-
-1. `changed-files.json` from git diff
-2. `pattern_relevance.py` → `relevance-scores.json`
-3. `merge_relevance.py` → appends `|relevance_score|relevance_method` to `outcomes.log`
-4. `evaluate_goal.py` → `goal-outcome.json`
-5. `merge_goal_outcome.py` → appends `|goal_name|goal_success|goal_score`
-6. `verify_citations.py` → marks `|unverified` entries
-7. `merge_build_result.py` → appends `|build_passed` or `|build_failed`
-8. `claude -p '/self-learning:process-learnings'` — LLM classification
-9. `write_merged_patterns.py` — atomic TOON write with `.bak`, 50-pattern cap, sorted by confidence and flags
-10. `compute_success_rates.py` — per-pattern success rates and flag assignment
-11. `claude -p '/self-learning:export-closedloop-learnings'`
-
 ## TOON format
 
 TOON (tabular object-oriented notation) reduces tokens by ~40% versus JSON. Tabular arrays look like:

@@ -1,4 +1,7 @@
-import type { PriorityLevel } from "@repo/design-system/components/ui/priority-icon";
+import type {
+  ProjectSummaryOwner,
+  ProjectSummaryRow,
+} from "@repo/app/projects/lib/project-summary-row";
 
 // ---------------------------------------------------------------------------
 // Sidebar navigation model
@@ -21,7 +24,6 @@ export type NavIconName =
   | "branches"
   | "agents"
   | "insights"
-  | "loops"
   | "agent-monitoring"
   | "judges";
 
@@ -48,7 +50,7 @@ export const artifactsNav: readonly NavItem[] = [
   { label: "Issues", icon: "issues" },
   { label: "Sessions", icon: "sessions" },
   { label: "Branches", icon: "branches" },
-  { label: "Agents", icon: "agents" },
+  { label: "Agentic Components", icon: "agents" },
 ];
 
 export const teams: readonly TeamItem[] = [
@@ -58,9 +60,12 @@ export const teams: readonly TeamItem[] = [
     name: "ClosedLoop",
     isActive: true,
     favorites: [
-      { id: "fav-night-crew", name: "Night Crew" },
-      { id: "fav-pascoe-triage", name: "Pascoe Triage" },
-      { id: "fav-sprint", name: "6/29-7/2" },
+      { id: "fav-sprint-0810", name: "8/10-14" },
+      { id: "fav-sprint-0817", name: "8/17-21" },
+      {
+        id: "fav-ottilie-august",
+        name: "Ottilie August Strategic Projects",
+      },
     ],
   },
   { id: "team-platform", name: "Platform Engineering" },
@@ -69,7 +74,6 @@ export const teams: readonly TeamItem[] = [
 
 export const labsNav: readonly NavItem[] = [
   { label: "Insights", icon: "insights" },
-  { label: "Loops", icon: "loops" },
   { label: "Agent Monitoring", icon: "agent-monitoring" },
   { label: "Judges", icon: "judges" },
 ];
@@ -78,184 +82,223 @@ export const labsNav: readonly NavItem[] = [
 // Projects list model
 // ---------------------------------------------------------------------------
 
-export type Assignee = {
-  name: string;
-  initials: string;
-  accent: string;
-};
+/**
+ * ISS-10476 promoted the Projects surface into `@repo/app`; the kit page is now
+ * a fixture host for it, so the row shape is the portable one rather than a
+ * second declaration of the same fields.
+ */
+export type Owner = ProjectSummaryOwner;
+export type ProjectRow = ProjectSummaryRow;
 
-export type ProjectRow = {
-  id: string;
-  code: string | null;
-  name: string;
-  priority: PriorityLevel;
-  assignee: Assignee | null;
-  dueDate: string | null;
-  updated: string;
-  depth?: number;
-};
+const kait = owner("Kait Carb", "KC");
+const ottilie = owner("Ottilie Eya", "AE");
+const daveth = owner("Daveth Ortiz", "DO");
+const marisol = owner("Marisol Angus", "MA");
 
-const kait: Assignee = { name: "Kait Carb", initials: "KC", accent: "#f59e0b" };
-const ottilie: Assignee = {
-  name: "Ottilie Eya",
-  initials: "AE",
-  accent: "#6366f1",
-};
-const daveth: Assignee = {
-  name: "Daveth Ortiz",
-  initials: "DO",
-  accent: "#0ea5e9",
-};
-const marisol: Assignee = {
-  name: "Marisol Angus",
-  initials: "MA",
-  accent: "#10b981",
-};
+/** Fixed clock this fixture's "N days ago" labels are written against. */
+const KIT_REFERENCE_NOW_MS = Date.parse("2026-06-27T12:00:00Z");
+const KIT_DAY_MS = 24 * 60 * 60 * 1000;
 
 export const projects: readonly ProjectRow[] = [
-  {
-    id: "pro-1",
+  project({
+    childTaskCount: 18,
     code: "PRO-1",
-    name: "4/24 - Reduce Onboarding Friction",
-    priority: "HIGH",
-    assignee: kait,
+    completionPercentage: 45,
     dueDate: "Apr 28, 2026",
-    updated: "5 days ago",
-  },
-  {
-    id: "pro-1-public-launch",
-    code: null,
-    name: "6/29 - Public Launch",
-    priority: "LOW",
-    assignee: kait,
-    dueDate: "Jun 29, 2026",
-    updated: "Jun 22, 2026",
-    depth: 1,
-  },
-  {
-    id: "pro-36",
-    code: "PRO-36",
-    name: "6/29-7/2",
-    priority: "MEDIUM",
-    assignee: kait,
-    dueDate: null,
-    updated: "Jun 22, 2026",
-  },
-  {
-    id: "pro-32",
-    code: "PRO-32",
-    name: "7/8-10",
-    priority: "MEDIUM",
-    assignee: kait,
-    dueDate: null,
-    updated: "Yesterday",
-  },
-  {
-    id: "anouk-workspace",
-    code: null,
-    name: "Anouk Workspace",
-    priority: "MEDIUM",
-    assignee: ottilie,
-    dueDate: null,
-    updated: "Mar 12, 2026",
-  },
-  {
-    id: "andrews-backlog",
-    code: null,
-    name: "Ottilie's Backlog",
-    priority: "LOW",
-    assignee: ottilie,
-    dueDate: null,
-    updated: "Mar 10, 2026",
-  },
-  {
-    id: "archive",
-    code: null,
-    name: "Archive",
-    priority: "LOW",
-    assignee: null,
-    dueDate: null,
-    updated: "Mar 10, 2026",
-  },
-  {
-    id: "pro-33",
-    code: "PRO-33",
-    name: "Bigs Backlog",
-    priority: "MEDIUM",
-    assignee: kait,
-    dueDate: null,
-    updated: "Jun 8, 2026",
-  },
-  {
-    id: "daniels-workspace",
-    code: null,
-    name: "Daveth's Workspace",
-    priority: "MEDIUM",
-    assignee: daveth,
-    dueDate: null,
-    updated: "Mar 10, 2026",
-  },
-  {
-    id: "pro-3",
-    code: "PRO-3",
-    name: "Enterprise",
+    id: "pro-1",
+    name: "4/24 - Reduce Onboarding Friction",
+    owner: kait,
     priority: "HIGH",
-    assignee: marisol,
-    dueDate: null,
+    updatedDaysAgo: 5,
+  }),
+  project({
+    childTaskCount: 24,
+    code: null,
+    completionPercentage: 70,
+    dueDate: "Jun 29, 2026",
+    id: "pro-1-public-launch",
+    name: "6/29 - Public Launch",
+    owner: kait,
+    priority: "LOW",
+    updated: "Jun 22, 2026",
+  }),
+  project({
+    childTaskCount: 9,
+    code: "PRO-36",
+    completionPercentage: 100,
+    id: "pro-36",
+    name: "6/29-7/2",
+    owner: kait,
+    priority: "MEDIUM",
+    updated: "Jun 22, 2026",
+  }),
+  project({
+    childTaskCount: 0,
+    code: "PRO-32",
+    completionPercentage: null,
+    id: "pro-32",
+    name: "7/8-10",
+    owner: kait,
+    priority: "MEDIUM",
+    updatedDaysAgo: 1,
+    updatedLabel: "Yesterday",
+  }),
+  project({
+    childTaskCount: 6,
+    code: null,
+    completionPercentage: 0,
+    id: "anouk-workspace",
+    name: "Anouk Workspace",
+    owner: ottilie,
+    priority: "MEDIUM",
+    updated: "Mar 12, 2026",
+  }),
+  project({
+    childTaskCount: 14,
+    code: null,
+    completionPercentage: 20,
+    id: "andrews-backlog",
+    name: "Ottilie's Backlog",
+    owner: ottilie,
+    priority: "LOW",
+    updated: "Mar 10, 2026",
+  }),
+  project({
+    childTaskCount: 3,
+    code: null,
+    completionPercentage: 45,
+    id: "archive",
+    name: "Archive",
+    owner: null,
+    priority: "LOW",
+    updated: "Mar 10, 2026",
+  }),
+  project({
+    childTaskCount: 21,
+    code: "PRO-33",
+    completionPercentage: 70,
+    id: "pro-33",
+    name: "Bigs Backlog",
+    owner: kait,
+    priority: "MEDIUM",
+    updated: "Jun 8, 2026",
+  }),
+  project({
+    childTaskCount: 11,
+    code: null,
+    completionPercentage: 20,
+    id: "daniels-workspace",
+    name: "Daveth's Workspace",
+    owner: daveth,
+    priority: "MEDIUM",
+    updated: "Mar 10, 2026",
+  }),
+  project({
+    childTaskCount: 30,
+    code: "PRO-3",
+    completionPercentage: 45,
+    id: "pro-3",
+    name: "Enterprise",
+    owner: marisol,
+    priority: "HIGH",
     updated: "Mar 1, 2026",
-  },
-  {
+  }),
+  project({
+    childTaskCount: 7,
+    code: null,
+    completionPercentage: 0,
     id: "entire-hq-gap-close",
-    code: null,
     name: "Entire HQ Gap Close",
+    owner: kait,
     priority: "LOW",
-    assignee: kait,
-    dueDate: null,
     updated: "Mar 10, 2026",
-  },
-  {
+  }),
+  project({
+    childTaskCount: 16,
+    code: null,
+    completionPercentage: 45,
     id: "hosted-must-have",
-    code: null,
     name: "Hosted Version + Free Trial - Must Have",
+    owner: kait,
     priority: "MEDIUM",
-    assignee: kait,
-    dueDate: null,
     updated: "Mar 10, 2026",
-  },
-  {
+  }),
+  project({
+    childTaskCount: 12,
+    code: null,
+    completionPercentage: 20,
     id: "hosted-nice-to-have",
-    code: null,
     name: "Hosted Version + Free Trial - Nice To Have",
+    owner: kait,
     priority: "LOW",
-    assignee: kait,
-    dueDate: null,
     updated: "Mar 10, 2026",
-  },
-  {
+  }),
+  project({
+    childTaskCount: 19,
+    code: null,
+    completionPercentage: 70,
     id: "hosted-public-launch",
-    code: null,
     name: "Hosted Version + Free Trial - Public Launch",
+    owner: kait,
     priority: "MEDIUM",
-    assignee: kait,
-    dueDate: null,
     updated: "Mar 10, 2026",
-  },
-  {
-    id: "idea-backlog-processed",
+  }),
+  project({
+    childTaskCount: 5,
     code: null,
+    completionPercentage: 100,
+    id: "idea-backlog-processed",
     name: "Idea Backlog (Processed)",
+    owner: kait,
     priority: "LOW",
-    assignee: kait,
-    dueDate: null,
     updated: "Mar 5, 2026",
-  },
-  {
-    id: "ideas-triage",
+  }),
+  project({
+    childTaskCount: 13,
     code: "PRO-9",
+    completionPercentage: 45,
+    id: "ideas-triage",
     name: "Ideas Triage",
+    owner: kait,
     priority: "MEDIUM",
-    assignee: kait,
-    dueDate: null,
     updated: "Apr 13, 2026",
-  },
+  }),
 ];
+
+function owner(name: string, initials: string): Owner {
+  return { initials, name };
+}
+
+function project(input: {
+  childTaskCount: number;
+  code: string | null;
+  completionPercentage: number | null;
+  dueDate?: string | null;
+  id: string;
+  name: string;
+  owner: Owner | null;
+  priority: ProjectRow["priority"];
+  updated?: string;
+  updatedDaysAgo?: number;
+  updatedLabel?: string;
+}): ProjectRow {
+  const updatedAtMs =
+    input.updatedDaysAgo === undefined
+      ? Date.parse(input.updated ?? "")
+      : KIT_REFERENCE_NOW_MS - input.updatedDaysAgo * KIT_DAY_MS;
+  const updatedLabel =
+    input.updatedLabel ?? input.updated ?? `${input.updatedDaysAgo} days ago`;
+  return {
+    childTaskCount: input.childTaskCount,
+    code: input.code,
+    completionPercentage: input.completionPercentage,
+    dueDateLabel: input.dueDate ?? null,
+    dueDateMs: input.dueDate ? Date.parse(input.dueDate) : null,
+    id: input.id,
+    name: input.name,
+    owner: input.owner,
+    priority: input.priority,
+    updatedAtMs,
+    updatedLabel,
+  };
+}

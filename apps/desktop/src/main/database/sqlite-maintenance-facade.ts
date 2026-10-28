@@ -16,6 +16,7 @@
  * key still wins over an earlier spread, so the FEA-1999 store-health reads and
  * the pack install-run methods keep their original precedence.
  */
+
 import { staleRebuildSkip } from "../collectors/engine/data-revision.js";
 import type { Harness, NormalizedSession } from "../collectors/types.js";
 import { runHistoricalBackfill as runHistoricalBackfillFn } from "../enrichment/historical-backfill.js";
@@ -26,6 +27,8 @@ import {
   recordInstallRunEnd as recordPackInstallRunEndFn,
   recordInstallRunStart as recordPackInstallRunStartFn,
 } from "../packs/catalog-store.js";
+import { effectiveParsePolicy } from "../parse-policy/effective-parse-policy.js";
+import type { ParsePolicy } from "../parse-policy/parse-policy.js";
 import {
   type AnalyticsRollupRecomputeResult,
   recomputeAnalyticsRollupsFor,
@@ -37,20 +40,20 @@ import {
   TERMINAL_STATUS_SET,
 } from "./db-constants.js";
 import { collectionViolationEventId } from "./deterministic-event-id.js";
-import {
-  correlateCommitShaPrLinks as correlateCommitShaPrLinksFn,
-  propagateAllBranchPrLinks as propagateAllBranchPrLinksFn,
-} from "./pr-link-maintenance.js";
+import { deleteInvocationSyncStateForSessions } from "./invocation-sync-orphan-maintenance.js";
+import { propagateAllBranchPrLinks as propagateAllBranchPrLinksFn } from "./pr-link-maintenance.js";
 import type { DesktopPrisma } from "./prisma-client.js";
 import type { createSqliteTokenUsageStore } from "./read-stores.js";
 import { runRebuildSessionTransaction } from "./rebuild-session-tx.js";
 import type { SessionIdentityProvider } from "./session-owner-identity.js";
+import { canReplaceSessionProjection } from "./session-projection-replaceability.js";
 import type { SqliteAgentDatabase } from "./sqlite-contract.js";
 import {
   createStoreHealthMethods,
   type StoreHealthMethods,
 } from "./store-health-methods.js";
 import { normalizeStoredTimestampFormats as normalizeStoredTimestampFormatsFn } from "./timestamp-format-maintenance.js";
+import { clearSessionAttributionEvidence } from "./write-core-import-phases-operation-claims.js";
 import { WriteQueueClass } from "./write-queue.js";
 
 /**
@@ -80,10 +83,11 @@ export function createMaintenanceFacade(
 ): Pick<
   SqliteAgentDatabase,
   | "captureRepoIdentity"
-  | "correlateCommitShaPrLinks"
+  | "claimProjectionCandidate"
   | "deleteSessionRow"
   | "listExistingSessionIds"
   | "listStaleRevisionSessions"
+  | "now"
   | "normalizeStoredTimestampFormats"
   | "propagateAllBranchPrLinks"
   | "rebuildComponentInvocationsFromStoredRows"
@@ -92,6 +96,7 @@ export function createMaintenanceFacade(
   | "recordCollectionModeViolation"
   | "recordPackInstallRunEnd"
   | "recordPackInstallRunStart"
+  | "releaseProjectionCandidate"
   | "removeUnauthoredBranchPrLinks"
   | "runHistoricalBackfill"
 > &
@@ -145,27 +150,87 @@ export function createMaintenanceFacade(
       );
       return new Set(rows.map((row) => row.id));
     },
-    async listStaleRevisionSessions(
-      currentRevision: number
-    ): Promise<Array<{ id: string; harness: string | null; status: string }>> {
+    async listStaleRevisionSessions(currentRevision: number): Promise<
+      Array<{
+        id: string;
+        harness: string | null;
+        status: string;
+        lastActivityAt: string;
+      }>
+    > {
       // ISS-5400: `await`ed rather than returned bare — the only deviation from a
       // verbatim move, so the extracted method satisfies `useAwait` on its own.
+      //
+      // ISS-8601: `lastActivityAt` is the age anchor the rebuild's admission test
+      // reads. It is the same NOT NULL column the SQL aggregate and the JS
+      // staleness fold already share, so the bound cannot become a fourth
+      // staleness clock.
       return await prisma.read((reader) =>
         reader.session.findMany({
           where: { dataRevision: { not: currentRevision } },
-          select: { id: true, harness: true, status: true },
+          select: {
+            id: true,
+            harness: true,
+            status: true,
+            lastActivityAt: true,
+          },
         })
+      );
+    },
+    /**
+     * ISS-8601: the store's clock, exposed so a MAIN-process reader can anchor to
+     * the same instant the in-transaction guards use. Reached over the db-host
+     * proxy it resolves as a promise, which is why its one caller awaits it.
+     */
+    now: nowFn,
+    async claimProjectionCandidate(
+      sessionId: string,
+      revision: string
+    ): Promise<void> {
+      if (!(sessionId && revision)) {
+        return;
+      }
+      // ISS-8741: one unconditional single-row assignment, so a replay writes the
+      // same bytes instead of accumulating. Tagged `bulk` to ride the same
+      // write-queue fairness class as the rebuild it precedes — a claim that
+      // jumped ahead of the interactive transcript writes would make the
+      // substrate cost the hot path.
+      await prisma.write(
+        (client) =>
+          client.$executeRawUnsafe(
+            "UPDATE sessions SET projection_candidate_revision = $1 WHERE id = $2",
+            revision,
+            sessionId
+          ),
+        undefined,
+        { class: WriteQueueClass.Bulk }
+      );
+    },
+    async releaseProjectionCandidate(sessionId: string): Promise<void> {
+      if (!sessionId) {
+        return;
+      }
+      await prisma.write(
+        (client) =>
+          client.$executeRawUnsafe(
+            "UPDATE sessions SET projection_candidate_revision = NULL WHERE id = $1",
+            sessionId
+          ),
+        undefined,
+        { class: WriteQueueClass.Bulk }
       );
     },
     async rebuildSessionFromParse(
       session: NormalizedSession,
-      harness: Harness
+      harness: Harness,
+      projectionRevision?: string | null,
+      parsePolicy: ParsePolicy = effectiveParsePolicy()
     ): Promise<{
       rebuilt: boolean;
       activeRace: boolean;
-      contentChanged?: boolean;
+      needsResync?: boolean;
     }> {
-      if (!(session.sessionId && session.startedAt)) {
+      if (!canReplaceSessionProjection(session)) {
         return { rebuilt: false, activeRace: false };
       }
       // Resolved before the transaction opens (and cached) so the capability
@@ -183,12 +248,14 @@ export function createMaintenanceFacade(
               runRebuildSessionTransaction(tx, {
                 session,
                 harness,
+                parsePolicy,
                 hasRowDigest,
                 tokenUsage,
                 detectBillingMode,
                 getUserIdentity,
                 log,
                 now: nowFn,
+                projectionRevision,
               })
             ),
           undefined,
@@ -203,11 +270,12 @@ export function createMaintenanceFacade(
     },
     async rebuildComponentInvocationsFromStoredRows(
       sessionId: string,
-      currentRevision: number
+      currentRevision: number,
+      parsePolicy: ParsePolicy = effectiveParsePolicy()
     ): Promise<{
       rebuilt: boolean;
       activeRace: boolean;
-      contentChanged?: boolean;
+      needsResync?: boolean;
     }> {
       if (!sessionId) {
         return { rebuilt: false, activeRace: false };
@@ -218,9 +286,17 @@ export function createMaintenanceFacade(
             // The boot-time stale list is advisory — see `staleRebuildSkip`.
             const current = await tx.session.findUnique({
               where: { id: sessionId },
-              select: { status: true, dataRevision: true },
+              select: {
+                status: true,
+                dataRevision: true,
+                lastActivityAt: true,
+              },
             });
-            const skip = staleRebuildSkip(current, currentRevision);
+            const skip = staleRebuildSkip(
+              current,
+              currentRevision,
+              new Date(nowFn())
+            );
             if (skip) {
               return skip;
             }
@@ -231,10 +307,16 @@ export function createMaintenanceFacade(
               nowFn(),
               log
             );
+            // ISS-12552: the stamp says the policy's revision, so with the
+            // policy off the session keeps no attribution evidence either; no
+            // transcript is left to re-derive it from.
+            const cleared = parsePolicy.attributionEvidence
+              ? false
+              : await clearSessionAttributionEvidence(tx, sessionId, nowFn());
             return {
               rebuilt: true,
               activeRace: false,
-              contentChanged: result.invocationSetChanged,
+              needsResync: result.invocationSetChanged || cleared,
             };
           })
         );
@@ -245,22 +327,29 @@ export function createMaintenanceFacade(
         return { rebuilt: false, activeRace: false };
       }
     },
-    async deleteSessionRow(sessionId: string): Promise<void> {
+    async deleteSessionRow(sessionId: string): Promise<boolean> {
       /* Cloud-side copies of sessions deleted here are removed by FEA-1787's
          phantom-purge script — no local tombstone mechanism exists. */
-      await prisma.write((client) =>
+      return await prisma.write((client) =>
         client.$transaction(async (tx) => {
           /*
-           * Re-check status inside the transaction: a session that became
-           * non-terminal (active, running) between listing and this tx must
-           * not be deleted — it heals via ordinary reimport.
+           * Re-check status inside the transaction: a session that is
+           * non-terminal (active, running) must not be deleted.
+           *
+           * ISS-8601: this guard stays STATUS-ONLY on purpose, and is the one
+           * place in the rebuild that did not take the age bound. Admission is to
+           * REBUILD, never to DELETE: a wedged row may be re-derived, but it may
+           * never be purged, so a bound that admits it upstream must not reach
+           * here. The boolean is what makes the refusal observable — callers used
+           * to read a `void` return as success and count a deletion that never
+           * happened.
            */
           const current = await tx.session.findUnique({
             where: { id: sessionId },
             select: { status: true },
           });
           if (current && !TERMINAL_STATUS_SET.has(current.status)) {
-            return;
+            return false;
           }
           await tx.event.deleteMany({ where: { sessionId } });
           // token_events is @@ignore'd (no PK → excluded from the generated
@@ -288,6 +377,23 @@ export function createMaintenanceFacade(
             where: { sessionId },
           });
           await tx.claudeCodeApiRequest.deleteMany({ where: { sessionId } });
+          await tx.claudeCodeErrorEvent.deleteMany({ where: { sessionId } });
+          await tx.claudeCodePermissionModeChange.deleteMany({
+            where: { sessionId },
+          });
+          await tx.claudeCodeMcpServerConnection.deleteMany({
+            where: { sessionId },
+          });
+          await tx.claudeCodeAuthEvent.deleteMany({ where: { sessionId } });
+          await tx.claudeCodePluginEvent.deleteMany({ where: { sessionId } });
+          await tx.claudeCodeLinesOfCode.deleteMany({ where: { sessionId } });
+          await tx.claudeCodeSessionStart.deleteMany({ where: { sessionId } });
+          await tx.claudeCodeToolResult.deleteMany({ where: { sessionId } });
+          await tx.claudeCodeActiveTime.deleteMany({ where: { sessionId } });
+          await tx.claudeCodeSessionIdentity.deleteMany({
+            where: { sessionId },
+          });
+          await tx.claudeCodeLlmRequest.deleteMany({ where: { sessionId } });
           // FEA-1899: PR rows are now artifacts; detach via the link table only.
           await tx.sessionArtifactLink.deleteMany({ where: { sessionId } });
           await tx.artifactLinkBackfillSeen.deleteMany({
@@ -298,20 +404,13 @@ export function createMaintenanceFacade(
           await tx.activitySegmentBackfillSeen.deleteMany({
             where: { sessionId },
           });
-          // FEA-3436: pr_backfill_seen has no FK cascade (session-keyed marker,
-          // no relation), so a manual delete here previously orphaned its row
-          // until the next retention sweep. Purge it explicitly, matching
-          // sweepExpiredSessions. The PR rows themselves are artifacts detached
-          // via the link table above (FEA-1899); this only clears the marker.
-          await tx.prBackfillSeen.deleteMany({ where: { sessionId } });
           // FEA-2347: the derived analytics rollups have no FK cascade and were
           // previously left for ingest-time rebuild — but a delete with no
           // following reimport (permanent/phantom purge) then orphaned them,
-          // inflating any aggregate not joined to `sessions`. Purge all three in
+          // inflating any aggregate not joined to `sessions`. Purge them in
           // the same tx so a delete leaves nothing session-attributable behind;
           // a reimport (DATA_REVISION rebuild) recomputes them regardless.
           await tx.sessionAnalytics.deleteMany({ where: { sessionId } });
-          await tx.sessionToolAnalytics.deleteMany({ where: { sessionId } });
           await tx.agentComponentSessionUsage.deleteMany({
             where: { sessionId },
           });
@@ -319,10 +418,18 @@ export function createMaintenanceFacade(
           // class — purge it so a manual delete leaves no cohort/coverage row to
           // orphan and inflate the aggregate metrics reads.
           await tx.sessionActivityMetrics.deleteMany({ where: { sessionId } });
+          await deleteInvocationSyncStateForSessions(tx, [sessionId]);
           // agents cascade via FK on sessions(id) (foreign_keys=ON on the
           // adapter connection — verified), but the explicit child deletes
           // above cover tables without ON DELETE CASCADE.
-          await tx.session.deleteMany({ where: { id: sessionId } });
+          // ISS-8601: the COUNT, not a bare `true`. An id that is already gone
+          // takes the same path as a successful delete, and returning `true`
+          // there would let a caller count and log a deletion that did not
+          // happen — the very shape this boolean was added to close.
+          const removed = await tx.session.deleteMany({
+            where: { id: sessionId },
+          });
+          return removed.count > 0;
         })
       );
     },
@@ -360,9 +467,6 @@ export function createMaintenanceFacade(
     },
     propagateAllBranchPrLinks(): Promise<number> {
       return propagateAllBranchPrLinksFn(prisma, log);
-    },
-    correlateCommitShaPrLinks(): Promise<number> {
-      return correlateCommitShaPrLinksFn(prisma, log);
     },
     removeUnauthoredBranchPrLinks(): Promise<number> {
       return removeUnauthoredBranchPrLinksFn(prisma, log);

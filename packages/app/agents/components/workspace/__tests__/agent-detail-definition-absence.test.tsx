@@ -123,6 +123,7 @@ function testDetailSource(
 ): AgentComponentsDataSource {
   return {
     scope: "test-definition-absence",
+    honorsDateWindow: false,
     list: () => Promise.reject(new Error("list unused in absence tests")),
     detail: () => Promise.resolve(detail),
   };

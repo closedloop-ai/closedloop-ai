@@ -200,26 +200,6 @@ describe("MermaidComponent render ordering", () => {
       expect(screen.queryByTestId("mermaid-viewer")).toBeNull()
     );
   });
-
-  it("keeps the legacy fallback on the sanitized current SVG path", async () => {
-    render(
-      <MermaidComponent
-        {...createNodeViewProps({
-          content: "graph TD; A;",
-          enhancementsEnabled: false,
-        })}
-      />
-    );
-
-    await waitFor(() => expect(mermaid.render).toHaveBeenCalledTimes(1));
-    mocks.renderControls[0].resolve({
-      svg: '<svg viewBox="0 0 10 10"><script>bad()</script><text>legacy render</text></svg>',
-    });
-
-    expect(await screen.findByText("legacy render")).toBeTruthy();
-    expect(document.body.innerHTML).not.toContain("<script");
-    expect(document.body.innerHTML).not.toContain("bad()");
-  });
 });
 
 describe("MermaidComponent public actions", () => {
@@ -235,6 +215,7 @@ describe("MermaidComponent public actions", () => {
     const textarea = screen.getByRole("textbox", {
       name: "Mermaid diagram source",
     });
+    expect(textarea.dataset.slot).toBe("textarea");
     fireEvent.change(textarea, { target: { value: "graph TD; A-->B;" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
@@ -299,24 +280,6 @@ describe("MermaidComponent public actions", () => {
     mocks.renderControls[2].reject("not an Error");
     expect(await screen.findByText("Failed to render diagram")).toBeTruthy();
   });
-
-  it("opens the legacy rendered diagram from its public Edit action", async () => {
-    render(
-      <MermaidComponent
-        {...createNodeViewProps({
-          content: "graph TD; A;",
-          enhancementsEnabled: false,
-        })}
-      />
-    );
-    await waitFor(() => expect(mermaid.render).toHaveBeenCalledOnce());
-    mocks.renderControls[0].resolve({ svg: MERMAID_SVG_LIGHT });
-
-    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
-    expect(
-      screen.getByRole("textbox", { name: "Mermaid diagram source" })
-    ).toBeTruthy();
-  });
 });
 
 describe("MermaidExtension public schema", () => {
@@ -341,7 +304,7 @@ describe("MermaidExtension public schema", () => {
   });
 
   it("executes its insertion, markdown, node-view, and plugin contracts", () => {
-    const extension = MermaidExtension.configure({ enhancementsEnabled: true });
+    const extension = MermaidExtension;
     const insertContent = vi.fn(() => true);
     const addCommands = extension.config.addCommands;
     const addNodeView = extension.config.addNodeView;
@@ -373,20 +336,11 @@ describe("MermaidExtension public schema", () => {
   });
 });
 
-function createNodeViewProps({
-  content,
-  enhancementsEnabled = true,
-}: {
-  content: string;
-  enhancementsEnabled?: boolean;
-}) {
+function createNodeViewProps({ content }: { content: string }) {
   return {
     decorations: [],
     deleteNode: vi.fn(),
     editor: {},
-    extension: {
-      options: { enhancementsEnabled },
-    },
     getPos: vi.fn(() => 0),
     HTMLAttributes: {},
     innerDecorations: {},
@@ -405,3 +359,36 @@ function latestViewerSvg() {
   }
   return latestCall.svg;
 }
+
+describe("MermaidComponent with a missing content attribute", () => {
+  it("renders the empty state, never calls mermaid, and Cancel commits nothing", () => {
+    const props = createNodeViewProps({ content: "" });
+    const nullContentProps = {
+      ...props,
+      node: { attrs: { content: null as unknown as string } },
+    };
+    render(<MermaidComponent {...nullContentProps} />);
+
+    expect(mermaid.render).not.toHaveBeenCalled();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add Mermaid Diagram" })
+    );
+    const textarea = screen.getByRole<HTMLInputElement>("textbox", {
+      name: "Mermaid diagram source",
+    });
+    expect(textarea.value).toBe("");
+
+    fireEvent.change(textarea, { target: { value: "draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add Mermaid Diagram" })
+    );
+
+    expect(
+      screen.getByRole<HTMLInputElement>("textbox", {
+        name: "Mermaid diagram source",
+      }).value
+    ).toBe("");
+    expect(props.updateAttributes).not.toHaveBeenCalled();
+  });
+});

@@ -11,6 +11,10 @@
  */
 import { ComponentResolvedState } from "@repo/api/src/types/agent-component";
 import {
+  type AgentComponentFootprint,
+  agentComponentFootprintFromTokenCount,
+} from "@repo/api/src/types/agent-component-footprint";
+import {
   AgentComponentInvocationAnchorKind,
   AgentComponentInvocationAttributionStatus,
   AgentComponentInvocationEvidenceClass,
@@ -27,7 +31,13 @@ import {
   parseRecord,
   stringValue,
 } from "./component-invocation-json.js";
-import type { AgentComponentInvocationCandidate } from "./component-invocation-row-writer.js";
+import {
+  type AgentComponentInvocationCandidate,
+  invocationFootprintColumns,
+  invocationLineColumns,
+  NO_INVOCATION_FINDINGS,
+  NO_INVOCATION_TELEMETRY,
+} from "./component-invocation-row-writer.js";
 import {
   bareComponentName,
   type SkillShadowSkillOccurrence,
@@ -152,15 +162,37 @@ export function storedBaseCandidate(input: {
   rawName: string | null;
   normalizedName: string | null;
   invokedAt: string | null;
+  durationMs?: number;
+  durationRefusedInvalidEvidence?: true;
   sourceOrder: number;
   anchorKind: string;
   anchorValue: string;
   providerToolUseId?: string | null;
   gitBranch: string | null;
   repositoryFullName: string | null;
+  /**
+   * ISS-10736: the context footprint, when the stored row carried a persisted
+   * count. Absent for the command and subagent rebuild sources, which store no
+   * output text and no count of it.
+   */
+  footprint?: AgentComponentFootprint;
+  /**
+   * ISS-10730: the per-edit delta the import persisted onto `events.data`
+   * (`import-metadata-builders`), when this rebuild found one. The rebuild lane
+   * reads events rather than the transcript, so it cannot reach the per-turn
+   * telemetry stamp — but the line delta IS on the row, so withholding it here
+   * would suppress a value whose operand is present.
+   */
+  diffDelta?: { add: number; del: number };
+  /** The stored tool result's verdict; NULL for every other rebuild source. */
+  succeeded?: boolean | null;
   now: string;
 }): AgentComponentInvocationCandidate {
   return {
+    // ISS-10720: which source attributed this row. Always NULL at derivation
+    // — `stampOtelInvocationAttribution` re-derives it from the live cost rows
+    // on every pass, so a stale attribution can never survive a re-import.
+    attributionSource: null,
     externalInvocationId: input.externalInvocationId,
     externalSourceId: input.externalSourceId,
     childSessionId: input.childSessionId ?? null,
@@ -174,6 +206,10 @@ export function storedBaseCandidate(input: {
       ? AgentComponentInvocationRelationship.ChildSession
       : AgentComponentInvocationRelationship.Direct,
     invokedAt: input.invokedAt,
+    ...(input.durationMs === undefined ? {} : { durationMs: input.durationMs }),
+    ...(input.durationRefusedInvalidEvidence
+      ? { durationRefusedInvalidEvidence: true }
+      : {}),
     sourceOrder: input.sourceOrder,
     sequence: 0,
     anchorKind: input.anchorKind,
@@ -189,10 +225,24 @@ export function storedBaseCandidate(input: {
     localComponentVersionId: null,
     gitBranch: input.gitBranch,
     repositoryFullName: input.repositoryFullName,
-    // Stored-row rebuild derives from events/agents/command metadata, which
-    // never yields Hook candidates — the only kind that carries a success fact —
-    // so a reconstructed candidate has no success signal.
-    succeeded: null,
+    // Stored-row rebuild never yields Hook candidates; a tool row's verdict is
+    // the `isError` its event persisted, and every other row has none.
+    succeeded: input.succeeded ?? null,
+    // ISS-7795: the stored-row rebuild reads events/agents/command metadata, not
+    // the transcript, so the per-turn attribution stamp the measurement needs is
+    // not reachable here. NULL is the honest answer — this lane never measured.
+    ...NO_INVOCATION_TELEMETRY,
+    ...invocationFootprintColumns({
+      footprint: input.footprint,
+      telemetry: NO_INVOCATION_TELEMETRY,
+    }),
+    ...invocationLineColumns({
+      componentKind: input.componentKind,
+      diffDelta: input.diffDelta,
+    }),
+    // ISS-10725: findings are attributed after derivation, from the code-review
+    // runs on disk; this lane reconstructs from stored rows and attributes none.
+    ...NO_INVOCATION_FINDINGS,
     createdAt: input.now,
     updatedAt: input.now,
   };
@@ -419,13 +469,21 @@ export async function storedAgentCandidates(
  * A subagent whose spawn events disagree on the delegation is left alone: that
  * is corrupt input, and the same trust-boundary rule `buildSubagentDedupIndex`
  * applies makes "no claim" the safe reading, not "the last one wins".
+ *
+ * ISS-10736: this ALSO moves the delegation's context footprint from the event
+ * row to the subagent row it pairs, because that pairing is the only thing that
+ * knows which subagent a stored delegation belongs to. Deriving it a second time
+ * beside this loop would be two answers to one question; see
+ * `releaseDelegationFootprint` and `adoptDelegationFootprint` below.
  */
 export function applyStoredSpawnClaimKeys(
   subagentCandidates: AgentComponentInvocationCandidate[],
-  storedEventCandidates: readonly AgentComponentInvocationCandidate[],
+  storedEventCandidates: AgentComponentInvocationCandidate[],
   delegationToolNames: ReadonlySet<string>
 ): void {
   const claimKeyByAgentId = new Map<string, string>();
+  const footprintByAgentId = new Map<string, number>();
+  const timingByAgentId = new Map<string, AgentComponentInvocationCandidate>();
   const ambiguousAgentIds = new Set<string>();
   for (const event of storedEventCandidates) {
     const { agentId, providerToolUseId, rawName } = event;
@@ -441,6 +499,13 @@ export function applyStoredSpawnClaimKeys(
       continue;
     }
     claimKeyByAgentId.set(agentId, providerToolUseId);
+    if (event.footprintTokens !== null) {
+      footprintByAgentId.set(agentId, event.footprintTokens);
+    }
+    if (event.durationMs !== undefined) {
+      timingByAgentId.set(agentId, event);
+    }
+    releaseDelegationFootprint(event);
   }
   for (const candidate of subagentCandidates) {
     if (!candidate.agentId || ambiguousAgentIds.has(candidate.agentId)) {
@@ -450,5 +515,66 @@ export function applyStoredSpawnClaimKeys(
     if (claimKey) {
       candidate.providerToolUseId = claimKey;
     }
+    adoptDelegationTiming(candidate, timingByAgentId.get(candidate.agentId));
+    adoptDelegationFootprint(
+      candidate,
+      footprintByAgentId.get(candidate.agentId)
+    );
+  }
+}
+
+/**
+ * ISS-10736 (tamsinb review): take the result-payload count OFF a delegating
+ * event, unconditionally, because `subagent` is the kind that owns it.
+ *
+ * `importToolEventData` persists `toolFootprintTokens` for every tool_use
+ * uniformly, and `classifyStoredTool` resolves a stored `Task`/`Agent` row to
+ * `tool` or `orchestration` — so without this the rebuild lane attaches a
+ * delegation's footprint to the very row the TRANSCRIPT lane deliberately leaves
+ * empty. The session total would still reconcile and the PER-KIND totals would
+ * flip the moment a transcript rotated away, which is the silent kind of wrong.
+ *
+ * Unconditional, and not "only when a subagent claims it", for parity: the
+ * transcript lane drops it from the delegating row whether or not a `subagent`
+ * row ends up existing.
+ */
+function releaseDelegationFootprint(
+  event: AgentComponentInvocationCandidate
+): void {
+  event.footprintTokens = null;
+}
+
+/**
+ * The other half: hand that count to the `subagent` row the pairing above just
+ * matched, through the same label fold every other producer goes through, so a
+ * derived count can never land under a foreign `usage_measurement`.
+ */
+function adoptDelegationFootprint(
+  candidate: AgentComponentInvocationCandidate,
+  footprintTokens: number | undefined
+): void {
+  const footprint = agentComponentFootprintFromTokenCount(footprintTokens);
+  if (!footprint) {
+    return;
+  }
+  const folded = invocationFootprintColumns({
+    footprint,
+    telemetry: { usageMeasurement: candidate.usageMeasurement },
+  });
+  candidate.footprintTokens = folded.footprintTokens;
+  candidate.usageMeasurement = folded.usageMeasurement;
+  if (folded.footprintRefusedUnlabelled) {
+    candidate.footprintRefusedUnlabelled = true;
+  }
+}
+
+/** Preserve the measured start/duration pair at the existing unambiguous spawn join. */
+function adoptDelegationTiming(
+  candidate: AgentComponentInvocationCandidate,
+  event: AgentComponentInvocationCandidate | undefined
+): void {
+  if (event) {
+    candidate.invokedAt = event.invokedAt;
+    candidate.durationMs = event.durationMs;
   }
 }

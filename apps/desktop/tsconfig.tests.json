@@ -5,6 +5,18 @@
     // `src` rootDir. Emission is off, so this only widens the program.
     "rootDir": ".",
     "types": ["node"],
+    // ISS-10194: `scripts/hermetic-git-env.mjs` is plain `.mjs` because `node`
+    // runs the test runners with no TypeScript loader, and its two env objects
+    // are imported from `test/`. Without `allowJs` the only way to type that
+    // import is a hand-written `.d.mts`, which is a SECOND copy of the key set
+    // that drifts with `tsc` green — delete a key from the runtime object and
+    // the declaration still promises it. Letting `tsc` infer from the source
+    // makes the object's own keys the type: `HERMETIC_GIT_ENV.GIT_ALLOW_PROTOCOL`
+    // is a compile error the moment the key goes, and
+    // `keyof typeof HERMETIC_GIT_ENV` is the exact union a recorder can derive
+    // its shape from. Inference only — `checkJs` stays off, so a `.mjs` pulled
+    // in by an import is typed, not diagnosed.
+    "allowJs": true,
     // The main project inherits `lib: ["ES2023"]` from node-next.json, but the
     // Electron main process is not bare Node: it ships the WHATWG fetch/URL/
     // stream globals, and these suites stub them (`RequestInfo`, `HeadersInit`,
@@ -28,17 +40,12 @@
   "include": ["test/**/*.ts"],
   "exclude": [
     "test/e2e",
-    "test/app-menu-labs.test.ts",
+    "test/app-menu.test.ts",
     "test/attribution-importer.test.ts",
-    "test/authorized-command-key-store.test.ts",
     "test/billing-mode-read-path-parity.test.ts",
-    "test/boot-recovery.test.ts",
     "test/cloud-command-executor.test.ts",
-    "test/command-key-notification-boundary.test.ts",
-    "test/command-key-reconciler.test.ts",
     "test/component-invocations-command-key-identity.test.ts",
     "test/component-invocations-materialization.test.ts",
-    "test/data-revision-rebuild.test.ts",
     "test/desktop-cloud-github-nudge.test.ts",
     "test/feature-flags-shared-ui.test.ts",
     "test/gateway-auth.test.ts",
@@ -47,18 +54,12 @@
     "test/ingest-orchestrator.test.ts",
     "test/ipc-sender-gates.test.ts",
     "test/keyboard-activation.test.ts",
-    "test/loop-http.test.ts",
     "test/maintenance-write-txs.test.ts",
     "test/model-pricing-sqlite.test.ts",
     "test/required-plugin-installer-runtime-ready.test.ts",
     "test/required-plugin-installer.test.ts",
-    "test/scheduled-tasks-ipc.test.ts",
-    "test/scheduler-service.test.ts",
     "test/shared-agent-sessions-sort.test.ts",
     "test/shared-branch-trace.test.ts",
-    "test/shared-trace-comments-store.test.ts",
-    "test/spawn-hardening.test.ts",
-    "test/tool-call-detail-import.test.ts",
-    "test/trace-comment-parent-session-cloud-post.test.ts"
+    "test/tool-call-detail-import.test.ts"
   ]
 }

@@ -15,8 +15,7 @@ export type UserTokenOctokitOptions = {
 /**
  * Build an Octokit authenticated as a GitHub user (OAuth App token or GitHub
  * App user-to-server token — both are plain bearer tokens to Octokit). Every
- * request is timeout-bounded like the installation lane, unlike the legacy
- * comment-write helpers in `comment-user-token.ts`.
+ * request is timeout-bounded like the installation lane.
  *
  * PLN-1525: the apps/api credential resolver builds its user-lane clients
  * through this so credential selection stays outside this package —

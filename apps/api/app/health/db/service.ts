@@ -1,6 +1,8 @@
 import {
   DbHealthCheckStatus,
   type DbHealthDeployment,
+  DbHealthHostType,
+  DbHealthSslMode,
 } from "@repo/api/src/types/db-health";
 import { getDatabaseTransportPosture, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
@@ -100,10 +102,33 @@ export async function getDatabaseHealth() {
     };
   }
 
+  // ISS-8410. `transport` used to be reported BESIDE the verdict rather than
+  // in it, so `ALLOW_INSECURE_SSL=1` degraded every connection to unverified
+  // TLS while this endpoint answered `ok: true` next to `sslMode: "insecure"` —
+  // nothing failed and nobody was alerted.
+  //
+  // Stated as the SAFE set, not as an excluded unsafe one. Excluding only
+  // `Insecure` let two other postures through: `Unknown`, which means the
+  // posture could not be read at all, and a REMOTE host carrying
+  // `sslmode=disable`, which is plaintext on the wire — graded healthier than
+  // the encrypted-but-unverified case this change does fail. Naming the safe
+  // set fails those closed and cannot silently admit a member added later.
+  //
+  // `Verified` rather than `verifiedRdsTls`: a publicly-trusted non-RDS host
+  // (a Neon preview) verifies against the same bundle and is not degraded.
+  // Localhost is the one deliberate pass — it has no TLS by design, and
+  // demanding otherwise would answer not-ok in local development. The stricter
+  // "must be verified RDS TLS" demand belongs to the deploy gate, which asks
+  // for it per-environment via DB_HEALTH_REQUIRE_RDS_VERIFIED_TLS.
+  const transportIsSafe =
+    checks.transport.sslMode === DbHealthSslMode.Verified ||
+    checks.transport.hostType === DbHealthHostType.Localhost;
+
   const ok =
     checks.connectivity.status === DbHealthCheckStatus.Ok &&
     checks.migrations.status !== DbHealthCheckStatus.Error &&
-    checks.tables.status === DbHealthCheckStatus.Ok;
+    checks.tables.status === DbHealthCheckStatus.Ok &&
+    transportIsSafe;
 
   return {
     timestamp: new Date().toISOString(),

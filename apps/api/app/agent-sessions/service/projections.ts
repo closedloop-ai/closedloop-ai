@@ -16,55 +16,57 @@ import type {
   SessionSpan,
   SessionThrottle,
 } from "@repo/api/src/types/agent-session";
-import {
-  AgentSessionOrigin,
-  AgentSessionState,
-  agentSessionStateValidator,
-} from "@repo/api/src/types/agent-session";
+import { AgentSessionOrigin } from "@repo/api/src/types/agent-session";
 import { reconcileCloudSyncState } from "@repo/api/src/types/agent-session-cloud-sync-reconcile";
+import type { CanonicalAgentSessionListItem } from "@repo/api/src/types/agent-session-list-contract";
 import { ArtifactType } from "@repo/api/src/types/artifact";
 import {
   BranchParticipationKind,
   normalizeRepoFullName,
 } from "@repo/api/src/types/branch";
+import type { CustomFieldValueDetail } from "@repo/api/src/types/custom-field";
 import { DocumentType } from "@repo/api/src/types/document";
-import {
-  normalizeSessionStatus,
-  SESSION_STATUS,
-  type SessionStatus,
-} from "@repo/api/src/types/session-status";
-import type { TranscriptDisposition } from "@repo/api/src/types/transcript-disposition-constants";
+import type { ArtifactTagPermissions } from "@repo/api/src/types/tag";
+import type { SessionTranscriptVerdict } from "@repo/api/src/types/transcript-terminal-skip-disposition";
 import type { BasicUser } from "@repo/api/src/types/user";
 import { klocFromLines } from "@repo/api/src/utils/kloc";
-import { locPerDollarFromLines } from "@repo/api/src/utils/loc-per-dollar";
+import {
+  locPerDollarFromLines,
+  locPerDollarNumeratorLines,
+} from "@repo/api/src/utils/loc-per-dollar";
 import {
   isBranchFallbackLocSource,
   LOC_SOURCE_GIT,
 } from "@repo/api/src/utils/session-loc";
-import { deriveAgentSessionFallbackState } from "@repo/lib/sessions/agent-session-detail-projection";
 import { z } from "zod";
+import { branchCandidatePullRequests } from "@/app/branches/branch-canonical-pull-request";
+import { projectArtifactTags } from "@/app/tags/artifact-tag-projection";
+import { activityBucketSchema } from "@/lib/desktop-agent-sessions-schema";
 import {
-  activityBucketSchema,
   phaseLoopbackSchema,
   sessionMarkerSchema,
   sessionPhaseSchema,
   sessionSpanSchema,
   sessionThrottleSchema,
-} from "@/lib/desktop-agent-sessions-schema";
+} from "@/lib/desktop-agent-sessions-trace-schema";
 import { toNumber } from "@/lib/prisma-number";
+import { isMergedPrDetail } from "@/lib/session-pr-links";
 import {
   normalizeNullableString,
+  parseCompleteJsonArrayOrEmpty,
   parseJsonArray,
   parseJsonValue,
 } from "./coercion";
-import { reconcileSessionCost } from "./cost-authority";
 import type {
   AgentSessionListRecord,
+  SessionArtifactOwnershipRecord,
   SourceArtifactSummaryRecord,
 } from "./records";
+import { statesBranchTouch } from "./session-branch-links";
 import { resolveRecordUpdatedAt } from "./session-display-sort";
 import type { SourceLinkRecord } from "./session-pr-status";
 import {
+  resolveAuthoredPrLinkIdentities,
   resolveAuthoredPrLinkIdentity,
   sessionPullRequestIdentityKey,
   toSessionPullRequestProjection,
@@ -72,7 +74,7 @@ import {
 import { projectDisplayedSessionStatus } from "./session-status-projection";
 
 export function toBasicUser(
-  user: NonNullable<AgentSessionListRecord["user"]>
+  user: NonNullable<AgentSessionListRecord["artifact"]["assignee"]>
 ): BasicUser {
   return {
     id: user.id,
@@ -96,7 +98,7 @@ function toProjectSummary(
   };
 }
 
-function toSourceArtifactDocumentType(
+export function toSourceArtifactDocumentType(
   record: Pick<SourceArtifactSummaryRecord, "type" | "subtype">
 ): DocumentType | null {
   if (record.type !== ArtifactType.Document) {
@@ -138,89 +140,12 @@ function toAgentSessionOrigin(value: string): AgentSessionOrigin {
     : AgentSessionOrigin.DesktopSync;
 }
 
-/**
- * ISS-5592: the TERMINAL half of the status→state projection, as an exhaustive
- * `Record<SessionStatus, …>` so a fourth lifecycle status fails `tsc` here until
- * it is intentionally mapped.
- *
- * That guard is the point of the table, and it is what the set-membership test
- * it replaces could not give: `TERMINAL_SESSION_STATUSES.has(status)` followed
- * by `=== INACTIVE` is a runtime check over `string`, so a new member silently
- * fell through to the non-terminal path and reported a finished run as pending
- * or active. This is the same silently-acquires-a-meaning failure ISS-4997
- * removed from the display fold, on the state axis. Only possible now that
- * `normalizeSessionStatus` returns the three-member `SessionStatus` (ISS-5592).
- *
- * `null` is a DELIBERATE mapping, not an omission: ACTIVE is not terminal, so it
- * continues to the awaiting-input and fallback derivations below. A member added
- * to {@link SESSION_STATUS} still has to choose.
- *
- * Why INACTIVE reads `Completed` and not a new `AgentSessionState.Inactive`: the
- * two vocabularies answer different questions. `SESSION_STATUS` is the stored
- * LIFECYCLE of a row; `AgentSessionState` is the OUTCOME the detail page reports
- * (did the run finish, or die). A finished-not-failed run IS `Completed` in
- * outcome terms, so this is the CORRECT projection, not a placeholder — ISS-4654
- * resolved the member as NOT NEEDED, not deferred and not pending a rollout. The
- * full rationale is on `AgentSessionState.Completed`; do not "finish" this by
- * adding a member. ERROR stays its own terminal rather than collapsing to
- * `Blocked` (FEA-4287): the list renders the raw "Failed", so the detail
- * projection must carry the same outcome or the two disagree.
- *
- * ISS-4654: the retired `completed`/`abandoned` keys are gone. A straggler still
- * carrying either folds to INACTIVE upstream and reads `Completed` — which is
- * also why `prSignal` no longer feeds this branch: the FEA-3551 rescue it
- * carried (an orphan-swept `abandoned` run that shipped a merged PR) is moot
- * when both paths agree on `Completed`.
- */
-const TERMINAL_AGENT_SESSION_STATE: Record<
-  SessionStatus,
-  AgentSessionState | null
-> = {
-  [SESSION_STATUS.INACTIVE]: AgentSessionState.Completed,
-  [SESSION_STATUS.ERROR]: AgentSessionState.Error,
-  [SESSION_STATUS.ACTIVE]: null,
-};
-
-/*
- * ISS-6588 removed this function's second parameter, a PR-outcome signal
- * (FEA-3551) threaded here from the caller's `prProjection`. It had been INERT
- * since ISS-4654 — no input to it could change the returned state — and the
- * branch it fed is gone with the retired spellings that reached it.
- */
-export function toAgentSessionState(
-  record: Pick<
-    AgentSessionListRecord,
-    "state" | "artifact" | "awaitingInputSince" | "sessionEndedAt"
-  >
-): AgentSessionState {
-  const parsedState = agentSessionStateValidator.safeParse(record.state);
-  if (parsedState.success) {
-    return parsedState.data;
-  }
-  // ISS-4654: fold BEFORE the table lookup, because the table is keyed by
-  // `SessionStatus` and only the fold can produce one. Outcomes and their
-  // rationale: see {@link TERMINAL_AGENT_SESSION_STATE}.
-  const normalizedStatus = normalizeSessionStatus(record.artifact.status);
-  const terminalState = TERMINAL_AGENT_SESSION_STATE[normalizedStatus];
-  if (terminalState) {
-    return terminalState;
-  }
-  if (record.awaitingInputSince && !record.sessionEndedAt) {
-    return AgentSessionState.PendingApproval;
-  }
-  return deriveAgentSessionFallbackState({
-    status: record.artifact.status,
-    awaitingInputSince: record.awaitingInputSince,
-    endedAt: record.sessionEndedAt,
-  });
-}
-
 const phaseIterationsSchema = z.record(z.string(), z.number().int().positive());
 
 /**
- * FEA-3562: derive a session's displayed branch from a linked PR's HEAD branch
- * when the session record itself carries no synced local branch. Every PR has a
- * head branch, so a session that surfaces a PR must not render "Branch: None".
+ * FEA-3562 / ISS-4742: derive a session's displayed branch from a linked PR's
+ * HEAD branch. Every PR has a head branch, so a session that surfaces a PR must
+ * not render "Branch: None".
  *
  * Only AUTHORED PR links count (same {@link resolveAuthoredPrLinkIdentity} gate
  * the PR-output projection uses) — a session that merely referenced or reviewed
@@ -317,9 +242,10 @@ function deriveTouchedBranchLink(record: AgentSessionListRecord): {
     }
     // Attribute only branches the session genuinely touched: a session_branch
     // link (carries branchParticipation) or an authored PR link. A referenced/
-    // reviewed PR-only link authored no branch and is skipped.
-    const hasParticipation = link.branchParticipation != null;
-    if (!(hasParticipation || resolveAuthoredPrLinkIdentity(link))) {
+    // reviewed PR-only link authored no branch and is skipped. ISS-8427 moved
+    // the rule itself into `statesBranchTouch` so this and the plural
+    // `deriveTouchedBranches` cannot drift on what "touched" means.
+    if (!statesBranchTouch(link)) {
       continue;
     }
     const resolved = {
@@ -470,19 +396,6 @@ function toBranchDiffStats(
 }
 
 /**
- * FEA-4250: total lines *changed* (added + removed) for the session's KLOC —
- * the same "added + deleted, not additions only" basis the org/component KLOC
- * uses (`apps/api/app/agent-components/loc-per-dollar.ts`), so a session's efficiency reads
- * on the same basis as the aggregates it rolls into. A missing scalar counts as
- * 0; the shared `klocFromLines` treats a 0 total as "no lines" → null.
- */
-function sessionTotalDiffLines(
-  record: Pick<AgentSessionListRecord, "linesAdded" | "linesRemoved">
-): number {
-  return (record.linesAdded ?? 0) + (record.linesRemoved ?? 0);
-}
-
-/**
  * FEA-4378 (codex P2): resolve one authored PR's `(repositoryFullName, prNumber)`
  * to its lines-changed, searching the linked branch's FULL PR-detail set — the
  * `currentPullRequestDetail` pointer AND the historical `pullRequestDetails[]`
@@ -492,45 +405,99 @@ function sessionTotalDiffLines(
  * the roll-up. Matching by `number` + normalized repo across the whole per-branch
  * set recovers a superseded PR's LOC.
  *
- * Freshness gate: the resolved detail must carry `lastVerifiedAt` (never trust an
- * unverified projection for a LOC/$ figure). `isCurrent` is deliberately NOT
- * required here — a historical (superseded) PR is `isCurrent: false` yet its
- * verified LOC is still the real code the session shipped.
+ * Merge + freshness gate (ISS-6114): the resolved detail must satisfy
+ * `isMergedPrDetail` — verified (`lastVerifiedAt`), `prState = MERGED`, and a
+ * non-null `mergedAt`. `isCurrent` is deliberately NOT required — a historical
+ * (superseded) PR is `isCurrent: false` yet, once merged, its LOC is still real
+ * code the session shipped.
  *
  * Partial-LOC gate (codex P2): a PR is only counted when BOTH `additions` and
  * `deletions` are present. A half-populated row (`additions: 7, deletions: null`)
  * is INCOMPLETE data, not a verified `7`-line total; coercing the missing side to
- * 0 would publish an understated figure as "lines changed in PRs" and feed LOC/$.
+ * 0 would publish an understated figure as "lines changed in merged PRs" and
+ * feed LOC/$.
  * Such a PR resolves to `null` (unavailable) and contributes nothing — the roll-up
  * degrades to the local working-tree diff rather than an invented undercount.
  *
- * Returns the combined `additions + deletions` when a complete, verified detail
- * matches the PR identity; otherwise `null` (no verified/complete LOC available).
+ * ISS-9980 (RULED 2026-09-11): the two reasons this can decline to return a
+ * number are NOT the same fact and no longer share a `null`. "No candidate row
+ * matched" (`excluded`) is a measured answer — this identity contributes 0 and
+ * the session's merged total is still knowable. "A matching merged row exists
+ * but its LOC is unreachable" (`unknowable`) is the ISS-4448 shape: we looked,
+ * the code is real, and we cannot say how much of it there is. Collapsing the
+ * second into the first is what let a session with 88 merged PRs report a
+ * confident `0` merged LOC, which is a false measurement, not a small one.
  */
+type AuthoredPrLocResolution =
+  | { kind: "counted"; lines: number }
+  | { kind: "excluded" }
+  | { kind: "unknowable" };
+
 function resolveAuthoredPrLoc(
   link: SourceLinkRecord,
   repositoryFullName: string,
-  prNumber: number
-): number | null {
+  prNumber: number,
+  { mergedOnly }: { mergedOnly: boolean }
+): AuthoredPrLocResolution {
   const branch = link.target?.branch;
   if (!branch) {
-    return null;
+    return { kind: "excluded" };
   }
   // Current pointer (`BranchDetail.currentPullRequestDetail`) plus the branch
   // Artifact's full historical PR set (`target.pullRequestDetails`, the
   // Artifact-level `BranchPullRequests` relation) — a superseded PR on a reused
   // branch is `isCurrent: false` and lives only in the historical set.
-  const candidates = [
-    branch.currentPullRequestDetail,
-    ...(link.target?.pullRequestDetails ?? []),
-  ];
+  const candidates = branchCandidatePullRequests(
+    branch,
+    link.target?.pullRequestDetails
+  );
   const branchRepoRaw = branch.repository?.fullName ?? repositoryFullName;
   for (const detail of candidates) {
+    // Freshness is UNCONDITIONAL: never trust an unverified projection for a
+    // LOC figure. This used to read as one guard with the merge check folded
+    // into `isMergedPrDetail` below — but that check is behind `mergedOnly`, so
+    // folding it there silently dropped freshness from the gate-CLOSED path and
+    // let an unverified row reach `authoredPrLinesChanged`, which is also the
+    // value the deprecated alias ships to installed Desktop builds.
     if (
-      !detail ||
+      detail == null ||
       detail.lastVerifiedAt == null ||
       detail.number !== prNumber
     ) {
+      continue;
+    }
+    // ISS-6114: MERGED, not merely authored. Cosimo's ruling (2026-09-01) on the
+    // decision this ticket was filed to force: the LOC rung means merged code.
+    //
+    // Through the canonical `isMergedPrDetail` rather than a fresh
+    // `prState === Merged` check, because that predicate is already the
+    // definition the Sessions-list "LOC / $" card runs on, and it has a
+    // Prisma mirror (`MERGED_PR_DETAIL_WHERE`) that is required to stay in
+    // lockstep with it. A second hand-written spelling here is how the two
+    // surfaces came to disagree in the first place: one gated on merge, one did
+    // not, and the same session answered "how much PR code is this" two ways.
+    //
+    // `isMergedPrDetail` also requires `lastVerifiedAt`, but that is NOT why the
+    // guard above exists: this branch runs only when `mergedOnly` is true, so it
+    // is the merge half that is conditional and freshness that is not.
+    //
+    // DELIBERATELY STRICTER THAN THE PR PILLS RENDERED ONE ROW ABOVE THIS
+    // FIGURE (ISS-6114 review). `derivePrLifecycleStatus`
+    // (`packages/lib/session-trace/derivation.ts`) classifies Merged with an OR
+    // — `mergedAt || prState === Merged` — while this is an AND over
+    // `lastVerifiedAt`, `prState`, and a non-null `mergedAt`. So a row carrying
+    // `prState = MERGED` with a null `mergedAt` shows a Merged PILL while
+    // contributing nothing here, and the panel reads "Merged" above "in
+    // session". That shape is writable: `buildPullRequestDetailUpdate`
+    // (`app/branches/github-projection-writer.ts`) writes `prState`
+    // unconditionally but `mergedAt` only when the producer supplies one, so a
+    // provenance-poorer producer cannot null a measured timestamp.
+    //
+    // The asymmetry is intended — a LOC figure must not count a merge it has no
+    // merge TIMESTAMP for, whereas a pill only claims lifecycle — but it is an
+    // undercount, so the rung degrades to the branch/local diff rather than
+    // publishing a number it cannot stand behind. Pinned below.
+    if (mergedOnly && !isMergedPrDetail(detail)) {
       continue;
     }
     const detailRepoRaw =
@@ -545,72 +512,123 @@ function resolveAuthoredPrLoc(
     // Both sides required: a half-populated row is unavailable, not a verified
     // partial total. Distinguishes true-zero (0 + 0, a real no-op PR) from unknown.
     if (detail.additions == null || detail.deletions == null) {
-      return null;
+      return { kind: "unknowable" };
     }
-    return detail.additions + detail.deletions;
+    return { kind: "counted", lines: detail.additions + detail.deletions };
   }
-  return null;
+  return { kind: "excluded" };
 }
 
 /**
- * FEA-4378: sum the lines *changed* (`additions + deletions`) across the PRs the
- * session AUTHORED, deduped by PR identity. This is the real delivered-code signal
- * for a multi-PR session: the session-level `linesAdded/linesRemoved` scalars are
- * the LOCAL working-tree git diff (via `sumCommitStats`), which collapses to a
- * tiny residual once a session's branches are merged/reset — so a 13-PR session
- * can read `+136 -2` and drive LOC/$ to ~0. Only AUTHORED links count (same
+ * FEA-4378 / ISS-6114: sum the lines *changed* (`additions + deletions`) across
+ * the MERGED PRs the session authored, deduped by PR identity.
+ *
+ * MERGED IS THE POINT, and it is a decision rather than an implementation
+ * detail. This roll-up counted every authored PR with a verified detail row,
+ * merged or not, so a session that opened two large PRs and landed neither
+ * reported their combined size as delivered code and divided it by cost to
+ * report a LOC/$ for work that never shipped — while contributing 0 to the
+ * Sessions-list "LOC / $" card, which runs the merge-gated
+ * `isMergedPrDetail`. Two surfaces, one question, two populations. Cosimo ruled
+ * on 2026-09-01 that the rung means merged LOC, so both now apply the same
+ * MERGE gate.
+ *
+ * THE TWO SURFACES STILL DISAGREE ON ADMISSION, and that half is untouched here
+ * (marisolashgrove on #6413). The card reads its numerator PR-side through
+ * `sessionLinkedPopulationArms` — the ISS-8153 population, which is the
+ * session→PR arms PLUS a non-prose session→branch link, over a scope with the
+ * session-activity window stripped. This rung still admits only identities that
+ * clear `resolveAuthoredPrLinkIdentities`, which needs a command-derived ref
+ * resolving to Authored. So a session on the installation-free lane that reaches
+ * its merged PR only through a session→branch link contributes its lines to the
+ * card and still reads 0 here. That discrepancy is BY DESIGN and survives this
+ * change; do not read "the same merge gate" as "the same population".
+ *
+ * THE COST, accepted with that ruling and widened by ISS-9964: an in-flight
+ * session's PR LOC does not count until its PRs land, and since ISS-9964 there is
+ * no branch-diff or working-tree rung left to fall back to — such a session reads
+ * `0` merged LOC and an honest `0` LOC/$. That is the point, not a regression:
+ * the session-level `linesAdded/linesRemoved` scalars are the LOCAL working-tree
+ * git diff (via `sumCommitStats`), which collapses to a tiny residual once a
+ * session's branches are merged/reset — so a 13-PR session could read `+136 -2`
+ * and drive LOC/$ to ~0 while claiming to measure delivered code. Only AUTHORED
+ * links count (same
  * {@link resolveAuthoredPrLinkIdentity} gate as the PR-output projection) — a
  * referenced/reviewed PR authored no code for this session.
  *
  * Per-PR LOC comes from {@link resolveAuthoredPrLoc}, which searches the branch's
  * full current+historical detail set (so a superseded PR on a reused branch still
- * counts) and requires a complete, verified row (partial/unknown LOC contributes
- * nothing). Dedup is by repo-scoped identity key, so a PR reachable via multiple
+ * counts) and requires a MERGED, complete, verified row (an open PR, or one with
+ * partial/unknown LOC, contributes nothing). Dedup is by repo-scoped identity key, so a PR reachable via multiple
  * authored links — or via both a branch's current pointer and its historical set —
  * is counted exactly once, never double-counted.
  *
- * Returns 0 when no authored PR resolves a complete, verified detail with LOC, so
- * the caller's `max(localDiff, authoredPrLinesChanged)` degrades to the local diff.
+ * ISS-9980 (RULED 2026-09-11): `complete` reports whether the total is a
+ * MEASUREMENT. Every identity that resolved `excluded` contributes a real 0 — no
+ * merged PR, no lines — so a session with nothing merged returns
+ * `{ lines: 0, complete: true }` and the caller divides it into an honest `0`
+ * LOC/$. An identity that resolved `unknowable` makes the SUM unknowable, not
+ * smaller: the session merged code whose size this projection cannot reach, and
+ * `{ complete: false }` is what stops the caller publishing the residue as a
+ * verified figure. Callers that still want the lossy legacy behaviour read
+ * `lines` and ignore `complete` — see the `authoredPrLinesChanged` emit below.
  */
-function authoredPrLinesChanged(record: AgentSessionListRecord): number {
+function authoredPrLinesChangedFor(
+  record: AgentSessionListRecord,
+  { mergedOnly }: { mergedOnly: boolean }
+): { lines: number; complete: boolean } {
   const byIdentity = new Map<string, number>();
+  const unknowableIdentities = new Set<string>();
   for (const link of record.artifact.sourceLinks ?? []) {
-    const attributed = resolveAuthoredPrLinkIdentity(link);
-    if (!attributed) {
-      continue;
+    for (const attributed of resolveAuthoredPrLinkIdentities(link)) {
+      const identityKey = sessionPullRequestIdentityKey(
+        attributed.repositoryFullName,
+        attributed.prNumber
+      );
+      if (byIdentity.has(identityKey)) {
+        continue;
+      }
+      const resolved = resolveAuthoredPrLoc(
+        link,
+        attributed.repositoryFullName,
+        attributed.prNumber,
+        { mergedOnly }
+      );
+      if (resolved.kind === "unknowable") {
+        unknowableIdentities.add(identityKey);
+        continue;
+      }
+      if (resolved.kind === "excluded") {
+        continue;
+      }
+      byIdentity.set(identityKey, resolved.lines);
     }
-    const identityKey = sessionPullRequestIdentityKey(
-      attributed.repositoryFullName,
-      attributed.prNumber
-    );
-    // Already resolved a complete, verified LOC for this PR identity via another
-    // authored link — never overwrite (or re-add) it, so a PR linked twice or
-    // reachable via both the current pointer and the historical set counts once.
-    if (byIdentity.has(identityKey)) {
-      continue;
-    }
-    const lines = resolveAuthoredPrLoc(
-      link,
-      attributed.repositoryFullName,
-      attributed.prNumber
-    );
-    if (lines == null) {
-      continue;
-    }
-    byIdentity.set(identityKey, lines);
   }
-  let total = 0;
-  for (const lines of byIdentity.values()) {
-    total += lines;
+  let lines = 0;
+  for (const counted of byIdentity.values()) {
+    lines += counted;
   }
-  return total;
+  // `complete` is derived AFTER the loop, not latched inside it, so it cannot
+  // depend on `sourceLinks` order. One identity can be reached by several links
+  // — a reused branch, or a PR held by both a branch's current pointer and its
+  // historical set — and one of those links resolving `unknowable` does not make
+  // the PR unreadable if ANOTHER link read it. Latching on the first unknowable
+  // made the SUM take the last counted resolution while the VERDICT took the
+  // first, so a session whose merged total was fully counted still reported
+  // `mergedAuthoredPrLinesChanged: null` purely from the order its links
+  // happened to be iterated in. Only an identity nothing ever counted makes the
+  // total NOT KNOWABLE.
+  const complete = [...unknowableIdentities].every((identityKey) =>
+    byIdentity.has(identityKey)
+  );
+  return { lines, complete };
 }
 
 /**
- * FEA-4188: the session's resolved HEAD branch NAME — the branch the session
- * actually worked on, from a source that identifies the head ref: the synced
- * local `branch`, else the linked authored-PR head ref
- * ({@link deriveLinkedPrHeadBranch}), else a touched session→branch link's name
+ * FEA-4188 / ISS-4742: the session's resolved HEAD branch NAME — the branch the
+ * session actually worked on, from a source that identifies the head ref: the
+ * linked authored-PR head ref ({@link deriveLinkedPrHeadBranch}), else a touched
+ * session→branch link's name
  * ({@link deriveTouchedBranchLink}). Deliberately EXCLUDES `baseBranch` — that
  * is the PR's base/target ref (e.g. `main`), NOT its head, so it can never
  * stand in for the head branch a PR was opened from.
@@ -627,11 +645,7 @@ function deriveSessionHeadBranch(
   record: AgentSessionListRecord,
   touchedBranchName: string | null
 ): string | null {
-  return (
-    normalizeNullableString(record.branch) ??
-    deriveLinkedPrHeadBranch(record) ??
-    touchedBranchName
-  );
+  return deriveLinkedPrHeadBranch(record) ?? touchedBranchName;
 }
 
 /**
@@ -667,11 +681,11 @@ function deriveSessionBranch(
  * ({@link toSessionListItem} — list + detail), so list, Properties, and
  * navigation all inherit it.
  *
- * A branch is "resolved" only when a real HEAD branch NAME resolves
- * ({@link deriveSessionHeadBranch} — the synced `branch`, a linked authored-PR
- * head ref, or a touched session→branch link's name). It is deliberately NOT
- * satisfied by `baseBranch` (the PR's base/target ref, not its head) nor by a
- * bare branch-artifact id whose target resolved no branch name — either would
+ * A branch is "resolved" only when a real HEAD branch NAME resolves: a linked
+ * authored-PR head ref or a touched session→branch link's name. It is
+ * deliberately NOT satisfied by `baseBranch` (the PR's base/target ref, not its
+ * head) nor by a bare branch-artifact id whose target resolved no branch name —
+ * either would
  * let a PR render alongside a row that still shows "Branch: None", the exact
  * orphaned state this gate exists to forbid.
  *
@@ -698,43 +712,68 @@ export function toSessionListItem(
   // session identity. Omitted (undefined) when the caller did not batch it
   // (e.g. the by-ids reader) or the session has no transcript rows yet — the
   // row then shows only the `lastSyncedAt` freshness, never a fabricated verdict.
-  transcriptDisposition?: TranscriptDisposition,
-  // FEA-4276: the per-session per-event token-cost aggregate, batched for the
-  // whole page by `getReconciledCostsBySessionId`
-  // ({ count, pricedCount, sum, tokenSum }). When present it is reconciled
-  // against the stored rollup by the SAME captured-cost authority
-  // (`reconcileSessionCost`) the DETAIL path uses — which trusts the per-event sum
-  // only when every counted row was priced (`pricedCount === count`) AND the
-  // per-event token counts reconcile with the rollup token total (`tokenSum` is
-  // not below it, catching a dropped/overflowed ingest chunk) — so list and detail
-  // can never disagree on a session's cost. Absent (undefined) when the caller did
-  // not batch it — the row then falls back to the stored rollup as before.
-  costAuthority?: {
-    count: number;
-    pricedCount: number;
-    sum: number;
-    tokenSum: number;
-  }
-): AgentSessionListItem {
+  //
+  // ISS-9884: the VERDICT PAIR, not the bare disposition. `failedTransient` is
+  // reached both by an ordinary retryable upload failure and by an
+  // environmental give-up, and the renderers have to tell those apart, so the
+  // reason that produced the disposition rides beside it.
+  transcriptVerdict?: SessionTranscriptVerdict,
+  // FEA-4204: the session's comment thread count, batched for the whole
+  // page by `loadListCommentCounts`. `undefined` means the caller did not batch
+  // it, and the field is OMITTED rather than serialized as 0 — absent is "no
+  // count available", which the client renders as no tag; a computed zero
+  // arrives as a real `0`.
+  commentCount?: number,
+  // FEA-4222: values attached to this Session artifact, loaded once for the
+  // page. `undefined` means the producer did not complete the projection and
+  // is omitted; a successful read with no values is an explicit empty array.
+  customFields?: CustomFieldValueDetail[],
+  // ISS-8712: the caller's org, plus the auth-derived tag capabilities. Both are
+  // REQUIRED to project tags at all: the relation is joined on the page's SELECT
+  // (see `records.ts`), but a projection that could not name the caller's org
+  // would have to trust the join's own scoping as its only check, and the
+  // permissions are what the client reads to decide whether to offer the picker.
+  // Omitted by callers that do not serve a tag-bearing surface — the row then
+  // reports `Unavailable` rather than an empty tag list it never read.
+  tagContext?: { organizationId: string; permissions: ArtifactTagPermissions }
+): CanonicalAgentSessionListItem {
   const sourceArtifact =
     record.sourceArtifactId && sourceArtifactsById
       ? toSourceArtifactSummary(
           sourceArtifactsById.get(record.sourceArtifactId) ?? null
         )
       : null;
-  const user = record.user ? toBasicUser(record.user) : null;
-  const storedRollup = toNumber(record.estimatedCost);
-  const estimatedCost = costAuthority
-    ? reconcileSessionCost({
-        tokenEventCount: costAuthority.count,
-        pricedEventCount: costAuthority.pricedCount,
-        tokenEventCostSum: costAuthority.sum,
-        tokenEventTokenSum: costAuthority.tokenSum,
-        rollupTokenTotal:
-          toNumber(record.inputTokens) + toNumber(record.outputTokens),
-        storedRollup,
-      })
-    : storedRollup;
+  // ISS-12585: the deprecated `user` alias carries the Owner, the artifact
+  // assignee; the recording user it used to name is retired.
+  const user = record.artifact.assignee
+    ? toBasicUser(record.artifact.assignee)
+    : null;
+  // ISS-7176: the WHOLE-SESSION cost is `session_detail.estimated_cost`, read
+  // straight through.
+  //
+  // This row used to reconcile against a per-event sum and prefer it. That was
+  // backwards. The desktop rollup adds a session-level WEB-SEARCH line item
+  // (`webSearchCostSql`, billed per request rather than per token) that no
+  // `agent_session_token_events` row carries, and the completeness gate guarding
+  // the swap compared token COUNTS — web search contributes none, so the gate
+  // passed, the per-event sum won, and the web-search dollars silently vanished
+  // from the displayed figure.
+  //
+  // AND THE STREAM IS INCOMPLETE ANYWAY, which ISS-7515 measured against the
+  // real desktop store rather than inferring: on the largest session there —
+  // 8.26B tokens / $6,229.94 across three models — `agent_session_token_events`
+  // held 97 rows for a session whose parent transcript alone records 1,016 agent
+  // turns. Preferring the per-event sum would have displayed $17.73. That case
+  // survived only because the rollup was the fallback; the web-search case above
+  // is the same failure where the completeness gate could not see it.
+  //
+  // Per-event sums remain the right tool for pricing PART of a session (a
+  // branch's share, a windowed slice); they are not a whole-session total. See
+  // ISS-7176 v3 for the rule and `packages/app/branches` for the part-of case.
+  //
+  // ISS-12260: a NULL column (never priced) is served as `null`, never as `0`.
+  const estimatedCost =
+    record.estimatedCost == null ? null : toNumber(record.estimatedCost);
   const primaryModel = record.model;
   // FEA-4188: resolve the head branch first, then enforce the PR⇒Branch
   // read-boundary invariant BEFORE `prs`/`prsMerged`/the state signal read the
@@ -755,71 +794,72 @@ export function toSessionListItem(
   const prs = prProjection.prs;
   const linkedArtifactProjection = toLinkedArtifactProjection(record);
   const linkedArtifacts = linkedArtifactProjection.items;
-  // FEA-4250/FEA-4378/ISS-4448: project the per-session KLOC + LOC/$ so the read
-  // contract carries them and no consumer re-derives. The numerator is
-  // `max(localWorkingTreeDiff, branchDiffLines, authoredPrLinesChanged)` — the
-  // SAME three signals the detail-view "Lines changed" row resolves, so LOC/$
-  // and the displayed figure can never disagree. The session-level
-  // `linesAdded/linesRemoved` scalars are the LOCAL working-tree diff, which
-  // collapses to a tiny residual once a multi-PR session's branches are
-  // merged/reset — so we prefer the branch-level diff or the summed LOC of the
-  // PRs the session AUTHORED when either is larger (the real delivered code).
-  // `kloc` is null only when ALL signals are 0; `locPerDollar` additionally
-  // null when there is no cost.
+  // ISS-9964 / ISS-9980 (RULED 2026-09-11): the per-session KLOC + LOC/$ are
+  // projected here so the read contract carries them and no consumer re-derives.
+  // The numerator is `mergedAuthoredPrLinesChanged` and NOTHING ELSE — the lines
+  // this session actually landed. The FEA-4250/ISS-4448 rungs (the local
+  // working-tree diff and the branch-level diff) are retired: both measure work
+  // in progress, and mixing them into a delivered-code rate is what let a
+  // session's LOC/$ move because a branch was pushed. Branches LOC/$ counts
+  // lines pushed to origin (ISS-9958); that difference is deliberate.
   //
-  // The authored-PR roll-up is gated on the SAME head-branch resolution the PR
-  // projection is (`enforcePrBranchInvariant`): a session whose PRs are
-  // suppressed (no resolvable head branch — the orphan case) must not count
-  // their LOC, or the KLOC numerator and the pills-row "N in PRs" figure would
-  // credit a PR the UI renders as "None". `headBranch !== null` is exactly the
-  // condition under which the invariant keeps the PRs.
-  const localDiffLines = sessionTotalDiffLines(record);
-  const prLinesChanged =
-    headBranch === null ? 0 : authoredPrLinesChanged(record);
-  // ISS-4448: the KLOC numerator must weigh the SAME three real signals the
-  // detail-view "Lines changed" row resolves (max of local working-tree diff,
-  // branch-level diff, and authored-PR roll-up) so LOC/$ and the displayed
-  // figure can never disagree — e.g. a merged 88-PR session that shows "4,004
-  // lines changed" (its branch diff) must not compute LOC/$ off the 56-line
-  // working-tree residual. `branchDiffStats` carries the branch-level diff.
+  // The roll-up is gated on the SAME head-branch resolution the PR projection is
+  // (`enforcePrBranchInvariant`): a session whose PRs are suppressed (no
+  // resolvable head branch — the orphan case) must not count their LOC, or the
+  // numerator and the pills-row figure would credit a PR the UI renders as
+  // "None". But a suppressed projection is not a measured zero — we know the PRs
+  // are there and have refused to read them — so it is NOT KNOWABLE, and
+  // `mergedAuthoredPrLinesChanged` is sent as `null` rather than as `0`. The
+  // key is always present (the type declares it nullable); it is the VALUE that
+  // carries the distinction, and `null` is the wire spelling of not-knowable.
+  //
+  // `authoredPrLinesChanged` (every authored PR, merged or not) is still emitted
+  // unchanged for version-skewed Desktop builds that read only that key. It is a
+  // COMPATIBILITY field, not a numerator: nothing in this repo divides by it.
+  const authoredPrLines =
+    headBranch === null
+      ? 0
+      : authoredPrLinesChangedFor(record, { mergedOnly: false }).lines;
+  const mergedAuthoredPrLoc =
+    headBranch === null
+      ? null
+      : authoredPrLinesChangedFor(record, { mergedOnly: true });
+  const mergedAuthoredPrLines =
+    mergedAuthoredPrLoc?.complete === true ? mergedAuthoredPrLoc.lines : null;
   const branchDiff = toBranchDiffStats(record);
-  const branchDiffLines = branchDiff
-    ? branchDiff.linesAdded + branchDiff.linesRemoved
-    : 0;
-  const totalLines = Math.max(localDiffLines, branchDiffLines, prLinesChanged);
-  const kloc = klocFromLines(totalLines);
+  // ISS-6113: the numerator rule lives in ONE place
+  // (`locPerDollarNumeratorLines`), because it was written out here and again in
+  // the detail override, and the copies drifted.
+  const totalLines = locPerDollarNumeratorLines({
+    mergedAuthoredPrLinesChanged: mergedAuthoredPrLines,
+  });
+  const kloc = totalLines === null ? null : klocFromLines(totalLines);
   const locPerDollar = locPerDollarFromLines(totalLines, estimatedCost);
 
   return {
     id: record.artifactId,
     slug: record.artifact.slug,
     externalSessionId: record.externalSessionId,
-    name: record.artifact.name,
-    // FEA-4301: serve the DISPLAYED status, not the raw persisted column. A row
-    // awaiting user input stores `active` but DISPLAYS as Waiting
-    // (`projectDisplayedSessionStatus`) — the SAME projection the Status-column
-    // sort (`compareByDisplayedStatus`) and the Status facet filter
-    // (`buildStatusFacetPredicate`) key off. Serving the raw `active` here made
-    // the badge render "Active" for a row the sort grouped under Waiting and the
-    // WAITING facet returned, so the cell, the sort, and the filter disagreed.
-    // Projecting once at the read boundary keeps all three consistent.
-    //
-    // ISS-5366: the projection also folds an unrecognized status to `unknown`
-    // and a long-silent `active` run to `stale`, the two derivations the client
-    // mapper applies unconditionally now that `sessions-honest-unknown-states`
-    // is retired. Serving the raw column while the badge folded left the row
-    // telling two stories — a "Stale" badge inside a page the Active facet
-    // returned — so the fold happens here, once, for the cell, the sort, and
-    // the facet alike.
+    // ISS-8717: the owner's rename wins over the collector's placeholder.
+    // `artifact.name` is rewritten by every ingest, so it is the placeholder
+    // channel and stays recoverable; `nameOverride` is null for a session
+    // nobody renamed, which is why the fallback is the whole prior behaviour.
+    name: record.nameOverride ?? record.artifact.name,
+    // The raw source remains visible for skew diagnosis; the served status is
+    // separately folded to the three-value display contract below.
+    rawStatus: record.artifact.status,
+    // ISS-10332: `null` is a real value (no priority) and IS serialized — the
+    // contract declares the field nullable, and omission means "unknown".
+    priority: record.artifact.priority,
     status: projectDisplayedSessionStatus({
       status: record.artifact.status,
       awaitingInputSince: record.awaitingInputSince,
       sessionEndedAt: record.sessionEndedAt,
       lastActivityAt: record.lastActivityAt,
       sessionStartedAt: record.sessionStartedAt,
+      endsWithError: record.endsWithError,
     }),
     origin: toAgentSessionOrigin(record.origin),
-    state: toAgentSessionState(record),
     harness: record.harness,
     cwd: record.cwd,
     repositoryFullName: resolvedRepo,
@@ -827,7 +867,6 @@ export function toSessionListItem(
     worktreePath: record.worktreePath,
     model: record.model,
     primaryModel,
-    models: primaryModel ? [primaryModel] : [],
     // FEA-3562/FEA-4188: the session's HEAD/working branch, resolved once by
     // {@link deriveSessionBranch} and shared with the PR⇒Branch invariant gate
     // above so `branch` and the rendered `prs` can never disagree.
@@ -842,7 +881,25 @@ export function toSessionListItem(
     // ISS-4449: the true resolved DOCUMENT-link count before the display cap, so
     // the detail pill row can show an honest "N of M" caption when truncated.
     linkedArtifactsTotal: linkedArtifactProjection.total,
-    cost: formatCurrency(estimatedCost),
+    // FEA-4204: spread-or-omit, never `commentCount: commentCount`. Writing the
+    // key unconditionally would put an explicit `undefined` on the object, which
+    // `JSON.stringify` drops on the wire but which every in-process consumer
+    // (the by-ids reader, tests, the desktop bridge) then reads as a present key
+    // — collapsing "not counted" into the same shape as a counted zero.
+    ...(commentCount === undefined ? {} : { commentCount }),
+    ...(customFields === undefined ? {} : { customFields }),
+    // ISS-8712: same spread-or-omit discipline as the two keys above. A caller
+    // that passed no `tagContext` gets NO tag keys at all rather than an
+    // `Unavailable` it did not compute, which is the honest shape for the
+    // by-ids reader and every in-process consumer.
+    ...(tagContext === undefined
+      ? {}
+      : projectArtifactTags(
+          record.artifact.tagArtifacts,
+          tagContext.organizationId,
+          tagContext.permissions
+        )),
+    cost: estimatedCost === null ? null : formatCurrency(estimatedCost),
     wallClock: record.wallClock,
     activeAgent: record.activeAgent,
     waitingUser: record.waitingUser,
@@ -851,12 +908,21 @@ export function toSessionListItem(
     filesChanged: record.filesChanged,
     kloc,
     locPerDollar,
-    // FEA-4378: authored-PR LOC roll-up (see authoredPrLinesChanged) — the real
-    // delivered-code figure the detail view surfaces next to the PR pills and
-    // the numerator prefers when it exceeds the local working-tree diff.
-    authoredPrLinesChanged: prLinesChanged,
+    // FEA-4378 / ISS-6114: the authored-PR LOC roll-up the detail view surfaces
+    // next to the PR pills. Each field reports what its name says —
+    // `authoredPrLinesChanged` every authored PR, `mergedAuthoredPrLinesChanged`
+    // the merged subset — so an installed Desktop build reading the older key
+    // keeps getting the older meaning. Only the merged field feeds the numerator
+    // (ISS-9964), and only it carries the ISS-9980 `null`: absent means the
+    // merged total was NOT KNOWABLE, never that nothing merged.
+    authoredPrLinesChanged: authoredPrLines,
+    mergedAuthoredPrLinesChanged: mergedAuthoredPrLines,
     gitDiffStats: toGitDiffStats(record),
     branchDiffStats: branchDiff,
+    // ISS-7737: `turns` spans the PARENT transcript only; the token counters
+    // four lines below span the parent PLUS every subagent transcript the
+    // desktop collector folded in. Adjacent here, different populations — do not
+    // divide one by the other, and do not derive a per-turn cost from the pair.
     turns: record.turns,
     toolCallsTotal: record.toolUseCount,
     steeringEpisodes: record.steeringEpisodes,
@@ -866,7 +932,12 @@ export function toSessionListItem(
     cache: toNumber(record.cacheReadTokens),
     cacheWrite: toNumber(record.cacheWriteTokens),
     userColor: buildUserColor(user),
-    activityBuckets: parseJsonArray<ActivityBucket>(
+    // ISS-6978: deliberately NOT the member-by-member read. The detail view
+    // treats an empty strip as "no persisted buckets" and synthesizes the whole
+    // cost strip from turn items instead; a partial strip would be labelled
+    // MEASURED while silently understating cost. See
+    // `parseCompleteJsonArrayOrEmpty`.
+    activityBuckets: parseCompleteJsonArrayOrEmpty<ActivityBucket>(
       record.activityBuckets,
       activityBucketSchema
     ),
@@ -875,12 +946,27 @@ export function toSessionListItem(
       sessionSpanSchema.nullable(),
       null
     ),
-    markers: parseJsonArray<SessionMarker>(record.markers, sessionMarkerSchema),
-    throttles: parseJsonArray<SessionThrottle>(
+    // ISS-6978: same exception as `activityBuckets` — empty routes the detail
+    // view to its COMPLETE turn-item-derived markers, and empty `throttles`
+    // routes the limit-dot rail to its `throttleSources`/events fallback tier.
+    // A partial authoritative array would suppress the richer fallback.
+    markers: parseCompleteJsonArrayOrEmpty<SessionMarker>(
+      record.markers,
+      sessionMarkerSchema
+    ),
+    throttles: parseCompleteJsonArrayOrEmpty<SessionThrottle>(
       record.throttles,
       sessionThrottleSchema
     ),
-    phases: parseJsonArray<SessionPhase>(record.phases, sessionPhaseSchema),
+    // ISS-6978: same exception, for a sharper reason — `currentPhaseLabel`
+    // reads `phases.at(-1)` as the CURRENT phase. The member most likely to
+    // fail the schema is the in-flight one (`dur`/`cost` still absent), so a
+    // member-by-member read would name the PREVIOUS phase as current instead of
+    // falling back to the honest generic label.
+    phases: parseCompleteJsonArrayOrEmpty<SessionPhase>(
+      record.phases,
+      sessionPhaseSchema
+    ),
     phaseIterations: parseJsonValue<PhaseIterations>(
       record.phaseIterations,
       phaseIterationsSchema,
@@ -906,16 +992,23 @@ export function toSessionListItem(
     // the shared empty glyph and must NOT substitute `updatedAt` or
     // `lastActivityAt`, which answer different questions.
     ...recordUpdatedAtField(record),
-    // PLN-1034: fall back to the start time for pre-backfill rows so the column
-    // and the default sort always have a real value.
-    lastActivityAt: record.lastActivityAt ?? record.sessionStartedAt,
+    lastActivityAt: record.lastActivityAt,
     endedAt: record.sessionEndedAt,
     awaitingInputSince: record.awaitingInputSince,
     // FEA-3479 (PRD-536 G1): cloud upsert freshness for "synced Xs ago".
     lastSyncedAt: record.lastSyncedAt,
     // PRD-536 G1 (Phase 3): session-level transcript verdict (syncing/stale/…)
     // for the list-row freshness affordance, batched per page by the caller.
-    transcriptDisposition,
+    transcriptDisposition: transcriptVerdict?.disposition,
+    // ISS-9884: the terminal skip reason BEHIND that verdict, when one produced
+    // it. The KEY is omitted when there is none, not set to `undefined` — an
+    // absent optional wire field must stay absent (AGENTS.md → Cross-Repo
+    // Compatibility), and the desktop-local producer of the same field omits
+    // it, so a consumer testing for the key's presence sees one shape from
+    // both.
+    ...(transcriptVerdict?.reason
+      ? { transcriptDispositionReason: transcriptVerdict.reason }
+      : {}),
     // PRD-536 E6 / ISS-4621: local↔cloud parity for the per-row disclosure. A
     // row served from the cloud store has its DERIVED-DATA lane synced (it exists
     // in the cloud DB), but the raw-transcript-BLOB lane is INDEPENDENT — so the
@@ -925,7 +1018,7 @@ export function toSessionListItem(
     // (the cloud copy is behind), not a false `synced`; a terminally-failed or
     // never-expected transcript, or an absent verdict, stays `synced`. See
     // {@link reconcileCloudSyncState}.
-    cloudSyncState: reconcileCloudSyncState(transcriptDisposition),
+    cloudSyncState: reconcileCloudSyncState(transcriptVerdict?.disposition),
     inputTokens: toNumber(record.inputTokens),
     outputTokens: toNumber(record.outputTokens),
     cacheReadTokens: toNumber(record.cacheReadTokens),
@@ -934,11 +1027,14 @@ export function toSessionListItem(
     billingMode: record.billingMode ?? null,
     agentCount: record.agentCount,
     toolUseCount: record.toolUseCount,
+    componentInvocationCount: record.componentInvocationCount,
     errorCount: record.errorCount,
     baseBranch: record.baseBranch,
     sourceArtifactId: record.sourceArtifactId,
     sourceArtifact,
-    sourceLoopId: record.sourceLoopId,
+    // ISS-12435: Loops are removed and the column is ignored; the field stays on
+    // the wire as null so version-skewed readers keep their shape.
+    sourceLoopId: null,
     user,
     computeTarget: {
       id: record.computeTarget.id,
@@ -956,6 +1052,47 @@ export function toSessionListItem(
         record.computeTarget.lastAgentSessionSyncAttemptAt,
     },
     project: toProjectSummary(record.artifact.project),
+    ...artifactOwnershipFields(record.artifact),
+  };
+}
+
+/**
+ * ISS-12197: spread-or-omit for the same reason as {@link recordUpdatedAtField}:
+ * a select that did not project a column leaves its key absent rather than
+ * serializing a `null` it never read, while a projected column that holds
+ * nothing is served as an explicit `null`. `assignee` rides the list select as
+ * well as the detail one; the other three are projected on the detail selects
+ * only (`sessionArtifactOwnershipSelect`), so a list row omits them. The
+ * timestamps are served as ISO strings: this route's payload already declares a
+ * `string` `createdAt`, and the client's key-only date reviver cannot carry one
+ * key as both.
+ */
+function artifactOwnershipFields(
+  artifact: AgentSessionListRecord["artifact"] &
+    Partial<SessionArtifactOwnershipRecord>
+): Pick<
+  AgentSessionListItem,
+  "assignee" | "createdAt" | "createdBy" | "dueDate"
+> {
+  return {
+    ...(artifact.assignee === undefined
+      ? {}
+      : {
+          assignee: artifact.assignee ? toBasicUser(artifact.assignee) : null,
+        }),
+    ...(artifact.createdAt === undefined
+      ? {}
+      : { createdAt: artifact.createdAt.toISOString() }),
+    ...(artifact.createdBy === undefined
+      ? {}
+      : {
+          createdBy: artifact.createdBy
+            ? toBasicUser(artifact.createdBy)
+            : null,
+        }),
+    ...(artifact.dueDate === undefined
+      ? {}
+      : { dueDate: artifact.dueDate ? artifact.dueDate.toISOString() : null }),
   };
 }
 

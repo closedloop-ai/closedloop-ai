@@ -94,7 +94,6 @@ describe("renderer OTel runtime", () => {
     runtime.reportException({ error });
     await flushMicrotasks();
 
-    expect(exportTelemetry).toHaveBeenCalledTimes(1);
     expect(exportTelemetry.mock.calls[0]?.[0]).toEqual({
       records: [
         {
@@ -111,6 +110,14 @@ describe("renderer OTel runtime", () => {
         },
       ],
     });
+    // ISS-6329: a pre-start exception that lands successfully is the renderer's
+    // one unambiguous "main is up now" signal, so the drain now boots the tracer
+    // provider behind it. That is exactly one extra call — the bootstrap probe —
+    // and pinning it here keeps the count exact rather than merely loosened.
+    expect(exportTelemetry).toHaveBeenCalledTimes(2);
+    expect(exportTelemetry.mock.calls[1]?.[0].records[0]?.name).toBe(
+      "desktop.renderer.otel.bootstrap"
+    );
   });
 
   it("exports React boundary component stack as the scrubbed stack field", async () => {

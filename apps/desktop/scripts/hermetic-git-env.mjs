@@ -14,10 +14,9 @@
  * 1. CORRECTNESS. An arbitrary hook (`pre-commit`, `post-checkout`, `pre-push`)
  *    executes inside a fixture repo and can mutate or REJECT it. Measured on the
  *    reporting machine before this fix: a rejecting global `pre-commit` failed
- *    3 of 22 tests in `git-action-diff-ops.test.ts` and 8 of 9 in
- *    `symphony-loop-multi-repo-worktree.test.ts`, purely from the operator's git
- *    config. A test asserting on repo state must never depend on it.
- * 2. SPEED. ISS-5403 measured the same mechanism in `packages/crewd` at
+ *    3 of 22 tests in `git-action-diff-ops.test.ts` (and most of a multi-repo
+ *    worktree suite since removed), purely from the operator's git config. A test asserting on repo state must never depend on it.
+ * 2. SPEED. ISS-5403 measured the same mechanism in a sibling package at
  *    **1933ms per `git commit` versus 55ms hermetic** — ~35x — which pushed
  *    tests past their timeout and aborted the package's whole run.
  *
@@ -34,6 +33,13 @@
  * into each — the SSOT-drift-by-copy defect this repo names by name. The
  * sibling `run-node-tests-outcome.mjs` is imported the same way from
  * `test/ambient-host-env-hermeticity.test.ts`.
+ *
+ * The TypeScript side types this by INFERENCE: `tsconfig.tests.json` sets
+ * `allowJs`, so `tsc` reads the objects below and a consumer's
+ * `HERMETIC_GIT_ENV.GIT_ALLOW_PROTOCOL` is a compile error the moment that key
+ * goes. There was a hand-written `hermetic-git-env.d.mts` here until ISS-10194
+ * review; do not bring it back, because a declaration is a second copy of the
+ * key set and it drifts with `tsc` green.
  *
  * APPLIED IN THREE PLACES, because none of them covers the others:
  *
@@ -53,11 +59,7 @@
  *   than by inheritance — which still holds when a developer runs a single file
  *   directly (`pnpm exec tsx --test test/foo.test.ts`) and bypasses the runner.
  *
- * This is the same fix ISS-5403 applied to `packages/crewd`, whose reference
- * implementation is `packages/crewd/test/helpers/git-fixture.ts`. That helper is
- * deliberately NOT imported here: reaching across package boundaries into
- * another package's `test/` tree is worse coupling than declaring the two
- * variables the desktop suite needs.
+ * This is the same fix ISS-5403 applied to that package's own git fixtures.
  */
 
 /**
@@ -75,12 +77,43 @@
  * covers the system file, and carrying both would be two spellings of one
  * decision.
  *
+ * `GIT_ALLOW_PROTOCOL` is the ISS-10194 half, and it is the same mechanism
+ * pointed at a second source of machine state: the network. A suite whose fake
+ * `git` failed to install runs the REAL git, and the clone path builds
+ * `https://github.com/<org>/<repo>.git`, so the assertions turn on network
+ * conditions and on whether that repo name happens to exist. Measured on
+ * 2026-09-14: `remote: Repository not found.` — a github.com response — reached
+ * a unit suite. `file` is every transport the desktop fixtures actually use
+ * (bare local remotes, cloned by path or `file://`); `https` and `ssh` are
+ * refused by git itself, locally, before any DNS or TCP, with
+ * `fatal: transport 'https' not allowed`. That message cannot be produced by a
+ * network failure, so it names its own cause.
+ *
  * These keys are SCREAMING_SNAKE because they are git's own contract, which is
  * the external-wire-format exception to the repo's camelCase rule.
  */
 export const HERMETIC_GIT_ENV = {
   GIT_CONFIG_GLOBAL: "/dev/null",
   GIT_CONFIG_SYSTEM: "/dev/null",
+  GIT_ALLOW_PROTOCOL: "file",
+};
+
+/**
+ * Env that makes an unusable EXPLICIT binary override a hard failure in the
+ * test process instead of a silent fall-through to the real binary.
+ *
+ * Not part of {@link HERMETIC_GIT_ENV}: that object is git's own contract and
+ * is also handed to individual git children, whereas this one configures OUR
+ * resolver and only means anything in the process where `getResolvedGitPath()`
+ * runs. Its name is read back by
+ * `src/server/operations/binary-path-overrides.ts`; that is the ONLY other
+ * place the name is written, and nothing pins the two spellings to each other
+ * by name, so the guard is behavioural — see the `DESKTOP_TEST_STRICT_ENV`
+ * cases in `test/iss-10194-binary-override-fallthrough.test.ts`, which apply
+ * this exact object and assert the resolver's decision flips.
+ */
+export const DESKTOP_TEST_STRICT_ENV = {
+  CLOSEDLOOP_DESKTOP_STRICT_BINARY_OVERRIDES: "1",
 };
 
 /**

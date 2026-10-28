@@ -282,6 +282,32 @@ describe.skipIf(!process.env.DATABASE_URL)(
       expect(indexCond).toContain("lower(full_name)");
     });
 
+    /**
+     * ISS-6578: the GitHub sync ladder is a SECOND consumer of this index. Its
+     * three hot lookups (credential draw, tier classification, reconciler
+     * repo-id resolution) ask for ONE name, so their predicate is a scalar
+     * `LOWER(full_name) = $2` rather than the authority read's `= ANY($2)`.
+     * They previously used Prisma's `mode: "insensitive"`, which compiles to
+     * `ILIKE` and cannot be matched to this index at all. A scalar equality is
+     * not automatically index-servable just because the array form is — the
+     * `LIMIT 1` alone changes the costing — so the fix is only real if the
+     * planner picks the index for THIS shape too.
+     */
+    it("pushes the single-name sync-ladder predicate into the same index", async () => {
+      const plan = await explain(ctx, INSTALLATION_REPOSITORY_COVERAGE_SQL, [
+        ORG_ID,
+        REQUESTED_REPO_NAMES[0],
+      ]);
+
+      expect(plan).toContain(INSTALLATION_REPOSITORY_INDEX);
+      const indexCond = requireIndexPredicate(
+        plan,
+        INSTALLATION_REPOSITORY_TABLE
+      );
+      expect(indexCond).toContain("installation_id");
+      expect(indexCond).toContain("lower(full_name)");
+    });
+
     it.each([
       {
         label: "pull_request_detail",
@@ -301,23 +327,22 @@ describe.skipIf(!process.env.DATABASE_URL)(
         index: INSTALLATION_REPOSITORY_INDEX,
         names: REQUESTED_REPO_NAMES,
       },
-    ])("$label returns an identical non-empty result set with and without the index", async ({
-      sql,
-      index,
-      names,
-    }) => {
-      const { withIndex, withoutIndex } = await compareWithAndWithoutIndex(
-        ctx,
-        sql,
-        index,
-        [...names]
-      );
+    ])(
+      "$label returns an identical non-empty result set with and without the index",
+      async ({ sql, index, names }) => {
+        const { withIndex, withoutIndex } = await compareWithAndWithoutIndex(
+          ctx,
+          sql,
+          index,
+          [...names]
+        );
 
-      // Non-empty matters: an equivalence check over two empty sets proves
-      // nothing about whether the partial index can hide a matching row.
-      expect(withIndex.length).toBeGreaterThan(0);
-      expect(withIndex).toEqual(withoutIndex);
-    });
+        // Non-empty matters: an equivalence check over two empty sets proves
+        // nothing about whether the partial index can hide a matching row.
+        expect(withIndex.length).toBeGreaterThan(0);
+        expect(withIndex).toEqual(withoutIndex);
+      }
+    );
 
     it("returns an identical empty result set for a head repository nobody has recorded", async () => {
       // The all-NULL / no-match state most pull_request_detail rows are in today.
@@ -388,6 +413,22 @@ FROM public_repositories repository
 WHERE repository.organization_id = $1::uuid
   AND LOWER(repository.full_name) = ANY($2::text[])
 FOR SHARE OF repository`;
+
+/**
+ * ISS-6578's tier-1 coverage probe, from
+ * `apps/api/lib/github/installation-repository-lookup.ts`. Copied verbatim for
+ * the same reason the three above are: the plan is what is under assertion, and
+ * a plan can only be read off the statement text the planner was given.
+ */
+const INSTALLATION_REPOSITORY_COVERAGE_SQL = `SELECT installation.installation_id AS "installationId"
+FROM github_installation_repositories repository
+INNER JOIN github_installations installation
+  ON installation.id = repository.installation_id
+WHERE installation.organization_id = $1::uuid
+  AND installation.status = 'ACTIVE'::"GitHubInstallationStatus"
+  AND repository.removed_at IS NULL
+  AND LOWER(repository.full_name) = $2::text
+LIMIT 1`;
 
 const INSTALLATION_REPOSITORY_AUTHORITY_SQL = `SELECT repository.id::text AS id
 FROM github_installation_repositories repository

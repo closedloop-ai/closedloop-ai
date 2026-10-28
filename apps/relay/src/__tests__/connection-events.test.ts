@@ -1,5 +1,4 @@
 import { ConnectionState } from "@repo/observability/telemetry/metrics";
-import { TelemetryCategory } from "@repo/observability/telemetry/schema";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -79,6 +78,9 @@ vi.mock("socket.io", () => {
   };
   return {
     Server: class MockServer {
+      // Engine.IO stub: index.ts attaches a `connection_error` listener to
+      // `io.engine` at module load, so a Server double without one crashes on import.
+      engine = { on: vi.fn() };
       of() {
         return mockNamespace;
       }
@@ -238,20 +240,9 @@ async function registerWorkerViaHello(
 
   capturedConnectionHandler(socket);
 
-  globalThis.fetch = vi.fn().mockResolvedValueOnce({
-    ok: true,
-    status: 200,
-    url: "http://127.0.0.1:19878/internal/relay/socket-event",
-    text: () =>
-      Promise.resolve(
-        JSON.stringify({
-          emit: [],
-          targetId,
-          gatewaySessionId,
-        })
-      ),
-    headers: { get: () => "application/json" },
-  } as unknown as Response);
+  globalThis.fetch = vi
+    .fn()
+    .mockResolvedValueOnce(socketEventApiResponse(targetId, gatewaySessionId));
 
   socket._trigger("desktop.hello", { targetId });
 
@@ -261,40 +252,21 @@ async function registerWorkerViaHello(
   return gatewaySessionId;
 }
 
-function makeDesktopTelemetryPayload(
-  category: string,
-  loopPerf: unknown
-): Record<string, unknown> {
-  return {
-    schemaVersion: "1",
-    category,
-    severity: "info",
-    timestamp: "2026-05-12T00:00:00.000Z",
-    trace: {
-      commandId: "cmd-1",
-      operationId: "op-1",
-      computeTargetId: TEST_TARGET_ID,
-    },
-    diagnostics: {
-      loopPerf,
-    },
-  };
-}
-
-function withoutTopLevelField(
-  field: "schemaVersion" | "severity" | "timestamp" | "trace",
-  payload: Record<string, unknown>
-): Record<string, unknown> {
-  const { [field]: _removed, ...rest } = payload;
-  return rest;
-}
-
-function mockSocketEventApiResponse() {
+/**
+ * The socket-event API's 200. `targetId`/`gatewaySessionId` are the hello-ack
+ * fields; omitting them drops the keys from the body (JSON.stringify skips
+ * undefined), which is the plain forward acknowledgement.
+ */
+function socketEventApiResponse(
+  targetId?: string,
+  gatewaySessionId?: string
+): Response {
   return {
     ok: true,
     status: 200,
     url: "http://127.0.0.1:19878/internal/relay/socket-event",
-    text: () => Promise.resolve(JSON.stringify({ emit: [] })),
+    text: () =>
+      Promise.resolve(JSON.stringify({ emit: [], targetId, gatewaySessionId })),
     headers: { get: () => "application/json" },
   } as unknown as Response;
 }
@@ -394,250 +366,27 @@ describe("connection handler", () => {
   });
 
   it("registers a worker after desktop.hello", async () => {
-    if (!capturedConnectionHandler) {
-      throw new Error(
-        "Connection handler not captured — module may not have loaded"
-      );
-    }
+    vi.useFakeTimers();
 
     const socket = makeMockSocket("socket-hello-1");
     socket.data.auth = { organizationId: TEST_ORG_ID, userId: TEST_USER_ID };
 
-    capturedConnectionHandler(socket);
+    await registerWorkerViaHello(socket, TEST_TARGET_ID);
 
-    globalThis.fetch = vi.fn().mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      url: "http://127.0.0.1:19878/internal/relay/socket-event",
-      text: () =>
-        Promise.resolve(
-          JSON.stringify({
-            emit: [],
-            targetId: TEST_TARGET_ID,
-            gatewaySessionId: "gw-session-001",
-          })
-        ),
-      headers: { get: () => "application/json" },
-    } as unknown as Response);
-
-    socket._trigger("desktop.hello", { targetId: TEST_TARGET_ID });
-
-    await new Promise<void>((resolve) => setTimeout(resolve, 50));
-
-    // Verify the fetch was called for the hello event
     expect(globalThis.fetch).toHaveBeenCalled();
+
+    const stateCountCalls = mockEmitProtocolMetric.mock.calls.filter(
+      (call) =>
+        (call[0] as { metric: string }).metric === "connection_state_count"
+    );
+    expect(stateCountCalls).toHaveLength(1);
+    expect(stateCountCalls[0][0]).toMatchObject({
+      metric: "connection_state_count",
+      state: ConnectionState.Online,
+      count: 1,
+    });
   });
 });
-
-// ---------------------------------------------------------------------------
-// PLN-750: loopPerf telemetry bypasses the generic relay limiter only on exact
-// category + diagnostics.loopPerf.event matches.
-// ---------------------------------------------------------------------------
-
-describe("desktop.telemetry loopPerf rate-limit bypass", () => {
-  it.each([
-    {
-      label: "iteration",
-      category: TelemetryCategory.LoopPerfIteration,
-      loopPerf: { event: "iteration", command: "EXECUTE", runId: "run-1" },
-    },
-    {
-      label: "pipeline_step",
-      category: TelemetryCategory.LoopPerfPipelineStep,
-      loopPerf: { event: "pipeline_step", command: "PLAN", runId: "run-1" },
-    },
-  ])("forwards a valid $label burst above the generic limit", async ({
-    category,
-    loopPerf,
-  }) => {
-    vi.useFakeTimers();
-    const socket = makeMockSocket(`socket-loopperf-${loopPerf.event}`);
-    socket.data.auth = { organizationId: TEST_ORG_ID, userId: TEST_USER_ID };
-    await registerWorkerViaHello(socket, TEST_TARGET_ID);
-
-    globalThis.fetch = vi.fn().mockResolvedValue(mockSocketEventApiResponse());
-    for (let index = 0; index < 64; index += 1) {
-      socket._trigger(
-        "desktop.telemetry",
-        makeDesktopTelemetryPayload(category, loopPerf)
-      );
-    }
-
-    await vi.advanceTimersByTimeAsync(0);
-    expect(globalThis.fetch).toHaveBeenCalledTimes(64);
-  });
-
-  it("forwards exact parse_failure loopPerf telemetry above the generic limit", async () => {
-    vi.useFakeTimers();
-    const socket = makeMockSocket("socket-loopperf-parse-failure");
-    socket.data.auth = { organizationId: TEST_ORG_ID, userId: TEST_USER_ID };
-    await registerWorkerViaHello(socket, TEST_TARGET_ID);
-
-    globalThis.fetch = vi.fn().mockResolvedValue(mockSocketEventApiResponse());
-    for (let index = 0; index < 64; index += 1) {
-      socket._trigger(
-        "desktop.telemetry",
-        makeDesktopTelemetryPayload(TelemetryCategory.LoopPerfParseFailure, {
-          event: "parse_failure",
-          lineNumber: index + 1,
-        })
-      );
-    }
-
-    await vi.advanceTimersByTimeAsync(0);
-    expect(globalThis.fetch).toHaveBeenCalledTimes(64);
-  });
-
-  it("limits exact valid loopPerf bursts at the loopPerf-specific cap", async () => {
-    vi.useFakeTimers();
-    const socket = makeMockSocket("socket-loopperf-specific-cap");
-    socket.data.auth = { organizationId: TEST_ORG_ID, userId: TEST_USER_ID };
-    await registerWorkerViaHello(socket, TEST_TARGET_ID);
-
-    globalThis.fetch = vi.fn().mockResolvedValue(mockSocketEventApiResponse());
-    for (let index = 0; index < 245; index += 1) {
-      socket._trigger(
-        "desktop.telemetry",
-        makeDesktopTelemetryPayload(TelemetryCategory.LoopPerfIteration, {
-          event: "iteration",
-          command: "EXECUTE",
-          runId: "run-1",
-          iteration: index + 1,
-        })
-      );
-    }
-
-    await vi.advanceTimersByTimeAsync(0);
-    expect(globalThis.fetch).toHaveBeenCalledTimes(240);
-  });
-
-  it.each([
-    {
-      label: "missing diagnostics",
-      payload: {
-        schemaVersion: "1",
-        category: TelemetryCategory.LoopPerfIteration,
-        severity: "info",
-        timestamp: "2026-05-12T00:00:00.000Z",
-      },
-    },
-    {
-      label: "non-object loopPerf",
-      payload: {
-        ...makeDesktopTelemetryPayload(
-          TelemetryCategory.LoopPerfIteration,
-          "iteration"
-        ),
-      },
-    },
-    {
-      label: "category event mismatch",
-      payload: makeDesktopTelemetryPayload(
-        TelemetryCategory.LoopPerfIteration,
-        {
-          event: "pipeline_step",
-        }
-      ),
-    },
-    {
-      label: "unknown loopPerf future category",
-      payload: makeDesktopTelemetryPayload("loop.perf.future", {
-        event: "future",
-      }),
-    },
-    {
-      label: "unknown event variant category",
-      payload: makeDesktopTelemetryPayload(
-        TelemetryCategory.LoopPerfUnknownEventVariant,
-        { event: "unknown_event_variant" }
-      ),
-    },
-    {
-      label: "generic non-loopPerf telemetry",
-      payload: {
-        schemaVersion: "1",
-        category: TelemetryCategory.JobStarted,
-        severity: "info",
-        timestamp: "2026-05-12T00:00:00.000Z",
-      },
-    },
-    {
-      label: "missing schemaVersion exact loopPerf",
-      payload: withoutTopLevelField(
-        "schemaVersion",
-        makeDesktopTelemetryPayload(TelemetryCategory.LoopPerfIteration, {
-          event: "iteration",
-        })
-      ),
-    },
-    {
-      label: "missing severity exact loopPerf",
-      payload: withoutTopLevelField(
-        "severity",
-        makeDesktopTelemetryPayload(TelemetryCategory.LoopPerfIteration, {
-          event: "iteration",
-        })
-      ),
-    },
-    {
-      label: "missing timestamp exact loopPerf",
-      payload: withoutTopLevelField(
-        "timestamp",
-        makeDesktopTelemetryPayload(TelemetryCategory.LoopPerfIteration, {
-          event: "iteration",
-        })
-      ),
-    },
-    {
-      label: "missing trace exact loopPerf",
-      payload: withoutTopLevelField(
-        "trace",
-        makeDesktopTelemetryPayload(TelemetryCategory.LoopPerfIteration, {
-          event: "iteration",
-        })
-      ),
-    },
-    {
-      label: "missing trace computeTargetId exact loopPerf",
-      payload: {
-        ...makeDesktopTelemetryPayload(TelemetryCategory.LoopPerfIteration, {
-          event: "iteration",
-        }),
-        trace: {
-          commandId: "cmd-1",
-          operationId: "op-1",
-        },
-      },
-    },
-    {
-      label: "mismatched trace computeTargetId exact loopPerf",
-      payload: {
-        ...makeDesktopTelemetryPayload(TelemetryCategory.LoopPerfIteration, {
-          event: "iteration",
-        }),
-        trace: {
-          commandId: "cmd-1",
-          operationId: "op-1",
-          computeTargetId: "different-target-id",
-        },
-      },
-    },
-  ])("keeps $label under the generic limiter", async ({ label, payload }) => {
-    vi.useFakeTimers();
-    const socket = makeMockSocket(`socket-loopperf-negative-${label}`);
-    socket.data.auth = { organizationId: TEST_ORG_ID, userId: TEST_USER_ID };
-    await registerWorkerViaHello(socket, TEST_TARGET_ID);
-
-    globalThis.fetch = vi.fn().mockResolvedValue(mockSocketEventApiResponse());
-    for (let index = 0; index < 64; index += 1) {
-      socket._trigger("desktop.telemetry", payload);
-    }
-
-    await vi.advanceTimersByTimeAsync(0);
-    expect(globalThis.fetch).toHaveBeenCalledTimes(60);
-  });
-});
-
 // ---------------------------------------------------------------------------
 // T-3.4: first registration emits online
 // ---------------------------------------------------------------------------
@@ -737,20 +486,9 @@ describe("T-3.6: degraded fires after timer", () => {
     globalThis.fetch = vi
       .fn()
       // First call: desktop.hello
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        url: "http://127.0.0.1:19878/internal/relay/socket-event",
-        text: () =>
-          Promise.resolve(
-            JSON.stringify({
-              emit: [],
-              targetId: "ct_degraded",
-              gatewaySessionId: "gw-session-t36",
-            })
-          ),
-        headers: { get: () => "application/json" },
-      } as unknown as Response)
+      .mockResolvedValueOnce(
+        socketEventApiResponse("ct_degraded", "gw-session-t36")
+      )
       // Subsequent calls: heartbeat fails
       .mockRejectedValue(new Error("Heartbeat network error"));
 
@@ -799,20 +537,7 @@ describe("T-3.7: online recovery from degraded", () => {
     capturedConnectionHandler(socket);
 
     const heartbeatSuccessResponse = () =>
-      Promise.resolve({
-        ok: true,
-        status: 200,
-        url: "http://127.0.0.1:19878/internal/relay/socket-event",
-        text: () =>
-          Promise.resolve(
-            JSON.stringify({
-              emit: [],
-              targetId: "ct_recovery",
-              gatewaySessionId: "gw-session-t37",
-            })
-          ),
-        headers: { get: () => "application/json" },
-      } as unknown as Response);
+      Promise.resolve(socketEventApiResponse("ct_recovery", "gw-session-t37"));
 
     // hello succeeds, first heartbeat fails (to trigger degraded), second heartbeat succeeds (recovery)
     globalThis.fetch = vi
@@ -893,20 +618,9 @@ describe("T-3.8: no recovery online when wasDegraded was never set", () => {
     capturedConnectionHandler(socket);
 
     const heartbeatSuccessResponse = () =>
-      Promise.resolve({
-        ok: true,
-        status: 200,
-        url: "http://127.0.0.1:19878/internal/relay/socket-event",
-        text: () =>
-          Promise.resolve(
-            JSON.stringify({
-              emit: [],
-              targetId: "ct_no_recovery",
-              gatewaySessionId: "gw-session-t38",
-            })
-          ),
-        headers: { get: () => "application/json" },
-      } as unknown as Response);
+      Promise.resolve(
+        socketEventApiResponse("ct_no_recovery", "gw-session-t38")
+      );
 
     globalThis.fetch = vi
       .fn()
@@ -990,20 +704,9 @@ describe("T-3.9: disconnected on socket close", () => {
     globalThis.fetch = vi
       .fn()
       // First call: desktop.hello
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        url: "http://127.0.0.1:19878/internal/relay/socket-event",
-        text: () =>
-          Promise.resolve(
-            JSON.stringify({
-              emit: [],
-              targetId: "ct_disc_degraded",
-              gatewaySessionId: "gw-session-t39b",
-            })
-          ),
-        headers: { get: () => "application/json" },
-      } as unknown as Response)
+      .mockResolvedValueOnce(
+        socketEventApiResponse("ct_disc_degraded", "gw-session-t39b")
+      )
       // All heartbeats fail
       .mockRejectedValue(new Error("Heartbeat fail"));
 
@@ -1059,20 +762,11 @@ describe("T-3.10: reliability — emitter throws → handler doesn't reject", ()
     }
     capturedConnectionHandler(socket);
 
-    globalThis.fetch = vi.fn().mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      url: "http://127.0.0.1:19878/internal/relay/socket-event",
-      text: () =>
-        Promise.resolve(
-          JSON.stringify({
-            emit: [],
-            targetId: "ct_emitter_throws",
-            gatewaySessionId: "gw-session-t310",
-          })
-        ),
-      headers: { get: () => "application/json" },
-    } as unknown as Response);
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        socketEventApiResponse("ct_emitter_throws", "gw-session-t310")
+      );
 
     // This should not throw even though emitProtocolMetric throws
     let threw = false;

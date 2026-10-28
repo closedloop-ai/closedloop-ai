@@ -20,9 +20,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
-import { DATA_REVISION } from "../src/main/collectors/engine/data-revision.js";
+import { test } from "vitest";
 import { runDataRevisionRebuild } from "../src/main/collectors/engine/data-revision-rebuild.js";
+import { effectiveDataRevision } from "../src/main/collectors/engine/effective-data-revision.js";
 import { openTestDb } from "./agent-db-test-utils.js";
 import {
   fakeCollector,
@@ -128,7 +128,7 @@ test("a session sealed at the pre-fix revision with the mispair re-derives corre
     >("SELECT data_revision FROM sessions WHERE id = $1", SID);
     assert.equal(
       Number(revisionRows[0]?.data_revision),
-      DATA_REVISION,
+      effectiveDataRevision(),
       "the rebuild sealed the session at the current revision"
     );
 
@@ -245,7 +245,7 @@ test("the missing-source bridge repairs the mispair instead of sealing it", asyn
     >("SELECT data_revision FROM sessions WHERE id = $1", SID);
     assert.equal(
       Number(revisionRows[0]?.data_revision),
-      DATA_REVISION,
+      effectiveDataRevision(),
       "sealing is honest: the pairing was corrected before the stamp"
     );
   } finally {

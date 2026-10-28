@@ -7,7 +7,7 @@ export function generateMetadata(): Metadata {
   return {
     title: "TokenOps waste",
     description:
-      "Session spend split by outcome, the recoverable share of the failed spend, and how the models fit the work",
+      "Session cost split by outcome, the recoverable share of the failed cost, and how the models fit the work",
   };
 }
 

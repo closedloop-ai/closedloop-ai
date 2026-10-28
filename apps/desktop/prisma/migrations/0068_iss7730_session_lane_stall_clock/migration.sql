@@ -1,0 +1,50 @@
+-- ISS-7730: bound the session lane's LANE-WIDE stall by wall clock, so a 5xx can
+-- stop burning a row-attributable retry budget.
+--
+-- `ingestion_failed` is the sync route's UNCLASSIFIED 500 fallthrough
+-- (`apps/api/app/desktop/agent-sessions/sync/route.ts`, the `else` after every
+-- taxonomized reason), and the desktop additionally collapses 502, 504, a
+-- deploy-skew 404 and a non-contract 2xx into it. It means "the server failed
+-- and could not say why" — nothing in it is reproducible from the persisted row,
+-- so `sync/AGENTS.md` invariant 4's "attributable to the item" test fails and it
+-- must defer with the budget intact. The sibling invocation lane already
+-- classifies the identical server reason that way
+-- (`agent-sync/invocation-sync-rejection-policy.ts`); the session lane spent
+-- MAX_CONSECUTIVE_INGESTION_FAILED (5) on it and dead-lettered healthy rows
+-- wholesale during a server-side burst — exactly the failure invariant 4 exists
+-- to prevent.
+--
+-- Exempting the class from the ladder removes its ONLY bound, which invariant 5
+-- forbids ("Exempting a failure class from the ladder without replacing the
+-- bound is how invariant 5 gets violated while looking like invariant 4
+-- compliance"). `lane_stalled_since` is the replacement bound: it records the
+-- START of the current unbroken lane-wide run, and a row stalled past
+-- SESSION_LANE_STALL_CEILING_MS dead-letters on the same recoverable path an
+-- exhausted ladder used to reach. Any row-attributable rejection clears it,
+-- because a 4xx is proof the lane answered.
+--
+-- DURABLE rather than in-memory, which is the whole reason this is a schema
+-- change: the per-class failure counters this lane keeps are process-scoped, and
+-- a desktop that relaunches inside an outage would restart an in-memory clock on
+-- every launch, so the terminal path would never actually be reached. The
+-- transcript lane's `lane_stalled_since` (0062, ISS-7097) is the precedent this
+-- mirrors column-for-column.
+--
+-- Additive, nullable, and local-only — `agent_session_sync_outbox` is desktop
+-- queue state and never crosses the cloud sync boundary, so no consumer contract
+-- changes. NULL reads as "not currently stalled" on every pre-migration row,
+-- which is correct: an upgraded launch starts each row's clock at its first
+-- post-upgrade lane-wide failure rather than inheriting an unmeasured one.
+-- Plain `ADD COLUMN` (SQLite has no `IF NOT EXISTS` for it), matching the 0062
+-- precedent.
+--
+-- ONE DELIBERATE EXCEPTION to "NULL ⇔ not stalled": a row dead-lettered BY this
+-- ceiling keeps its non-null stamp, because `outboxDeadLetterFields` does not
+-- name the column. That is the same choice `attempt_count` already makes on a
+-- dead-letter — the value is EVIDENCE of why the row was abandoned, and erasing
+-- it would leave an operator unable to tell a wall-clock abandonment from any
+-- other. It cannot leak into a live budget: every path back to `pending`
+-- (`sqliteReEnqueueRecoveredDeadLetter`, `sqliteRependDeadLetteredForFormulaRewalk`,
+-- `sqliteRePendWithheldOutbox`) nulls it, so a recovered row always starts a
+-- fresh run.
+ALTER TABLE "agent_session_sync_outbox" ADD COLUMN "lane_stalled_since" TEXT;

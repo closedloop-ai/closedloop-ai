@@ -26,7 +26,15 @@ vi.mock("@repo/observability/log", () => ({
   log: { error: vi.fn(), info: mockLogInfo, warn: vi.fn() },
 }));
 
-vi.mock("@/lib/route-utils", () => ({
+// Partial: the route now reads its body through this module's bounded reader,
+// so only the `request_completed` emit and the flush hook are stubbed. That
+// emit is pinned per receiver in webhook-body-caps (ISS-9053), which also pins
+// the one flush a delivery schedules. Stubbing the emit silences the wrapper's
+// flush too, so `mockScheduleLogFlush` here is the other half of that contract:
+// the receiver owns NO terminal flush, and re-adding one turns these red.
+vi.mock("@/lib/route-utils", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/route-utils")>()),
+  logRequestCompleted: vi.fn(),
   scheduleLogFlush: mockScheduleLogFlush,
 }));
 
@@ -69,7 +77,7 @@ describe("POST /webhooks/slack", () => {
     expect(response.status).toBe(401);
     await expect(response.json()).resolves.toMatchObject({ ok: false });
     expect(mockSlackVerifyWebhookSignature).not.toHaveBeenCalled();
-    expect(mockScheduleLogFlush).toHaveBeenCalledTimes(1);
+    expect(mockScheduleLogFlush).not.toHaveBeenCalled();
   });
 
   it("preserves invalid signature rejection", async () => {
@@ -81,7 +89,30 @@ describe("POST /webhooks/slack", () => {
     await expect(response.json()).resolves.toMatchObject({ ok: false });
     expect(mockHandleCreateIdea).not.toHaveBeenCalled();
     expect(mockHandleGetStatus).not.toHaveBeenCalled();
-    expect(mockScheduleLogFlush).toHaveBeenCalledTimes(1);
+    expect(mockScheduleLogFlush).not.toHaveBeenCalled();
+  });
+
+  it("rejects a request with no timestamp header", async () => {
+    const body = "command=%2Fsymphony";
+    mockHeaders.mockResolvedValueOnce(
+      new Headers({ "x-slack-signature": "v0=signature" })
+    );
+    mockSlackVerifyWebhookSignature.mockReturnValueOnce(false);
+
+    const response = await POST(makeRequest(body));
+
+    expect(mockSlackVerifyWebhookSignature).toHaveBeenCalledWith(
+      body,
+      "",
+      "v0=signature",
+      "secret"
+    );
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({
+      message: "Invalid signature",
+      ok: false,
+    });
+    expect(mockScheduleLogFlush).not.toHaveBeenCalled();
   });
 
   it("logs one terminal URL verification event without challenge contents", async () => {
@@ -111,31 +142,67 @@ describe("POST /webhooks/slack", () => {
   it.each([
     ["create-idea", mockHandleCreateIdea],
     ["status", mockHandleGetStatus],
-  ])("logs supported %s subcommand as an allowlisted value", async (subcommand, handler) => {
+  ])(
+    "logs supported %s subcommand as an allowlisted value",
+    async (subcommand, handler) => {
+      const body = new URLSearchParams({
+        channel_id: "C1",
+        command: "/symphony",
+        team_id: "T1",
+        text: `${subcommand} PRO-1 private details`,
+        user_id: "U1",
+      }).toString();
+
+      const response = await POST(makeRequest(body));
+
+      expect(response.status).toBe(200);
+      expect(handler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          channel_id: "C1",
+          command: "/symphony",
+          team_id: "T1",
+          text: "PRO-1 private details",
+          user_id: "U1",
+        })
+      );
+      expect(mockLogInfo).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(mockLogInfo.mock.calls)).not.toContain(
+        "private details"
+      );
+      expect(mockLogInfo).toHaveBeenCalledWith(
+        "[webhook/slack] Event handled",
+        {
+          channelId: "C1",
+          command: "/symphony",
+          outcome: "processed",
+          provider: "slack",
+          subcommand,
+          teamId: "T1",
+        }
+      );
+    }
+  );
+
+  it("returns a generic 500 and flushes logs when a handler rejects", async () => {
     const body = new URLSearchParams({
       channel_id: "C1",
       command: "/symphony",
       team_id: "T1",
-      text: `${subcommand} PRO-1 private details`,
+      text: "status ISS-7984",
       user_id: "U1",
     }).toString();
+    mockHandleGetStatus.mockRejectedValueOnce(
+      new Error("database unavailable")
+    );
 
     const response = await POST(makeRequest(body));
 
-    expect(response.status).toBe(200);
-    expect(handler).toHaveBeenCalled();
-    expect(mockLogInfo).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify(mockLogInfo.mock.calls)).not.toContain(
-      "private details"
-    );
-    expect(mockLogInfo).toHaveBeenCalledWith("[webhook/slack] Event handled", {
-      channelId: "C1",
-      command: "/symphony",
-      outcome: "processed",
-      provider: "slack",
-      subcommand,
-      teamId: "T1",
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({
+      message: "Something went wrong",
+      ok: false,
     });
+    expect(mockScheduleLogFlush).not.toHaveBeenCalled();
   });
 
   it("logs unknown subcommands without raw text or token", async () => {

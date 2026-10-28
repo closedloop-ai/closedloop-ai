@@ -1,20 +1,20 @@
 import type { DesktopGatewayServer } from "../../server/server.js";
-import type { OrgSyncPolicyStore } from "../agent-sync/org-sync-policy-store.js";
 import type { CloudCommandExecutor } from "../cloud/cloud-command-executor.js";
 import type { CloudSocketService } from "../cloud/cloud-socket.js";
-import type { CommandKeyReconciler } from "../command-signing/command-key-reconciler.js";
 import type { CostReconciliationService } from "../cost/cost-reconciliation-service.js";
 import type { AgentDashboardDesignSystemRuntime } from "../dashboard/agent-dashboard-design-system-runtime.js";
+import type { DesktopRealtimeHost } from "../realtime/desktop-realtime-host.js";
 import type { DesktopOtelRuntime } from "../telemetry/app-otel-runtime.js";
 import type { DesktopAppLifecycleTelemetry } from "../telemetry/app-otel-runtime-lifecycle.js";
 import { shutdownDesktopOtelRuntime } from "../telemetry/app-otel-runtime-lifecycle.js";
 import { Observability } from "../telemetry/observability.js";
 import { processExceptionTelemetryBridge } from "../telemetry/process-exception-telemetry-bridge.js";
+import { raceShutdownDeadline } from "../telemetry/shutdown-deadline.js";
 import type { DesktopShutdownDiagnostics } from "../telemetry/telemetry-protocol.js";
 import type { DesktopTray } from "../tray.js";
+import type { DesktopUpdateLifecycleReporter } from "../update/update-lifecycle-telemetry.js";
 import type { QueueStatsDebounce } from "../util/queue-stats-debounce.js";
 import type { DesktopWindow } from "../window.js";
-import type { BootRecoveryService } from "./boot-recovery.js";
 import { runShutdownSequence, type ShutdownResult } from "./shutdown.js";
 import {
   type QuiescibleSyncLaneService,
@@ -31,13 +31,18 @@ import {
  */
 export type DesktopApplicationShutdownDeps = {
   getAgentDashboardRuntime: () => AgentDashboardDesignSystemRuntime | null;
-  bootRecovery: BootRecoveryService;
+  /**
+   * ISS-11345: cancels an in-flight browser sign-in and resolves once it has
+   * revoked any session it held unadopted and closed its loopback listener.
+   */
+  releaseSignIn: () => Promise<void>;
   queueStatsTelemetryDebounce: QueueStatsDebounce;
-  clearActiveCommandKeyTargetContext: (reason: string) => void;
-  commandKeyReconciler: CommandKeyReconciler;
-  /** Disposes the org-policy re-kick subscription AND drops the app's handle. */
-  disposeOrgSyncPolicySubscription: () => void;
-  orgSyncPolicyStore: OrgSyncPolicyStore;
+  /**
+   * Drops the app's handle on the auth-session lane-recovery seam, so a late
+   * auth-state notification cannot re-arm a stopped lane. The seam's own callback
+   * is shutdown-gated as a backstop.
+   */
+  disposeAuthSessionLaneRecovery: () => void;
   stopAgentCapture: () => Promise<void>;
   costReconciliation: CostReconciliationService;
   /**
@@ -48,10 +53,20 @@ export type DesktopApplicationShutdownDeps = {
   transcriptSync: QuiescibleSyncLaneService | null;
   appLifecycleTelemetry: DesktopAppLifecycleTelemetry;
   appOtelRuntime: DesktopOtelRuntime;
+  /** ISS-7247 release-health reporter; settled here, before the OTel flush. */
+  updateTelemetry: DesktopUpdateLifecycleReporter;
+  /**
+   * The version this quit will actually come back on, or undefined. Covers BOTH
+   * an explicit apply and `autoInstallOnAppQuit`, which stages a downloaded
+   * update on an ORDINARY quit — the common path, and the one that would
+   * otherwise never arm an expectation and never be reported.
+   */
+  getUpdateRestartTargetVersion: () => string | undefined;
   unregisterDisabledAgentDashboardDbIpcHandlers: () => void;
   getUpdateCheckTimer: () => NodeJS.Timeout | null;
   clearUpdateCheckTimer: () => void;
   cloudSocket: CloudSocketService;
+  realtimeHost: Pick<DesktopRealtimeHost, "dispose">;
   commandExecutor: CloudCommandExecutor;
   server: DesktopGatewayServer;
   desktopWindow: DesktopWindow;
@@ -95,21 +110,16 @@ export async function runDesktopApplicationShutdown(
   // unexpectedly" or trigger a mid-shutdown restart. The bounded, clean
   // db-host drain then runs inside the runtime's close() below.
   deps.getAgentDashboardRuntime()?.beginClosing();
-  deps.bootRecovery[Symbol.dispose]();
-  await deps.bootRecovery.quiesce(1000);
+  // ISS-11345: a crash never reaches here; the held session's server-side
+  // expiry is what ends it then.
+  await raceShutdownDeadline(deps.releaseSignIn(), SIGN_IN_RELEASE_BUDGET_MS);
   deps.queueStatsTelemetryDebounce.cancel();
-  deps.clearActiveCommandKeyTargetContext("shutdown");
-  deps.commandKeyReconciler.stop();
-  // ISS-4623: unsubscribe the org-policy re-kick BEFORE stopping the lanes so a
-  // policy refresh resolving during teardown cannot re-kick a sweep/upload into
+  // ISS-4623: drop the auth-session lane-recovery handle BEFORE stopping the
+  // lanes, so a late auth-state notification cannot re-arm a given-up lane into
   // stopped lanes while the cloud socket is still online (whitlockk review). The
-  // callback is also shutdown-gated as a backstop.
-  //
-  // ISS-4623 (davetho review): dispose the store too — the subscription
-  // dispose above only stops the lane re-kick, not the store's self-heal timer,
-  // which could otherwise fire during teardown, refresh(), and re-arm.
-  deps.disposeOrgSyncPolicySubscription();
-  deps.orgSyncPolicyStore.dispose();
+  // seam's callback is also shutdown-gated as a backstop.
+  deps.disposeAuthSessionLaneRecovery();
+  deps.realtimeHost.dispose();
   await deps.stopAgentCapture();
   deps.costReconciliation.stop();
   // ISS-4903: quiesce the sync lanes BEFORE the db-host close below. `stop()`
@@ -121,6 +131,22 @@ export async function runDesktopApplicationShutdown(
   // sequence below as a prior incomplete phase rather than being hidden.
   const unquiescedLanes = await quiesceDesktopSyncLanes(deps.transcriptSync);
   await deps.getAgentDashboardRuntime()?.close();
+  // ISS-7247: emitted HERE, above the OTel shutdown that flushes the exporter.
+  // `finishUpdateInstall()` looks like the home for `restart_initiated`, but the
+  // before-quit continuation calls it AFTER this returns, on a dead runtime.
+  //
+  // Flush first, arm second: settling a previous attempt must not be overwritten
+  // by the one this quit starts. The flush on a NON-update quit is what keeps a
+  // quick manual quit after an upgrade from looking like a crash next launch.
+  deps.updateTelemetry.flushPendingTerminalRecord();
+  const restartTargetVersion = deps.getUpdateRestartTargetVersion();
+  if (restartTargetVersion !== undefined) {
+    // Resolved HERE rather than reused from the apply click: the version that
+    // will actually be staged is whatever finished downloading, which a poll can
+    // still have advanced since the user pressed the button.
+    deps.updateTelemetry.installStarted(restartTargetVersion);
+    deps.updateTelemetry.restartInitiated(restartTargetVersion);
+  }
   deps.appLifecycleTelemetry.stop();
   deps.appLifecycleTelemetry.emitShutdown();
   await shutdownDesktopOtelRuntime({
@@ -152,3 +178,6 @@ export async function runDesktopApplicationShutdown(
       ),
   });
 }
+
+/** Budget for {@link DesktopApplicationShutdownDeps.releaseSignIn}. */
+export const SIGN_IN_RELEASE_BUDGET_MS = 1000;

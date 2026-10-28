@@ -30,7 +30,9 @@ export type CloudCostEvidenceEvent = {
 
 export type CloudLifetimeSession = {
   artifactId: string;
-  estimatedCost: { toString(): string } | number;
+  // ISS-7176: nullable — null is the session's cost being UNKNOWN (never
+  // priced), which contributes no lifetime cost evidence. See `validCost`.
+  estimatedCost: { toString(): string } | number | null;
   inputTokens: bigint | number;
   outputTokens: bigint | number;
   cacheReadTokens: bigint | number;
@@ -145,9 +147,30 @@ function applySessionCoverage(
   const costsMatch =
     eventCost?.observed === true &&
     branchCostSubtotalsReconcile(eventCost.subtotalUsd, lifetimeCost ?? null);
+  // ISS-7813: `validCost` answers `undefined` for BOTH a never-priced session
+  // (null) and a corrupt one (non-finite, negative). Only the second is
+  // malformed. Reporting the first as `Malformed` would be the same
+  // unknown-vs-broken conflation this ticket removes, and it does not stay
+  // local: `Malformed` is index 1 of `branchReasonPrecedence`, so one unpriced
+  // session relabelled its whole BRANCH's cost evidence as corrupt data.
+  //
+  // What surfaces at branch level is `CoverageIncomplete`, not the
+  // `PricingIncomplete` written here — the same contribution always carries
+  // `coverageIncomplete: true`, and `normalizeContribution` adds that reason,
+  // which outranks `PricingIncomplete` (index 2 vs 7). So the observable change
+  // is `malformed` → `coverage_incomplete`. The reason below still has to be
+  // right: it is what a contribution-level reader sees, and it must not be the
+  // one thing that outranks the truth.
+  //
+  // The sibling classifiers already draw this line — `isMalformedCost` in
+  // `branch-session-cost-evidence.ts` and the desktop's `hasMalformedCost` both
+  // treat null as not-malformed, so before this the cloud disagreed with desktop
+  // about the same session.
+  const lifetimeNeverPriced = session.estimatedCost === null;
   const lifetimeMalformed =
-    lifetimeTokens === undefined || lifetimeCost === undefined;
-  if (lifetimeMalformed) {
+    lifetimeTokens === undefined ||
+    (lifetimeCost === undefined && !lifetimeNeverPriced);
+  if (lifetimeMalformed || lifetimeNeverPriced) {
     markCoverageIncomplete(indexes, contributions);
     contributions.push({
       ...(!hasEventSubtotal && lifetimeCost !== undefined
@@ -160,7 +183,9 @@ function applySessionCoverage(
           }
         : {}),
       coverageIncomplete: true,
-      reason: BranchCostCompletenessReason.Malformed,
+      reason: lifetimeMalformed
+        ? BranchCostCompletenessReason.Malformed
+        : BranchCostCompletenessReason.PricingIncomplete,
     });
     return;
   }
@@ -299,7 +324,15 @@ function numberFromDecimal(value: { toString(): string } | number): number {
   return typeof value === "number" ? value : Number(value.toString());
 }
 
-function validCost(value: { toString(): string } | number): number | undefined {
+function validCost(
+  value: { toString(): string } | number | null
+): number | undefined {
+  // ISS-7176: an unknown cost is `undefined` here, the same answer this already
+  // gives a non-finite or negative one — never 0, which would assert the session
+  // cost nothing.
+  if (value === null) {
+    return undefined;
+  }
   const parsed = numberFromDecimal(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 }

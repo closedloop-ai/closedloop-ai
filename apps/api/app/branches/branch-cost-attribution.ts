@@ -1,13 +1,9 @@
 import type { BranchPageDetail } from "@repo/api/src/types/branch";
-import {
-  isLocEnriched,
-  sumEvenSplitEnrichedSpend,
-} from "@repo/lib/branches/loc-per-dollar";
 
 /**
  * Per-branch cost attribution helpers (FEA-3576 / FEA-2276 / FEA-4331), split out
  * of `branch-read-service.ts` so the cost-split concern lives in its own co-located
- * module instead of growing the grandfathered service. These are pure functions
+ * module instead of growing the service. These are pure functions
  * over the service's usage/detail shapes — no database access — imported back by
  * the list, detail, and refresh read paths.
  *
@@ -22,20 +18,22 @@ import {
 /** The distinct-session cost view a branch's usage exposes to these helpers. */
 type BranchSessionCostUsage = {
   estimatedCostUsd: number;
+  /** True when any linked session reports priced cost, including a real zero. */
+  hasPricedCost: boolean;
   sessionIds: string[];
   sessions: BranchPageDetail["sessions"];
 };
 
 /**
  * The session's global active-write branch count used as the even-split divisor,
- * floored at 1 so a missing/zero count never divides a cost by zero and a session
- * on a single branch keeps its full cost.
+ * Missing or invalid authority remains unknown; callers must not invent N=1.
  */
 function sessionBranchCount(
   branchCounts: ReadonlyMap<string, number>,
   sessionId: string
-): number {
-  return Math.max(1, branchCounts.get(sessionId) ?? 1);
+): number | null {
+  const count = branchCounts.get(sessionId);
+  return count && Number.isSafeInteger(count) && count > 0 ? count : null;
 }
 
 /**
@@ -77,11 +75,12 @@ function evenSplitBranchCost(
   let total = 0;
   for (const [sessionId, cost] of costBySession) {
     const branchCount = sessionBranchCount(branchCounts, sessionId);
+    if (branchCount === null) {
+      return null;
+    }
     total += cost / branchCount;
   }
-  return usage.sessions.some((session) => session.estimatedCostUsd !== null)
-    ? total
-    : null;
+  return usage.hasPricedCost ? total : null;
 }
 
 /**
@@ -97,7 +96,7 @@ function evenSplitBranchCost(
  * map for filtered spend.
  */
 function rawBranchCost(usage: BranchSessionCostUsage): number | null {
-  return usage.estimatedCostUsd > 0 ? usage.estimatedCostUsd : null;
+  return usage.hasPricedCost ? usage.estimatedCostUsd : null;
 }
 
 /**
@@ -162,6 +161,10 @@ function attachSessionEvenSplitCosts(
       continue;
     }
     const branchCount = sessionBranchCount(branchCounts, session.sessionId);
+    if (branchCount === null) {
+      session.evenSplitCostUsd = null;
+      continue;
+    }
     session.evenSplitCostUsd = session.estimatedCostUsd / branchCount;
   }
 }
@@ -174,47 +177,6 @@ type BranchLocEnrichmentMetrics = {
   deletions: number | null;
 };
 
-/**
- * The Value-per-$ DENOMINATOR: captured cost even-split-attributed to the
- * LOC-enriched branches. The apportionment (FEA-2032 even-split) is the shared
- * `sumEvenSplitEnrichedSpend` kernel — the same one the desktop producer adapts
- * into (apps/desktop/src/main/branch/branch-analytics-projection.ts), so the two
- * surfaces cannot re-diverge. This adapter owns only web's per-session cost map:
- * each linked session's captured cost taken ONCE (the same session artifact is
- * pushed onto every branch it links to, so set-if-absent), an un-priced session
- * coerced to 0.
- *
- * NOT `sumUsage(usageByBranch.values())`: that is per-branch ATTRIBUTION, which
- * counts a session once per branch it touched. Each session's cost enters the map
- * exactly ONCE, then the kernel splits it.
- *
- * ISS-4689 — `globalBranchCounts` is the `getSessionBranchCounts` map: each
- * session's GLOBAL (unfiltered, corpus-wide) active-write branch count, the SAME
- * divisor the list row's `attributedCostUsd` and the branch-detail header use. It
- * makes the ratio window-independent: without it the kernel divides by the count
- * of branches in the SUPPLIED (windowed) `metrics` set, so narrowing the window
- * drops a shared session's out-of-window branch from the divisor as well as its
- * churn from the numerator and the ratio moves. Optional — omitted, the kernel
- * falls back to the in-set count.
- */
-function sumLocEnrichedSpend(
-  metrics: readonly BranchLocEnrichmentMetrics[],
-  usageByBranch: ReadonlyMap<string, BranchSessionCostUsage>,
-  globalBranchCounts?: ReadonlyMap<string, number>
-): number | null {
-  const costBySession = distinctSessionCosts(
-    [...usageByBranch.values()].flatMap((usage) => usage.sessions)
-  );
-  return sumEvenSplitEnrichedSpend(
-    metrics.map((metric) => ({
-      enriched: isLocEnriched(metric),
-      sessionIds: usageByBranch.get(metric.id)?.sessionIds ?? [],
-    })),
-    costBySession,
-    globalBranchCounts
-  );
-}
-
 export {
   attachSessionEvenSplitCosts,
   type BranchLocEnrichmentMetrics,
@@ -225,5 +187,4 @@ export {
   evenSplitBranchCostByBranch,
   rawBranchCost,
   sessionBranchCount,
-  sumLocEnrichedSpend,
 };

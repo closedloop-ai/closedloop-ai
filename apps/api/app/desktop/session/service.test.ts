@@ -180,12 +180,81 @@ describe("desktopSessionService.exchange", () => {
     expect(consumedAtTxDepth).toBeGreaterThan(0);
   });
 
-  it("rejects when the device session is not approved or expired", async () => {
+  it.each([
+    {
+      name: "the id and secret do not match a device session",
+      deviceSession: null,
+    },
+    {
+      name: "the device session is still pending approval",
+      deviceSession: approvedDeviceSession({ status: "pending" }),
+    },
+  ])("rejects when $name", async ({ deviceSession }) => {
+    installDb({
+      desktopOnboardingDeviceSession: {
+        findFirst: vi.fn().mockResolvedValue(deviceSession),
+      },
+    });
+
+    await expect(
+      desktopSessionService.exchange({
+        deviceSessionId: "device-1",
+        deviceSessionSecret: "secret",
+        request: request(),
+        now: NOW,
+      })
+    ).resolves.toEqual({ ok: false, error: "invalid" });
+    expect(mocks.consume).not.toHaveBeenCalled();
+  });
+
+  it("rejects an expired approved device session", async () => {
     installDb({
       desktopOnboardingDeviceSession: {
         findFirst: vi
           .fn()
-          .mockResolvedValue(approvedDeviceSession({ expiresAt: PAST })),
+          .mockResolvedValue(approvedDeviceSession({ expiresAt: NOW })),
+      },
+    });
+
+    await expect(
+      desktopSessionService.exchange({
+        deviceSessionId: "device-1",
+        deviceSessionSecret: "secret",
+        request: request(),
+        now: NOW,
+      })
+    ).resolves.toEqual({ ok: false, error: "invalid" });
+    expect(mocks.consume).not.toHaveBeenCalled();
+  });
+
+  it("returns org_required when an approved device session has no user", async () => {
+    installDb({
+      desktopOnboardingDeviceSession: {
+        findFirst: vi
+          .fn()
+          .mockResolvedValue(approvedDeviceSession({ userId: null })),
+      },
+    });
+
+    await expect(
+      desktopSessionService.exchange({
+        deviceSessionId: "device-1",
+        deviceSessionSecret: "secret",
+        request: request(),
+        now: NOW,
+      })
+    ).resolves.toEqual({ ok: false, error: "org_required" });
+    expect(mocks.consume).not.toHaveBeenCalled();
+  });
+
+  it("rejects an approved device session with no onboarding attempt", async () => {
+    installDb({
+      desktopOnboardingDeviceSession: {
+        findFirst: vi
+          .fn()
+          .mockResolvedValue(
+            approvedDeviceSession({ onboardingAttemptId: null })
+          ),
       },
     });
 
@@ -300,23 +369,67 @@ describe("desktopSessionService.refresh", () => {
       where: { id: "rt-1", revokedAt: null },
       data: { revokedAt: NOW, lastUsedAt: NOW },
     });
+    // ISS-6274: rotation reads nothing back off these rows, so each write asks
+    // for its primary key alone — the narrowest `select` Prisma accepts — not
+    // the whole row.
     expect(update).toHaveBeenCalledWith({
       where: { id: "rt-1" },
       data: { replacedByTokenId: "rt-2" },
+      select: { id: true },
     });
+    // ISS-9195: the create was the one write in this rotation still returning
+    // the whole row, which on this model means the stored refresh-token hash.
+    // Its `id` is the only field read — the back-link asserted just above.
     expect(create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           familyId: "fam-1",
           rotatedFromTokenId: "rt-1",
         }),
+        select: { id: true },
       })
     );
     // Sliding-window expiry extension is a security property — assert it ran.
     expect(sessionUpdate).toHaveBeenCalledWith({
       where: { id: "sess-1" },
       data: { expiresAt: expect.any(Date), lastUsedAt: NOW },
+      select: { id: true },
     });
+  });
+
+  it("revokes the family when another request wins the rotation claim", async () => {
+    const tokenUpdateMany = vi.fn().mockResolvedValue({ count: 0 });
+    const sessionUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const create = vi.fn();
+    installDb({
+      desktopRefreshToken: {
+        findUnique: vi.fn().mockResolvedValue(refreshTokenRow()),
+        updateMany: tokenUpdateMany,
+        create,
+      },
+      desktopSession: { updateMany: sessionUpdateMany },
+    });
+
+    await expect(
+      desktopSessionService.refresh({
+        refreshToken: "old-refresh",
+        request: request(),
+        now: NOW,
+      })
+    ).resolves.toEqual({ ok: false, error: "invalid" });
+    expect(tokenUpdateMany).toHaveBeenNthCalledWith(1, {
+      where: { id: "rt-1", revokedAt: null },
+      data: { revokedAt: NOW, lastUsedAt: NOW },
+    });
+    expect(tokenUpdateMany).toHaveBeenNthCalledWith(2, {
+      where: { familyId: "fam-1", revokedAt: null },
+      data: { revokedAt: NOW },
+    });
+    expect(sessionUpdateMany).toHaveBeenCalledWith({
+      where: { id: "sess-1", revokedAt: null },
+      data: { revokedAt: NOW },
+    });
+    expect(create).not.toHaveBeenCalled();
   });
 
   it("detects reuse of a rotated token and revokes the family + session", async () => {
@@ -349,7 +462,99 @@ describe("desktopSessionService.refresh", () => {
     });
   });
 
-  it("rejects when the user is inactive or no longer in the session org", async () => {
+  it("detects reuse of a revoked token and revokes the family + session", async () => {
+    const tokenUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const sessionUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const create = vi.fn().mockResolvedValue({ id: "rt-2" });
+    installDb({
+      desktopRefreshToken: {
+        findUnique: vi
+          .fn()
+          .mockResolvedValue(
+            refreshTokenRow({ revokedAt: PAST, replacedByTokenId: null })
+          ),
+        updateMany: tokenUpdateMany,
+        create,
+        update: vi.fn().mockResolvedValue({}),
+      },
+      desktopSession: {
+        updateMany: sessionUpdateMany,
+        update: vi.fn().mockResolvedValue({}),
+      },
+    });
+
+    await expect(
+      desktopSessionService.refresh({
+        refreshToken: "revoked",
+        request: request(),
+        now: NOW,
+      })
+    ).resolves.toEqual({ ok: false, error: "invalid" });
+    expect(tokenUpdateMany).toHaveBeenCalledWith({
+      where: { familyId: "fam-1", revokedAt: null },
+      data: { revokedAt: NOW },
+    });
+    expect(sessionUpdateMany).toHaveBeenCalledWith({
+      where: { id: "sess-1", revokedAt: null },
+      data: { revokedAt: NOW },
+    });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("rejects an expired refresh token without revoking its family", async () => {
+    const tokenUpdateMany = vi.fn();
+    const sessionUpdateMany = vi.fn();
+    installDb({
+      desktopRefreshToken: {
+        findUnique: vi
+          .fn()
+          .mockResolvedValue(refreshTokenRow({ expiresAt: NOW })),
+        updateMany: tokenUpdateMany,
+      },
+      desktopSession: { updateMany: sessionUpdateMany },
+    });
+
+    await expect(
+      desktopSessionService.refresh({
+        refreshToken: "expired",
+        request: request(),
+        now: NOW,
+      })
+    ).resolves.toEqual({ ok: false, error: "invalid" });
+    expect(tokenUpdateMany).not.toHaveBeenCalled();
+    expect(sessionUpdateMany).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      name: "revoked",
+      session: sessionWithUser({ revokedAt: PAST }),
+    },
+    {
+      name: "expired",
+      session: sessionWithUser({ expiresAt: NOW }),
+    },
+  ])(
+    "rejects a $name session before issuing an access token",
+    async ({ session }) => {
+      installDb({
+        desktopRefreshToken: {
+          findUnique: vi.fn().mockResolvedValue(refreshTokenRow({ session })),
+        },
+      });
+
+      await expect(
+        desktopSessionService.refresh({
+          refreshToken: "old-refresh",
+          request: request(),
+          now: NOW,
+        })
+      ).resolves.toEqual({ ok: false, error: "invalid" });
+      expect(mocks.issueDesktopAccessToken).not.toHaveBeenCalled();
+    }
+  );
+
+  it("rejects when the user is inactive", async () => {
     installDb({
       desktopRefreshToken: {
         findUnique: vi.fn().mockResolvedValue(
@@ -369,6 +574,29 @@ describe("desktopSessionService.refresh", () => {
         now: NOW,
       })
     ).resolves.toEqual({ ok: false, error: "invalid" });
+  });
+
+  it("rejects when the user no longer belongs to the session organization", async () => {
+    installDb({
+      desktopRefreshToken: {
+        findUnique: vi.fn().mockResolvedValue(
+          refreshTokenRow({
+            session: sessionWithUser({
+              user: { active: true, organizationId: "org-2" },
+            }),
+          })
+        ),
+      },
+    });
+
+    await expect(
+      desktopSessionService.refresh({
+        refreshToken: "old-refresh",
+        request: request(),
+        now: NOW,
+      })
+    ).resolves.toEqual({ ok: false, error: "invalid" });
+    expect(mocks.issueDesktopAccessToken).not.toHaveBeenCalled();
   });
 
   it("rejects when the organization is inactive", async () => {

@@ -5,14 +5,11 @@ import {
   type DragEndEvent,
   DragOverlay,
   type DragStartEvent,
-  MouseSensor,
-  TouchSensor,
   useDraggable,
   useDroppable,
-  useSensor,
-  useSensors,
 } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
+import { ArtifactStatusEditSurface } from "@repo/api/src/types/artifact-status-contract";
 import {
   type ArtifactStatus,
   type DocumentListPage,
@@ -21,18 +18,20 @@ import {
   IssueStatus,
 } from "@repo/api/src/types/document";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
-import { ArtifactStatusIcon } from "@repo/app/documents/components/artifact-status-icon";
-import { DocumentStatusIcon } from "@repo/app/documents/components/document-status-icon";
-import { IssueStatusIcon } from "@repo/app/documents/components/issue-status-icon";
 import { documentKeys } from "@repo/app/documents/hooks/document-keys";
 import { useUpdateDocument } from "@repo/app/documents/hooks/use-documents";
-import type { DocumentRowData } from "@repo/app/documents/lib/artifact-row-adapter";
+import {
+  type DocumentRowData,
+  documentRowStatusEvidence,
+} from "@repo/app/documents/lib/artifact-row-adapter";
 import {
   getDocumentRoute,
   withOrgSlug,
 } from "@repo/app/documents/lib/document-navigation";
 import { DOCUMENT_TYPE_ICONS } from "@repo/app/projects/lib/project-constants";
 import { AssigneeAvatar } from "@repo/app/shared/components/assignee-avatar";
+import { useArtifactBoardPointerSensors } from "@repo/app/shared/components/generic-artifact-surface/artifact-board/artifact-board-dnd";
+import { UNASSIGNED_ASSIGNEE_LABEL } from "@repo/app/shared/lib/user-utils";
 import { EmptyState } from "@repo/design-system/components/ui/empty-state";
 import {
   KanbanBoardLayout,
@@ -41,10 +40,19 @@ import {
 import { Link } from "@repo/navigation/link";
 import { type QueryKey, useQueryClient } from "@tanstack/react-query";
 import { CheckSquareIcon, TerminalIcon } from "lucide-react";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useOrgSlug } from "@/hooks/use-org-slug";
+import { useKanbanArtifactStatus } from "../hooks/use-kanban-artifact-status";
+import {
+  type KanbanStatusGroupPresentation,
+  useKanbanBoardStatusPolicy,
+} from "../hooks/use-kanban-board-status-policy";
 import { DISPLAY_GROUPS } from "../utils";
 import { KanbanArtifactCard } from "./kanban-artifact-card";
+import {
+  type KanbanPriorityLabel,
+  useKanbanPriorityLabel,
+} from "./use-kanban-priority-label";
 
 /**
  * Resolve the status to set when an artifact is dropped on a column. The board
@@ -117,17 +125,8 @@ export function MyTasksKanban({
   const updateArtifactMutation = useUpdateDocument();
   const lastDraggedArtifactIdRef = useRef<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
-
-  const grouped = useMemo(() => {
-    const map = new Map<string, DocumentRowData[]>();
-    for (const group of DISPLAY_GROUPS) {
-      const items = artifacts.filter((i: DocumentRowData) =>
-        group.statuses.includes(i.status)
-      );
-      map.set(group.key, items);
-    }
-    return map;
-  }, [artifacts]);
+  const { canMoveArtifactTo, groupKeyForArtifact, groups } =
+    useKanbanBoardStatusPolicy(artifacts);
 
   const handleDragStart = useCallback((event: DragStartEvent) => {
     lastDraggedArtifactIdRef.current = String(event.active.id);
@@ -165,15 +164,22 @@ export function MyTasksKanban({
           (i: DocumentRowData) => i.id === overId
         );
         if (targetArtifact) {
-          columnKey = DISPLAY_GROUPS.find((g) =>
-            g.statuses.includes(targetArtifact.status)
-          )?.key;
+          columnKey = groupKeyForArtifact(targetArtifact);
         }
       }
       const newStatus = columnKey
         ? columnTargetStatus(columnKey, artifact.type)
         : null;
-      if (!newStatus || artifact.status === newStatus) {
+      if (
+        !newStatus ||
+        artifact.status === newStatus ||
+        !canMoveArtifactTo(artifact, newStatus)
+      ) {
+        setActiveId(null);
+        return;
+      }
+      const expectedStatus = documentRowStatusEvidence(artifact);
+      if (expectedStatus === null || expectedStatus.trim().length === 0) {
         setActiveId(null);
         return;
       }
@@ -189,14 +195,25 @@ export function MyTasksKanban({
           return {
             ...old,
             items: old.items.map((i) =>
-              i.id === artifactId ? { ...i, status: newStatus } : i
+              i.id === artifactId
+                ? {
+                    ...i,
+                    rawStatus: newStatus,
+                    status: newStatus,
+                  }
+                : i
             ),
           };
         }
       );
       setActiveId(null);
       updateArtifactMutation.mutate(
-        { id: artifactId, status: newStatus },
+        {
+          expectedStatus,
+          id: artifactId,
+          status: newStatus,
+          surface: ArtifactStatusEditSurface.Board,
+        },
         {
           onError: () => {
             queryClient.invalidateQueries({ queryKey: documentKeys.lists() });
@@ -204,21 +221,19 @@ export function MyTasksKanban({
         }
       );
     },
-    [artifacts, pageQueryKey, queryClient, updateArtifactMutation]
+    [
+      artifacts,
+      canMoveArtifactTo,
+      groupKeyForArtifact,
+      pageQueryKey,
+      queryClient,
+      updateArtifactMutation,
+    ]
   );
 
-  // Split the pointer sensor by input type so touch and mouse each get the
-  // right activation. Mouse keeps its 8px drag threshold (desktop behavior
-  // unchanged). Touch uses a 250ms press-and-hold with a 5px tolerance: a plain
-  // vertical swipe scrolls the column, and only a deliberate hold starts a drag,
-  // so touch-drag no longer hijacks scroll. A single PointerSensor with a delay
-  // would also delay mouse drags, so the sensors are kept separate.
-  const sensors = useSensors(
-    useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
-    useSensor(TouchSensor, {
-      activationConstraint: { delay: 250, tolerance: 5 },
-    })
-  );
+  // My Tasks keeps pointer-only drag semantics, while sharing the champion's
+  // mouse/touch activation profile so narrow-screen scroll remains stable.
+  const sensors = useArtifactBoardPointerSensors();
 
   if (isUserLoading || (assigneeId && isLoading)) {
     return (
@@ -270,16 +285,12 @@ export function MyTasksKanban({
             belongs on a scroll container that owns the body AND the footer,
             never on a board that shares a column with one. */}
         <KanbanBoardLayout className="flex-1" stackBelow>
-          {DISPLAY_GROUPS.map((group) => {
-            const items = grouped.get(group.key) ?? [];
+          {groups.map((group) => {
             return (
               <MyTasksKanbanColumn
-                groupKey={group.key}
-                groupLabel={group.label}
-                items={items}
+                group={group}
                 key={group.key}
                 lastDraggedArtifactIdRef={lastDraggedArtifactIdRef}
-                status={group.statuses[0]}
               />
             );
           })}
@@ -295,38 +306,33 @@ export function MyTasksKanban({
 }
 
 type KanbanColumnProps = {
-  groupKey: string;
-  groupLabel: string;
-  items: DocumentRowData[];
+  group: KanbanStatusGroupPresentation;
   lastDraggedArtifactIdRef: React.MutableRefObject<string | null>;
-  status: ArtifactStatus;
 };
 
 function MyTasksKanbanColumn({
-  groupKey,
-  groupLabel,
-  items,
+  group,
   lastDraggedArtifactIdRef,
-  status,
 }: Readonly<KanbanColumnProps>) {
-  const { isOver, setNodeRef } = useDroppable({ id: groupKey });
+  const { isOver, setNodeRef } = useDroppable({ id: group.key });
 
+  // Full-width when the board stacks below `sm` so a 360px screen shows one
+  // readable column; the fixed 270px width returns side-by-side at `sm+`.
   return (
-    // Full-width when the board stacks below `sm` so a 360px screen shows one
-    // readable column; the fixed 270px width returns side-by-side at `sm+`.
     <div className="w-full sm:w-auto" ref={setNodeRef}>
       <KanbanColumn
         className="w-full rounded-md bg-muted/30 shadow-none sm:w-[270px]"
-        count={items.length}
+        count={group.items.length}
         highlighted={isOver}
-        icon={<ArtifactStatusIcon size={16} status={status} />}
-        title={groupLabel}
+        icon={group.headerIcon}
+        title={group.headerTitle}
       >
         <div className="flex flex-col gap-1.5">
-          {items.map((artifact) => (
+          {group.items.map((artifact) => (
             <MyTasksCard
               artifact={artifact}
               key={artifact.id}
+              laneStatuses={group.statuses}
               lastDraggedArtifactIdRef={lastDraggedArtifactIdRef}
             />
           ))}
@@ -338,6 +344,9 @@ function MyTasksKanbanColumn({
 
 function getKanbanArtifactCardProps(
   artifact: DocumentRowData,
+  priorityChipLabel: KanbanPriorityLabel,
+  statusContent: React.ReactNode,
+  trailingStatusIcon: React.ReactNode,
   disableAvatarLink = false
 ): React.ComponentProps<typeof KanbanArtifactCard> {
   // Non-document artifact types (e.g. SESSION) have no DocumentType icon entry;
@@ -348,11 +357,11 @@ function getKanbanArtifactCardProps(
   return {
     assigneeLabel: artifact.assignee
       ? artifact.assignee.firstName
-      : "Unassigned",
+      : UNASSIGNED_ASSIGNEE_LABEL,
     icon: <TypeIcon className="size-4 shrink-0" />,
     kindLabel: artifact.type,
-    priorityLabel: artifact.priority,
-    statusLabel: artifact.status,
+    priorityLabel: priorityChipLabel(artifact.priority),
+    statusLabel: statusContent,
     subtitle: showSlug ? artifact.slug : undefined,
     title: artifact.title,
     updatedLabel: (
@@ -364,15 +373,11 @@ function getKanbanArtifactCardProps(
           disableTooltip
         />
         {/* The card knows its artifact type, so render the exact vocabulary's
-            icon (Documents and Features diverge on IN_REVIEW — PRD-495). */}
-        {artifact.type === DocumentType.Feature ? (
-          <IssueStatusIcon size={16} status={artifact.status as IssueStatus} />
-        ) : (
-          <DocumentStatusIcon
-            size={16}
-            status={artifact.status as DocumentStatus}
-          />
-        )}
+            icon (Documents and Features diverge on IN_REVIEW — PRD-495). The
+            chip beside it resolves through the SAME per-type vocabulary
+            (`useKanbanStatusLabel`), so the two cannot disagree about whether
+            this build recognizes the status. */}
+        {trailingStatusIcon}
       </div>
     ),
   };
@@ -382,9 +387,20 @@ function getKanbanArtifactCardProps(
 function KanbanCardPreview({
   artifact,
 }: Readonly<{ artifact: DocumentRowData }>) {
+  // The resolved label shape, not the gate's boolean — see the hook's own
+  // docstring for why the read cannot live in this module.
+  const priorityChipLabel = useKanbanPriorityLabel();
+  const { statusContent, trailingStatusIcon } =
+    useKanbanArtifactStatus(artifact);
+
   return (
     <KanbanArtifactCard
-      {...getKanbanArtifactCardProps(artifact)}
+      {...getKanbanArtifactCardProps(
+        artifact,
+        priorityChipLabel,
+        statusContent,
+        trailingStatusIcon
+      )}
       variant="drag-preview"
     />
   );
@@ -392,21 +408,33 @@ function KanbanCardPreview({
 
 type MyTasksCardProps = {
   artifact: DocumentRowData;
+  laneStatuses: readonly ArtifactStatus[];
   lastDraggedArtifactIdRef: React.MutableRefObject<string | null>;
 };
 
 function MyTasksCard({
   artifact,
+  laneStatuses,
   lastDraggedArtifactIdRef,
 }: Readonly<MyTasksCardProps>) {
   const orgSlug = useOrgSlug();
+  const priorityChipLabel = useKanbanPriorityLabel();
+  const { draggableOptions, statusContent, trailingStatusIcon } =
+    useKanbanArtifactStatus(artifact, laneStatuses);
   const { attributes, isDragging, listeners, setNodeRef, transform } =
-    useDraggable({ id: artifact.id });
+    useDraggable({ id: artifact.id, ...draggableOptions });
+  const draggable = draggableOptions.disabled !== true;
 
   const style =
     !isDragging && transform
       ? { transform: CSS.Transform.toString(transform) }
       : undefined;
+  let dragClassName = "cursor-default";
+  if (isDragging) {
+    dragClassName = "invisible cursor-grabbing";
+  } else if (draggable) {
+    dragClassName = "cursor-grab";
+  }
 
   const handleLinkClick = useCallback(
     (e: React.MouseEvent) => {
@@ -422,7 +450,7 @@ function MyTasksCard({
 
   return (
     <div
-      className={isDragging ? "invisible cursor-grabbing" : "cursor-grab"}
+      className={dragClassName}
       ref={setNodeRef}
       style={style}
       {...attributes}
@@ -430,7 +458,13 @@ function MyTasksCard({
     >
       <Link href={href} onClick={handleLinkClick}>
         <KanbanArtifactCard
-          {...getKanbanArtifactCardProps(artifact, true)}
+          {...getKanbanArtifactCardProps(
+            artifact,
+            priorityChipLabel,
+            statusContent,
+            trailingStatusIcon,
+            true
+          )}
           variant="lane"
         />
       </Link>

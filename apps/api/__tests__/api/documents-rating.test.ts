@@ -13,8 +13,10 @@ import {
 let mockAuthContext: AuthContext;
 
 vi.mock("@/lib/auth/with-auth", () => ({
-  withAuth: (handler: any) => async (request: any, context: any) =>
-    handler(mockAuthContext, request, context.params),
+  withAuth:
+    (handler: (...args: unknown[]) => Promise<Response>) =>
+    async (request: unknown, context: { params: Promise<unknown> }) =>
+      handler(mockAuthContext, request, context.params),
 }));
 vi.mock("@/lib/identifier-utils", () => ({
   resolveDocumentId: vi.fn(async (id: string) => id),
@@ -198,6 +200,7 @@ describe("PUT /api/artifacts/[id]/rating", () => {
       mockAuthContext.user.id,
       mockAuthContext.user.organizationId,
       4,
+      undefined,
       undefined
     );
   });
@@ -239,7 +242,8 @@ describe("PUT /api/artifacts/[id]/rating", () => {
       mockAuthContext.user.id,
       mockAuthContext.user.organizationId,
       5,
-      "Excellent work!"
+      "Excellent work!",
+      undefined
     );
   });
 
@@ -278,6 +282,7 @@ describe("PUT /api/artifacts/[id]/rating", () => {
       mockAuthContext.user.id,
       mockAuthContext.user.organizationId,
       3,
+      undefined,
       undefined
     );
   });
@@ -417,6 +422,11 @@ describe("PUT /api/artifacts/[id]/rating", () => {
     expect(json.success).toBe(false);
   });
 
+  // The route's only job here is mapping `Result.err(Status.NotFound)` → 404.
+  // WHICH inputs produce that error (missing document, wrong artifact type,
+  // another org's document) is decided inside `documentEvaluationService`,
+  // which this suite mocks away — so those cases are covered where they are
+  // actually decidable: `app/documents/__tests__/evaluation-service-org-scoping.test.ts`.
   it("returns 404 when artifact not found", async () => {
     vi.mocked(documentEvaluationService.upsertRating).mockResolvedValue(
       Result.err(Status.NotFound)
@@ -435,31 +445,6 @@ describe("PUT /api/artifacts/[id]/rating", () => {
     expect(response.status).toBe(404);
     const json = await response.json();
     expect(json.success).toBe(false);
-  });
-
-  it("returns 404 for cross-org artifact access", async () => {
-    vi.mocked(documentEvaluationService.upsertRating).mockResolvedValue(
-      Result.err(Status.NotFound)
-    );
-
-    const request = createMockRequest({
-      url: "http://localhost:3002/api/artifacts/cross-org-artifact/rating",
-      method: "PUT",
-      body: { score: 4 },
-    });
-    const response = await PUT(
-      request,
-      createMockRouteContext({ id: "cross-org-artifact" })
-    );
-
-    expect(response.status).toBe(404);
-    expect(documentEvaluationService.upsertRating).toHaveBeenCalledWith(
-      "cross-org-artifact",
-      mockAuthContext.user.id,
-      mockAuthContext.user.organizationId,
-      4,
-      undefined
-    );
   });
 
   it("returns 500 for unexpected errors", async () => {

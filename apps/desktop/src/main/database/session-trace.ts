@@ -8,11 +8,6 @@
  * row-type shapes, and the cross-runtime session-trace contract.
  */
 
-import { MAX_SYNCED_SESSION_PR_REFS_PRODUCER } from "@repo/api/src/types/session-artifact-link";
-import {
-  LOC_SOURCE_BRANCH_FALLBACK,
-  LOC_SOURCE_GIT,
-} from "@repo/api/src/utils/session-loc";
 import {
   clampMarkerLabel,
   deriveSessionTracePresentation,
@@ -24,7 +19,7 @@ import {
   SessionTraceThrottleSourceType,
   sessionPrWithLifecycle,
 } from "@repo/lib/session-trace/derivation";
-import { estimateTokenCost } from "../../shared/token-cost.js";
+import { sessionHasParsedTranscript } from "@repo/lib/session-trace/transcript";
 import { asRecord } from "../../shared/type-guards.js";
 import type {
   ActivityBucket,
@@ -36,27 +31,30 @@ import type {
   SyncedAgentSession,
 } from "../agent-sync/agent-session-sync-contract.js";
 import { parseJsonValueText } from "../agent-sync/agent-sync-json-text.js";
-import { reportTokenCostPricingMiss } from "../cost/token-cost-pricing-miss.js";
 import { parseIsoMs, roundNumber } from "../session/session-marker-utils.js";
-import { BRANCH_WRITE_METHOD_VALUES } from "./db-constants.js";
-import {
-  boundedNonNegativeInt,
-  nullableNumber,
-  tokenCountValue,
-  validIso,
-} from "./db-helpers.js";
+import { validIso } from "./db-helpers.js";
 import type {
   SessionPrWithIdentity,
-  SqliteArtifactLinkRow,
-  SqliteGitLocRow,
   SqlitePullRequestRow,
 } from "./db-row-types.js";
 import {
   createActivityBucket,
   roundActivityBucket,
 } from "./session-trace-activity-bucket.js";
-import { buildSessionAutonomyInput } from "./session-trace-autonomy-input.js";
+import {
+  activityExtentMs,
+  bucketIndex,
+  clampToRange,
+  formatTraceClockOffset,
+} from "./session-trace-activity-geometry.js";
+import { buildSessionAutonomyInputFromTrace } from "./session-trace-autonomy-input.js";
 import { buildTraceDurationFields } from "./session-trace-duration.js";
+import {
+  boundedLocFromMetadata,
+  boundedTurnsFromMetadata,
+  optionalNumberFromMetadata,
+} from "./session-trace-metadata-values.js";
+import { addTraceTokenEventToBucket } from "./session-trace-token-bucket.js";
 
 const SESSION_TRACE_BUCKET_TARGET = 40;
 const SESSION_TRACE_PHASE_EVENT_RE =
@@ -80,6 +78,13 @@ type SessionTraceSyncInput = {
     summary?: string | null;
     data?: string | null;
   }[];
+  /**
+   * ISS-7830: whether a user ever navigated into this thread. Read from
+   * `session_viewership`, never from `metadata` — the importer rewrites that blob
+   * from the transcript on every re-import. Absent means unviewed, which is the
+   * pre-ISS-7830 classification.
+   */
+  viewedByUser?: boolean;
   timelineRows: readonly TraceTimelineRow[];
   tokenEvents: readonly {
     model: string;
@@ -100,91 +105,20 @@ type SessionTraceSyncInput = {
   localPullRequests: readonly SqlitePullRequestRow[];
 };
 
-type TraceTimelineRow = {
+export type TraceTimelineRow = {
   eventType: string;
   toolName: string | null;
   createdAt: string;
   label: string;
+  /**
+   * ISS-8659: this row is a Claude `/fork` child's replay of a PARENT message.
+   * It still RENDERS — the inherited conversation is the capability the ticket
+   * chose to keep — but it is not this session's own steering, so it earns no
+   * `prompt` marker and no autonomy prompt. Kept as a flag rather than a distinct
+   * `eventType` so row ordering and `eventRole` classification are untouched.
+   */
+  isForkReplayed?: boolean;
 };
-
-function buildDiffStats(
-  row: SqliteGitLocRow | undefined,
-  field: "gitDiffStats" | "branchDiffStats"
-): Partial<SyncedAgentSession> {
-  if (!row) {
-    return {};
-  }
-  // FEA-3267: these LOC land in the Postgres int4 columns
-  // SessionDetail.lines_added/branch_lines_added, so route the summed SQLite
-  // values through the same int4/PR_INT_MAX bound the cloud wire schema declares
-  // (as the PR/commit-ref LOC path already does). An overflowed 64-bit SUM that
-  // cleared a bare `=== 0` check would fail the cloud's single batch parse / int4
-  // upsert and reject every session in the batch — omit the block, not the sync.
-  const added = boundedNonNegativeInt(Number(row.total_added));
-  const removed = boundedNonNegativeInt(Number(row.total_removed));
-  const files = boundedNonNegativeInt(Number(row.total_files));
-  if (added === undefined || removed === undefined || files === undefined) {
-    return {};
-  }
-  if (added === 0 && removed === 0 && files === 0) {
-    return {};
-  }
-  const stats: Partial<SyncedAgentSession> = {};
-  stats[field] = {
-    linesAdded: added,
-    linesRemoved: removed,
-    filesChanged: files,
-    // FEA-3633: tag the AUTHORED (gitDiffStats) LOC as a branch/PR-total fallback
-    // when the desktop query fell back to the branch/PR total (loc_basis =
-    // 'branch_fallback') instead of the session's own authored-commit sums, so the
-    // cloud can dedup that shared total per branch. Commit-sourced authored LOC and
-    // the always-branch-total branchDiffStats field stay tagged "git".
-    source: locSourceFor(field, row.loc_basis),
-  };
-  return stats;
-}
-
-/**
- * FEA-3633: the `source` tag for a diff-stats block. Only the authored
- * `gitDiffStats` field distinguishes the branch/PR-total fallback (loc_basis =
- * 'branch_fallback') from authored-commit LOC; the `branchDiffStats` field is the
- * branch total BY CONSTRUCTION, so it stays "git".
- */
-function locSourceFor(
-  field: "gitDiffStats" | "branchDiffStats",
-  locBasis: string | null | undefined
-): string {
-  if (field === "gitDiffStats" && locBasis === LOC_SOURCE_BRANCH_FALLBACK) {
-    return LOC_SOURCE_BRANCH_FALLBACK;
-  }
-  return LOC_SOURCE_GIT;
-}
-
-// Write evidence only — a read-only session resolves to no branch.
-const BRANCH_WRITE_METHODS: ReadonlySet<string> = new Set(
-  BRANCH_WRITE_METHOD_VALUES
-);
-
-function resolveArtifactLinkBranch(
-  linkRows: SqliteArtifactLinkRow[]
-): string | null {
-  let best: SqliteArtifactLinkRow | null = null;
-  for (const link of linkRows) {
-    if (link.target_kind !== "branch" || !link.branch_name) {
-      continue;
-    }
-    if (!BRANCH_WRITE_METHODS.has(link.method)) {
-      continue;
-    }
-    if (
-      !best ||
-      (link.link_observed_at ?? "") > (best.link_observed_at ?? "")
-    ) {
-      best = link;
-    }
-  }
-  return best?.branch_name ?? null;
-}
 
 function buildSessionTraceSyncFields(
   input: SessionTraceSyncInput
@@ -199,11 +133,11 @@ function buildSessionTraceSyncFields(
     timelineRows,
     tokenEvents,
     localPullRequests,
+    viewedByUser,
   } = input;
   const diffStats = asRecord(metadata?.diffStats);
-  // FEA-3267: these flat scalars land in the same int4 SessionDetail columns as
-  // buildDiffStats()'s summed values and the cloud wire schema bounds them
-  // identically, so route the harness-supplied metadata through the same clamp.
+  // FEA-3267: these flat scalars land in int4 SessionDetail columns that the
+  // cloud wire schema bounds, so clamp the harness-supplied metadata.
   // An out-of-int4 (or negative/fractional) value would otherwise fail the
   // cloud's single batch parse and reject every session in it — drop the field,
   // not the sync.
@@ -216,22 +150,15 @@ function buildSessionTraceSyncFields(
   // FEA-2806: harness pr-link records (method 'harness_pr_link') are
   // included — those are PRs the session actively worked with. Tool-text
   // URL matches ('pr_url_in_tool_use') remain excluded as noise.
-  // FEA-2711: cap the legacy `prs` field to the desktop PRODUCER per-session
-  // bound (`MAX_SYNCED_SESSION_PR_REFS_PRODUCER`) that the sibling `prRefs` array
-  // is also sliced to in `sync-source.ts`. Cap AFTER dedup so the bound counts
-  // distinct PRs the way the cloud does; `mergeSessionPullRequests` preserves
-  // oldest-first order, so this keeps the earliest N — matching the `prRefs`
-  // "keep the earliest N" semantics.
-  // ISS-4445: the producer bound stays 100 while the cloud validator accepts up
-  // to 500, so a new desktop never emits a payload an old (`.max(100)`) cloud
-  // would reject the whole batch over — the raise is deploy-order-safe. Both
-  // sides still validate against the higher cloud cap.
+  // ISS-9859: emitted whole, like the sibling `prRefs` in `sync-source.ts`. The
+  // two used to share a 100-ref producer cap that kept the EARLIEST PRs.
   const prs = mergeSessionPullRequests([
     ...localPullRequests.flatMap(localPullRequestToSessionPr),
-  ]).slice(0, MAX_SYNCED_SESSION_PR_REFS_PRODUCER);
-  const turns =
-    numberFromMetadata(metadata?.userMessages) +
-    numberFromMetadata(metadata?.assistantMessages);
+  ]);
+  const turns = boundedTurnsFromMetadata(
+    metadata?.userMessages,
+    metadata?.assistantMessages
+  );
   // FEA-3427 + ISS-5182: one end anchor for both duration and timeline. A
   // terminal session's `endedAt` is itself `max(event.created_at)` frozen at the
   // terminal transition (`session-maintenance.ts`, FEA-3580), so it IS the
@@ -261,16 +188,12 @@ function buildSessionTraceSyncFields(
     throttleSources: extractThrottleSources(events),
     correctionSources: extractCorrectionSources(events),
   });
-  // FEA-3781: the prompt/agent stream split and the headless signal, with their
-  // rationale, live in ./session-trace-autonomy-input.ts.
-  const autonomyInput = buildSessionAutonomyInput({
-    entrypoint: stringFromMetadata(metadata?.entrypoint),
-    // FEA-3671: the same transcript-first precedence the prompt markers use, so
-    // the timeline, humanTurns, and autonomy cannot disagree on human turns.
-    hasTranscript: sessionHasParsedTranscript(metadata),
+  const autonomyInput = buildSessionAutonomyInputFromTrace(
+    metadata,
     timelineRows,
     tokenEvents,
-  });
+    viewedByUser
+  );
   const presentation = deriveSessionTracePresentation({
     startedAt,
     updatedAt,
@@ -290,8 +213,8 @@ function buildSessionTraceSyncFields(
   ];
 
   return {
-    // Emitted unconditionally so a read-only session (null) heals a stale
-    // cloud branch rather than preserving the omitted field (AC8).
+    // Legacy sync field for server skew; modern cloud derives session-to-branch
+    // association from artifact links, like desktop local display.
     branch: artifactLinkBranch ?? null,
     ...(prs.length > 0 ? { prs } : {}),
     ...durationFields,
@@ -303,7 +226,7 @@ function buildSessionTraceSyncFields(
     ...(flatFilesChanged === undefined
       ? {}
       : { filesChanged: flatFilesChanged }),
-    ...(turns > 0 ? { turns } : {}),
+    ...(turns === undefined || turns === 0 ? {} : { turns }),
     steeringEpisodes: presentation.steeringEpisodes,
     autonomy: presentation.autonomy,
     tracePhaseSources: sourceFields.tracePhaseSources,
@@ -344,6 +267,7 @@ function buildTraceTimelineRows(
       toolName: null,
       createdAt: timestamp,
       label,
+      ...(message?.isForkReplayed === true ? { isForkReplayed: true } : {}),
     });
   }
   for (const event of events) {
@@ -381,34 +305,6 @@ function traceMessageEventType(role: string): string {
     return "AssistantMessage";
   }
   return "SystemMessage";
-}
-
-/**
- * FEA-3671: SSOT predicate for "this session has a parsed transcript". The
- * parser writes the visible turn stream to `metadata.$.messages`, from which it
- * has ALREADY excluded synthetic `user`-role entries — `isMeta` slash-command
- * expansions (e.g. `/login`), compaction summaries, and non-human origins
- * (`isSyntheticUserEntry` in packages/lib/harness/claude/parse-claude.ts). So a
- * `role:"human"` message in `$.messages` is the authoritative human-turn signal.
- *
- * This mirrors, in intent, the human-turn rollup's own precedence (session-analytics-rollup.ts
- * `COALESCE(transcript_human_turns, ht.human_turns, 0)`): when a transcript
- * exists, `role:"human"` message rows are authoritative and the hook-captured
- * `event_type LIKE '%user%'|'%prompt%'` events are IGNORED for the human-turn
- * count; only a transcript-less (hook-only live) session falls back to those
- * events. The `json_type($.messages) = 'array'` test in that SQL is exactly
- * `Array.isArray(metadata?.messages)` here.
- *
- * The timeline prompt markers MUST honor the same precedence so they can't
- * disagree with humanTurns: a meta-only `/login` session parses to a transcript
- * with zero `role:"human"` messages (humanTurns=0) yet still carries
- * `UserPromptSubmit` hook events — those must NOT emit human `prompt` markers, or
- * the timeline contradicts the count (the bug Ottilie reported).
- */
-function sessionHasParsedTranscript(
-  metadata: Record<string, unknown> | null
-): boolean {
-  return Array.isArray(metadata?.messages);
 }
 
 function extractTracePhaseSources(
@@ -740,75 +636,7 @@ function buildTraceActivityFields(input: {
     if (!bucket) {
       continue;
     }
-    const storedInputCost = nullableNumber(tokenEvent.input_cost_usd_estimated);
-    const storedOutputCost = nullableNumber(
-      tokenEvent.output_cost_usd_estimated
-    );
-    const storedCacheReadCost = nullableNumber(
-      tokenEvent.cache_read_cost_usd_estimated
-    );
-    const storedCacheCreationCost = nullableNumber(
-      tokenEvent.cache_creation_cost_usd_estimated
-    );
-    const inputTokens = tokenCountValue(
-      tokenEvent.input_tokens,
-      "timeline.input"
-    );
-    const outputTokens = tokenCountValue(
-      tokenEvent.output_tokens,
-      "timeline.output"
-    );
-    const cacheReadTokens = tokenCountValue(
-      tokenEvent.cache_read_tokens,
-      "timeline.cache_read"
-    );
-    const cacheWriteTokens = tokenCountValue(
-      tokenEvent.cache_write_tokens,
-      "timeline.cache_write"
-    );
-    const fallbackInput =
-      storedInputCost == null &&
-      storedOutputCost == null &&
-      storedCacheReadCost == null &&
-      storedCacheCreationCost == null
-        ? {
-            model: tokenEvent.model,
-            inputTokens,
-            outputTokens,
-            cacheReadTokens,
-            cacheWriteTokens,
-            // FEA-3419: 1h-correct fallback when the row carried the split.
-            ...(tokenEvent.cache_write_1h_tokens == null
-              ? {}
-              : { cacheWrite1hTokens: tokenEvent.cache_write_1h_tokens }),
-            observedAt: tokenEvent.created_at,
-          }
-        : undefined;
-    const fallbackCost = fallbackInput
-      ? estimateTokenCost(fallbackInput)
-      : undefined;
-    if (fallbackInput && !fallbackCost) {
-      reportTokenCostPricingMiss(fallbackInput, "trace_activity");
-    }
-    const inputCost = storedInputCost ?? fallbackCost?.inputCostUsd ?? 0;
-    const outputCost = storedOutputCost ?? fallbackCost?.outputCostUsd ?? 0;
-    const cacheCost =
-      (storedCacheReadCost ?? 0) +
-      (storedCacheCreationCost ?? 0) +
-      (fallbackCost?.cacheReadCostUsd ?? 0) +
-      (fallbackCost?.cacheWriteCostUsd ?? 0);
-    bucket.cIn += inputCost;
-    bucket.cOut += outputCost;
-    bucket.cCache += cacheCost;
-    const byModel = bucket.byModel[tokenEvent.model] ?? {
-      cIn: 0,
-      cOut: 0,
-      cCache: 0,
-    };
-    byModel.cIn += inputCost;
-    byModel.cOut += outputCost;
-    byModel.cCache += cacheCost;
-    bucket.byModel[tokenEvent.model] = byModel;
+    addTraceTokenEventToBucket(bucket, tokenEvent);
   }
 
   const markers = buildTraceMarkers(
@@ -822,6 +650,32 @@ function buildTraceActivityFields(input: {
     span: {
       first: formatTraceClockOffset(0),
       last: formatTraceClockOffset(durationMs),
+      /*
+       * ISS-5850: the ABSOLUTE extent the bins above tile, alongside the clock
+       * offsets that describe the same two edges.
+       *
+       * `first`/`last` are offsets from `windowStartMs` and so carry no anchor,
+       * which left every consumer unable to tell an interval this collector
+       * never looked at from one it observed as quiet. The bins are laid down
+       * across exactly `[windowStartMs, windowStartMs + durationMs]` a few lines
+       * up — that is the extent, stated by the producer that measured it rather
+       * than re-inferred downstream from the union of the bins it happened to
+       * emit.
+       *
+       * `windowStartMs + durationMs`, NOT `windowEndMs` (#5921 review). They are
+       * the same number for every session with any span at all, and differ on
+       * exactly one input: a session whose every usable timeline row and token
+       * event carries ONE timestamp. There `windowEndMs === windowStartMs`, but
+       * `durationMs` is floored to 1ms so a strip can exist at all, and the sole
+       * bin emitted therefore ends at `windowStartMs + 1`. Stating `windowEndMs`
+       * would publish an extent one millisecond SHORT of the bin it describes,
+       * so the consumer's overlap test (`resolveTimelineSourceExtent` →
+       * `resolveColumnCoverage`) sees a bin sticking out past the extent that
+       * produced it. The floor is part of the geometry, so the extent has to
+       * carry it.
+       */
+      startMs: windowStartMs,
+      endMs: windowStartMs + durationMs,
     },
     ...(markers.length > 0 ? { markers } : {}),
   };
@@ -833,27 +687,43 @@ function buildTraceMarkers(
   durationMs: number,
   hasTranscript: boolean
 ): SessionMarker[] {
-  return rows.flatMap((row, index): SessionMarker[] => {
-    const kind = traceMarkerKind(row, hasTranscript);
-    if (!kind) {
-      return [];
-    }
-    const rowMs = parseIsoMs(row.createdAt);
-    const x = Number.isFinite(rowMs)
-      ? Math.max(0, Math.min(100, ((rowMs - startMs) / durationMs) * 100))
-      : 0;
-    return [
-      {
-        kind,
-        x: roundNumber(x),
-        t: Number.isFinite(rowMs)
-          ? formatTraceClockOffset(rowMs - startMs)
-          : row.createdAt,
-        label: clampMarkerLabel(row.label),
-        tl: index,
-      },
-    ];
+  return rows.flatMap((row, index) => {
+    const marker = buildTraceMarker(
+      row,
+      index,
+      startMs,
+      durationMs,
+      hasTranscript
+    );
+    return marker ? [marker] : [];
   });
+}
+
+/** Build one canonical activity marker without retaining its timeline. */
+export function buildTraceMarker(
+  row: TraceTimelineRow,
+  index: number,
+  startMs: number,
+  durationMs: number,
+  hasTranscript: boolean
+): SessionMarker | null {
+  const kind = traceMarkerKind(row, hasTranscript);
+  if (!kind) {
+    return null;
+  }
+  const rowMs = parseIsoMs(row.createdAt);
+  const x = Number.isFinite(rowMs)
+    ? Math.max(0, Math.min(100, ((rowMs - startMs) / durationMs) * 100))
+    : 0;
+  return {
+    kind,
+    x: roundNumber(x),
+    t: Number.isFinite(rowMs)
+      ? formatTraceClockOffset(rowMs - startMs)
+      : row.createdAt,
+    label: clampMarkerLabel(row.label),
+    tl: index,
+  };
 }
 
 function traceMarkerKind(
@@ -866,15 +736,21 @@ function traceMarkerKind(
   // humanTurns count. When a parsed transcript exists, the human-turn SSOT is the
   // `role:"human"` message rows — tagged `eventType === "UserMessage"` by
   // buildTraceTimelineRows (the parser already dropped synthetic `isMeta` `/login`
-  // entries). Hook `UserPromptSubmit` events (also `event_type` matching
-  // user/prompt) are NOT human turns in that regime, so they must NOT emit a
-  // prompt marker — otherwise a meta-only `/login` session shows prompt markers
-  // while humanTurns=0. Only a transcript-less (hook-only live) session falls back
-  // to the broad user/prompt event-name match, exactly as the human-turn rollup's
-  // COALESCE(transcript_human_turns, ht.human_turns) fallback does.
+  // entries) — MINUS the fork-replayed ones. Hook `UserPromptSubmit` events (also
+  // `event_type` matching user/prompt) are NOT human turns in that regime, so they
+  // must NOT emit a prompt marker — otherwise a meta-only `/login` session shows
+  // prompt markers while humanTurns=0. Only a transcript-less (hook-only live)
+  // session falls back to the broad user/prompt event-name match, exactly as the
+  // human-turn rollup's COALESCE(transcript_human_turns, ht.human_turns) does.
+  //
+  // ISS-8659 narrowed the transcript arm: `$.messages` keeps a fork's replayed
+  // parent prompts so the inherited conversation still renders, while
+  // `transcriptHumanTurnsSql` counts only the fork's own. Without this exclusion
+  // the designated fork dossier renders four prompt markers beside a stored
+  // `human_turns` of 1 — the disagreement this comment exists to forbid.
   if (
     hasTranscript
-      ? row.eventType === "UserMessage"
+      ? row.eventType === "UserMessage" && row.isForkReplayed !== true
       : eventType.includes("user") || eventType.includes("prompt")
   ) {
     if (isSessionTerminatingLabel(row.label)) {
@@ -907,90 +783,10 @@ function traceRowOrder(row: TraceTimelineRow): number {
   return 3;
 }
 
-function formatTraceClockOffset(durationMs: number): string {
-  const totalSeconds = Math.max(0, Math.round(durationMs / 1000));
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-}
-
-// FEA-3586: the min/max parseable activity timestamp across the trace's timeline
-// rows and token events. Used to tighten the bucket/marker window to the real
-// activity span so a stale end anchor can't compress every bar into hour one.
-function activityExtentMs(
-  timelineRows: readonly TraceTimelineRow[],
-  tokenEvents: SessionTraceSyncInput["tokenEvents"]
-): { minMs: number; maxMs: number } {
-  let minMs = Number.NaN;
-  let maxMs = Number.NaN;
-  const consider = (value: string) => {
-    const ms = parseIsoMs(value);
-    if (!Number.isFinite(ms)) {
-      return;
-    }
-    // `!(a <= b)` / `!(a >= b)` so a NaN seed is always replaced by a real ms.
-    if (!(minMs <= ms)) {
-      minMs = ms;
-    }
-    if (!(maxMs >= ms)) {
-      maxMs = ms;
-    }
-  };
-  for (const row of timelineRows) {
-    consider(row.createdAt);
-  }
-  for (const event of tokenEvents) {
-    consider(event.created_at);
-  }
-  return { minMs, maxMs };
-}
-
-function clampToRange(value: number, min: number, max: number): number {
-  if (value < min) {
-    return min;
-  }
-  if (value > max) {
-    return max;
-  }
-  return value;
-}
-
-function bucketIndex(
-  createdAt: string,
-  startMs: number,
-  bucketMs: number,
-  bucketCount: number
-): number {
-  const eventMs = parseIsoMs(createdAt);
-  if (!Number.isFinite(eventMs)) {
-    return 0;
-  }
-  const index = Math.floor((eventMs - startMs) / bucketMs);
-  return Math.max(0, Math.min(bucketCount - 1, index));
-}
-
 function stringFromMetadata(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0
     ? value.trim()
     : null;
-}
-
-function numberFromMetadata(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-
-// FEA-3267: an absent metadata LOC field stays absent; a present one is bounded
-// to the cloud's int4 LOC range, yielding undefined (field omitted) when it is
-// out of range.
-function boundedLocFromMetadata(value: unknown): number | undefined {
-  return value === undefined
-    ? undefined
-    : boundedNonNegativeInt(numberFromMetadata(value));
-}
-
-function optionalNumberFromMetadata(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function localPullRequestToSessionPr(
@@ -1005,9 +801,7 @@ function localPullRequestToSessionPr(
         num: row.pr_number,
         title: row.title,
         status: null,
-        prState: row.state,
         closedAt: row.closed_at,
-        mergedAt: row.merged_at,
       }),
       repositoryFullName: row.repo_full_name,
     },
@@ -1085,9 +879,13 @@ function buildTerminatingCommandMap(
 
 export type { SessionTraceSyncInput };
 export {
-  buildDiffStats,
   buildSessionTraceSyncFields,
   buildTraceTimelineRows,
-  resolveArtifactLinkBranch,
+  extractCorrectionSources,
+  extractThrottleSources,
+  fitSessionTraceSourcesToAggregateLimit,
+  localPullRequestToSessionPr,
+  mergeSessionPullRequests,
   resolveTraceEndMs,
+  traceRowOrder,
 };

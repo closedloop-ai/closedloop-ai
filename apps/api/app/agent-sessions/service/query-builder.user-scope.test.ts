@@ -43,11 +43,11 @@ describe("agentSessionsService user-scope enforcement", () => {
         filters: { viewerScope: AgentSessionViewerScope.Self, quality: "all" },
       });
 
-      // Self scope adds `userId = <viewerId>` to the org-scoped where, so a Me
-      // read returns only the viewer's own sessions — never org-wide rows.
+      // Self scope adds `createdById = <viewerId>` (Created by, ISS-12251 D-4)
+      // to the org-scoped where, so a Me read returns only the sessions the
+      // viewer created — never org-wide rows.
       const expectedWhere = {
-        artifact: { is: { organizationId: "org-1" } },
-        userId: "viewer-1",
+        artifact: { is: { organizationId: "org-1", createdById: "viewer-1" } },
       };
       expect(findMany).toHaveBeenCalledWith(
         expect.objectContaining({ where: expectedWhere })
@@ -75,8 +75,17 @@ describe("agentSessionsService user-scope enforcement", () => {
         },
       });
 
-      const where = findMany.mock.calls[0]?.[0].where as { userId?: unknown };
-      expect(where.userId).toBe("viewer-1");
+      // ISS-12251: the deep link is dropped, and the Owner facet still ANDs on
+      // the assignee — "my sessions that these people own", never theirs.
+      expect(findMany.mock.calls[0]?.[0].where).toEqual({
+        artifact: {
+          is: {
+            organizationId: "org-1",
+            assigneeId: { in: ["other-a", "other-b"] },
+            createdById: "viewer-1",
+          },
+        },
+      });
     });
 
     it("fails closed to an impossible predicate when self scope has no resolved viewer", async () => {
@@ -92,8 +101,10 @@ describe("agentSessionsService user-scope enforcement", () => {
         filters: { viewerScope: AgentSessionViewerScope.Self, quality: "all" },
       });
 
-      const where = findMany.mock.calls[0]?.[0].where as { userId?: unknown };
-      expect(where.userId).toEqual({ in: [] });
+      const where = findMany.mock.calls[0]?.[0].where as {
+        artifact?: { is?: { createdById?: unknown } };
+      };
+      expect(where.artifact?.is?.createdById).toEqual({ in: [] });
     });
 
     it("keeps org scope org-wide (no user predicate) even with a viewer present", async () => {
@@ -122,8 +133,11 @@ describe("agentSessionsService user-scope enforcement", () => {
       expect(count).toHaveBeenCalledWith({ where: expectedWhere });
     });
   });
-  describe("FEA-4304 scoped userId is an AND constraint the Owner facet can't widen", () => {
-    it("keeps ONLY the scoped user when the Owner facet carries a DIFFERENT user (no silent widening)", async () => {
+  describe("FEA-4304 / ISS-12251: the scoped userId and the Owner facet both match the assignee, and AND", () => {
+    // Operator ruling (Kerensa Whitlock, 2026-10-13): "If the UI says owner, it should
+    // filter by owner. The owner is the assignee." The singular `userId` deep
+    // link renders inside the Owner filter group, so it matches the assignee.
+    it("intersects the scoped userId with the Owner facet, so a facet naming other people matches nothing", async () => {
       const findMany = vi.fn().mockResolvedValue([]);
       const count = vi.fn().mockResolvedValue(0);
       installDb({
@@ -132,9 +146,8 @@ describe("agentSessionsService user-scope enforcement", () => {
 
       await agentSessionsService.findSessions({
         organizationId: "org-1",
-        // Fixed cross-surface scope = user-2; a stale/crafted Owner facet asks for
-        // OTHER users. The facet must not widen past the scope — the scoped user
-        // is not in the facet, so the intersection is empty (never other users).
+        // Fixed cross-surface scope = sessions user-2 owns; the Owner facet asks
+        // for sessions OTHER people own. Both hold: the facet cannot widen the scope.
         filters: {
           userId: "user-2",
           userIds: ["user-9", "user-10"],
@@ -143,10 +156,12 @@ describe("agentSessionsService user-scope enforcement", () => {
       });
 
       const expectedWhere = {
-        artifact: { is: { organizationId: "org-1" } },
-        // Empty `in`: matches no rows rather than honoring the wider facet — the
-        // scoped user is never violated, and another user's sessions never leak.
-        userId: { in: [] },
+        artifact: {
+          is: {
+            organizationId: "org-1",
+            assigneeId: { in: ["user-9", "user-10"], equals: "user-2" },
+          },
+        },
       };
       expect(findMany).toHaveBeenCalledWith(
         expect.objectContaining({ where: expectedWhere })
@@ -154,7 +169,7 @@ describe("agentSessionsService user-scope enforcement", () => {
       expect(count).toHaveBeenCalledWith({ where: expectedWhere });
     });
 
-    it("narrows to the scoped user when the Owner facet is a superset containing it", async () => {
+    it("scopes the singular userId deep link alone to the assignee, never Created by or the recorder", async () => {
       const findMany = vi.fn().mockResolvedValue([]);
       const count = vi.fn().mockResolvedValue(0);
       installDb({
@@ -163,18 +178,13 @@ describe("agentSessionsService user-scope enforcement", () => {
 
       await agentSessionsService.findSessions({
         organizationId: "org-1",
-        // Scope = user-2; the Owner facet includes user-2 plus others. AND
-        // collapses the intersection to exactly the scoped user.
-        filters: {
-          userId: "user-2",
-          userIds: ["user-2", "user-9"],
-          quality: "all",
-        },
+        filters: { userId: "user-2", quality: "all" },
       });
 
       const expectedWhere = {
-        artifact: { is: { organizationId: "org-1" } },
-        userId: "user-2",
+        artifact: {
+          is: { organizationId: "org-1", assigneeId: { equals: "user-2" } },
+        },
       };
       expect(findMany).toHaveBeenCalledWith(
         expect.objectContaining({ where: expectedWhere })
@@ -196,8 +206,12 @@ describe("agentSessionsService user-scope enforcement", () => {
       });
 
       const expectedWhere = {
-        artifact: { is: { organizationId: "org-1" } },
-        userId: { in: ["user-9", "user-10"] },
+        artifact: {
+          is: {
+            organizationId: "org-1",
+            assigneeId: { in: ["user-9", "user-10"] },
+          },
+        },
       };
       expect(findMany).toHaveBeenCalledWith(
         expect.objectContaining({ where: expectedWhere })
@@ -245,8 +259,12 @@ describe("agentSessionsService user-scope enforcement", () => {
       });
 
       const expectedWhere = {
-        artifact: { is: { organizationId: "org-1" } },
-        userId: { in: [] },
+        artifact: {
+          is: {
+            organizationId: "org-1",
+            assigneeId: { in: ["user-9", "user-10"], equals: "user-2" },
+          },
+        },
       };
       expect(aggregate).toHaveBeenCalledWith(
         expect.objectContaining({ where: expectedWhere })

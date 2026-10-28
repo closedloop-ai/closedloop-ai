@@ -18,10 +18,12 @@
  * applies that same model to LOC.
  *
  * **Why the derivation reads the raw entries and not the merged tool-use
- * records.** `subagent-scanner.ts` bounds each tool input at 1000 JSON chars, so
- * a real `Edit`'s `old_string`/`new_string` — and a `Write`'s `content` — are
- * truncated past re-parsing there. Line deltas must come from the untruncated
- * raw lines, which the sidecar lane already streams once per file.
+ * records.** It used to be truncation: `subagent-scanner.ts` bounded each tool
+ * input at 1000 JSON chars, so a real `Edit`'s `old_string`/`new_string` — and
+ * a `Write`'s `content` — could not be re-parsed from the merged record.
+ * ISS-6480 removed that bound, so this justification no longer holds, and
+ * whether this pass still needs the raw lines is open — ISS-7164. It is left
+ * in place deliberately rather than removed on a retired premise.
  *
  * The line formula itself is NOT redefined here: every delta is routed through
  * `applyDiffStatsToolUse` in the shared harness module, the same registry the
@@ -55,11 +57,6 @@ export type SidecarDiffStatsContribution = {
   linesRemoved: number;
   filePaths: ReadonlySet<string>;
 };
-
-/** An empty contribution — the shape a sidecar with no edits contributes. */
-export function emptySidecarDiffStats(): SidecarDiffStatsContribution {
-  return { linesAdded: 0, linesRemoved: 0, filePaths: new Set<string>() };
-}
 
 /**
  * Feed one raw transcript line into the accumulator. Assistant `tool_use` blocks
@@ -121,8 +118,9 @@ function applyToolUseBlock(
     // `toolInput` is raw transcript JSON — nothing has validated it. The shared
     // entry point gates on the payload schema before dispatching, so a malformed
     // block (a `Write` with no string `content`, an `Edit`/`MultiEdit` with no
-    // edited side) contributes neither lines nor a changed file rather than the
-    // fabricated one-added-line the total handlers would coerce it into.
+    // edited side) contributes neither lines nor a changed file. Since ISS-6764
+    // the total handlers book no line for such a payload either, so what the
+    // gate still suppresses here is the fabricated changed-FILE.
     const counted = applyDiffStatsToolUse(pass.acc, block.name, toolInput);
     // Claim the id only when the payload ACTUALLY contributed. A record the
     // schema gate rejected booked nothing, so claiming it would let a malformed
@@ -254,11 +252,21 @@ export function foldSidecarDiffStats(
   const linesAdded = (parentDiffStats?.linesAdded ?? 0) + addedFromSidecars;
   const linesRemoved =
     (parentDiffStats?.linesRemoved ?? 0) + removedFromSidecars;
-  // The parent's own `filesChanged` is authoritative for its own edits (it may
-  // exceed `ownFilePaths` if a tool use carried no usable `file_path`), so widen
+  // The parent's own `filesChanged` is authoritative for its own edits, so widen
   // it by the sidecar paths it does not already account for rather than trusting
-  // the recovered set alone.
-  const newSidecarPaths = unionPaths.size - ownFilePaths.size;
+  // the recovered set alone. Since ISS-6761 `ownDiffFilePaths` applies the same
+  // gate the parent's handlers do, so the two sets agree and this reduces to
+  // `unionPaths.size` — the arithmetic is kept because it is the form that stays
+  // correct if they ever diverge again. It is clamped at 0: were `ownFilePaths`
+  // ever to EXCEED the parent's set, a negative widening would silently
+  // undercount changed files.
+  //
+  // ISS-8659 is how they nearly diverged: a fork keeps its replayed tool calls in
+  // the raw `toolUses` array while their paths are deliberately kept out of
+  // `diffFiles`, so feeding the RAW array to `ownDiffFilePaths` would break the
+  // agreement in exactly that direction. `claude-parser.ts` passes the
+  // fork-filtered list for that reason.
+  const newSidecarPaths = Math.max(0, unionPaths.size - ownFilePaths.size);
   const filesChanged = (parentDiffStats?.filesChanged ?? 0) + newSidecarPaths;
   // Mirror the parent lane's stronger invariant: `parse-claude.ts` gates the
   // whole object on `acc.diffFiles.size > 0`, so the core can never emit lines
@@ -286,13 +294,25 @@ export function foldSidecarDiffStats(
  * the shared handler registry rather than re-declared here, so a newly
  * registered handler is picked up automatically instead of silently falling out
  * of the union and double-counting the parent's files as new sidecar paths.
+ *
+ * ISS-6761: the payload gate is part of that mirroring, exactly as it is in
+ * {@link parentCountedDiffToolUseIds}. The parent's own loop now drops a
+ * malformed block instead of coercing it, so a path recovered from one was
+ * never in the parent's `filesChanged` — claiming it here would subtract a file
+ * the parent never counted, and a sidecar's well-formed edit of that same path
+ * would then be counted by nobody.
  */
 export function ownDiffFilePaths(
   toolUses: ReadonlyArray<{ name: string; input?: unknown }>
 ): ReadonlySet<string> {
   const paths = new Set<string>();
   for (const toolUse of toolUses) {
-    if (!DIFF_STATS_TOOL_NAMES.has(toolUse.name)) {
+    if (
+      !(
+        DIFF_STATS_TOOL_NAMES.has(toolUse.name) &&
+        isUsableDiffStatsToolInput(toolUse.name, toolUse.input)
+      )
+    ) {
       continue;
     }
     const filePath = asRecord(toolUse.input).file_path;
@@ -340,11 +360,11 @@ export function ownDiffFilePaths(
  * sidecar passes already do — claim an id only for a payload that could produce
  * a trustworthy delta.
  *
- * What this deliberately does NOT do is un-count the parent's own fabrication:
- * a malformed inline `Write` still books its coerced line in the CORE's pass,
- * which is the parent lane's long-standing total-handler posture (ISS-5402 left
- * it unchanged on purpose, and it is not reachable from this module). This seed
- * only stops that fabrication from also DELETING the real measurement.
+ * ISS-6761: the CORE's own pass now applies this same gate before dispatching
+ * its diffStats handlers, so a malformed inline `Write` no longer books a
+ * coerced line there either. This seed and the parent it mirrors therefore agree
+ * on which records were counted, rather than agreeing only that a fabrication
+ * must not DELETE the real measurement.
  */
 export function parentCountedDiffToolUseIds(
   toolUses: ReadonlyArray<{ name: string; id?: string; input?: unknown }>

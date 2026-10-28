@@ -5,9 +5,9 @@ import type { Meta, StoryObj } from "@storybook/react";
  * Use to show a placeholder while content is loading.
  */
 const meta = {
-  title: "Design System/Primitives/Skeleton",
+  title: "Primitives v1.0/Feedback & Status/Skeleton",
   component: Skeleton,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   argTypes: {},
   parameters: {
     layout: "centered",

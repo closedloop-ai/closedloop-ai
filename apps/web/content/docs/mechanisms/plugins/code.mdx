@@ -3,7 +3,7 @@ title: code plugin
 description: The hub plugin that implements the full Closedloop.ai autonomous SDLC.
 ---
 
-The `code` plugin is the hub of Closedloop.ai. It implements the full autonomous SDLC — PRD → plan → critics → implementation → tests → visual QA → validation — through an orchestrator prompt and a roughly 1,351-line shell loop runner.
+The `code` plugin is the hub of Closedloop.ai. It implements the full autonomous SDLC — PRD → plan → critics → implementation → tests → visual QA → validation — through an orchestrator prompt.
 
 ## Commands
 
@@ -11,7 +11,6 @@ The `code` plugin is the hub of Closedloop.ai. It implements the full autonomous
 |---|---|
 | `/code:code` | Begin a Closedloop coding session. Flags: `[working-directory]`, `--prompt <name>`, `--prd <file>`, `--plan <file>`. |
 | `/code:amend-plan` | Interactively amend a running plan. Flags: `--workdir <path>`, `--message "<text>"`, `--state-file <path>`. |
-| `/code:cancel-code` | Stop a running loop by removing the state file. |
 | `/code:plan-with-codex` | Run a Claude-vs-Codex debate loop to refine a plan. Flags: `--max-rounds N` (default 15), `--plan-file PATH`, `--codex-model MODEL` (default `gpt-5.4`), then a `<prompt>`. |
 
 ## Agents (23)
@@ -64,12 +63,6 @@ The `code` plugin is the hub of Closedloop.ai. It implements the full autonomous
 `plugins/code/prompts/prompt.md` (~271 lines) drives the phased workflow. It is read-only and never touches project files. It uses `Bash` (for directory listing, `echo`, `mkdir`), `Task` (for subagents), `TodoWrite`, `AskUserQuestion`, and `SendMessage`.
 
 The first action is always a TodoWrite with the 18-entry phase list.
-
-## The loop runner
-
-`plugins/code/scripts/run-loop.sh` relaunches `claude -p` with a fresh 200K-token context each iteration until the orchestrator writes `<promise>COMPLETE</promise>` or `CLOSEDLOOP_MAX_ITERATIONS` (default 10) is hit.
-
-After each iteration, `run-loop.sh` runs an 11-step post-iteration pipeline (changed-files, relevance, goal eval, citation verification, outcomes merge, build-result merge, pattern processing, success-rate computation, closedloop-learnings export). See [Self-learning](../self-learning).
 
 ## Environment variables
 

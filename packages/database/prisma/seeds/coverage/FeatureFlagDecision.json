@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Last evaluated flag decision per viewer (ISS-8126), read only as the fallback when PostHog cannot answer."
+}

@@ -1,11 +1,11 @@
-import { isFeatureFlagEnabledForDistinctId } from "@repo/analytics/feature-flags";
-import { COMPUTE_TARGET_SIGNING_FEATURE_FLAG_KEY } from "@repo/api/src/types/compute-target";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import {
   type FeatureFlagIdentity,
   resolveDistinctIdsForIdentity,
 } from "@/lib/feature-flag-identity";
+import { evaluateServerFeatureFlagForDistinctId } from "@/lib/feature-flags/server-feature-flag-evaluation";
+import { COMPUTE_TARGET_SIGNING_SERVER_FLAG } from "@/lib/feature-flags/server-feature-flags";
 
 export type ComputeTargetSigningIdentity = FeatureFlagIdentity;
 
@@ -28,8 +28,8 @@ export async function getComputeTargetSigningFeatureSupport(
   try {
     for (const distinctId of resolveDistinctIdsForIdentity(identity)) {
       if (
-        (await isFeatureFlagEnabledForDistinctId(
-          COMPUTE_TARGET_SIGNING_FEATURE_FLAG_KEY,
+        (await evaluateServerFeatureFlagForDistinctId(
+          COMPUTE_TARGET_SIGNING_SERVER_FLAG,
           distinctId
         )) === true
       ) {

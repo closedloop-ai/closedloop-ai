@@ -1,10 +1,11 @@
 import { CostAvailability } from "@repo/app/agents/lib/cost-availability";
+import type { SessionTableRow } from "@repo/app/agents/lib/session-list-row";
 import { tooltipMockModule } from "@repo/app/test/mocks/tooltip";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { SESSION_COST_CELL_TEST_ID } from "../session-cost-cell";
+import { SessionsTable } from "../session-detail-table";
 import { createSessionTableRowFixture } from "../session-list-fixtures";
-import { SessionsTable, type SessionTableRow } from "../sessions-table";
 
 vi.mock("@repo/design-system/components/ui/tooltip", () => tooltipMockModule);
 

@@ -12,9 +12,9 @@
  *    `estimatedCostUsd: null`, so they are permanently `—`; sitting beside the
  *    independently-computed `LOC / $` they read as its unavailable operands and
  *    make a real number look fabricated.
- * ISS-5521's UNDISCLOSED CAP — "Merged PRs" counted over the first
- * {@link COHORT_SCAN_CAP} cohort sessions under a tooltip claiming "every
- * session" — was the third symptom and is NO LONGER gated here. ISS-6462 gave
+ * ISS-5521's UNDISCLOSED CAP — "Merged PRs" counted over a bounded sample of
+ * the cohort under a tooltip claiming "every session" — was the third symptom
+ * and is NO LONGER gated here. ISS-6462 gave
  * the Packs Performance tile the same disclosure off the same field with no
  * flag, so a gate on this one left the default path with two screens describing
  * one response and only one of them telling the truth.
@@ -25,9 +25,10 @@
  *  - web (`apps/app`) reads it as a PostHog flag via
  *    `AGENTS_DETAIL_HONESTY_FEATURE_FLAG_KEY`
  *    (`packages/app/shared/lib/feature-flags.ts`).
- *  - the desktop main process registers it as a Labs toggle via
- *    `DESKTOP_AGENTS_DETAIL_HONESTY_FEATURE_FLAG_KEY`
- *    (`apps/desktop/src/shared/feature-flags.ts`).
+ *  - the desktop renderer resolves the byte-for-byte-equal key from the
+ *    signed-in account's PostHog assignment, delivered over the IPC bridge,
+ *    under the alias `DESKTOP_AGENTS_DETAIL_HONESTY_FEATURE_FLAG_KEY`
+ *    (`apps/desktop/src/shared/feature-flags-labs-detail.ts`).
  *
  * `AgentDetail` mounts on the web app AND the packaged desktop renderer, so a
  * single-surface gate would let the change leak on desktop while hidden on web

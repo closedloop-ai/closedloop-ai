@@ -1,6 +1,12 @@
+import { OperationKind } from "@repo/api/src/types/attribution-evidence";
 import type { OnboardingStatus } from "@repo/api/src/types/onboarding";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import {
+  withOperationReceipt,
+  withOperationReceipts,
+} from "@/lib/operation-receipts/operation-receipt-recorder";
 import { errorResponse, successResponse } from "@/lib/route-utils";
+import { recordOnboardingWrite } from "../onboarding-receipt";
 import { onboardingService } from "../service";
 
 /**
@@ -9,15 +15,21 @@ import { onboardingService } from "../service";
 export const PUT = withAnyAuth<
   OnboardingStatus,
   "/onboarding/dismiss-checklist"
->(async ({ user }) => {
-  try {
-    const status = await onboardingService.dismissChecklist(
-      user.organizationId,
-      user.id
-    );
+>(
+  withOperationReceipts(
+    OperationKind.SettingsWrite,
+    async ({ user }, _request, _params, receipts) => {
+      try {
+        const status = await onboardingService.dismissChecklist(
+          user.organizationId,
+          user.id,
+          recordOnboardingWrite(receipts)
+        );
 
-    return successResponse(status);
-  } catch (error) {
-    return errorResponse("Failed to dismiss onboarding checklist", error);
-  }
-});
+        return successResponse(withOperationReceipt(status, receipts));
+      } catch (error) {
+        return errorResponse("Failed to dismiss onboarding checklist", error);
+      }
+    }
+  )
+);

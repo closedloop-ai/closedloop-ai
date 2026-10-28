@@ -34,11 +34,11 @@ vi.mock("../../agent-sessions/service", () => ({
   },
 }));
 
-import { agentComponentsService } from "../service";
 import {
   ensureInventorySpineDefault,
   isOrphanUsageRead,
-} from "./usage-lane-doubles";
+} from "@/__tests__/support/agent-components/usage-lane-doubles";
+import { agentComponentsService } from "../service";
 
 // ---------------------------------------------------------------------------
 // Harness — a trimmed copy of service.test.ts's DB installer. The list path

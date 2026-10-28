@@ -27,7 +27,7 @@ vi.mock("@repo/collaboration/server/auth", () => ({
 }));
 
 vi.mock("@repo/observability/log", () => ({
-  log: { error: vi.fn(), info: vi.fn() },
+  log: { error: vi.fn(), flush: vi.fn(async () => undefined), info: vi.fn() },
 }));
 
 // Import after mocks are set up.

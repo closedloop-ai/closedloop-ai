@@ -17,11 +17,8 @@ import {
   CommandItem,
   CommandList,
 } from "@closedloop-ai/design-system/components/ui/command";
-import {
-  Avatar,
-  AvatarFallback,
-  AvatarImage,
-} from "@closedloop-ai/design-system/components/ui/avatar";
+import { PersonAvatar } from "@closedloop-ai/design-system/components/ui/person-avatar";
+import { avatarInitial } from "./avatar";
 
 export interface User {
   id: string;
@@ -68,14 +65,9 @@ interface UserSelectPopoverProps {
 /**
  * Get initials from a name
  */
+/** One initial on every avatar (Nerys, 2026-10-22). */
 function getInitials(name: string): string {
-  return name
-    .split(" ")
-    .filter((part) => part.length > 0)
-    .map((part) => part[0])
-    .join("")
-    .toUpperCase()
-    .slice(0, 2);
+  return avatarInitial(name);
 }
 
 /**
@@ -139,12 +131,14 @@ function UserSelectPopover({
     >
       {value ? (
         <div className="flex items-center gap-2">
-          <Avatar className="h-5 w-5">
-            {value.avatarUrl && <AvatarImage src={value.avatarUrl} alt={value.name} />}
-            <AvatarFallback className="text-[10px]">
-              {value.initials || getInitials(value.name)}
-            </AvatarFallback>
-          </Avatar>
+          <PersonAvatar
+            avatarUrl={value.avatarUrl}
+            className="h-5 w-5"
+            fallbackClassName="text-[10px]"
+            imageAlt={value.name}
+            initials={value.initials || getInitials(value.name)}
+            name={value.name}
+          />
           <span className="truncate">{value.name}</span>
         </div>
       ) : (
@@ -179,14 +173,14 @@ function UserSelectPopover({
                   onSelect={() => handleSelect(user)}
                   className="cursor-pointer hover:bg-muted"
                 >
-                  <Avatar className="mr-2 h-6 w-6">
-                    {user.avatarUrl && (
-                      <AvatarImage src={user.avatarUrl} alt={user.name} />
-                    )}
-                    <AvatarFallback className="text-[10px]">
-                      {user.initials || getInitials(user.name)}
-                    </AvatarFallback>
-                  </Avatar>
+                  <PersonAvatar
+                    avatarUrl={user.avatarUrl}
+                    className="mr-2 h-6 w-6"
+                    fallbackClassName="text-[10px]"
+                    imageAlt={user.name}
+                    initials={user.initials || getInitials(user.name)}
+                    name={user.name}
+                  />
                   <div className="flex flex-col">
                     <span>{user.name}</span>
                     {user.email && (

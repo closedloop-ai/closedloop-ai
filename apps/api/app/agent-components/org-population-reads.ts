@@ -3,136 +3,59 @@ import "server-only";
 import { AGENT_COMPONENT_INVENTORY_CAP } from "@repo/api/src/types/agent-component";
 import type { Prisma, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
+import { countPredicateBindParameters } from "@/lib/postgres-bind-parameters";
 import { resolveDefinitionHashes } from "./definition-hash-resolution";
+import { foldedIdentityKeys } from "./detail-usage-reads";
 import type { OrphanUsageRow } from "./identity";
 import {
   type UsageWindow,
   usageWindowWhere,
   usageWithoutLiveInventoryWhere,
 } from "./plugin-child-usage";
+import { orArmsPerStatement } from "./usage-bind-budget";
 import type { AgentComponentListQuery } from "./validators";
 
 // ---------------------------------------------------------------------------
-// ISS-4797 / ISS-4799: the two FACET-SCOPED reads that feed the org component
-// population — the inventory scan and the ORPHAN (null-FK) usage scan.
+// ISS-4797 / ISS-4799 / ISS-6891: the two FACET-SCOPED reads that feed the org
+// component population — the inventory scan and the ORPHAN (null-FK) usage scan.
 //
-// Both used to be `findMany`s with a hard row `take` applied AFTER the request's
-// `?kinds=` / `?search=` predicate. That ordering makes a STRICTER filter return
-// MORE data: the unfiltered read spends its row budget across every kind and
-// drops its older tail, while a `?kinds=subagent` read starts from a far smaller
-// set and never truncates at all. The reported symptoms were exactly that —
-// per-kind totals summing to 2,174 against an All total of 2,138 (51 subagent
-// slugs visible only in the filtered view, all older than All's truncation
-// floor), and one `tool` component reporting 1 invocation in the All list, 15 in
-// the kind-filtered list, and 61 on its (identity-scoped, untruncated) detail
-// page. A count derived from a facet-truncated population is not a count.
+// Both once carried a terminal `take` applied AFTER the request's `?kinds=` /
+// `?search=` predicate. That ordering makes a STRICTER filter return MORE data:
+// the unfiltered read spends its budget across every kind and drops its older
+// tail, while a `?kinds=subagent` read starts from a far smaller set and never
+// truncates at all. The reported symptoms were exactly that — per-kind totals
+// summing to 2,174 against an All total of 2,138 (51 subagent slugs visible only
+// in the filtered view, all older than All's truncation floor), and one `tool`
+// component reporting 1 invocation in the All list, 15 in the kind-filtered
+// list, and 61 on its (identity-scoped, untruncated) detail page.
 //
-// The repair is to move the cap OFF raw rows and ONTO distinct component
-// IDENTITY — which is what the cap was always documented to bound ("comfortably
-// exceeds any realistic distinct-component count"). Each read now resolves its
-// identity spine first (a SQL `groupBy` over `(componentKind, componentKey)`,
-// ordered by recency and capped), then reads every row belonging to the retained
-// identities. Because a facet can only ever REMOVE identities, the identity set
-// a filtered read sees is a subset of the unfiltered read's, so:
+// ISS-4797 moved that cap off raw ROWS and onto distinct component IDENTITY, and
+// ISS-5516 removed the second, raw-row ceiling that sat beside it. Both repairs
+// narrowed the defect without closing it: the identity cap was still evaluated
+// against the FACETED predicate and was still TERMINAL — no page could reach past
+// it — so above 5,000 identities a `?kinds=subagent` read still surfaced an older
+// subagent that the All read had truncated away. The module's own header used to
+// concede this ("Above it the spine still truncates"). A cap that decides which
+// identities exist is not a safety valve, it is the answer.
 //
-//  - per-kind totals sum exactly to the All total;
-//  - a filtered count can never exceed that kind's count within All (the
-//    monotonicity invariant);
-//  - a component's usage in the list equals its usage on the detail page, whose
-//    reads are scoped to the ONE requested identity (and so are unaffected by
-//    the facet the list was asked for). Those reads carry their own row ceiling
-//    of `MAX_ORG_ORPHAN_USAGE_ROWS` — see `detail-usage-reads.ts` — so the parity
-//    claim is "both sides read the same identity-scoped population", NOT that
-//    either side is unbounded.
+// ISS-6891 removes the cap rather than relocating it a third time. Both reads now
+// evaluate their facet predicate and return the population it selects, complete.
+// With no truncation anywhere in the pipeline the subset property is structural
+// rather than conditional: a facet can only REMOVE identities from a complete
+// population, so a filtered read is a subset of the unfiltered one at every org
+// size, per-kind totals sum exactly to the All total, and the `total`/`hasMore`
+// the list emits describe the whole population instead of a capped view of it.
+// Pagination stays where it belongs — on the caller's `limit`/`offset` over that
+// complete population — so a page is a window, never a truncation.
 //
-// Those three properties hold unconditionally for any org within the identity
-// cap. Above it the spine still truncates — but on whole components, ordered by
-// recency, rather than on an arbitrary row tail that shifts with the filter.
-//
-// MEMORY: moving the correctness bound onto identities does NOT leave the row
-// reads unbounded. Each still carries `MAX_ORG_POPULATION_ROWS`, a ceiling set
-// as far above the identity cap as Postgres's bind-parameter limit allows (6x
-// it), and hitting it is an ANOMALY rather than the routine truncation the old
-// raw-row cap performed — so it is logged, not swallowed. See
-// `MAX_ORG_POPULATION_ROWS` for why that limit, not the memory allowance,
-// decides the number.
+// What bounds cost now is the same thing that bounds the FK-linked rollup in
+// `org-population.ts`, which has always run with NO cap over a strictly LARGER
+// grouping key on the same table: the org's real size, plus the chunking
+// `loadUsageGroupsForInventory` applies to its `agentComponentId: { in: [...] }`
+// predicate for the driver's bind budget. The remaining exposure is a genuinely
+// enormous org's scan volume, and it is REPORTED rather than silently truncated —
+// see `warnOnOversizePopulation`, which never changes what the read returns.
 // ---------------------------------------------------------------------------
-
-/**
- * Cap on the number of DISTINCT components an org population read materializes.
- *
- * Replaces the former raw-row caps as the correctness-bearing bound. The shared
- * {@link AGENT_COMPONENT_INVENTORY_CAP} value is unchanged; what changed is the
- * unit it counts. Capping raw rows made the retained population depend on which
- * facet was requested (ISS-4797/ISS-4799); capping identities does not, because
- * a facet only ever removes identities from the same recency-ordered spine.
- */
-export const MAX_ORG_POPULATION_COMPONENTS = AGENT_COMPONENT_INVENTORY_CAP;
-
-/**
- * Rows one retained component identity is expected to contribute to a population
- * read: its install multiplicity (compute targets × observed versions) for the
- * inventory lane, and its per-session usage groups for the orphan lane.
- *
- * Sized as a generous allowance, not a measured maximum — it exists only to give
- * {@link MAX_ORG_POPULATION_ROWS} a number with a legible derivation.
- */
-const MAX_ROWS_PER_COMPONENT = 20;
-
-/**
- * Bind slots one prepared statement may carry on the Postgres wire protocol.
- *
- * Load-bearing here because Prisma binds every element of an `IN (...)` list as
- * its OWN parameter, and the inventory row ids this module returns are fed
- * straight into `agentComponentId: { in: [...] }` by the FK usage rollup (see
- * `loadUsageGroupsForInventory`). A row read that happily returns more ids than
- * this hands the NEXT read a statement the driver refuses outright — so the
- * ceiling below is derived from this limit rather than chosen freely.
- */
-export const POSTGRES_MAX_BIND_PARAMETERS = 32_767;
-
-/**
- * Bind slots held back for the rest of that rollup's predicate — the org id, one
- * arm per `?kinds=` value, one per `?search=` OR arm, the window bounds, and the
- * content scope. A deliberately generous reserve: the exact count varies with
- * the facets, and erring large costs a few retained rows while erring small
- * costs the whole request.
- */
-const BIND_PARAMETERS_RESERVED_FOR_FACETS = 767;
-
-/**
- * Hard ceiling on the rows either population row read may materialize.
- *
- * This is a MEMORY-and-driver bound, not the correctness bound — {@link
- * MAX_ORG_POPULATION_COMPONENTS} is the correctness bound, and it is the one
- * that decides which components a facet retains. The distinction matters because
- * a row ceiling is inherently facet-DEPENDENT (a `?kinds=` read starts from
- * fewer identities, so it reaches any row ceiling later than the unfiltered read
- * does), which is precisely the defect ISS-4797/ISS-4799 reported. So this
- * ceiling is set as far above the identity cap as it safely can be — 6x it —
- * and under it the facet invariants hold unconditionally.
- *
- * "As far as it safely can be" is the whole reason this is a `Math.min` rather
- * than a round number. The alternative to a ceiling is genuinely unbounded: the
- * inventory row ids feed an `agentComponentId: { in: [...] }` predicate, so an
- * org with pathological install multiplicity would build an unbounded IN-list as
- * well as an unbounded result set. But an IN-list is not merely expensive past
- * {@link POSTGRES_MAX_BIND_PARAMETERS} — it FAILS, taking the whole catalog
- * request with it. A ceiling above that limit would therefore trade a truncated
- * answer for a 500, which is why the driver limit, not the memory allowance,
- * decides the value at the current identity cap.
- *
- * Reaching it is an ANOMALY, not routine truncation, and callers log it (see
- * `warnOnRowCeiling`) rather than silently returning a facet-dependent
- * population. Raising it past the bind limit requires chunking that IN-list
- * first; the principled fix for an org that legitimately exceeds it is a
- * per-identity row limit (a lateral join), which would preserve the invariants
- * at any size. Both are deliberately out of scope here.
- */
-export const MAX_ORG_POPULATION_ROWS = Math.min(
-  MAX_ORG_POPULATION_COMPONENTS * MAX_ROWS_PER_COMPONENT,
-  POSTGRES_MAX_BIND_PARAMETERS - BIND_PARAMETERS_RESERVED_FOR_FACETS
-);
 
 /** The columns the org population read selects off each inventory row. */
 const ORG_INVENTORY_SELECT = {
@@ -238,6 +161,16 @@ export type UsageSearchFacet = {
  * re-opening. The `nameMatchedIdentities` arm is what keeps this a FILTER and not
  * an undercount: a component found by its display `name` has no `name` column on
  * the usage table, so its rows are readmitted by identity.
+ *
+ * ISS-6756 (whitlockk): that readmission arm is an IDENTITY equality, so it matches
+ * the persisted fold like every other identity lane. Asking Prisma for
+ * `{ equals, mode: "insensitive" }` compiles to `component_key ILIKE $n`, which
+ * binds the key as an unescaped PATTERN — so readmitting `mcp__closedloop__ping`
+ * also readmitted `mcpXXclosedloopYYping`, seeding a synthetic bucket for a
+ * DIFFERENT component into a `?search=` response the caller never asked for. The
+ * substring arm below stays on the raw column: it is a genuine `contains` over
+ * whatever the user typed, not an identity, and there is no folded value to
+ * compare a fragment against.
  */
 export function usageSearchWhere(
   facet: UsageSearchFacet | null
@@ -247,119 +180,156 @@ export function usageSearchWhere(
   }
   return {
     OR: [
-      { componentKey: { contains: facet.search, mode: "insensitive" } },
-      ...facet.nameMatchedIdentities.map((identity) => ({
-        componentKind: identity.kind,
-        componentKey: {
-          equals: identity.key,
-          mode: "insensitive" as const,
-        },
-      })),
+      searchContainsArm(facet.search),
+      ...searchIdentityArms(facet.nameMatchedIdentities),
     ],
   };
 }
 
 /**
- * ISS-4797: read the org's inventory rows for the requested facets, bounded by
- * DISTINCT COMPONENT IDENTITY rather than by raw row count.
+ * The substring half of the `?search=` predicate: a genuine `contains` over
+ * whatever the user typed, on the raw column. Built in ONE place because
+ * {@link usageSearchWherePasses} needs the identical object to negate — a
+ * hand-copied twin there would make the complement inexact the moment either
+ * side moved, and an inexact complement drops or duplicates rows rather than
+ * erroring.
+ */
+function searchContainsArm(
+  search: string
+): Prisma.AgentComponentSessionUsageWhereInput {
+  return { componentKey: { contains: search, mode: "insensitive" } };
+}
+
+/**
+ * The readmission half: one identity-equality arm per name-matched inventory
+ * identity. An identity whose key folds to nothing contributes NO arm — `""`
+ * here would readmit every row still on the column's `DEFAULT ''` value, which
+ * is the opposite of what a filter arm is for.
+ */
+function searchIdentityArms(
+  identities: readonly { kind: string; key: string }[]
+): Prisma.AgentComponentSessionUsageWhereInput[] {
+  return identities.flatMap((identity) =>
+    foldedIdentityKeys([identity.key]).map((componentKeyNormalized) => ({
+      componentKind: identity.kind,
+      componentKeyNormalized,
+    }))
+  );
+}
+
+/**
+ * What one readmission arm costs, MEASURED off a representative arm rather than
+ * restated as a number beside it — the reason
+ * {@link countPredicateBindParameters} exists at all. A hand count goes stale the
+ * moment the arm grows a term, and this one is what divides the budget in
+ * {@link usageSearchWherePasses}.
+ */
+export const SEARCH_IDENTITY_ARM_BIND_WIDTH = countPredicateBindParameters({
+  componentKind: "",
+  componentKeyNormalized: "",
+});
+
+/**
+ * ISS-8932: {@link usageSearchWhere} decomposed into passes narrow enough that
+ * each one fits a single statement's bind budget, and DISJOINT so their results
+ * may be concatenated.
  *
- * Pass 1 resolves the identity spine — the distinct `(componentKind,
- * componentKey)` pairs the facets admit, ordered most-recently-seen first and
- * capped at {@link MAX_ORG_POPULATION_COMPONENTS}. Pass 2 reads every row
- * belonging to those identities. When the spine did not truncate (the realistic
- * case — the cap is sized to exceed any realistic distinct-component count) pass
- * 2 is the plain facet read with no row ceiling, so no component is ever
- * partially materialized and no component is dropped because a NOISIER kind
- * consumed the row budget first.
+ * ISS-6891 removed the 5,000-identity population cap, which was the only thing
+ * bounding this facet's arm count: an org with roughly 16k name-matching
+ * components emitted a statement Postgres refuses outright, 500ing a broad
+ * `?search=` instead of returning the complete inventory. The bound belongs here,
+ * upstream of every consumer, because narrowing the OTHER half of those
+ * statements — the id `IN` — cannot shrink the arms.
  *
- * The row read stays uncapped by design: its size is the retained identity count
- * times each component's install multiplicity (compute targets × observed
- * versions), which the identity cap bounds in the dimension that actually grows
- * with org size. The former raw-row cap bounded it in the dimension that made
- * the count wrong.
+ * THE SPLIT IS A PARTITION, NOT A CHUNKING, and that is the whole design. A usage
+ * row can satisfy BOTH the `contains` arm and an identity arm, so slicing the
+ * `OR` naively returns the same row under two passes; a consumer that
+ * concatenates would then double-count invocations and sessions — a silently
+ * inflated total, strictly worse than the refusal it replaced. So the first pass
+ * is the `contains` arm ALONE and every identity pass carries an explicit `NOT`
+ * of it. Their union is exactly the original `OR`, and their pairwise
+ * intersections are empty:
+ *   - a row matching `contains` satisfies only pass one, by the `NOT`;
+ *   - a row not matching it carries exactly ONE `componentKeyNormalized` (the
+ *     column is a database-derived `lower(btrim(component_key))`, not a writer's
+ *     value), and {@link foldedIdentityKeys} de-duplicates, so the identity arms
+ *     partition and it matches at most one identity pass.
+ *
+ * Every term is a function of `(componentKind, componentKey)` alone, which is why
+ * a `groupBy` consumer inherits the partition at GROUP granularity as long as
+ * both columns are in its `by` key — see {@link usageSearchWherePasses}'s callers,
+ * where that is the load-bearing precondition.
+ *
+ * A facet that already fits returns the single, byte-identical
+ * {@link usageSearchWhere} predicate, so every request this product actually
+ * serves issues exactly the statements it does today.
+ *
+ * The no-search case returns ONE empty pass rather than none: callers loop over
+ * passes, and returning `[]` would silently skip the read entirely.
+ */
+export function usageSearchWherePasses(
+  facet: UsageSearchFacet | null,
+  identityArmsPerPass: number
+): readonly Prisma.AgentComponentSessionUsageWhereInput[] {
+  if (!facet?.search) {
+    return [{}];
+  }
+  // Clamped at BOTH ends by the caller's own budget arithmetic, and again here:
+  // a zero or fractional width would step the loop below by zero and never
+  // terminate, which is a hang rather than a wrong answer.
+  const perPass = Math.max(1, Math.floor(identityArmsPerPass));
+  const arms = searchIdentityArms(facet.nameMatchedIdentities);
+  if (arms.length <= perPass) {
+    return [usageSearchWhere(facet)];
+  }
+  const containsArm = searchContainsArm(facet.search);
+  const passes: Prisma.AgentComponentSessionUsageWhereInput[] = [containsArm];
+  for (let offset = 0; offset < arms.length; offset += perPass) {
+    passes.push({
+      NOT: containsArm,
+      OR: arms.slice(offset, offset + perPass),
+    });
+  }
+  return passes;
+}
+
+/**
+ * ISS-6891: read the org's inventory rows for the requested facets — the
+ * COMPLETE population the facets select, with no terminal cap.
+ *
+ * A caller pages this population through `limit`/`offset` in `listForOrg`, so
+ * every identity the facets admit stays reachable. That is what makes a filtered
+ * read a subset of the unfiltered one at any org size: with nothing truncated,
+ * the only thing a facet can do is remove identities.
  */
 export async function readOrgInventoryRows(
   db: Parameters<Parameters<typeof withDb>[0]>[0],
   organizationId: string,
   facets: Pick<AgentComponentListQuery, "kinds" | "search">
 ) {
-  const { where, scope } = await resolveInventoryIdentityScope(
-    db,
-    organizationId,
-    facets
-  );
-  // No empty-spine short-circuit here, unlike the orphan lane below. It would be
-  // sound against the database — the spine evaluated this read's own predicate —
-  // but it is only ever worth one saved round trip on an org with no matching
-  // components at all, and it would make the row read's result depend on a spine
-  // the inventory test doubles are not all wired to derive. The asymmetry is
-  // deliberate, not an oversight.
   const rows = await db.agentComponent.findMany({
-    where: scope.truncated
-      ? { AND: [where, inventoryIdentityScopeWhere(scope)] }
-      : where,
+    where: orgInventoryWhere(organizationId, facets),
     select: ORG_INVENTORY_SELECT,
-    // Deterministic order so downstream consumers see a stable row sequence, and
-    // so the memory ceiling below drops a stable tail if it ever binds.
+    // Deterministic order so downstream consumers see a stable row sequence.
     orderBy: [{ lastSeenAt: { sort: "desc", nulls: "last" } }, { id: "asc" }],
-    take: MAX_ORG_POPULATION_ROWS,
   });
-  warnOnRowCeiling(rows.length, OrgPopulationLane.Inventory, organizationId);
-  return retainedRows(rows, scope);
-}
-
-/**
- * The org inventory identity spine, resolved once and shared by every read that
- * must reproduce the LIST's population. Kept as one helper so an ids-only read
- * (`readOrgInventoryIds`) and the full row read cannot resolve different
- * populations — the exact drift ISS-5363 exists to close.
- *
- * Most-recently-seen identities win the cap, with a deterministic tiebreak so an
- * org above the cap drops a STABLE set of components rather than an arbitrary one
- * that shifts request-to-request. `AgentComponent.lastSeenAt` is nullable, so
- * `pass` narrows the read to one half of that column when the cap binds — see
- * `readIdentitySpine`.
- */
-async function resolveInventoryIdentityScope(
-  db: Parameters<Parameters<typeof withDb>[0]>[0],
-  organizationId: string,
-  facets: Pick<AgentComponentListQuery, "kinds" | "search">
-): Promise<{ where: Prisma.AgentComponentWhereInput; scope: IdentityScope }> {
-  const where = orgInventoryWhere(organizationId, facets);
-  const readSpine = (pass: SpinePass, take: number) => {
-    const recency = spinePassFilter(pass);
-    return db.agentComponent.groupBy({
-      by: ["componentKind", "componentKey"],
-      where:
-        recency === undefined
-          ? where
-          : { AND: [where, { lastSeenAt: recency }] },
-      _max: { lastSeenAt: true },
-      orderBy: [
-        { _max: { lastSeenAt: "desc" } },
-        { componentKind: "asc" },
-        { componentKey: "asc" },
-      ],
-      take,
-    });
-  };
-  return {
-    where,
-    scope: buildIdentityScope(await readIdentitySpine(readSpine)),
-  };
+  warnOnOversizePopulation(
+    rows.length,
+    OrgPopulationLane.Inventory,
+    organizationId
+  );
+  return rows;
 }
 
 /**
  * ISS-5363 (whitlockk review): the ids of the CURRENT org inventory the unfaceted
- * list bounds its FK usage read by — `uninstalledAt: null`, within the retained
- * identity spine.
+ * list bounds its FK usage read by — `uninstalledAt: null`.
  *
  * The detail's elsewhere-linked lane must ask its question over exactly this
  * population. Bounding that lane with `notIn <this family's ids>` instead was
  * BROADER than the list: it admitted usage FK-linked to a TOMBSTONED inventory
- * row, and to a current row the identity cap truncated away — neither of which
- * the list can load through its FK lane or its orphan lane, so the detail read
- * HIGH against the list. Same population in, same number out.
+ * row, which the list can load through neither its FK lane nor its orphan lane,
+ * so the detail read HIGH against the list. Same population in, same number out.
  *
  * Unfaceted deliberately: a detail route carries no `?kinds=`/`?search=`, so the
  * population it reconciles against is the All view's.
@@ -368,21 +338,17 @@ export async function readOrgInventoryIds(
   db: Parameters<Parameters<typeof withDb>[0]>[0],
   organizationId: string
 ): Promise<string[]> {
-  const { where, scope } = await resolveInventoryIdentityScope(
-    db,
-    organizationId,
-    {}
-  );
   const rows = await db.agentComponent.findMany({
-    where: scope.truncated
-      ? { AND: [where, inventoryIdentityScopeWhere(scope)] }
-      : where,
+    where: orgInventoryWhere(organizationId, {}),
     select: { id: true, componentKind: true, componentKey: true },
     orderBy: [{ lastSeenAt: { sort: "desc", nulls: "last" } }, { id: "asc" }],
-    take: MAX_ORG_POPULATION_ROWS,
   });
-  warnOnRowCeiling(rows.length, OrgPopulationLane.Inventory, organizationId);
-  return retainedRows(rows, scope).map((row) => row.id);
+  warnOnOversizePopulation(
+    rows.length,
+    OrgPopulationLane.Inventory,
+    organizationId
+  );
+  return rows.map((row) => row.id);
 }
 
 /**
@@ -394,16 +360,15 @@ export async function readOrgInventoryIds(
  * surface that reads only that lane silently reports zero for a component whose
  * detail page shows real invocations (ISS-4635).
  *
- * ISS-4799: bounded by DISTINCT COMPONENT IDENTITY (pass 1), then aggregated in
- * SQL over exactly those identities (pass 2) — the same `groupBy` shape the
- * FK-linked lane already uses, which also folds away the `gitBranch` dimension
- * this lane never reads. The former shape was a raw-row `findMany` under a
- * facet-scoped row cap, so a `?kinds=tool` request materialized far more of a
- * tool's usage than the unfiltered request did, and the same component reported
- * three different invocation totals across the All list, the filtered list, and
- * its detail page. Summing per (identity, session, harness, version) in SQL is
- * exactly what the row-by-row fold did in JS, so the folded totals are unchanged
- * — only the truncation is gone.
+ * ISS-4799 / ISS-6891: aggregated in SQL over the facet's COMPLETE population —
+ * the same `groupBy` shape the FK-linked lane already uses, which also folds away
+ * the `gitBranch` dimension this lane never reads. The former shape was a raw-row
+ * `findMany` under a facet-scoped row cap, so a `?kinds=tool` request materialized
+ * far more of a tool's usage than the unfiltered request did, and the same
+ * component reported three different invocation totals across the All list, the
+ * filtered list, and its detail page. Summing per (identity, session, harness,
+ * version) in SQL is exactly what the row-by-row fold did in JS, so the folded
+ * totals are unchanged — only the truncation is gone.
  */
 export async function loadOrphanUsageRows(
   db: Parameters<Parameters<typeof withDb>[0]>[0],
@@ -416,23 +381,23 @@ export async function loadOrphanUsageRows(
   window: UsageWindow
 ): Promise<OrphanUsageRow[]> {
   const { kinds, search, nameMatchedIdentities } = facets;
-  const where: Prisma.AgentComponentSessionUsageWhereInput = {
+  const baseWhere: Prisma.AgentComponentSessionUsageWhereInput = {
     // ISS-6180 (whitlockk review): usage-only means "no LIVE inventory row owns this
     // usage", not merely "the FK is null" — see `usageWithoutLiveInventoryWhere`.
-    // Nested under `AND` rather than spread in, because `usageSearchWhere` below
-    // owns the top-level `OR` key and a spread would silently replace this one.
+    // Nested under `AND` rather than spread in, because the search pass spread in
+    // below owns the top-level `OR` key and a spread would silently replace this
+    // one.
     AND: [usageWithoutLiveInventoryWhere()],
     ...(kinds && kinds.length > 0 ? { componentKind: { in: [...kinds] } } : {}),
-    // FEA-3215 / ISS-4660: the same `search` predicate the FK lane applies, from
-    // the one shared derivation, so orphan (usage-only) rows folded into the
-    // merged set can't leak components that fall outside the active filter.
-    //
     // FEA-3758: harness is deliberately NOT pre-filtered here. The derived
     // harness needs ALL of a component's usage rows (a component used in both
     // harnesses resolves to `both`); pre-filtering orphan usage by a single
     // harness would drop the other harness's rows and corrupt the derived value.
     // The harness facet is applied post-fold on the derived harness.
-    ...usageSearchWhere({ search, nameMatchedIdentities }),
+    //
+    // The `?search=` facet is deliberately ABSENT from this object — it is spread
+    // in per PASS below.
+    //
     // Usage carries no organizationId of its own; it isolates through
     // session→artifact.organizationId.
     session: {
@@ -446,87 +411,48 @@ export async function loadOrphanUsageRows(
     ...usageWindowWhere(window),
   };
 
-  // Most-recently-invoked identities win the cap, with a deterministic tiebreak
-  // so an org above the cap drops a STABLE set of components.
-  // `AgentComponentSessionUsage.lastInvokedAt` is nullable and an all-time window
-  // adds no bound of its own, so the never-stamped tail is demoted by the same
-  // `pass` narrowing the inventory lane uses — see `readIdentitySpine`. The
-  // predicate is nested under `AND` rather than spread in, because a
-  // `?startDate=`/`?endDate=` window already owns the `lastInvokedAt` key here and
-  // a spread would silently replace that bound.
-  const readSpine = (pass: SpinePass, take: number) => {
-    const recency = spinePassFilter(pass);
-    return db.agentComponentSessionUsage.groupBy({
-      by: ["componentKind", "componentKey"],
-      where:
-        recency === undefined
-          ? where
-          : { AND: [where, { lastInvokedAt: recency }] },
-      _max: { lastInvokedAt: true },
-      orderBy: [
-        { _max: { lastInvokedAt: "desc" } },
-        { componentKind: "asc" },
-        { componentKey: "asc" },
-      ],
-      take,
+  // FEA-3215 / ISS-4660: the `search` predicate is the FK lane's own, from the
+  // one shared derivation, so orphan (usage-only) rows folded into the merged set
+  // can't leak components that fall outside the active filter.
+  //
+  // ISS-8932: it now arrives as disjoint PASSES, one statement each. Unlike the
+  // FK lane this one has no second chunk loop to multiply with, so the arms take
+  // the whole remaining budget (`shares: 1`), measured off the predicate this
+  // request actually built rather than assumed small.
+  const passes = usageSearchWherePasses(
+    { search, nameMatchedIdentities },
+    orArmsPerStatement(
+      countPredicateBindParameters(baseWhere),
+      SEARCH_IDENTITY_ARM_BIND_WIDTH,
+      1
+    )
+  );
+  const groups: OrphanUsageGroup[] = [];
+  for (const searchPass of passes) {
+    const passGroups = await readOrphanUsageGroups(db, {
+      ...baseWhere,
+      ...searchPass,
     });
-  };
-  const scope = buildIdentityScope(await readIdentitySpine(readSpine));
-  if (scope.retained.size === 0) {
-    return [];
+    // Appended one at a time rather than spread: a large org's orphan lane can
+    // return far more groups than the engine accepts as ARGUMENTS to one call.
+    for (const group of passGroups) {
+      groups.push(group);
+    }
   }
-
-  const groups = await db.agentComponentSessionUsage.groupBy({
-    // Mirrors the FK lane's grouping key minus `agentComponentId` (this lane
-    // attributes by the row's own identity, never by the FK — which is null or
-    // tombstoned here) and `gitBranch` (this lane never read it — the branch
-    // split is a detail-view concern). Summing across branches is what the
-    // former row-by-row fold did.
-    by: [
-      "componentKind",
-      "componentKey",
-      "agentSessionId",
-      "harness",
-      // FEA-3982: the version identity the orphan usage was recorded against, so
-      // the fold attributes it to the matching version bucket rather than a
-      // catch-all unversioned one.
-      "componentVersionHash",
-      "definitionVersionId",
-    ],
-    where: scope.truncated
-      ? { AND: [where, { componentKey: { in: scope.keys } }] }
-      : where,
-    // ISS-4635: errors ride the same lane as invocations so the ranking
-    // leaderboard's `errorRate` covers orphan usage too.
-    _sum: { invocationCount: true, errorCount: true },
-    _min: { firstInvokedAt: true },
-    _max: { lastInvokedAt: true },
-    // Deterministic order so the memory ceiling below drops a stable tail if it
-    // ever binds, and so the tail it drops is the least-recently-invoked one.
-    orderBy: [
-      { _max: { lastInvokedAt: "desc" } },
-      { componentKind: "asc" },
-      { componentKey: "asc" },
-      { agentSessionId: "asc" },
-    ],
-    take: MAX_ORG_POPULATION_ROWS,
-  });
-  warnOnRowCeiling(
+  warnOnOversizePopulation(
     groups.length,
     OrgPopulationLane.OrphanUsage,
     organizationId
   );
-  const retained = retainedRows(groups, scope);
-
   // FEA-3982 (whitlockk decision): resolve each group's `definitionVersionId` to its
   // exact `definitionHash`, so it attributes on the F1 fingerprint when linked
   // and the coarse `componentVersionHash` otherwise.
   const orphanDefinitionHashById = await resolveDefinitionHashes(
     db,
     organizationId,
-    retained.map((group) => group.definitionVersionId)
+    groups.map((group) => group.definitionVersionId)
   );
-  return retained.map((group) => ({
+  return groups.map((group) => ({
     agentSessionId: group.agentSessionId,
     componentKind: group.componentKind,
     componentKey: group.componentKey,
@@ -543,221 +469,64 @@ export async function loadOrphanUsageRows(
 }
 
 /**
- * The retained slice of one facet's identity spine: which `(kind, key)` pairs the
- * cap kept, whether it truncated at all, and the key list a follow-up row read
- * narrows on when it did.
+ * One grouped orphan-usage row, exactly as the `groupBy` returns it. Named so the
+ * per-pass accumulator in {@link loadOrphanUsageRows} has a type without
+ * restating the aggregate shape.
  */
-type IdentityScope = {
-  truncated: boolean;
-  keys: string[];
-  retainsNullKey: boolean;
-  retained: ReadonlySet<string>;
-};
+type OrphanUsageGroup = Awaited<
+  ReturnType<typeof readOrphanUsageGroups>
+>[number];
 
 /**
- * One lane's resolved identity spine: the identities the cap kept, plus whether
- * the cap is what decided that set.
+ * The orphan lane's one `groupBy`, issued once per disjoint `?search=` pass.
  *
- * `truncated` is reported by the read that hit its `take`, NOT measured off
- * `identities` — see `readIdentitySpine` for the dedupe that makes those two
- * different answers.
+ * SOUND TO CONCATENATE ACROSS PASSES WITH NO DEDUPE and no re-aggregation. Every
+ * term {@link usageSearchWherePasses} emits is a function of
+ * `(componentKind, componentKey)` alone, and BOTH are in the `by` key below, so
+ * every row of a given group satisfies the same one pass — no group can span two,
+ * exactly as `agentComponentId` makes the FK lane's id chunking sound.
  */
-type ResolvedSpine = {
-  identities: IdentityShaped[];
-  truncated: boolean;
-};
-
-/** One row shaped enough to be tested against a resolved {@link IdentityScope}. */
-type IdentityShaped = {
-  componentKind: string;
-  componentKey: string | null;
-};
-
-/**
- * The comparable form of a `(componentKind, componentKey)` identity. `\u0000`
- * separates the halves because it cannot occur in either column, so no pair of
- * distinct identities can collide on a concatenation boundary.
- */
-function identityKeyOf(kind: string, key: string | null): string {
-  return `${kind}\u0000${key ?? ""}`;
-}
-
-/**
- * Resolve a {@link ResolvedSpine} into the scope a follow-up row read applies.
- *
- * `truncated` is carried in from the spine rather than re-derived from
- * `identities.length` here. Those are NOT the same test: the demotion path can
- * return fewer than {@link MAX_ORG_POPULATION_COMPONENTS} identities from a
- * population that genuinely exceeds the cap (see `readIdentitySpine`'s dedupe),
- * and a length-based test would read that as "not truncated" — dropping the
- * identity narrowing on exactly the above-cap orgs it exists for, and handing the
- * population back to the facet-DEPENDENT row ceiling this whole change removes.
- */
-function buildIdentityScope(spine: ResolvedSpine): IdentityScope {
-  const retained = new Set<string>();
-  const keys = new Set<string>();
-  let retainsNullKey = false;
-  for (const identity of spine.identities) {
-    retained.add(identityKeyOf(identity.componentKind, identity.componentKey));
-    if (identity.componentKey === null) {
-      retainsNullKey = true;
-    } else {
-      keys.add(identity.componentKey);
-    }
-  }
-  return {
-    truncated: spine.truncated,
-    keys: [...keys],
-    retainsNullKey,
-    retained,
-  };
-}
-
-/**
- * The `componentKey` narrowing a truncated inventory spine adds to its row read.
- * Nested under an `AND` by the caller rather than spread into the base `where`,
- * because the `?search=` facet already owns that where-clause's `OR` key and a
- * spread would silently replace it. `AgentComponent.componentKey` is nullable, so
- * a retained null-key identity needs its own arm — an `IN` list never matches
- * `NULL` in SQL. (`AgentComponentSessionUsage.componentKey` is NOT NULL, so that
- * lane narrows with a plain `IN` and needs no such arm.)
- */
-function inventoryIdentityScopeWhere(
-  scope: IdentityScope
-): Prisma.AgentComponentWhereInput {
-  return {
-    OR: [
-      { componentKey: { in: scope.keys } },
-      ...(scope.retainsNullKey
-        ? [{ componentKey: null } satisfies Prisma.AgentComponentWhereInput]
-        : []),
+function readOrphanUsageGroups(
+  db: Parameters<Parameters<typeof withDb>[0]>[0],
+  where: Prisma.AgentComponentSessionUsageWhereInput
+) {
+  return db.agentComponentSessionUsage.groupBy({
+    // Mirrors the FK lane's grouping key minus `agentComponentId` (this lane
+    // attributes by the row's own identity, never by the FK — which is null or
+    // tombstoned here) and `gitBranch` (this lane never read it — the branch
+    // split is a detail-view concern). Summing across branches is what the
+    // former row-by-row fold did.
+    by: [
+      "componentKind",
+      "componentKey",
+      "agentSessionId",
+      "harness",
+      // FEA-3982: the version identity the orphan usage was recorded against, so
+      // the fold attributes it to the matching version bucket rather than a
+      // catch-all unversioned one.
+      "componentVersionHash",
+      "definitionVersionId",
     ],
-  };
-}
-
-/**
- * Drop rows whose identity the spine did not retain. The `componentKey`
- * narrowing above is key-only (a two-column `IN` is not expressible), so a
- * retained key can readmit rows of a NON-retained kind that happens to share it;
- * this exact-pair filter is what makes the scope precise.
- */
-function retainedRows<T extends IdentityShaped>(
-  rows: T[],
-  scope: IdentityScope
-): T[] {
-  if (!scope.truncated) {
-    return rows;
-  }
-  return rows.filter((row) =>
-    scope.retained.has(identityKeyOf(row.componentKind, row.componentKey))
-  );
-}
-
-/**
- * Which half of a lane's nullable recency column one spine read covers.
- *
- * `All` is the single read every below-cap org resolves its spine with;
- * `Stamped` and `Unstamped` exist only to reproduce `NULLS LAST` when the cap
- * actually binds. See {@link readIdentitySpine}.
- */
-const SpinePass = {
-  All: "all",
-  Stamped: "stamped",
-  Unstamped: "unstamped",
-} as const;
-type SpinePass = (typeof SpinePass)[keyof typeof SpinePass];
-
-/**
- * The predicate a {@link SpinePass} narrows its lane's recency column with, or
- * `undefined` for the unnarrowed `All` pass. Callers key it under their own
- * column name (`lastSeenAt` / `lastInvokedAt`), which is why this returns the
- * bare filter rather than a whole `where`.
- */
-function spinePassFilter(pass: SpinePass): { not: null } | null | undefined {
-  if (pass === SpinePass.Stamped) {
-    return { not: null };
-  }
-  if (pass === SpinePass.Unstamped) {
-    return null;
-  }
-  return undefined;
-}
-
-/**
- * Resolve one lane's identity spine, with the NEVER-STAMPED identities demoted
- * behind every stamped one whenever the cap actually decides what to keep.
- *
- * Both lanes order their spine by an aggregate of a NULLABLE recency column
- * (`max(lastSeenAt)`, `max(lastInvokedAt)`), and Postgres sorts NULLs FIRST under
- * `DESC`. Left alone, identities the scanner has never stamped a timestamp on
- * would outrank every genuinely recent component and win the cap outright — the
- * cap would retain the org's least-informative components and truncate away its
- * live ones. The obvious repair, `NULLS LAST`, is not expressible: Prisma accepts
- * the `{ sort, nulls }` order object only on a plain scalar column (as the
- * inventory ROW read uses it), never on a `groupBy` aggregate key, whose `_max`
- * order input is typed as a bare `SortOrder`.
- *
- * So the demotion is done with reads that reproduce `NULLS LAST` exactly — but
- * only when it can change the answer. A first `All` pass that comes back BELOW
- * the cap returned every identity the facets admit, and no ordering of a complete
- * set changes its membership, so that pass is the whole story and the realistic
- * org pays exactly one query. Only when it comes back AT the cap — the one case
- * where the order decides who is dropped — is the spine re-resolved as the
- * stamped identities by recency, then the unstamped ones by the same
- * deterministic `(componentKind, componentKey)` tiebreak that keeps an above-cap
- * org dropping a STABLE component set request-to-request.
- *
- * An identity holding both stamped and unstamped rows satisfies BOTH narrowed
- * `where`s — its stamped rows form one group and its unstamped rows another —
- * even though its true aggregate is non-null and it therefore belongs to the
- * stamped pass. The dedupe is what keeps the unstamped pass from re-admitting
- * it, and it is why `truncated` is reported by the READ that hit its cap rather
- * than measured off the returned array: dropping those duplicates can land the
- * spine under the cap for a population that plainly exceeds it (the demotion
- * only runs because the `All` pass came back AT the cap), and a length-based
- * test would then call an above-cap org untruncated.
- */
-async function readIdentitySpine(
-  readSpine: (
-    pass: SpinePass,
-    take: number
-  ) => Promise<readonly IdentityShaped[]>
-): Promise<ResolvedSpine> {
-  const spine = await readSpine(SpinePass.All, MAX_ORG_POPULATION_COMPONENTS);
-  if (spine.length < MAX_ORG_POPULATION_COMPONENTS) {
-    return { identities: [...spine], truncated: false };
-  }
-  const stamped = await readSpine(
-    SpinePass.Stamped,
-    MAX_ORG_POPULATION_COMPONENTS
-  );
-  const remaining = MAX_ORG_POPULATION_COMPONENTS - stamped.length;
-  if (remaining <= 0) {
-    return { identities: [...stamped], truncated: true };
-  }
-  const seen = new Set(
-    stamped.map((identity) =>
-      identityKeyOf(identity.componentKind, identity.componentKey)
-    )
-  );
-  const unstamped = await readSpine(SpinePass.Unstamped, remaining);
-  return {
-    identities: [
-      ...stamped,
-      ...unstamped.filter(
-        (identity) =>
-          !seen.has(
-            identityKeyOf(identity.componentKind, identity.componentKey)
-          )
-      ),
+    where,
+    // ISS-4635: errors ride the same lane as invocations so the ranking
+    // leaderboard's `errorRate` covers orphan usage too.
+    _sum: { invocationCount: true, errorCount: true },
+    _min: { firstInvokedAt: true },
+    _max: { lastInvokedAt: true },
+    // Deterministic order so downstream consumers see a stable group sequence.
+    orderBy: [
+      { _max: { lastInvokedAt: "desc" } },
+      { componentKind: "asc" },
+      { componentKey: "asc" },
+      { agentSessionId: "asc" },
     ],
-    truncated: true,
-  };
+  });
 }
 
 /**
- * Which population row read hit its ceiling. A closed, low-cardinality set so
- * the emitted event carries the lane as a tag rather than free text.
+ * Which population read materialized an oversize result. A closed,
+ * low-cardinality set so the emitted event carries the lane as a tag rather than
+ * free text.
  */
 export const OrgPopulationLane = {
   Inventory: "inventory",
@@ -767,35 +536,56 @@ export type OrgPopulationLane =
   (typeof OrgPopulationLane)[keyof typeof OrgPopulationLane];
 
 /**
- * Report a population row read that materialized all the way to
- * {@link MAX_ORG_POPULATION_ROWS}.
- *
- * Reaching this ceiling is an ANOMALY, not the routine truncation the old raw-row
- * cap performed: the correctness bound is {@link MAX_ORG_POPULATION_COMPONENTS}
- * (identities), and the row ceiling sits an order of magnitude above what that
- * cap can legitimately expand to. So a read that touches it means the population
- * is pathological — and, because a row ceiling is inherently facet-DEPENDENT, it
- * is the one condition under which the ISS-4797/ISS-4799 invariants could stop
- * holding. It is therefore surfaced rather than swallowed, at error level so it
- * reaches the alerting path instead of being lost in info-level noise.
- *
- * Deliberately does NOT throw or truncate differently: the caller still returns
- * its identity-scoped rows, so a pathological org degrades to a bounded answer
- * rather than a failed request.
+ * Rows a single component identity is expected to contribute — install
+ * multiplicity for the inventory lane, per-session usage groups for the orphan
+ * lane. A generous allowance, not a measured maximum: it exists only to give
+ * {@link OVERSIZE_POPULATION_ROWS} a legible derivation.
  */
-function warnOnRowCeiling(
+const EXPECTED_ROWS_PER_COMPONENT = 20;
+
+/**
+ * Informational threshold above which a population read is worth an operator's
+ * attention.
+ *
+ * ISS-5516 removed the raw-row CEILING these lanes used to carry, and ISS-6891
+ * removed the identity cap that replaced it; the visibility both truncations
+ * carried did not go with them. This is now the ONLY thing these lanes report
+ * about their own size, so it is the honest signal that an org's population has
+ * outgrown what a single request should materialize.
+ *
+ * The distinction is the whole point: this threshold NEVER changes what the read
+ * returns. Crossing it means "this org's population is large enough that an SRE
+ * should look before it becomes a transaction timeout", not "rows were dropped"
+ * — nothing is dropped, which is exactly why the signal has to exist.
+ *
+ * Sized off the shared {@link AGENT_COMPONENT_INVENTORY_CAP}, which after ISS-6891
+ * bounds no read: it survives as the largest page a caller may request and, here,
+ * as the distinct-component count above which an org stops being routine.
+ */
+export const OVERSIZE_POPULATION_ROWS =
+  AGENT_COMPONENT_INVENTORY_CAP * EXPECTED_ROWS_PER_COMPONENT;
+
+/**
+ * Report a population read whose result crossed {@link OVERSIZE_POPULATION_ROWS}.
+ *
+ * Emitted at error level so it reaches the alerting path rather than being lost
+ * in info-level noise — the same lane `fetchDetailUsageSeenBounds` uses for its
+ * own anomaly signal. Deliberately observational: it does not throw, truncate, or
+ * otherwise alter the returned population, because a facet-dependent truncation
+ * here is precisely the defect ISS-5516 and ISS-6891 removed.
+ */
+function warnOnOversizePopulation(
   rowCount: number,
   lane: OrgPopulationLane,
   organizationId: string
 ): void {
-  if (rowCount < MAX_ORG_POPULATION_ROWS) {
+  if (rowCount < OVERSIZE_POPULATION_ROWS) {
     return;
   }
-  log.error("agent_components_org_population_row_ceiling_reached", {
-    ceiling: MAX_ORG_POPULATION_ROWS,
-    identityCap: MAX_ORG_POPULATION_COMPONENTS,
+  log.error("agent_components_org_population_oversize", {
     lane,
     organizationId,
     rowCount,
+    threshold: OVERSIZE_POPULATION_ROWS,
   });
 }

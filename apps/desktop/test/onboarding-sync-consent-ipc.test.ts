@@ -1,29 +1,42 @@
 /**
  * ISS-5489 (PLN-1694 M1) — the post-auth consent read/write.
  *
- * Targets `sync-consent-apply` rather than the IPC registrar for the reason the
- * FEA-4103 precedent spells out: `onboarding-ipc.ts` imports `electron` (for the
- * onboarding popup's `shell.openExternal`) and cannot load under `test:node`, so
- * the logic lives in an electron-free module and the handler is a thin
- * trusted-sender guard over it.
+ * The persistence rules target `sync-consent-apply` rather than the IPC
+ * registrar because `onboarding-ipc.ts` imports `electron` for the onboarding
+ * popup's `shell.openExternal`; the consent logic stays electron-free and the
+ * handler is a thin trusted-sender guard over it.
  *
  * The write path is the load-bearing assertion: it must go through
  * `applyDataSyncLevel` — the consolidated setter that derives every sync boolean
  * together — and never write a tier or a flag on its own.
+ *
+ * The broadcast suite at the bottom does reach the registrar, through the
+ * electron-module mock, because what it pins is that all three write CHANNELS
+ * notify the renderer — a property no single apply helper holds.
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DataSyncLevel } from "@repo/api/src/types/data-sync-level";
+import { afterAll, beforeAll, describe, test } from "vitest";
 import {
   applySyncConsent,
   readSyncConsentRecord,
   type SyncConsentApplyDeps,
 } from "../src/main/ipc/sync-consent-apply.js";
-import {
-  DataSyncLevel,
-  type SyncObservabilityTier,
-} from "../src/shared/contracts.js";
+import type { DesktopOnboardingState } from "../src/main/onboarding/onboarding-state.js";
+import { createDesktopApi } from "../src/main/preload-common.js";
+import type { ApiKeyStore } from "../src/main/settings/api-key-store.js";
+import { SettingsStore } from "../src/main/settings/settings-store.js";
+import type { SyncObservabilityTier } from "../src/shared/contracts.js";
+import { OnboardingIpcChannel } from "../src/shared/onboarding-ipc-channel.js";
 import { hasRecordedSyncConsent } from "../src/shared/sync-consent.js";
+import {
+  type ElectronModuleMock,
+  registerElectronModuleMock,
+} from "./helpers/electron-module-mock.js";
 
 const ORG = "org_acme";
 /** A second org, for the switch the binding exists to detect. */
@@ -291,3 +304,274 @@ test("re-answering for the SAME org does not clear", () => {
   applySyncConsent(deps, { level: DataSyncLevel.Full });
   assert.deepEqual(recorded.writeOrder, ["org", "level"]);
 });
+
+/**
+ * The three renderer-originated consent writes, all of which land on the same
+ * post-write notification. Table-driven so a fourth write path added without a
+ * push is one missing row rather than a case nobody thought to copy. Declared
+ * above the suite because a `describe` body runs at registration time.
+ */
+const WRITE_PATHS = [
+  {
+    channel: "RecordSyncConsent",
+    name: "the takeover's answer",
+    payload: { level: DataSyncLevel.Full, organizationId: ORG },
+  },
+  {
+    channel: "SetDataSyncLevel",
+    name: "the Settings level setter",
+    payload: DataSyncLevel.Full,
+  },
+  {
+    channel: "SetSyncObservabilityTier",
+    name: "the legacy tier alias",
+    payload: "full",
+  },
+] as const;
+
+const LEGACY_TIER_LEVELS: ReadonlyArray<
+  readonly [SyncObservabilityTier, DataSyncLevel]
+> = [
+  ["local", DataSyncLevel.Off],
+  ["metadata", DataSyncLevel.Metadata],
+  ["full", DataSyncLevel.Full],
+];
+
+/**
+ * The renderer-facing half: every consent write must also PUSH the committed
+ * record back, or only the surface that made the write learns the answer.
+ *
+ * Driven through the real `registerOnboardingIpcHandlers` rather than through
+ * `applySyncConsent` alone, because what is under test is that all THREE
+ * renderer-originated write channels reach the broadcast — the takeover, the
+ * Settings level setter, and the legacy tier alias. Calling the apply helpers
+ * directly would leave the level setter (an inline handler) unproven. That needs
+ * the electron-module mock: `onboarding-ipc.ts` imports `shell` at module scope
+ * for the onboarding popup.
+ *
+ * The store is a REAL `SettingsStore` over a temp dir, so the pushed record is
+ * what the write actually persisted rather than what a double was told to say.
+ */
+describe("the post-write consent broadcast", () => {
+  let electronMock: ElectronModuleMock;
+  let onboardingIpc: OnboardingIpcModule;
+
+  beforeAll(async () => {
+    electronMock = registerElectronModuleMock();
+    onboardingIpc = await import("../src/main/ipc/onboarding-ipc.js");
+  });
+
+  afterAll(() => {
+    electronMock.deregister();
+  });
+
+  function makeHarness({ withWindow = true }: { withWindow?: boolean } = {}) {
+    const storeDir = mkdtempSync(join(tmpdir(), "iss-5489-consent-ipc-"));
+    // Seeded EXPLICITLY as un-consented. A bare store runs the boot migration,
+    // which grandfathers a tier from the legacy connectivity flags — so the
+    // "it was null before the write" half of these cases would be exercising
+    // that migration instead of the handler.
+    writeFileSync(
+      join(storeDir, `${SETTINGS_STORE_NAME}.json`),
+      JSON.stringify({ dataSyncLevel: "metadata", syncObservabilityTier: null })
+    );
+    const settingsStore = new SettingsStore({
+      cwd: storeDir,
+      name: SETTINGS_STORE_NAME,
+    });
+    const sends: RendererSend[] = [];
+    const handlers = new Map<string, IpcInvokeListener>();
+
+    onboardingIpc.registerOnboardingIpcHandlers(
+      {
+        handle: (channel, listener) => {
+          handlers.set(channel, listener);
+        },
+      },
+      {
+        apiKeyStore: {} as ApiKeyStore,
+        applyBinaryPathPatch: () => undefined,
+        // The persistence half of app.ts's `applyDataSyncLevel`: the store write
+        // that derives every sync boolean, the tier this record reports included.
+        applyDataSyncLevel: (level) => settingsStore.setDataSyncLevel(level),
+        cancelManagedOnboardingForUserChange: () => undefined,
+        getOnboardingState: () => ({}) as DesktopOnboardingState,
+        getSessionOrganizationId: () => ORG,
+        isTrustedSender: () => true,
+        onSessionAnalysisAgreed: () => undefined,
+        persistActiveProfileKey: () => undefined,
+        restartCloudSocket: () => undefined,
+        ...(withWindow
+          ? {
+              sendToRenderer: (channel: string, ...args: unknown[]) => {
+                sends.push({ args, channel });
+              },
+            }
+          : {}),
+        settingsStore,
+        startDeviceOnboarding: () =>
+          Promise.resolve({ status: "approved" as const }),
+        warmTelemetryOrgIdentity: () => undefined,
+      }
+    );
+
+    return {
+      dispose: () => rmSync(storeDir, { force: true, recursive: true }),
+      handlers,
+      sends,
+      settingsStore,
+    };
+  }
+
+  type Harness = ReturnType<typeof makeHarness>;
+
+  function invoke(harness: Harness, channel: string, payload?: unknown) {
+    const handler = harness.handlers.get(channel);
+    if (!handler) {
+      throw new Error(`no handler registered for ${channel}`);
+    }
+    return handler({ sender: "renderer" }, payload);
+  }
+
+  function consentSends(harness: Harness): RendererSend[] {
+    return harness.sends.filter(
+      (send) =>
+        send.channel === onboardingIpc.DESKTOP_SYNC_CONSENT_CHANGED_CHANNEL
+    );
+  }
+
+  for (const write of WRITE_PATHS) {
+    test(`${write.name} pushes the committed record to the renderer`, () => {
+      const harness = makeHarness();
+      try {
+        assert.equal(harness.settingsStore.getSyncObservabilityTier(), null);
+
+        invoke(harness, OnboardingIpcChannel[write.channel], write.payload);
+
+        const pushed = consentSends(harness);
+        assert.equal(
+          pushed.length,
+          1,
+          "every renderer-originated consent write must broadcast exactly once"
+        );
+        assert.deepEqual(pushed[0].args, [
+          { tier: "full", organizationId: ORG, bound: true },
+        ]);
+        assert.deepEqual(
+          pushed[0].args,
+          [harness.settingsStore.getSyncConsentRecord()],
+          "the broadcast must be the committed store record"
+        );
+      } finally {
+        harness.dispose();
+      }
+    });
+  }
+
+  for (const [tier, expectedLevel] of LEGACY_TIER_LEVELS) {
+    test(`the legacy ${tier} tier alias persists ${expectedLevel}`, () => {
+      const harness = makeHarness();
+      try {
+        const result = invoke(
+          harness,
+          OnboardingIpcChannel.SetSyncObservabilityTier,
+          tier
+        );
+
+        assert.deepEqual(result, { tier });
+        assert.equal(harness.settingsStore.getDataSyncLevel(), expectedLevel);
+        assert.deepEqual(harness.settingsStore.getSyncConsentRecord(), {
+          tier,
+          organizationId: ORG,
+          bound: true,
+        });
+      } finally {
+        harness.dispose();
+      }
+    });
+  }
+
+  test("the takeover's push carries the org main bound, not the payload's", () => {
+    const harness = makeHarness();
+    try {
+      invoke(harness, OnboardingIpcChannel.RecordSyncConsent, {
+        level: DataSyncLevel.Full,
+        organizationId: "org_from_a_stale_renderer",
+      });
+
+      assert.deepEqual(consentSends(harness)[0].args, [
+        { tier: "full", organizationId: ORG, bound: true },
+      ]);
+    } finally {
+      harness.dispose();
+    }
+  });
+
+  test("a rejected write pushes nothing", () => {
+    // The push says "this is what the device now holds". Emitting one for a
+    // write that threw would tell every renderer surface the question had been
+    // answered while disk still says it has not.
+    const harness = makeHarness();
+    try {
+      assert.throws(() =>
+        invoke(harness, OnboardingIpcChannel.SetDataSyncLevel, "everything")
+      );
+      assert.deepEqual(consentSends(harness), []);
+    } finally {
+      harness.dispose();
+    }
+  });
+
+  test("the preload subscribes to the channel main broadcasts on", () => {
+    // The two halves name this channel independently — main through the exported
+    // constant, the preload through a literal, because importing the IPC module
+    // into the preload bundle would drag `electron` and the telemetry runtime in
+    // with it. Drift between them is SILENT: main pushes, nothing listens, and
+    // every renderer surface falls back to the pre-answer record.
+    const subscribed: string[] = [];
+    const api = createDesktopApi({
+      invoke: () => Promise.resolve(),
+      on: (channel: string) => {
+        subscribed.push(channel);
+      },
+      removeListener: () => undefined,
+      send: () => undefined,
+    });
+
+    api.onSyncConsentRecordChanged(() => undefined);
+
+    assert.deepEqual(subscribed, [
+      onboardingIpc.DESKTOP_SYNC_CONSENT_CHANGED_CHANNEL,
+    ]);
+  });
+
+  test("a composition root with no renderer window still writes", () => {
+    // `sendToRenderer` is optional for version skew; an absent push must not
+    // take the persistence path down with it.
+    const harness = makeHarness({ withWindow: false });
+    try {
+      invoke(
+        harness,
+        OnboardingIpcChannel.SetDataSyncLevel,
+        DataSyncLevel.Full
+      );
+      assert.equal(harness.settingsStore.getSyncObservabilityTier(), "full");
+      assert.deepEqual(harness.settingsStore.getSyncConsentRecord(), {
+        tier: "full",
+        organizationId: ORG,
+        bound: true,
+      });
+      assert.deepEqual(harness.sends, []);
+    } finally {
+      harness.dispose();
+    }
+  });
+});
+
+type OnboardingIpcModule = typeof import("../src/main/ipc/onboarding-ipc.js");
+
+type IpcInvokeListener = (event: unknown, ...args: unknown[]) => unknown;
+
+type RendererSend = { channel: string; args: unknown[] };
+
+const SETTINGS_STORE_NAME = "desktop-settings";

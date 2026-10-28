@@ -11,8 +11,7 @@ import { displayUserName } from "@/lib/user-display-name";
  * Shape the Sessions usage-summary `groupBy` aggregates into the facet payload
  * the Sessions surface renders (Owner, Model, Harness, Repository breakdowns).
  *
- * Extracted from `service.ts` (ISS-5283): that file is grandfathered over the
- * 1,000-line ceiling and is SHRINK-ONLY, and this is a genuinely separate
+ * Extracted from `service.ts` (ISS-5283) because this is a genuinely separate
  * responsibility — `getUsageSummary` decides WHICH population each aggregate
  * runs over (see `facet-count-where.ts`), while these decide how a raw group row
  * becomes a facet option. Splitting them also makes the ordering rules below
@@ -63,6 +62,13 @@ type ByRepositoryGroup = {
  * has no per-owner cost, so session-count desc is the portable key; sorting by
  * `estimatedCost` here listed owners differently on cloud vs desktop for the
  * same facet.
+ *
+ * ISS-10851: `userId` breaks ties, matching the SQL candidate AND desktop's
+ * `compareByUserRow` (`org-directory-cache.ts`). A tiebreak on only one of the
+ * three relocates the FEA-3452 divergence instead of closing it, because a tie
+ * then follows each producer's own input order. `userName` is NOT a safe key on
+ * any of them: display names collide (two people named "Test User" is the
+ * common fixture shape, and nothing stops it in production).
  */
 export function buildUsageByUser(
   groups: readonly ByUserGroup[],
@@ -88,7 +94,11 @@ export function buildUsageByUser(
       };
     })
     .filter((value): value is AgentSessionUsageByUser => value != null)
-    .sort((left, right) => right.sessionCount - left.sessionCount);
+    .sort(
+      (left, right) =>
+        right.sessionCount - left.sessionCount ||
+        left.userId.localeCompare(right.userId)
+    );
 }
 
 /**
@@ -114,7 +124,12 @@ export function buildUsageByModel(
     .sort((left, right) => right.estimatedCost - left.estimatedCost);
 }
 
-/** Harness facet, session-count desc to match the other facet orders. */
+/**
+ * Harness facet, session-count desc to match the other facet orders.
+ *
+ * ISS-10851: `harness` breaks ties, matching the SQL candidate — it is the
+ * row's own dimension value, already unique per row in a `groupBy`.
+ */
 export function buildUsageByHarness(groups: readonly ByHarnessGroup[]) {
   return groups
     .map((group) => ({
@@ -126,13 +141,20 @@ export function buildUsageByHarness(groups: readonly ByHarnessGroup[]) {
       cacheWriteTokens: toNumber(group._sum.cacheWriteTokens),
       estimatedCost: toNumber(group._sum.estimatedCost),
     }))
-    .sort((left, right) => right.sessionCount - left.sessionCount);
+    .sort(
+      (left, right) =>
+        right.sessionCount - left.sessionCount ||
+        left.harness.localeCompare(right.harness)
+    );
 }
 
 /**
  * Repository facet (Filter → Repository). Sessions with no captured repository
  * (null) are dropped: there is nothing to filter to, so offering the option
  * would be an affordance that cannot narrow anything.
+ *
+ * ISS-10851: `repositoryFullName` breaks ties, matching the SQL candidate — it
+ * is the row's own dimension value, already unique per row in a `groupBy`.
  */
 export function buildUsageByRepository(
   groups: readonly ByRepositoryGroup[] | undefined
@@ -150,5 +172,9 @@ export function buildUsageByRepository(
       estimatedCost: toNumber(group._sum.estimatedCost),
       errorCount: group._sum.errorCount ?? 0,
     }))
-    .sort((left, right) => right.sessionCount - left.sessionCount);
+    .sort(
+      (left, right) =>
+        right.sessionCount - left.sessionCount ||
+        left.repositoryFullName.localeCompare(right.repositoryFullName)
+    );
 }

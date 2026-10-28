@@ -1,4 +1,5 @@
 import type { BranchPageDetail } from "@repo/api/src/types/branch";
+import type { SessionTimelineDetail } from "@repo/api/src/types/document-sessions";
 
 /**
  * A branch's changed-LOC, read from the cloud branch projection.
@@ -12,7 +13,8 @@ import type { BranchPageDetail } from "@repo/api/src/types/branch";
  * left, a per-render provenance label would claim knowledge the client no longer
  * has.
  *
- * `null` therefore means UNAVAILABLE — never zero. Consumers render "—".
+ * `null` therefore means UNAVAILABLE — never zero. The Changes consumers say
+ * so with `BranchUnavailableValue`.
  */
 export type PreferredBranchLoc = {
   additions: number | null;
@@ -55,7 +57,7 @@ export function resolvePreferredBranchLoc(
  */
 export function resolveChurn(
   loc: PreferredBranchLoc | undefined,
-  detail: BranchPageDetail
+  detail: SessionTimelineDetail
 ): number | null {
   if (loc) {
     return loc.churn;

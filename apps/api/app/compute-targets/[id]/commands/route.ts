@@ -1,9 +1,9 @@
-import { analytics } from "@repo/analytics/server";
 import {
   CURRENT_DESKTOP_API_NAMESPACE,
   DESKTOP_API_PREFIX,
   rewriteDesktopApiPath,
 } from "@repo/api/src/desktop-api-namespace";
+import { OperationKind } from "@repo/api/src/types/attribution-evidence";
 import { BranchViewLocalHeader } from "@repo/api/src/types/branch-view-local";
 import type { ApiResult } from "@repo/api/src/types/common";
 import type {
@@ -18,7 +18,7 @@ import {
 import { log } from "@repo/observability/log";
 import { buildTelemetryTraceContext } from "@repo/observability/telemetry/context";
 import { emitCommandLifecycleEvent } from "@repo/observability/telemetry/emitter";
-import { TelemetryCategory } from "@repo/observability/telemetry/schema";
+import { TelemetryCategory } from "@repo/observability/telemetry/telemetry-category";
 import { NextResponse } from "next/server";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
@@ -38,9 +38,23 @@ import {
 } from "@/lib/compute-target-signing-eligibility";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import {
+  evaluateFeatureFlagForAnyIdentity,
+  type FeatureFlagIdentity,
+} from "@/lib/feature-flag-identity";
+import { ELECTRON_REMOTE_UPDATE_SERVER_FLAG } from "@/lib/feature-flags/server-feature-flags";
+import {
   healthCheckRepairNotOwnedResponse,
   isHealthCheckRepairCommand,
 } from "@/lib/health-check-repair-command";
+import {
+  type OperationReceiptRecorder,
+  withOperationReceipt,
+  withOperationReceipts,
+} from "@/lib/operation-receipts/operation-receipt-recorder";
+import {
+  recordNoOpUnlessRecorded,
+  recordOrganizationWrite,
+} from "@/lib/organization-write-receipt";
 import {
   errorResponse,
   notFoundResponse,
@@ -164,7 +178,6 @@ async function resolveCommandSigningContext(input: {
   targetGatewayId?: string | null;
   requesterUserId: string;
   requesterClerkUserId?: string | null;
-  targetOwnerClerkUserId?: string | null;
 }): Promise<CommandSigningContext> {
   const requirement = await resolveCommandSigningRequirement(input);
   // This route's Unknown policy: proceed UNSIGNED but surface the warning to the
@@ -181,18 +194,6 @@ async function resolveCommandSigningContext(input: {
       requirement.status === CommandSigningRequirementStatus.Required,
     eligibilityUnknown: false,
   };
-}
-
-async function resolveTargetOwnerClerkUserId(input: {
-  targetId: string;
-  targetUserId: string;
-  requesterUserId: string;
-  requesterClerkUserId?: string | null;
-}): Promise<string | null | undefined> {
-  if (input.targetUserId === input.requesterUserId) {
-    return input.requesterClerkUserId;
-  }
-  return (await computeTargetsService.findById(input.targetId))?.user?.clerkId;
 }
 
 function validateSigningCompatibility(
@@ -247,17 +248,47 @@ function buildCommandInputForDispatch(
 }
 
 /**
- * Checks whether the electron-remote-update feature flag is enabled for the given user.
- * Returns true when enabled or when PostHog is not configured (fail-open).
+ * Structured-log event name for an unavailable electron-remote-update read.
+ * Named after the flag rather than the route so the two dispatch paths that
+ * gate on it cannot be told apart only by which file warned.
  */
-async function isElectronRemoteUpdateEnabled(userId: string): Promise<boolean> {
-  if (typeof analytics.isFeatureEnabled !== "function") {
-    return true;
-  }
+const ELECTRON_REMOTE_UPDATE_UNAVAILABLE_LOG_KEY =
+  "electron_remote_update_feature_flag_unavailable";
+
+/**
+ * Checks whether the electron-remote-update feature flag is enabled for the
+ * request principal. Returns true when enabled or when PostHog did not answer
+ * (fail-open).
+ *
+ * ISS-7778: routed through the classified evaluator — the second of the two
+ * sites that bypassed the shared helper entirely. Fail-open is preserved
+ * verbatim: an unconfigured client and an unevaluated flag both resolve `null`,
+ * which is not `false`, and a thrown evaluation still admits the command. A
+ * SUPPRESSED grant resolves an explicit `false`, so suppression denies here
+ * rather than being swallowed by the fail-open default.
+ *
+ * IT EVALUATES THE CLERK ID, not the internal user id, and that is the whole
+ * point of taking an identity here instead of a bare string. The button that
+ * offers this command renders behind `<FeatureFlagged>`, which reads the browser
+ * PostHog client — identified with the Clerk id alone by
+ * `packages/analytics/hooks/use-identify-user.ts`. Evaluating the internal id
+ * server-side made the route an INDEPENDENT SECOND DRAW on any percentage
+ * rollout, which buckets on a hash of the distinct id: a user bucketed IN on the
+ * Clerk id saw the button and could then be bucketed OUT here and 403'd, and a
+ * user bucketed OUT in the browser could still have a direct call admitted.
+ * `resolveDistinctIdsForIdentity` is the same Clerk-first resolver ISS-8196
+ * established for exactly this divergence; the internal id survives only as the
+ * fallback for a principal carrying no Clerk id, which would otherwise resolve
+ * no flags at all.
+ */
+async function isElectronRemoteUpdateEnabled(
+  identity: FeatureFlagIdentity
+): Promise<boolean> {
   try {
-    const result = await analytics.isFeatureEnabled(
-      "electron-remote-update",
-      userId
+    const result = await evaluateFeatureFlagForAnyIdentity(
+      ELECTRON_REMOTE_UPDATE_SERVER_FLAG,
+      identity,
+      ELECTRON_REMOTE_UPDATE_UNAVAILABLE_LOG_KEY
     );
     return result !== false;
   } catch {
@@ -273,7 +304,7 @@ async function isElectronRemoteUpdateEnabled(userId: string): Promise<boolean> {
 async function checkUpdateAndRestartPreconditions(
   input: CreateDesktopCommandInput,
   supportedOperations: string[],
-  userId: string
+  identity: FeatureFlagIdentity
 ): Promise<NextResponse<ApiResult<never>> | null> {
   if (!supportedOperations.includes(UPDATE_AND_RESTART_OPERATION_ID)) {
     return NextResponse.json(
@@ -282,7 +313,7 @@ async function checkUpdateAndRestartPreconditions(
     );
   }
 
-  const allowed = await isElectronRemoteUpdateEnabled(userId);
+  const allowed = await isElectronRemoteUpdateEnabled(identity);
   if (!allowed) {
     return NextResponse.json(
       { success: false, error: "Feature not available" },
@@ -313,6 +344,7 @@ async function expireUndeliveredSignedCommand(input: {
   requestId: string;
   reason: string | undefined;
   deduped: boolean;
+  receipts: OperationReceiptRecorder;
 }): Promise<NextResponse<ApiResult<CreateDesktopCommandResponse>>> {
   const reason = `signed_command_delivery_failed:${input.reason ?? "unknown"}`;
   await desktopCommandStore.markCommandExpired(input.commandId, reason, {
@@ -327,7 +359,7 @@ async function expireUndeliveredSignedCommand(input: {
     status: DesktopCommandStatus.Expired,
     ...(input.deduped ? { deduped: true } : {}),
   };
-  return successResponse(response);
+  return successResponse(withOperationReceipt(response, input.receipts));
 }
 
 async function validateBrowserSignedCommand(input: {
@@ -382,9 +414,10 @@ async function prepareCommandDispatch(input: {
     return { ok: false, response: browserKeyRevocationReservedResponse() };
   }
 
-  // `findAccessibleById` above deliberately includes org-shared targets, and the
-  // validator accepts any /api/gateway/* path, so Repair needs its own owner
-  // check here — the app's relay forwarder only refuses it for UX (ISS-5389).
+  // `findAccessibleById` above is owner-only since ISS-12617, so this cannot
+  // fire today. It stays as defense in depth while installed Desktops still
+  // serve Repair (ISS-12749): the validator accepts any /api/gateway/* path, and
+  // this check must hold even if the lookup above ever widens again (ISS-5389).
   if (
     isHealthCheckRepairCommand(routeInput) &&
     target.userId !== input.user.id
@@ -407,19 +440,13 @@ async function prepareCommandDispatch(input: {
     const guardError = await checkUpdateAndRestartPreconditions(
       routeInput,
       target.supportedOperations,
-      input.user.id
+      { userId: input.user.id, clerkUserId: input.user.clerkId }
     );
     if (guardError) {
       return { ok: false, response: guardError };
     }
   }
 
-  const targetOwnerClerkUserId = await resolveTargetOwnerClerkUserId({
-    targetId: target.id,
-    targetUserId: target.userId,
-    requesterUserId: input.user.id,
-    requesterClerkUserId: input.user.clerkId,
-  });
   const signingContext = await resolveCommandSigningContext({
     capabilities: target.capabilities,
     organizationId: target.organizationId,
@@ -427,7 +454,6 @@ async function prepareCommandDispatch(input: {
     targetGatewayId: target.gatewayId,
     requesterUserId: input.user.id,
     requesterClerkUserId: input.user.clerkId,
-    targetOwnerClerkUserId,
   });
   const signingCompatibilityError = validateSigningCompatibility(
     routeInput,
@@ -490,6 +516,7 @@ async function handleDispatchResult(input: {
   signatureFields: CommandSignatureFields | undefined;
   signingContext: CommandSigningContext;
   target: AccessibleCommandTarget;
+  receipts: OperationReceiptRecorder;
 }): Promise<NextResponse<ApiResult<CreateDesktopCommandResponse>>> {
   if (input.dispatchResult.delivered) {
     log.info("Desktop command dispatched", {
@@ -510,16 +537,22 @@ async function handleDispatchResult(input: {
       requestId: input.requestId,
       reason: input.dispatchResult.reason,
       deduped: input.createResult.deduped,
+      receipts: input.receipts,
     });
     return expiredResponse;
   }
 
   scheduleLogFlush();
-  return successResponse({
-    commandId: input.commandId,
-    status: input.createResult.command.status,
-    deduped: input.createResult.deduped ? true : undefined,
-  });
+  return successResponse(
+    withOperationReceipt(
+      {
+        commandId: input.commandId,
+        status: input.createResult.command.status,
+        deduped: input.createResult.deduped ? true : undefined,
+      },
+      input.receipts
+    )
+  );
 }
 
 function handleCreateCommandError(
@@ -553,77 +586,88 @@ function handleCreateCommandError(
 export const POST = withAnyAuth<
   CreateDesktopCommandResponse,
   "/compute-targets/[id]/commands"
->(async ({ user }, request, params) => {
-  try {
-    const { id: targetId } = await params;
-    const prepared = await prepareCommandDispatch({
-      targetId,
-      user,
-      request,
-    });
-    if (!prepared.ok) {
-      return prepared.response;
+>(
+  withOperationReceipts(
+    OperationKind.OrganizationWrite,
+    async ({ user }, request, params, receipts) => {
+      try {
+        const { id: targetId } = await params;
+        const prepared = await prepareCommandDispatch({
+          targetId,
+          user,
+          request,
+        });
+        if (!prepared.ok) {
+          return prepared.response;
+        }
+        const { target, input, rewrittenInput, requestId, signatureFields } =
+          prepared;
+
+        const createResult = await desktopCommandStore.createCommand(
+          target.id,
+          rewrittenInput,
+          buildTelemetryTraceContext({
+            computeTargetId: target.id,
+            operationId: rewrittenInput.operationId,
+            requestId,
+          }),
+          recordOrganizationWrite(receipts)
+        );
+        // ISS-12552: a deduplicated retry inserted nothing, so it is a no-op.
+        if (createResult.deduped) {
+          await recordNoOpUnlessRecorded(receipts);
+        }
+
+        const { commandId } = createResult.command;
+
+        const pluginVersionRaw = target.capabilities.pluginVersion;
+        const pluginVersion =
+          typeof pluginVersionRaw === "string" ? pluginVersionRaw : undefined;
+
+        const traceContext = buildTelemetryTraceContext({
+          commandId,
+          operationId: rewrittenInput.operationId,
+          computeTargetId: target.id,
+          requestId,
+          pluginVersion,
+        });
+
+        const relayOperation = toRelayOperation(
+          commandId,
+          rewrittenInput,
+          signatureFields
+        );
+
+        const isUpdateAndRestart =
+          input.operationId === UPDATE_AND_RESTART_OPERATION_ID;
+        const dispatchCtx: DispatchContext = {
+          traceContext,
+          pluginVersion,
+          isUpdateAndRestart,
+        };
+
+        const dispatchResult = await dispatchRelayCommandToRelay({
+          targetId: target.id,
+          commandId,
+          relayOperation,
+          requestId,
+        });
+
+        return handleDispatchResult({
+          commandId,
+          createResult,
+          dispatchCtx,
+          dispatchResult,
+          rewrittenInput,
+          requestId,
+          signatureFields,
+          signingContext: prepared.signingContext,
+          target,
+          receipts,
+        });
+      } catch (error) {
+        return handleCreateCommandError(error);
+      }
     }
-    const { target, input, rewrittenInput, requestId, signatureFields } =
-      prepared;
-
-    const createResult = await desktopCommandStore.createCommand(
-      target.id,
-      rewrittenInput,
-      buildTelemetryTraceContext({
-        computeTargetId: target.id,
-        operationId: rewrittenInput.operationId,
-        requestId,
-      })
-    );
-
-    const { commandId } = createResult.command;
-
-    const pluginVersionRaw = target.capabilities.pluginVersion;
-    const pluginVersion =
-      typeof pluginVersionRaw === "string" ? pluginVersionRaw : undefined;
-
-    const traceContext = buildTelemetryTraceContext({
-      commandId,
-      operationId: rewrittenInput.operationId,
-      computeTargetId: target.id,
-      requestId,
-      pluginVersion,
-    });
-
-    const relayOperation = toRelayOperation(
-      commandId,
-      rewrittenInput,
-      signatureFields
-    );
-
-    const isUpdateAndRestart =
-      input.operationId === UPDATE_AND_RESTART_OPERATION_ID;
-    const dispatchCtx: DispatchContext = {
-      traceContext,
-      pluginVersion,
-      isUpdateAndRestart,
-    };
-
-    const dispatchResult = await dispatchRelayCommandToRelay({
-      targetId: target.id,
-      commandId,
-      relayOperation,
-      requestId,
-    });
-
-    return handleDispatchResult({
-      commandId,
-      createResult,
-      dispatchCtx,
-      dispatchResult,
-      rewrittenInput,
-      requestId,
-      signatureFields,
-      signingContext: prepared.signingContext,
-      target,
-    });
-  } catch (error) {
-    return handleCreateCommandError(error);
-  }
-});
+  )
+);

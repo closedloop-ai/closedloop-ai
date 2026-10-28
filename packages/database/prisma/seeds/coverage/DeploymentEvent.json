@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Append-only deployment history (ISS-4975); only the deployment webhook ingest writes it and nothing reads it yet."
+}

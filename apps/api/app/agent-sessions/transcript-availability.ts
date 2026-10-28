@@ -1,13 +1,19 @@
 import {
-  isRecoverableTranscriptSkipReason,
   TranscriptAvailability,
   type TranscriptAvailabilitySummary,
-  type TranscriptSkipReason,
   TranscriptUploadStatus,
-  toKnownTranscriptSkipReason,
 } from "@repo/api/src/types/desktop-transcripts";
 import { TranscriptDisposition } from "@repo/api/src/types/transcript-disposition-constants";
+import {
+  type TranscriptSkipReason,
+  toKnownTranscriptSkipReason,
+} from "@repo/api/src/types/transcript-skip-reason-constants";
+import {
+  dispositionForTerminalSkipReason,
+  type SessionTranscriptVerdict,
+} from "@repo/api/src/types/transcript-terminal-skip-disposition";
 import type { Prisma, SessionTranscript } from "@repo/database";
+import type { TranscriptArchiveProgressInput } from "./transcript-archive-progress";
 
 /**
  * FR8 availability-state derivation + shared session-transcript lookup helpers
@@ -40,6 +46,30 @@ export function sessionTranscriptIdentityWhere(identity: {
   };
 }
 
+/**
+ * The plural {@link sessionTranscriptIdentityWhere}: a set of composite identity
+ * predicates rather than a bare `externalSessionId IN (...)`, so Postgres can use
+ * the `(computeTargetId, externalSessionId, fileKey)` unique index and the scan
+ * is bounded by the requested identities rather than the org's entire transcript
+ * history. `computeTargetId` rides the predicate so a rare cross-target
+ * `externalSessionId` collision cannot pull in another session's rows.
+ */
+export function sessionTranscriptIdentitiesWhere(
+  organizationId: string,
+  identities: readonly {
+    computeTargetId: string;
+    externalSessionId: string;
+  }[]
+): Prisma.SessionTranscriptWhereInput {
+  return {
+    organizationId,
+    OR: identities.map((identity) => ({
+      computeTargetId: identity.computeTargetId,
+      externalSessionId: identity.externalSessionId,
+    })),
+  };
+}
+
 /** True when the rows already include the always-expected main transcript. */
 export function hasMainTranscript(
   rows: Pick<SessionTranscript, "fileKey">[]
@@ -66,6 +96,17 @@ export type TranscriptAvailabilityInput = Pick<
   SessionTranscript,
   "uploadStatus" | "uploadedAt" | "lastObservedAt"
 >;
+
+/** One stored transcript row as the session-detail enrichment reads it. */
+export type TranscriptAvailabilityRow = TranscriptAvailabilityInput &
+  TranscriptArchiveProgressInput &
+  Pick<
+    SessionTranscript,
+    | "computeTargetId"
+    | "externalSessionId"
+    | "fileKey"
+    | "permanentFailureReason"
+  >;
 
 /**
  * Narrow the free-text `SessionTranscript.permanentFailureReason` TEXT column to
@@ -167,15 +208,18 @@ export function toTranscriptAvailabilitySummary(
  *   started — the NORMAL "transcript uploading" case, not an error)
  * - `uploadFailed`→ `failedTransient` (a retryable attempt failure; the desktop
  *   re-queues with backoff).
- * - `permanentlyUnavailable` → `failedPermanent` for a HARD terminal skip
- *   (FEA-3476: `too_large`, `source_gone`, `retries_exhausted` — the transcript
- *   is never coming, no retry affordance), BUT `syncing` for a RECOVERABLE
- *   terminal skip (ISS-4695 item 3: `materialized_source_unavailable` — a
- *   batch-materialized OpenCode source that was absent this sweep but
- *   re-materializes on a later one). The reason is what disambiguates these two
- *   `permanentlyUnavailable` cases, so the main summary's
+ * - `permanentlyUnavailable` → one of THREE verdicts, chosen by the reason
+ *   (ISS-9884 made this no longer a binary): `failedPermanent` for a HARD
+ *   terminal skip (FEA-3476: `too_large`, `source_gone`, `retries_exhausted` —
+ *   the transcript is never coming, no retry affordance); `syncing` for a
+ *   RECOVERABLE skip whose source regenerates on its own (ISS-4695 item 3:
+ *   `materialized_source_unavailable` — a batch-materialized OpenCode source
+ *   that was absent this sweep but re-materializes on a later one); and
+ *   `failedTransient` for a RECOVERABLE skip the lane has STOPPED attempting
+ *   (ISS-9884: `environment_unavailable`). The reason is what disambiguates
+ *   those cases, so the main summary's
  *   {@link TranscriptAvailabilitySummary.permanentFailureReason} drives the
- *   verdict — a hard `failedPermanent` on a regenerable source would hide that
+ *   verdict — a hard `failedPermanent` on a recoverable source would hide that
  *   redrive/recovery is still possible.
  *
  * `neverExpected` is returned when the session has no transcript summaries at
@@ -191,14 +235,7 @@ export function toTranscriptAvailabilitySummary(
 export function deriveTranscriptDisposition(
   summaries: TranscriptAvailabilitySummary[]
 ): TranscriptDisposition {
-  const main = summaries.find((summary) => summary.fileKey === MAIN_FILE_KEY);
-  if (!main) {
-    return TranscriptDisposition.NeverExpected;
-  }
-  return dispositionForAvailability(
-    main.availability,
-    main.permanentFailureReason
-  );
+  return deriveTranscriptVerdict(summaries).disposition;
 }
 
 function dispositionForAvailability(
@@ -230,49 +267,6 @@ function dispositionForAvailability(
 }
 
 /**
- * ISS-4695 item 3 (Option A): resolve a `permanentlyUnavailable` file's
- * session-level verdict from WHY it was terminally skipped.
- *
- * - `materialized_source_unavailable` → `syncing`: a batch-materialized OpenCode
- *   source (`main.jsonl` re-derived from `opencode.db` every sweep) that was
- *   absent at sync time is RECOVERABLE — it re-materializes on a later sweep, so
- *   the cloud must NOT show a hard `failedPermanent` that hides that recovery.
- *   `syncing` keeps the aggregate honest as "still coming": it maps through
- *   {@link reconcileCloudSyncState} to a still-uploading `pending` disclosure
- *   rather than a settled one. (That mapping is display-only — it does not itself
- *   drive recovery. The actual redrive is `redriveOnStart` in
- *   `apps/desktop/src/main/app.ts`, matching the shared dead-letter prefix; this
- *   verdict only keeps the cloud from LYING that the row is settled while that
- *   desktop-side redrive can still re-materialize the source.)
- * - every other reason (`too_large`, `source_gone`, `retries_exhausted`) is a
- *   HARD terminal → `failedPermanent`: the transcript is never coming.
- * - `null` (an unknown/legacy reason the current build does not recognize, e.g.
- *   an older API row, degraded to `null` by `normalizeSkipReason`) defaults to
- *   the conservative HARD `failedPermanent` — the prior FEA-3476 behavior — so a
- *   value we cannot classify never LIES as recoverable.
- *
- * ISS-4820 (whitlockk review): the hard/recoverable SPLIT itself is not re-decided
- * here — it is read from {@link isRecoverableTranscriptSkipReason}, the shared
- * SSOT in the wire contract, which carries the exhaustive switch (a newly added
- * reason fails typecheck there until someone classifies it deliberately). This
- * function owns only the mapping from that split to a
- * {@link TranscriptDisposition}, plus the `null` default. Previously the split
- * was re-stated here, in the renderer, and in the server's write precedence —
- * three places to wire the next recoverable reason into, which is how the
- * classification drifted in the first place.
- */
-function dispositionForTerminalSkipReason(
-  reason: TranscriptSkipReason | null
-): TranscriptDisposition {
-  if (reason === null) {
-    return TranscriptDisposition.FailedPermanent;
-  }
-  return isRecoverableTranscriptSkipReason(reason)
-    ? TranscriptDisposition.Syncing
-    : TranscriptDisposition.FailedPermanent;
-}
-
-/**
  * Stable per-session key for grouping `SessionTranscript` rows by their session
  * identity `(computeTargetId, externalSessionId)` — the identity the list-row
  * transcript-disposition batch groups on. `organizationId` is already fixed for
@@ -287,15 +281,19 @@ export function sessionTranscriptGroupKey(identity: {
 }
 
 /**
- * PRD-536 G1 (Phase 3): derive the session-level {@link TranscriptDisposition}
- * for every session on a Sessions LIST page in ONE pass, so the list row can
- * render the same freshness affordance the detail Properties panel does without
- * a per-row detail fetch.
+ * PRD-536 G1 (Phase 3): derive the session-level
+ * {@link SessionTranscriptVerdict} for every session on a Sessions LIST page in
+ * ONE pass, so the list row can render the same freshness affordance the detail
+ * Properties panel does without a per-row detail fetch.
+ *
+ * ISS-9884 widened the value from the bare disposition to the verdict PAIR. The
+ * pass is unchanged and there is still no second query — the reason was always
+ * in hand on the main summary; nothing carried it out.
  *
  * `rows` is the flat set of `SessionTranscript` rows for the page's sessions
  * (one batched `findMany`, filtered by `organizationId` + `externalSessionId IN
  * [...]`). Rows are grouped by session identity via {@link sessionTranscriptGroupKey}
- * and each group is folded with the SAME {@link deriveTranscriptDisposition} the
+ * and each group is folded with the SAME {@link deriveTranscriptVerdict} the
  * detail path uses (SSOT). A session with no rows in the batch is simply absent
  * from the returned map — the projection then omits `transcriptDisposition` for
  * that row (honest "no verdict yet" rather than a fabricated one). The main
@@ -303,7 +301,7 @@ export function sessionTranscriptGroupKey(identity: {
  * detail enrichment (PRD AC6), so a session that has synced a subagent file but
  * not `main` still folds to `syncing` rather than `neverExpected`.
  */
-export function deriveTranscriptDispositionsBySession(
+export function deriveTranscriptVerdictsBySession(
   rows: (Pick<
     SessionTranscript,
     | "fileKey"
@@ -312,7 +310,7 @@ export function deriveTranscriptDispositionsBySession(
     | "externalSessionId"
   > &
     TranscriptAvailabilityInput)[]
-): Map<string, TranscriptDisposition> {
+): Map<string, SessionTranscriptVerdict> {
   const rowsByKey = new Map<string, TranscriptAvailabilitySummary[]>();
   const hasMainByKey = new Map<string, boolean>();
   for (const row of rows) {
@@ -325,7 +323,7 @@ export function deriveTranscriptDispositionsBySession(
     }
   }
 
-  const dispositionByKey = new Map<string, TranscriptDisposition>();
+  const verdictByKey = new Map<string, SessionTranscriptVerdict>();
   for (const [key, summaries] of rowsByKey) {
     // Mirror the detail enrichment: a session always expects a `main` file, so
     // synthesize a `missing` main when the batch caught only subagent rows — the
@@ -333,7 +331,73 @@ export function deriveTranscriptDispositionsBySession(
     if (!hasMainByKey.get(key)) {
       summaries.unshift(missingMainSummary());
     }
-    dispositionByKey.set(key, deriveTranscriptDisposition(summaries));
+    verdictByKey.set(key, deriveTranscriptVerdict(summaries));
   }
-  return dispositionByKey;
+  return verdictByKey;
+}
+
+/**
+ * ISS-9884: {@link deriveTranscriptDisposition} plus the reason behind it, from
+ * the same single pass over the same main summary. The disposition-only export
+ * is now a projection of THIS function rather than a parallel implementation,
+ * so the verdict a list row renders and the verdict the detail path derives
+ * cannot disagree about which reason produced which state.
+ */
+export function deriveTranscriptVerdict(
+  summaries: TranscriptAvailabilitySummary[]
+): SessionTranscriptVerdict {
+  const main = summaries.find((summary) => summary.fileKey === MAIN_FILE_KEY);
+  if (!main) {
+    return {
+      disposition: TranscriptDisposition.NeverExpected,
+      reason: null,
+    };
+  }
+  return {
+    disposition: dispositionForAvailability(
+      main.availability,
+      main.permanentFailureReason
+    ),
+    reason:
+      main.availability === TranscriptAvailability.PermanentlyUnavailable
+        ? main.permanentFailureReason
+        : null,
+  };
+}
+
+/**
+ * ISS-11089: whether this row's bytes are PERMANENTLY unrecoverable — the
+ * desktop terminally skipped the file AND the reason it gave is a hard one, so
+ * no retry, re-materialization or returning transport can ever produce it.
+ *
+ * This is the row-level twin of the `Skipped` arm of
+ * {@link deriveTranscriptAvailability} narrowed by
+ * {@link dispositionForTerminalSkipReason}, and it deliberately does NOT route
+ * through the former: that function reads `uploadedAt`/`lastObservedAt` and
+ * calls `.getTime()` on one of them, which is correct where a full row is in
+ * hand and a `TypeError` where a narrower persisted-row `select` is. The byte
+ * fold that consumes this must degrade rather than 500 a whole session-detail
+ * read, so it asks the two fields it can actually rely on. The two are held
+ * together by a test, not by prose — `transcript-availability.test.ts` asserts
+ * that every status/reason pair this returns `true` for also derives
+ * `permanentlyUnavailable` and `failedPermanent`.
+ *
+ * `skipped` alone is NOT enough and must not be substituted for this (ISS-9884
+ * / ISS-4695 item 3): `materialized_source_unavailable` re-materializes on a
+ * later sweep and `environment_unavailable` uploads once the transport is back,
+ * so counting either as unrecoverable would tell a reader a transcript is gone
+ * while it is still coming. An unknown or absent reason degrades to hard, which
+ * is {@link dispositionForTerminalSkipReason}'s own conservative default.
+ */
+export function isPermanentlyUnrecoverableTranscript(
+  row: Pick<SessionTranscript, "uploadStatus" | "permanentFailureReason">
+): boolean {
+  if (row.uploadStatus !== TranscriptUploadStatus.Skipped) {
+    return false;
+  }
+  return (
+    dispositionForTerminalSkipReason(
+      normalizeSkipReason(row.permanentFailureReason)
+    ) === TranscriptDisposition.FailedPermanent
+  );
 }

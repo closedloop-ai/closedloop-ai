@@ -25,7 +25,12 @@ export function attachCanonicalCloudDetailCost(
   detail.estimatedCostUsd = replicatedUsd;
   detail.attributedCostUsd = attributedUsd;
   for (const session of detail.sessions) {
-    session.branchCount = branchCounts.get(session.sessionId) ?? 1;
+    const branchCount = branchCounts.get(session.sessionId);
+    if (branchCount === undefined) {
+      Reflect.deleteProperty(session, "branchCount");
+    } else {
+      session.branchCount = branchCount;
+    }
   }
   attachSessionEvenSplitCosts(detail, branchCounts);
 

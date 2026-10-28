@@ -16,12 +16,12 @@
  * `representedSubagentIds`, which could hide a REAL subagent behind the anchor.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { UNATTRIBUTED_SUBAGENT_ID } from "@repo/lib/harness/claude/parse-claude-subagents";
 import type {
   NormalizedSession,
   NormalizedSubagent,
 } from "@repo/lib/harness/types";
+import { test } from "vitest";
 import { pairDelegationsWithSubagents } from "../src/main/database/subagent-spawn-matching.js";
 
 const TS = "2026-07-09T12:00:01.000Z";

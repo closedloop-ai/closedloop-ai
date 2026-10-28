@@ -1,0 +1,68 @@
+-- ISS-9630: record whether a command was ever ANSWERED, not just how long the
+-- current delivery has waited.
+--
+-- WHAT ASKS FOR IT. `queued_at` (ISS-7223) measures the age of the CURRENT
+-- delivery, which is what the ack-timeout sweep bands on. It cannot answer a
+-- different question the delivery guarantee depends on: has this command ever
+-- been answered by the target at all? `requeueUndeliveredCommands` returns an
+-- accepted or running row to `queued` with a fresh `queued_at` on reconnect, so
+-- a command the target ACKED and began running is byte-identical, on the
+-- columns that exist today, to one that never arrived — both are
+-- `status = 'queued'` with a recent `queued_at`. The cloud therefore cannot
+-- distinguish "never executed" from "executed once, ack lost, then requeued".
+--
+-- That distinction is the whole safety question for any retry policy, because
+-- these commands spawn local CLI processes (Claude, git, codex) on the target.
+-- Re-delivering one that already ran re-runs it. Comparing the two timestamps
+-- answers it: `acked_at < queued_at` means the answer on record belongs to an
+-- EARLIER delivery, so the work may already have happened on the target, while
+-- `acked_at IS NULL` means no delivery was ever answered.
+--
+-- WHY NULLABLE. NULL means NOT KNOWN TO HAVE BEEN ANSWERED — never "known not
+-- answered". That is the honest reading for a command still waiting on its
+-- first ack, and for a terminal row whose ack predates this column. Every
+-- reader is held to it: `wasAnsweredOnEarlierDelivery` treats NULL as "no
+-- earlier answer on record" and its contract says in as many words that a
+-- `false` is not a license to redispatch.
+--
+-- WHAT IS BACKFILLED, AND WHY ONLY THAT (codex on #7012). A row sitting in
+-- `accepted` or `running` reached that state only because the target answered
+-- it — `acknowledgeCommand` sets `accepted`, and a streamed event sets
+-- `running`. Leaving those NULL would be the one case where NULL is not merely
+-- unknown but demonstrably WRONG: the first post-deploy reconnect requeues
+-- exactly these rows with a fresh `queued_at`, and a later crossing would then
+-- report `previouslyAcked = false` for work the target had already taken —
+-- corrupting the very population this column exists to size.
+--
+-- The value is `queued_at`, the entry that answer belongs to, which is
+-- precisely what the ack path now writes for a same-delivery ack; `created_at`
+-- stands in where `queued_at` predates ISS-7223. Nothing is invented: the state
+-- is the evidence, and the timestamp is a column already on the row. It reads
+-- as "answered on the delivery it is on" until a requeue advances `queued_at`
+-- past it, at which point it correctly reads as an earlier delivery.
+--
+-- Bounded to live in-flight rows, so this is not the full-table rewrite a
+-- history backfill would be: `desktop_commands` has no retention sweep — the
+-- only deleteMany in the repo is the seed reset — so terminal rows accumulate
+-- indefinitely, and for them no ack time exists to recover and no retry ever
+-- reads one. Queued rows are untouched for the same reason: a queued row's
+-- state proves nothing about whether any delivery was answered.
+--
+-- DELIBERATELY NO DEFAULT. `queued_at` carries `DEFAULT CURRENT_TIMESTAMP`
+-- because a row is queued at insert. An ack is an event that may never happen,
+-- so a default would stamp every command as answered the moment it was created
+-- — inverting the column's only meaning. This is catalog-only and does not
+-- rewrite the table.
+--
+-- NO INDEX. Nothing filters or orders on this column: the sweep's band
+-- predicate is unchanged (`status = 'queued'` over `queued_at`, served by
+-- `desktop_commands_queued_at_idx`), and `acked_at` is read only as a projected
+-- column on rows that predicate already selected. Adding an index for a value
+-- no WHERE clause names would be dead weight on every write. A later change
+-- that does filter on it owes the index in the same PR, per apps/api/AGENTS.md.
+ALTER TABLE "desktop_commands" ADD COLUMN "acked_at" TIMESTAMP(3);
+
+UPDATE "desktop_commands"
+SET "acked_at" = COALESCE("queued_at", "created_at")
+WHERE "status" IN ('accepted', 'running')
+  AND "acked_at" IS NULL;

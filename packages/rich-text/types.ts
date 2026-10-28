@@ -42,6 +42,11 @@ export type RichTextEditorProps = {
    */
   liveblocksIsReady?: boolean;
   /**
+   * When true, an empty synced collaboration document is never seeded from
+   * `value`, because the service seeds it (ISS-12508). Defaults to false.
+   */
+  skipEmptyRoomSeed?: boolean;
+  /**
    * Where scrolling is handled for the editor content.
    * "inner" keeps scroll inside the editor; "outer" lets a parent container scroll.
    */
@@ -58,15 +63,12 @@ export type RichTextEditorProps = {
    */
   toolbarMode?: "always" | "focus";
   /**
-   * Opt into the interactive mermaid viewer (pan/zoom, fullscreen, minimap,
-   * export). When false (or unset), mermaid diagrams render as a static SVG
-   * with a hover-reveal edit button. Gated by the `mermaid-enhancements`
-   * feature flag at call sites.
-   */
-  mermaidEnhancementsEnabled?: boolean;
-  /**
-   * Enables document inline-image controls and URL resolution. The image schema
-   * stays registered even when this is false so collaborators do not drop refs.
+   * Enables the document inline-image AUTHORING controls — the toolbar button,
+   * and the paste and drop upload paths. It no longer gates URL resolution:
+   * since ISS-8387 a ref is resolved exactly when `resolveInlineImages` is
+   * supplied, so a host that wants reading closed withholds that prop rather
+   * than relying on this one. The image schema stays registered even when this
+   * is false so collaborators do not drop refs.
    */
   inlineImagesEnabled?: boolean;
   /**
@@ -76,6 +78,14 @@ export type RichTextEditorProps = {
   uploadInlineImage?: (file: File) => Promise<InlineImageUploadResult>;
   /**
    * App-owned resolver for turning durable attachment refs into display URLs.
+   *
+   * MUST be referentially stable across the host's renders. Since ISS-9795 the
+   * resolver reaches each image's node view through React context, and the node
+   * view keys its fetch on this callback's identity, so a host that rebuilds it
+   * every render clears and re-fetches every image in the document every render
+   * (ISS-9805). Memoize it — `useCallback`, or a `useMemo`'d options object as
+   * `useInlineImageEditorOptions` does. The identity-keyed behaviour this rests
+   * on is pinned by `inline-image-node-view.test.tsx`.
    */
   resolveInlineImages?: InlineImageResolver;
   /**

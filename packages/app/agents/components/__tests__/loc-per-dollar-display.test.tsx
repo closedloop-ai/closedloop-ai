@@ -10,10 +10,7 @@ import {
   type AgentSessionUsageSummary,
   AgentSessionViewerScope,
 } from "@repo/api/src/types/agent-session";
-import {
-  LOC_PER_DOLLAR_LABEL,
-  LOC_PER_DOLLAR_MERGED_LABEL,
-} from "@repo/api/src/utils/loc-per-dollar";
+import { LOC_PER_DOLLAR_LABEL } from "@repo/api/src/utils/loc-per-dollar";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { AppCoreStoryProviders } from "../../../shared/storybook/decorators";
@@ -184,25 +181,19 @@ describe("Agents metric-mode picker (ISS-4866 item 1)", () => {
   });
 });
 
-describe("Sessions merged LOC/$ card scope label (ISS-4866 item 3)", () => {
-  it("names the population the merged card actually computes", () => {
-    renderSummaryCards();
-
-    expect(screen.getByText(LOC_PER_DOLLAR_MERGED_LABEL)).toBeInTheDocument();
-    // Built FROM the shared unit constant, so the unit itself cannot drift.
-    expect(LOC_PER_DOLLAR_MERGED_LABEL.startsWith(LOC_PER_DOLLAR_LABEL)).toBe(
-      true
-    );
-  });
-
-  it("never renders the bare unit label the merged scope replaced", () => {
-    // The retired rendering. `LOC_PER_DOLLAR_LABEL` is a strict prefix of the
-    // merged label, so this is asserted with `exact` — otherwise the merged
-    // label would satisfy it and the case would prove nothing.
+// ISS-9964 / ISS-9980 (RULED 2026-09-11): ISS-4866 item 3's second label
+// constant is retired. `LOC_PER_DOLLAR_MERGED_LABEL` existed to say that the
+// Sessions card computed a NARROWER population than the surfaces sharing the
+// bare unit; the Sessions ratio is now merged-authored-PR-only everywhere it is
+// rendered, so the qualifier distinguishes nothing and one constant survives.
+// Both cases below asserted that retired split — the `(Merged)` suffix renders,
+// and the bare unit does NOT — so their expectations have no subject left.
+describe("Sessions LOC/$ card label (ISS-9964)", () => {
+  it("renders the one surviving unit label", () => {
     renderSummaryCards();
 
     expect(
-      screen.queryByText(LOC_PER_DOLLAR_LABEL, { exact: true })
-    ).not.toBeInTheDocument();
+      screen.getByText(LOC_PER_DOLLAR_LABEL, { exact: true })
+    ).toBeInTheDocument();
   });
 });

@@ -7,6 +7,7 @@
  * facet-scoping step as well as the two failure domains.
  */
 
+import { isReadCancelledError } from "../../shared/read-cancellation-contract.js";
 import type {
   SharedAgentSessionsListRequest,
   SharedAgentSessionsPageDataResponse,
@@ -14,6 +15,7 @@ import type {
 import { emptySharedAgentSessionsPageDataResponse } from "../../shared/shared-agent-sessions-contract.js";
 import { isTransientDbHostError } from "../../shared/transient-db-host-error.js";
 import type { AgentSessionSyncSource } from "../agent-sync/agent-session-sync-source.js";
+import { SESSION_COMPACT_FILTER_VERSION } from "../agent-sync/session-compact-filter-capabilities.js";
 import {
   type GetSharedAgentSessionsOptions,
   getSharedAgentSessions,
@@ -26,22 +28,50 @@ import { applyFacetScopedCounts } from "./shared-agent-sessions-facet-usage.js";
  * `getSharedBranchesPageData`. The desktop Sessions view mounts the paginated
  * table and its prop-driven summary cards together, so serving both from one IPC
  * call reuses the same request/window instead of the two issuing independent
- * reads. `getSharedAgentSessionUsage` already prefers the metadata-only SQL
- * `aggregateUsage` (COUNT/SUM/GROUP BY over the token tables — never a full
- * corpus hydrate), so the usage half stays cheap; the list half is the same
- * paginated read `getSharedAgentSessions` performs. Run concurrently so the
- * combined call is no slower than the slower of the two. An absent source
+ * reads. Supported quality/facet combinations stay on the grouped SQLite
+ * aggregate, while the list pages before projecting visible rows. The list half
+ * is the same paginated read
+ * `getSharedAgentSessions` performs. A writer revision change prompts at most
+ * two fresh attempts, but unrelated writes cannot discard the last completed
+ * page. The counter is a best-effort change signal, not an atomic snapshot
+ * across the separate list and usage operations. An absent source
  * degrades to the empty combined shape, matching each half's own guard.
  */
 export async function getSharedAgentSessionsPageData(
   source: AgentSessionSyncSource | null | undefined,
   request: SharedAgentSessionsListRequest = {},
-  options: GetSharedAgentSessionsOptions = {}
+  options: GetSharedAgentSessionsOptions = {},
+  listReader?: () => Promise<Awaited<ReturnType<typeof getSharedAgentSessions>>>
 ): Promise<SharedAgentSessionsPageDataResponse> {
   if (!source) {
     return emptySharedAgentSessionsPageDataResponse();
   }
 
+  let revision = await readSessionStoreRevision(source);
+  if (revision === null) {
+    return readPageDataOnce(source, request, options, listReader);
+  }
+  let remainingRetries = 2;
+  while (true) {
+    const page = await readPageDataOnce(source, request, options, listReader);
+    const nextRevision = await readSessionStoreRevision(source);
+    if (nextRevision === revision) {
+      return page;
+    }
+    if (nextRevision === null || remainingRetries === 0) {
+      return page;
+    }
+    remainingRetries -= 1;
+    revision = nextRevision;
+  }
+}
+
+async function readPageDataOnce(
+  source: AgentSessionSyncSource,
+  request: SharedAgentSessionsListRequest,
+  options: GetSharedAgentSessionsOptions,
+  listReader?: () => Promise<Awaited<ReturnType<typeof getSharedAgentSessions>>>
+): Promise<SharedAgentSessionsPageDataResponse> {
   // FEA-4177 — independent failure domains. These are two separate SQL reads;
   // `Promise.all` gave them ONE failure domain, so a usage-aggregate failure
   // AFTER the list succeeded discarded the rows and errored the whole table.
@@ -49,13 +79,24 @@ export async function getSharedAgentSessionsPageData(
   // the table shows a real error), but a usage failure degrades ONLY the summary
   // cards (`usage` omitted, `usageError: true`) while the list still renders.
   const [listResult, usageResult] = await Promise.allSettled([
-    getSharedAgentSessions(source, request, options),
+    listReader?.() ?? getSharedAgentSessions(source, request, options),
     getSharedAgentSessionUsage(source, request),
   ]);
   if (listResult.status === "rejected") {
     throw listResult.reason;
   }
   if (usageResult.status === "rejected") {
+    // ISS-9802 (whitlockk review): a CANCELLATION is not a usage failure, and the
+    // degrade below would turn the caller's own abort into `usageError: true` —
+    // summary cards reporting a problem for a read the user superseded. It is
+    // re-thrown for the same reason the list half re-throws and the analytics
+    // aggregate stops degrading: the read never finished, so the honest answer
+    // is "unknown", never a fabricated one. Reachable only since this change
+    // gave `aggregateSqliteUsage` its `yieldDbHostLoop()` checkpoints — before
+    // them the usage half could not receive a cancellation at all.
+    if (isReadCancelledError(usageResult.reason)) {
+      throw usageResult.reason;
+    }
     // ISS-4483 (review cid 3679616168, whitlockk): a usage-half rejection that is a
     // transient db-host lifecycle failure (the child restarting mid-backfill)
     // must not blank the cards to a fatal dash. The combined read still RESOLVES
@@ -85,39 +126,41 @@ export async function getSharedAgentSessionsPageData(
     }
     return { list: listResult.value, usageError: true };
   }
-  // FEA-4192: reconcile the summary session COUNT with the list — the single
-  // source of truth for this rationale (renderer callers point here). The list
-  // half applies the Substantive|Idle|All quality segment (`matchesListQuery`);
-  // the usage half is intentionally all-quality so its token/cost totals stay
-  // byte-for-byte in step with the SQL `aggregateUsage` path (FEA-1834 §4), which
-  // cannot express the substantive predicate on the column-less desktop
-  // `sessions` table. That left `totalSessions` — the "Sessions" summary card —
-  // counting the all-quality corpus while the visible list showed the
-  // quality-gated subset, so the card contradicted the list total whenever the
-  // segment was not `all`. Mirror the already-quality-gated `list.total` into the
-  // count; the token/cost cards keep their all-quality basis by design.
-  //
-  // This is NOT full parity with the cloud SSOT, and the asymmetry is deliberate:
-  // web `buildWhere` gates ALL THREE cards (count AND token/cost) in one SQL
-  // predicate, so under a non-`all` segment web describes the gated set across the
-  // whole row. Desktop can only gate the COUNT (the substantive predicate isn't
-  // SQL-expressible here), so under a non-`all` segment its token/cost cards
-  // describe a LARGER (all-quality) population than its count — two populations in
-  // one row. The desktop Sessions UI stays consistent today because it never
-  // sends a non-`all` segment: `buildFacetQuery` omits `quality`, so
-  // `coerceSessionQuality` fails open to `all` and all three cards describe one
-  // population on screen. Any caller that DOES pass a non-`all` segment here (the
-  // API contract, the tests below, or a future desktop quality toggle) owns
-  // giving the token/cost cards an honest per-basis caption in
-  // `packages/app/agents/components/sessions/sessions-summary-cards.tsx` — e.g.
-  // "all sessions in range" — before the mixed-basis row can reach a user.
+  // Both reads apply the same quality predicate. Keep the usage count from its
+  // own aggregate so count, tokens and cost retain one population.
   // ISS-5283 (whitlockk review): scope each FILTERED facet's option counts to every
   // OTHER active filter — see `shared-agent-sessions-facet-usage.ts`. Unfiltered
   // dimensions reuse this summary and issue no extra read.
   const usage = await applyFacetScopedCounts(
-    { ...usageResult.value, totalSessions: listResult.value.total },
+    usageResult.value,
     request,
     (relaxed) => getSharedAgentSessionUsage(source, relaxed)
   );
   return { list: listResult.value, usage };
+}
+
+async function readSessionStoreRevision(
+  source: AgentSessionSyncSource
+): Promise<number | null> {
+  if (!source.readSessionCompactFilterCapabilities) {
+    return null;
+  }
+  try {
+    const capabilities = await source.readSessionCompactFilterCapabilities();
+    const revision = capabilities.storeRevision;
+    if (
+      capabilities.cursor !== SESSION_COMPACT_FILTER_VERSION ||
+      capabilities.usage !== SESSION_COMPACT_FILTER_VERSION ||
+      !Number.isSafeInteger(revision) ||
+      (revision ?? -1) < 0
+    ) {
+      return null;
+    }
+    return revision ?? null;
+  } catch (error) {
+    if (isTransientDbHostError(error)) {
+      throw error;
+    }
+    return null;
+  }
 }

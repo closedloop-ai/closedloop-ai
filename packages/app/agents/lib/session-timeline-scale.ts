@@ -15,7 +15,8 @@
  * column width, the window start picks which stretch of the session those 24
  * columns cover, and the bar count stops moving.
  *
- * Mirrors the prototype's `apps/prototypes/app/p/sessions/timeline-model.ts`,
+ * Mirrors the legacy Web Master fixture's
+ * `packages/app/agents/components/sessions/web-master-legacy-preview/timeline-model.ts`,
  * which is the source of truth for this screen. It is re-declared rather than
  * imported because `apps/prototypes` is a presentational sandbox that production
  * must not depend on; the four scale values, the 24-column constant and the

@@ -1,6 +1,6 @@
 import { vi } from "vitest";
-import type { TranscriptS3Port } from "@/app/desktop/transcripts/service";
 import { TranscriptRateLimiter } from "@/app/desktop/transcripts/transcript-rate-limit";
+import type { TranscriptS3Port } from "@/app/desktop/transcripts/transcript-s3-port";
 
 /**
  * Shared pure fixtures for the transcript sync-service test suites

@@ -36,18 +36,29 @@
  *   will not write (a foreign chunk, whose revision does not match the pending
  *   assembly) while still accepting the batch.
  */
-import { SyncReason } from "@closedloop-ai/telemetry-contract/sync";
+import {
+  SyncPayloadShaping,
+  SyncReason,
+} from "@closedloop-ai/telemetry-contract/sync";
 import type { AgentSessionSyncMode } from "@repo/api/src/types/agent-session";
 import {
-  type DesktopSyncBatchEventInput,
   DesktopSyncBatchOutcome,
+  type SessionSyncBatchEvent,
 } from "../telemetry/app-otel-runtime.js";
+import {
+  type FreshestSessionLagAnomaly,
+  resolveFreshestSessionLagMs,
+} from "./agent-session-freshness-lag.js";
+import { reportUnsendableComponentUsage } from "./agent-session-payload-preparation.js";
 import type { BoundedFailureFoldConfig } from "./agent-session-sync-ack-fold.js";
 import {
   ACK_OMITTED_BACKOFF_MS,
   MAX_ACK_OMITTED_DEAD_LETTERS,
   MAX_CONSECUTIVE_ACK_OMITTED,
 } from "./agent-session-sync-backoff-policy.js";
+import type { UnsendableComponentUnits } from "./agent-session-sync-payload.js";
+import type { OutboxClearVerdict } from "./outbox-clear-result.js";
+import type { PriorityUploadClaim } from "./priority-upload-claims.js";
 
 export type AcceptedAckInput = {
   syncMode: AgentSessionSyncMode;
@@ -65,7 +76,98 @@ export type AcceptedAckInput = {
   remainingChunks: number | null;
   /** The server's per-row echo, when the request gated it open. */
   acceptedSessionIds?: readonly string[];
+  /**
+   * ISS-7496: newest parseable `updatedAt` among the sessions this batch put on
+   * the wire, in epoch ms, read at send time off the payload itself.
+   *
+   * `null` means the batch carried none — a corrupt local row, since `updatedAt`
+   * is required on the wire type. `undefined` means this caller did not measure
+   * one, which is the silent arm: only a measured impossibility is a finding.
+   */
+  freshestUpdatedAtMs?: number | null;
+  /**
+   * ISS-7265: the ids of the sessions this batch put on the wire WITHOUT their
+   * activity tiling, read at send time off the payload itself.
+   *
+   * Ids and not a count, because the harm this measures is a session being
+   * permanently DEQUEUED while the cloud holds no tiling for it, and only the
+   * server's echo says which sessions that actually happened to. `undefined`
+   * means this caller measured nothing; `[]` means it measured none.
+   */
+  tilingStrippedSessionIds?: readonly string[];
+  /**
+   * ISS-6999: the component-usage rows the session in this batch shipped
+   * WITHOUT, measured at prepare time against the bytes that actually went out.
+   *
+   * Present only on the FINAL chunk of a sequence that skipped something, so
+   * reaching the delivery path with it set means those rows are now permanently
+   * absent from the cloud. `undefined` means either nothing was skipped or this
+   * caller never measured — both correctly report nothing.
+   */
+  unsendableComponentUnits?: UnsendableComponentUnits;
+  /**
+   * ISS-10332: the priorities the sent sessions carried, read at send time off
+   * the payload itself (`priorityUploadClaims`).
+   */
+  priorityUploadClaims?: readonly PriorityUploadClaim[];
 };
+
+/**
+ * What the send frame measured off the payload it sent, for the ack and failure
+ * paths the ack itself does not echo. ISS-7248: `batchId` joins this attempt to
+ * its server-side half, and `drainingPendingChunkTail` says whether it drained an
+ * already-open chunk tail.
+ */
+export type SentBatchAttempt = {
+  batchId: string;
+  drainingPendingChunkTail: boolean;
+  /** ISS-7265: which sent sessions shipped without their tiling. */
+  tilingStrippedSessionIds: readonly string[];
+  /** ISS-7496: the sent payload's newest `updatedAt`; null when it had none. */
+  freshestUpdatedAtMs: number | null;
+  unsendableComponentUnits?: UnsendableComponentUnits;
+  priorityUploadClaims: readonly PriorityUploadClaim[];
+};
+
+/**
+ * Assemble {@link AcceptedAckInput} from what the send frame holds. Lives with
+ * its consumer rather than in the grandfathered sync-service file, which is
+ * shrink-only — the same reason this whole module was extracted.
+ *
+ * `acceptedSessionIds` is OMITTED rather than set to `undefined` when the server
+ * sent no echo: absence is the legacy whole-batch contract, and a present-but-
+ * undefined key would read the same to `splitAckedIds` only by luck.
+ */
+export function acceptedAckInput(source: {
+  syncMode: AgentSessionSyncMode;
+  ids: string[];
+  sessionCount: number;
+  payloadBytes: number;
+  latencyMs: number;
+  hasMoreChunks: boolean;
+  /** Chunks still pinned behind this one; only meaningful mid-sequence. */
+  pendingChunkCount: number | null;
+  acceptedSessionIds?: readonly string[];
+  attempt: Omit<SentBatchAttempt, "batchId" | "drainingPendingChunkTail">;
+}): AcceptedAckInput {
+  const { attempt, hasMoreChunks } = source;
+  return {
+    syncMode: source.syncMode,
+    ids: source.ids,
+    sessionCount: source.sessionCount,
+    payloadBytes: source.payloadBytes,
+    latencyMs: source.latencyMs,
+    hasMoreChunks,
+    remainingChunks: hasMoreChunks ? source.pendingChunkCount : null,
+    ...(source.acceptedSessionIds
+      ? { acceptedSessionIds: source.acceptedSessionIds }
+      : {}),
+    freshestUpdatedAtMs: attempt.freshestUpdatedAtMs,
+    tilingStrippedSessionIds: attempt.tilingStrippedSessionIds,
+    unsendableComponentUnits: attempt.unsendableComponentUnits,
+    priorityUploadClaims: attempt.priorityUploadClaims,
+  };
+}
 
 /**
  * The per-row failure/budget state a VERIFIED ack resets. Passed as the live
@@ -73,13 +175,31 @@ export type AcceptedAckInput = {
  * processing order, not as a dozen callbacks.
  */
 export type AcceptedAckRowState = {
+  /**
+   * ISS-11427: the set-aside marker. The incremental feed re-sends a
+   * dead-lettered session whenever it changes, and the verified ack that lands
+   * it deletes the outbox row, so the marker would otherwise outlive the
+   * delivery and the row would go on reporting a dead letter it no longer is.
+   */
+  deadLetteredIds: Map<string, number>;
   timeoutCountById: Map<string, number>;
   /**
    * FEA-1461: a successful ack resets the rate-limit counter and clears any
    * deferred-retry deadline, so a future rejection starts over at 1.
    */
   rateLimitedCountById: Map<string, number>;
+  /** ISS-8595: the tally for an ack reason this build could not name. */
+  unknownAckReasonCountById: Map<string, number>;
   ingestionFailedCountById: Map<string, number>;
+  /**
+   * ISS-7730: a verified ack is the strongest possible proof the lane is
+   * reachable, so it ends any lane-wide stall run outright. No durable clear of
+   * THIS clock is needed alongside it — the ack deletes the outbox row that
+   * carried it. The lane-level ISS-9418 give-up is a different column on a row
+   * the ack does not delete, so it is cleared explicitly through
+   * `AcceptedAckDeps.clearLaneGiveUp`.
+   */
+  laneStalledSinceMsById: Map<string, number>;
   validationFailedCountById: Map<string, number>;
   /** Goal stage 2: the server has now confirmed this exact row. */
   ackOmittedCountById: Map<string, number>;
@@ -106,12 +226,42 @@ export type AcceptedAckRowState = {
 
 export type AcceptedAckDeps = {
   rowState: AcceptedAckRowState;
-  /** The awaited, success-reporting durable clear (`clearOutboxOnAck`). */
-  clearOutboxDurably: (ids: string[]) => Promise<boolean>;
+  /**
+   * The awaited, success-reporting durable clear (`clearOutboxOnAck`).
+   * ISS-7957: `deletedRowCount` is the rows the delete actually removed, OMITTED
+   * when nothing measured one (a source with no outbox delegate, or a
+   * version-skewed db-host peer that predates the field).
+   */
+  clearOutboxDurably: (ids: string[]) => Promise<OutboxClearVerdict>;
   /** Superseded-lifecycle guard values, re-read AFTER the clear await. */
   sourceStateGeneration: () => number;
   isStarted: () => boolean;
+  /**
+   * ISS-8116 (davetho / whitlockk review): the pass's IDENTITY-only predicate,
+   * re-read after the tiling-debt and durable-clear awaits.
+   *
+   * The generation pair above cannot see a compute-target/account switch — that
+   * is the whole finding of ISS-6067 and ISS-8116 — so the pre-await check in
+   * `runSessionSyncPass` protected only ENTRY to this function. An identity that
+   * moved while `recordTilingDebt` or `clearOutboxDurably` was outstanding still
+   * reached the dequeue and the cursor persist below under the wrong key.
+   *
+   * Deliberately identity-only, without `shouldRun()`: the server already
+   * accepted this batch, so a readiness drop must not discard its ack and force
+   * a re-upload (see `SyncPassIdentityGuard.isCurrentSourceIdentity`).
+   */
+  isCurrentSourceIdentity: () => boolean;
   dequeue: (syncMode: AgentSessionSyncMode, ids: string[]) => void;
+  /**
+   * ISS-9418: clear this LANE's durable give-up
+   * (`SessionFoldRunners.clearLaneGiveUp`). A verified ack clears it: the server
+   * took the bytes, so the world is demonstrably no longer the problem, which is
+   * the same evidence the per-row clocks reset on. Without it a lane that
+   * recovers the NORMAL way — batches start being accepted again — keeps its
+   * lane-run columns set indefinitely, because the only other clear is a
+   * row-attributable rejection a healthy corpus may never produce.
+   */
+  clearLaneGiveUp: () => void;
   persistCursorIfCaughtUp: () => void;
   applyBoundedFold: (config: BoundedFailureFoldConfig) => void;
   deadLetteredCount: () => number;
@@ -130,7 +280,30 @@ export type AcceptedAckDeps = {
   discardPendingChunkTail: () => void;
   schedulePendingPartDrain: () => void;
   scheduleImmediateDrainIfReadyWorkRemains: () => void;
-  emitTelemetry: (event: DesktopSyncBatchEventInput) => void;
+  emitTelemetry: (event: SessionSyncBatchEvent) => void;
+  /**
+   * ISS-7496: route an impossible freshness input to the monitored lane. Omitted
+   * in contexts with no telemetry runtime; the attribute is dropped either way,
+   * so a missing reporter costs the alert, never the batch.
+   */
+  reportFreshnessAnomaly?: (anomaly: FreshestSessionLagAnomaly) => void;
+  /**
+   * ISS-7265 AC3: hand the durable tiling-debt ledger this delivery's verdict —
+   * which confirmed sessions left without their tiling (now owed) and which left
+   * with it (debt settled). Optional so a context with no durable store drops
+   * the bookkeeping rather than the ack.
+   */
+  recordTilingDebt?: (debt: {
+    owed: string[];
+    settled: string[];
+  }) => Promise<void>;
+  /**
+   * ISS-10332: stop re-sending the priorities the CONFIRMED sessions carried.
+   * Optional so a context with no durable store keeps re-sending them.
+   */
+  settlePriorityUploads?: (
+    claims: readonly PriorityUploadClaim[]
+  ) => Promise<void>;
   logInfo: (message: string) => void;
   logError: (message: string) => void;
 };
@@ -155,7 +328,15 @@ export async function processAcceptedAck(
     return;
   }
   let deadLetteredOmitted = false;
-  if (!hasMoreChunks) {
+  // ISS-7957: the rows the durable clear actually removed. `undefined` means
+  // UNMEASURED and is carried as an omission all the way to the event.
+  let durablyClearedRows: number | undefined;
+  if (hasMoreChunks) {
+    // A non-final chunk dropped nothing: it acks a chunk, and the session
+    // dequeues only on its final one. That is a MEASURED zero, not an absent
+    // measurement — no clear was attempted and none was owed.
+    durablyClearedRows = 0;
+  } else {
     const advance = await advanceOnDurableClear(
       input,
       split,
@@ -166,6 +347,7 @@ export async function processAcceptedAck(
       return;
     }
     deadLetteredOmitted = advance.deadLetteredOmitted;
+    durablyClearedRows = advance.durablyClearedRows;
   }
   deps.logInfo(formatAckLine(input, split, deadLetteredOmitted, deps));
   if (hasMoreChunks) {
@@ -188,6 +370,19 @@ export async function processAcceptedAck(
     deps.emitTelemetry({
       ...spendBatchCost(),
       outcome: DesktopSyncBatchOutcome.Success,
+      ...resolveDeliveredStrip(input, split),
+      // ISS-7401/ISS-7957: rows the outbox delete ACTUALLY removed, threaded
+      // from `deleteMany`'s own `count` rather than inferred from the ack
+      // length. Those two disagree in the case that matters — an ack naming ids
+      // whose rows are already gone — and the ack length reported progress that
+      // had not happened. OMITTED when nothing measured a count (a source with
+      // no outbox delegate, a version-skewed db-host peer), because an omission
+      // reads as "unmeasured" downstream while a `0` reads as "measured, cleared
+      // nothing". Triage evidence on the alert. The cursor-stall detector reads
+      // it only when the lane's cursor boundary also moved forward (ISS-10429);
+      // the count-alone suppression PR #5915 removed stays removed.
+      ...(durablyClearedRows === undefined ? {} : { durablyClearedRows }),
+      ...resolveDeliveredFreshness(input, split, deps),
     });
   }
 }
@@ -227,19 +422,44 @@ async function advanceOnDurableClear(
   split: AckSplit,
   deps: AcceptedAckDeps,
   spendBatchCost: BatchCostLedger
-): Promise<{ advanced: boolean; deadLetteredOmitted: boolean }> {
+): Promise<{
+  advanced: boolean;
+  deadLetteredOmitted: boolean;
+  /** ISS-7957: absent when the clear reported no measurement. */
+  durablyClearedRows?: number;
+}> {
   const { syncMode } = input;
   const { ackedIds, omittedIds } = split;
   const generationAtAck = deps.sourceStateGeneration();
-  const cleared = await deps.clearOutboxDurably(ackedIds);
-  if (deps.sourceStateGeneration() !== generationAtAck || !deps.isStarted()) {
+  // ISS-7265 AC3: BEFORE the clear, deliberately. The server has already
+  // confirmed these rows, so what is owed is settled fact by now, and the two
+  // failure directions are not symmetric: a debt recorded for a delivery whose
+  // clear then fails costs one redundant re-queue that the next intact delivery
+  // settles, while a debt recorded AFTER a clear that committed is lost outright
+  // if the process dies in between — and the outbox row it would have leaned on
+  // is already gone. Over-record is cheap; under-record is the data loss this
+  // ledger exists to stop.
+  await recordTilingDebtForDelivery(input, split, deps);
+  await settlePriorityUploadsForDelivery(input, split, deps);
+  reportUnsendableComponentUsageForDelivery(input, split);
+  const clear = await deps.clearOutboxDurably(ackedIds);
+  if (
+    deps.sourceStateGeneration() !== generationAtAck ||
+    !deps.isStarted() ||
+    // ISS-8116: the generation pair above is blind to a compute-target/account
+    // switch, which moves the identity without bumping it. Without this third
+    // reading a batch acked under A dequeued and advanced A's cursor while B was
+    // live — the exact post-await hole the pre-`handleBatchAck` check could not
+    // close, because both of the awaits above sit inside it.
+    !deps.isCurrentSourceIdentity()
+  ) {
     // stop()/identity change raced the clear await. The durable delete (if it
     // committed) is still correct — those rows WERE acked — but the in-memory
     // state now belongs to a different lifecycle; leave it to the
     // reset/re-hydration machinery.
     return { advanced: false, deadLetteredOmitted: false };
   }
-  if (!cleared) {
+  if (!clear.cleared) {
     deps.logError(
       `acked batch (${syncMode}, ${ackedIds.length} session(s)) could not durably clear its outbox rows; ` +
         "leaving rows queued for a deduped re-send and retrying the clear on the next ack"
@@ -252,6 +472,12 @@ async function advanceOnDurableClear(
     return { advanced: false, deadLetteredOmitted: false };
   }
   clearRowFailureState(deps.rowState, ackedIds);
+  // ISS-9418: and the LANE-level give-up, on the same evidence and at the same
+  // moment. Unconditional, unlike the per-row clears above: the stamp is one
+  // fact about the lane, so it does not need an id to have held a clock, and
+  // clearing an absent stamp is the no-op the writer's change-detection makes
+  // free once hydration has told it what the column holds.
+  deps.clearLaneGiveUp();
   deps.dequeue(syncMode, ackedIds);
   // FEA-1962: once this dequeue empties both queues the client is fully caught
   // up — persist the watermark. Sequenced AFTER the committed outbox clear
@@ -280,7 +506,15 @@ async function advanceOnDurableClear(
   if (ackedIds.length > 0 && !deadLetteredOmitted) {
     deps.resetDeadLetterRevisitAfterDrainedAck();
   }
-  return { advanced: true, deadLetteredOmitted };
+  return {
+    advanced: true,
+    deadLetteredOmitted,
+    // Preserve OMISSION across the hop: an absent measurement must not become a
+    // reported zero, which downstream reads as "cleared nothing" (ISS-7401).
+    ...(clear.deletedRowCount === undefined
+      ? {}
+      : { durablyClearedRows: clear.deletedRowCount }),
+  };
 }
 
 /** Every per-row failure/budget map a VERIFIED ack resets (see `AcceptedAckRowState`). */
@@ -291,7 +525,9 @@ function clearRowFailureState(
   for (const id of ackedIds) {
     rowState.timeoutCountById.delete(id);
     rowState.rateLimitedCountById.delete(id);
+    rowState.unknownAckReasonCountById.delete(id);
     rowState.ingestionFailedCountById.delete(id);
+    rowState.laneStalledSinceMsById.delete(id);
     rowState.validationFailedCountById.delete(id);
     rowState.ackOmittedCountById.delete(id);
     rowState.validationBisectIds.delete(id);
@@ -301,6 +537,7 @@ function clearRowFailureState(
     rowState.deadLetterCountById.delete(id);
     rowState.chunkValidationCycleById.delete(id);
     rowState.ackOmittedCycleById.delete(id);
+    rowState.deadLetteredIds.delete(id);
   }
 }
 
@@ -488,4 +725,169 @@ function createBatchCostLedger(input: AcceptedAckInput): BatchCostLedger {
     spent = true;
     return { payloadBytes: input.payloadBytes, latencyMs: input.latencyMs };
   };
+}
+
+/**
+ * ISS-7496: the freshness attribute for THIS delivery, or nothing at all.
+ *
+ * Gated on a WHOLE batch's FINAL chunk. The measure names how stale the freshest
+ * session the cloud now holds is, and neither a partial accept (the omitted rows
+ * did not land) nor a non-final chunk (the session is not yet whole upstream)
+ * can claim that — reporting the sent batch's maximum for either would overstate
+ * cloud freshness, which is the exact failure this attribute exists to detect.
+ * Absent keeps meaning unknown.
+ */
+function resolveDeliveredFreshness(
+  input: AcceptedAckInput,
+  split: AckSplit,
+  deps: AcceptedAckDeps
+): { freshestSessionLagMs?: number } {
+  if (input.hasMoreChunks || split.omittedIds.length > 0) {
+    return {};
+  }
+  const { lagMs, anomaly } = resolveFreshestSessionLagMs({
+    freshestUpdatedAtMs: input.freshestUpdatedAtMs,
+    confirmedAtMs: Date.now(),
+  });
+  if (anomaly) {
+    deps.reportFreshnessAnomaly?.(anomaly);
+  }
+  return lagMs === null ? {} : { freshestSessionLagMs: lagMs };
+}
+
+/**
+ * ISS-7265: the degradation attributes for THIS delivery, or nothing at all.
+ *
+ * The strip was measurable only on a FAILED attempt, and success is the path
+ * that clears the durable outbox and dequeues the session — so the common case
+ * of the data loss, the permanent one, emitted no telemetry whatsoever.
+ *
+ * Counted over the ids the server CONFIRMED rather than the ids that were sent,
+ * and gated on the FINAL chunk, because both alternatives report a loss that
+ * did not happen: an omitted row stays queued and will re-send its tiling, and
+ * a non-final chunk has not dequeued anything yet. Gating on the final chunk
+ * also stops one stripped session being counted once per chunk of its own
+ * fallback split.
+ *
+ * `payloadShaping` rides along so a delivery states the same degraded shape a
+ * failure states, instead of leaving a reader to infer it from a bare count.
+ * Both are OMITTED when nothing was stripped — never `0`, never `whole` — since
+ * a confident "this delivery was complete" on every ordinary batch is the
+ * reassurance this ticket exists to remove.
+ */
+function resolveDeliveredStrip(
+  input: AcceptedAckInput,
+  split: AckSplit
+): {
+  payloadShaping?: SyncPayloadShaping;
+  tilingStrippedSessionCount?: number;
+} {
+  if (input.hasMoreChunks) {
+    return {};
+  }
+  const stripped = new Set(input.tilingStrippedSessionIds ?? []);
+  const count = split.ackedIds.filter((id) => stripped.has(id)).length;
+  if (count === 0) {
+    return {};
+  }
+  return {
+    payloadShaping: SyncPayloadShaping.TilingStripped,
+    tilingStrippedSessionCount: count,
+  };
+}
+
+/**
+ * ISS-7265 AC3: turn this delivery into the durable tiling-debt ledger's two
+ * facts — the sessions the cloud now holds WITHOUT a tiling it is owed, and the
+ * sessions whose delivery settles an outstanding debt.
+ *
+ * Reached only from the final-chunk path, over the ids the server CONFIRMED, for
+ * the same reasons {@link resolveDeliveredStrip} states: an omitted row stays
+ * queued and re-sends its tiling, and a non-final chunk has dequeued nothing.
+ * This is the site where the strip becomes PERMANENT — the outbox clear and the
+ * dequeue follow immediately — so it is the only honest place to write down that
+ * something is still owed.
+ *
+ * An `undefined` `tilingStrippedSessionIds` means this caller measured NOTHING,
+ * which is not the same as "measured none". Recording a settle off it would
+ * clear a real debt on the strength of a delivery that never reported, so the
+ * whole ledger write is skipped instead.
+ */
+async function recordTilingDebtForDelivery(
+  input: AcceptedAckInput,
+  split: AckSplit,
+  deps: AcceptedAckDeps
+): Promise<void> {
+  const stripped = input.tilingStrippedSessionIds;
+  if (!(stripped && deps.recordTilingDebt)) {
+    return;
+  }
+  const strippedSet = new Set(stripped);
+  const owed: string[] = [];
+  const settled: string[] = [];
+  for (const id of split.ackedIds) {
+    if (strippedSet.has(id)) {
+      owed.push(id);
+    } else {
+      settled.push(id);
+    }
+  }
+  if (owed.length > 0 || settled.length > 0) {
+    await deps.recordTilingDebt({ owed, settled });
+  }
+}
+
+/**
+ * ISS-6999 (whitlockk, cid 3846110703; codex, cid 3846063729): report the
+ * component-usage rows THIS delivery permanently left behind.
+ *
+ * The report lives here, and not at prepare or fold time, because only this
+ * frame knows the rows are actually gone. A payload folded into a batch has
+ * still to survive an empty-batch return, a stale-source return, a capability
+ * downgrade, and a `sendBatch` that can throw — and every one of those leaves
+ * the session queued for a re-prepare that measures the identical rows again.
+ *
+ * Gated for the same two reasons {@link recordTilingDebtForDelivery} is, which
+ * together make the report exactly-once per session that really lost the rows.
+ * On the FINAL chunk — not re-checked here, because the only caller,
+ * {@link advanceOnDurableClear}, already runs solely on the `!hasMoreChunks`
+ * path; a non-final chunk has dequeued nothing and can still have its whole tail
+ * discarded, which re-prepares the session and measures the rows again. And over
+ * the ids the SERVER confirmed, which IS checked here, because an omitted row
+ * stays queued and re-sends.
+ */
+function reportUnsendableComponentUsageForDelivery(
+  input: AcceptedAckInput,
+  split: AckSplit
+): void {
+  if (split.ackedIds.length === 0) {
+    return;
+  }
+  reportUnsendableComponentUsage(input.unsendableComponentUnits);
+}
+
+/**
+ * ISS-10332: the server confirmed these sessions, so the cloud has now seen the
+ * priorities they carried and a later web set or clear must win over them.
+ *
+ * Over the CONFIRMED ids only, and on the final chunk only (the sole caller runs
+ * on that path): an omitted row stays queued and must carry its value again.
+ * Before the outbox clear, because the echo is the confirmation: a clear that
+ * then fails re-sends the session without a value it already delivered.
+ */
+async function settlePriorityUploadsForDelivery(
+  input: AcceptedAckInput,
+  split: AckSplit,
+  deps: AcceptedAckDeps
+): Promise<void> {
+  if (!(input.priorityUploadClaims && deps.settlePriorityUploads)) {
+    return;
+  }
+  const acked = new Set(split.ackedIds);
+  const claims = input.priorityUploadClaims.filter((claim) =>
+    acked.has(claim.sessionId)
+  );
+  if (claims.length > 0) {
+    await deps.settlePriorityUploads(claims);
+  }
 }

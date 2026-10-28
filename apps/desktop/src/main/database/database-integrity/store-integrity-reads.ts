@@ -1,8 +1,7 @@
 /**
  * @file store-integrity-reads.ts
  * @description ISS-4824 — the clone-safe STORE-HEALTH reads, extracted out of the
- * `sqlite.ts` monolith (a file on the shrink-only `noExcessiveLinesPerFile`
- * grandfather list) into the module that owns the concern.
+ * `sqlite.ts` monolith into the module that owns the concern.
  *
  * Both exist solely to feed the FEA-1999 store-integrity probe, both are
  * deliberately CLONE-SAFE (plain rows / plain scalars, no `prisma.read` callback)

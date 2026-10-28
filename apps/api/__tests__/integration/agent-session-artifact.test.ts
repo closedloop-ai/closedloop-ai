@@ -16,15 +16,16 @@ import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import { SlugPrefix } from "@repo/api/src/types/slug-prefix";
 import { ArtifactType as PrismaArtifactType, withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { agentSessionsService } from "@/app/agent-sessions/service";
 import { computeTargetsService } from "@/app/compute-targets/service";
 import { generateSlug } from "@/lib/slug-generator";
 import {
-  autoRollbackTransaction,
+  createCommittedTestOrganizationTracker,
   createTestOrganization,
   createTestProject,
   createTestUser,
+  joinAmbientTransactionForSessionSyncWrites,
 } from "../utils/db-helpers";
 
 const env = keys();
@@ -116,9 +117,16 @@ function findSessionArtifact(
 }
 
 describeIfDb("agent session artifact migration (FEA-1699)", () => {
+  // Committed, not rolled back: `findSessions` opens its own RepeatableRead
+  // snapshot (ISS-12881), and `withDb.tx` refuses an isolation level inside an
+  // ambient transaction (ISS-4669).
+  const committedOrganizations = createCommittedTestOrganizationTracker();
+
+  afterEach(() => committedOrganizations.cleanup());
+
   it("creates a SESSION artifact + session_detail + SES-* slug on sync", async () => {
-    await autoRollbackTransaction(async () => {
-      const organizationId = await createTestOrganization();
+    await committedOrganizations.run(async () => {
+      const organizationId = await committedOrganizations.create();
       const user = await createTestUser(organizationId);
       const computeTarget = await createComputeTarget(organizationId, user.id);
 
@@ -155,7 +163,7 @@ describeIfDb("agent session artifact migration (FEA-1699)", () => {
   });
 
   it("falls back to a stable name when the synced session has none", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const organizationId = await createTestOrganization();
       const user = await createTestUser(organizationId);
       const computeTarget = await createComputeTarget(organizationId, user.id);
@@ -173,7 +181,7 @@ describeIfDb("agent session artifact migration (FEA-1699)", () => {
   });
 
   it("re-syncing the same session updates in place without a duplicate or new slug", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const organizationId = await createTestOrganization();
       const user = await createTestUser(organizationId);
       const computeTarget = await createComputeTarget(organizationId, user.id);
@@ -221,8 +229,8 @@ describeIfDb("agent session artifact migration (FEA-1699)", () => {
   });
 
   it("resolves the project from source-artifact attribution and scopes project queries", async () => {
-    await autoRollbackTransaction(async () => {
-      const organizationId = await createTestOrganization();
+    await committedOrganizations.run(async () => {
+      const organizationId = await committedOrganizations.create();
       const user = await createTestUser(organizationId);
       const projectId = await createTestProject(organizationId, user.id);
       const computeTarget = await createComputeTarget(organizationId, user.id);
@@ -279,7 +287,7 @@ describeIfDb("agent session artifact migration (FEA-1699)", () => {
   });
 
   it("preserves project attribution when a resync payload omits attribution", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const organizationId = await createTestOrganization();
       const user = await createTestUser(organizationId);
       const projectId = await createTestProject(organizationId, user.id);
@@ -333,7 +341,7 @@ describeIfDb("agent session artifact migration (FEA-1699)", () => {
   });
 
   it("removes session artifacts when the owning compute target is deleted", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const organizationId = await createTestOrganization();
       const user = await createTestUser(organizationId);
       const computeTarget = await createComputeTarget(organizationId, user.id);
@@ -370,7 +378,7 @@ describeIfDb("agent session artifact migration (FEA-1699)", () => {
   });
 
   it("supports artifact links from a session to another artifact", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const organizationId = await createTestOrganization();
       const user = await createTestUser(organizationId);
       const projectId = await createTestProject(organizationId, user.id);

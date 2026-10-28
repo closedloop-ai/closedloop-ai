@@ -5,8 +5,12 @@ import {
   SHARED_BRANCHES_TRANSIENT_ERROR_CODE,
 } from "../../shared/shared-branches-contract.js";
 import { isTransientDbHostError } from "../../shared/transient-db-host-error.js";
+import { writePersistentLog } from "../logging/durable-log-sink.js";
 import { gatewayLog } from "../logging/gateway-logger.js";
-import { writePersistentLog } from "../logging/persistent-log.js";
+import {
+  BranchDefaultEligibilityUnavailableError,
+  formatBranchDefaultEligibilityDiagnostic,
+} from "./branch-default-eligibility-diagnostic.js";
 
 /** Sanitize a local data-source failure while retaining its retry classification. */
 export function rethrowAsBranchSourceError(
@@ -16,7 +20,7 @@ export function rethrowAsBranchSourceError(
   writePersistentLog(
     "error",
     "branch-source-error",
-    `${label}: ${String(error)}`
+    branchSourcePersistentLogMessage(label, error)
   );
   // ISS-5262 (closedloop-ai-stage review): the shutdown classification must
   // survive this boundary, not die at it. Every Branches handler is wrapped in
@@ -97,4 +101,53 @@ export function startBranchDetailPerf(id: string): {
       });
     },
   };
+}
+
+function branchSourcePersistentCategory(
+  error: unknown
+): BranchSourcePersistentCategory {
+  if (isDbHostShutdownError(error)) {
+    return BranchSourcePersistentCategory.DbHostShutdown;
+  }
+  if (isTransientDbHostError(error)) {
+    return BranchSourcePersistentCategory.DbHostTransient;
+  }
+  return BranchSourcePersistentCategory.SourceFailure;
+}
+
+function safeBranchSourceOperation(label: string): string {
+  switch (label) {
+    case "getSharedBranchAnalytics":
+    case "getSharedBranchCohortAnalytics":
+    case "getSharedBranchDetail":
+    case "getSharedBranches":
+    case "getSharedBranchesPageData":
+    case "getSharedBranchUsage":
+      return label;
+    default:
+      return "unknown";
+  }
+}
+
+/** Closed categories safe to persist without source error text. */
+export const BranchSourcePersistentCategory = {
+  DbHostShutdown: "db_host_shutdown",
+  DbHostTransient: "db_host_transient",
+  EligibilityUnavailable: "repository_default_eligibility_unavailable",
+  SourceFailure: "source_failure",
+} as const;
+export type BranchSourcePersistentCategory =
+  (typeof BranchSourcePersistentCategory)[keyof typeof BranchSourcePersistentCategory];
+
+/** Format one bounded persistent diagnostic without arbitrary error content. */
+export function branchSourcePersistentLogMessage(
+  label: string,
+  error: unknown
+): string {
+  const operation = safeBranchSourceOperation(label);
+  if (error instanceof BranchDefaultEligibilityUnavailableError) {
+    return `operation=${operation} category=${BranchSourcePersistentCategory.EligibilityUnavailable} ${formatBranchDefaultEligibilityDiagnostic(error.diagnostic)}`;
+  }
+  const category = branchSourcePersistentCategory(error);
+  return `operation=${operation} category=${category}`;
 }

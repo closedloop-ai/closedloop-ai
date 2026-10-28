@@ -10,6 +10,7 @@ import type {
   DeploymentArtifact,
 } from "@repo/api/src/types/artifact";
 import { ArtifactType as ApiArtifactType } from "@repo/api/src/types/artifact";
+import type { BranchProductEligibility } from "@repo/api/src/types/branch-product-eligibility";
 import type {
   BranchInfo,
   PullRequestInfo,
@@ -45,7 +46,6 @@ type PullRequestDetailForInfo = {
   mergeCommitSha: string | null;
   lastVerifiedAt: Date | null;
   lastRefreshAttemptAt: Date | null;
-  isCurrent?: boolean;
 };
 
 type PullRequestDetailWithRepository = PullRequestDetailForInfo & {
@@ -107,6 +107,8 @@ export type PullRequestInfoOptions = {
   branchName?: string | null;
   baseBranch?: string | null;
   checksStatus?: PullRequestInfo["checksStatus"];
+  productEligibility?: BranchProductEligibility;
+  hasCompatibilityProviderFallback?: boolean;
 };
 
 export function branchArtifactToInfo(
@@ -124,6 +126,9 @@ export function branchArtifactToInfo(
         branchName: detail.branchName,
         baseBranch: detail.baseBranch,
         checksStatus: detail.checksStatus,
+        productEligibility: options.productEligibility,
+        hasCompatibilityProviderFallback:
+          options.hasCompatibilityProviderFallback,
       })
     : null;
   return {
@@ -137,6 +142,12 @@ export function branchArtifactToInfo(
     externalLinkId: options.externalLinkId ?? artifact.id,
     repoFullName: detail.repository?.fullName ?? options.repoFullName ?? null,
     currentPullRequest,
+    ...(options.productEligibility && {
+      productEligibility: options.productEligibility,
+    }),
+    ...(options.hasCompatibilityProviderFallback && {
+      hasCompatibilityProviderFallback: true,
+    }),
   };
 }
 
@@ -159,6 +170,12 @@ function pullRequestDetailToInfo(
     reviewDecision: detail.reviewDecision,
     externalLinkId: options.externalLinkId ?? null,
     repoFullName: detail.repository?.fullName ?? options.repoFullName ?? null,
+    ...(options.productEligibility && {
+      productEligibility: options.productEligibility,
+    }),
+    ...(options.hasCompatibilityProviderFallback && {
+      hasCompatibilityProviderFallback: true,
+    }),
   };
 }
 

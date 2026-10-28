@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Delivery point to artifact association with no reader yet; how points fan in is an open product question (ISS-8399)."
+}

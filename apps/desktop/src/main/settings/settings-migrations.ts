@@ -1,3 +1,5 @@
+import type { DataSyncLevel } from "@repo/api/src/types/data-sync-level";
+import { RECOMMENDED_DATA_SYNC_LEVEL } from "@repo/api/src/types/data-sync-level";
 import type {
   DesktopSettings,
   RiskTier,
@@ -8,13 +10,12 @@ import { DEFAULT_DESKTOP_SETTINGS } from "../../shared/contracts.js";
 import type { LegacyDataSyncFlags } from "../../shared/data-sync-level.js";
 import {
   dataSyncLevelToBooleans,
-  grandfatherConsentTier,
   legacyFlagsToDataSyncLevel,
 } from "../../shared/data-sync-level.js";
 import type { FlagKey } from "../../shared/feature-flags.js";
 import { RETIRED_LABS_SETTING_KEYS } from "./labs-setting-key-ledger.js";
 import { normalizeAndValidateOrigin } from "./origin-policy.js";
-import { isUuidV4 } from "./saved-config.js";
+import { reconcileManagedApiKeySources } from "./saved-config.js";
 
 /**
  * One-time, boot-time store reconciliation for `SettingsStore`, split out of
@@ -30,11 +31,8 @@ import { isUuidV4 } from "./saved-config.js";
  * migrations stay behavior-identical to when they lived inline in the
  * constructor and can be unit-tested against a real `SettingsStore` instance.
  *
- * The FEA-3462 stranded sync-consent reconciliation and the FEA-3907
- * data-sync-level backfill are now a single pass (`migrateDataSyncLevel`): both
- * answer "what consent tier does an upgrading install carry?", and splitting them
- * let a full-syncing install fall through the gap — level backfilled, tier left
- * null — and go dark once `unified-auth-onboarding` turned on. See that function.
+ * `migrateDataSyncLevel` preserves effective connectivity separately from the
+ * explicit consent answer; a missing answer remains unset (ISS-12523).
  */
 
 /**
@@ -54,6 +52,7 @@ export type SettingsMigrationTarget = {
       key: Key,
       value: DesktopSettings[Key]
     ): void;
+    set(values: Partial<DesktopSettings>): void;
     delete(key: keyof DesktopSettings): void;
   };
   getFlag(key: FlagKey): boolean;
@@ -71,88 +70,33 @@ export type SettingsMigrationTarget = {
  */
 export function runSettingsMigrations(target: SettingsMigrationTarget): void {
   const store = target.rawStore;
-  // PRD-566 / FEA-4348: run the Scheduled Tasks → Routines opt-in copy BEFORE
-  // `removeRetiredKeys` so the legacy `scheduledTasks` value is still present to
-  // read. It deletes the legacy key itself after copying.
-  migrateScheduledTasksToRoutines(store);
+  // ISS-10554 — detected AND acted on before any other migration runs, because
+  // several of them write unconditionally on a first launch (`removeRetiredKeys`
+  // seeds `agentCollaborationNetworkResidueCleared`). Both halves have to be up
+  // here. Detecting late would misread a never-booted store as an existing one;
+  // detecting early and SEEDING late leaves a crash window in between, and a
+  // process that dies in it boots next time into a store that is no longer empty,
+  // so the seed never runs again and the install silently reconciles down to the
+  // metadata floor — the new-install default lost permanently, to a crash. The
+  // seed is one store write, so it either lands whole or not at all; anything that
+  // crashes after it finds a settled level on the next boot and reconciles it
+  // normally.
+  const firstLaunch = Object.keys(store.store).length === 0;
+  if (firstLaunch) {
+    seedRecommendedDataSyncLevel(target, RECOMMENDED_DATA_SYNC_LEVEL);
+  }
   removeRetiredKeys(store);
+  removeRetiredScheduledTasksShadow(store);
 
   const raw = store.store;
   migrateOriginRename(store, raw);
   migrateApprovalTier(store, raw);
+  migrateAlwaysAllowRulesContainer(store, raw);
   migrateSavedConfigsInit(store, raw);
   migrateSavedConfigManagedFields(target);
   // Reconciles BOTH the data-sync level and the stranded sync-consent tier
   // (formerly `migrateStrandedSyncConsent`, FEA-3462) in one pass.
-  migrateDataSyncLevel(target, raw);
-}
-
-/**
- * PRD-566 / FEA-4348: the "Scheduled Tasks" Labs flag was renamed to "Routines"
- * — the persisted DesktopSettings field is now `routines`, with `scheduledTasks`
- * kept as a compatibility SHADOW so the rename is not a one-way door.
- *
- * Why a shadow and not a delete-after-copy: deleting `scheduledTasks` made the
- * rename one-way (whitlockk, PR #3896). If a user downgrades to a pre-rename build,
- * that build reads only `scheduledTasks` — with the key gone the scheduler
- * defaults OFF, and if they then re-toggle `scheduledTasks` there, a plain
- * "seed only when routines unset" re-upgrade would ignore their newer choice
- * because `routines` already exists. So instead we DUAL-WRITE through the
- * rollback window: `routines` is authoritative on new builds, and it is
- * mirrored back into `scheduledTasks` (here at boot, and on every `setFlag`)
- * so an old build always sees the current value.
- *
- * Precedence (covers new→old→new): on boot, if BOTH keys exist and disagree,
- * the legacy `scheduledTasks` wins — the only way they diverge is an old build
- * writing it while `routines` stayed frozen, so the legacy value is the newer
- * user intent. Otherwise `routines` (or the seeded legacy value) wins and is
- * mirrored down. Idempotent and non-escalating: a legacy `false` is honored, so
- * an explicit opt-OUT survives a round-trip rather than defaulting back on.
- *
- * The shadow bleeds `scheduledTasks` through `getAll()` (electron-store spreads
- * raw persisted data in IPC responses), which is acceptable and intended for
- * the rollback window — it is a known boolean mirror, not stale cruft. Retire
- * the shadow (and this migration) only once all installs are past the rename
- * (Compatibility Guardrail).
- */
-function migrateScheduledTasksToRoutines(
-  store: SettingsMigrationTarget["rawStore"]
-): void {
-  const hasLegacy = "scheduledTasks" in store.store;
-  const hasRoutines = "routines" in store.store;
-  if (!(hasLegacy || hasRoutines)) {
-    return;
-  }
-  const legacyValue = store.get("scheduledTasks" as keyof DesktopSettings) as
-    | boolean
-    | undefined;
-  const routinesValue = store.get("routines" as keyof DesktopSettings) as
-    | boolean
-    | undefined;
-
-  // Resolve the authoritative value for this boot. A legacy value that DISAGREES
-  // with `routines` means an older build wrote `scheduledTasks` while `routines`
-  // stayed frozen (new→old→new) — that newer user intent wins. Otherwise prefer
-  // `routines`, falling back to the legacy seed on a fresh post-rename read.
-  let effective: boolean | undefined;
-  if (
-    typeof legacyValue === "boolean" &&
-    typeof routinesValue === "boolean" &&
-    legacyValue !== routinesValue
-  ) {
-    effective = legacyValue;
-  } else {
-    effective = routinesValue ?? legacyValue;
-  }
-
-  if (typeof effective !== "boolean") {
-    return;
-  }
-  // Authoritative on new builds…
-  store.set("routines" as keyof DesktopSettings, effective as never);
-  // …mirrored into the legacy shadow so a downgrade still reads the current
-  // value instead of silently defaulting the scheduler off.
-  store.set("scheduledTasks" as keyof DesktopSettings, effective as never);
+  migrateDataSyncLevel(target, raw, firstLaunch);
 }
 
 /**
@@ -392,6 +336,22 @@ function migrateApprovalTier(
 }
 
 /**
+ * ISS-9175: electron-store has no schema, so a non-array `alwaysAllowRules`
+ * (`{}`, `null`, a string) can be on disk. `getAll()` reads it as `[]`, but
+ * nothing else rewrites it, so repair the raw value once here; an older build
+ * reading the file after a rollback then sees `[]` too. An absent key is left
+ * absent.
+ */
+function migrateAlwaysAllowRulesContainer(
+  store: SettingsMigrationTarget["rawStore"],
+  raw: Record<string, unknown>
+): void {
+  if ("alwaysAllowRules" in raw && !Array.isArray(raw.alwaysAllowRules)) {
+    store.set("alwaysAllowRules", []);
+  }
+}
+
+/**
  * Migration: initialize savedConfigs and activeConfigId for existing installs.
  * TODO(PLN-116-cleanup): Remove this migration block once all existing installs
  * have been upgraded.
@@ -409,57 +369,15 @@ function migrateSavedConfigsInit(
 }
 
 /**
- * FEA-3907 (+ FEA-3462) — reconcile an UPGRADING install onto the graduated data
- * sync level AND establish the PRD-532 §7 consent tier it carries, in one pass.
- * These are two answers to the same question ("how much of my data went to the
- * cloud before the level/tier concept existed?"), and keeping them separate is
- * what let a real regression through: a pre-fix build backfilled the LEVEL from
- * the legacy flags but deliberately left `syncObservabilityTier` null, and the
- * separate FEA-3462 reconciliation only backfilled a `metadata` floor for installs
- * with `onboardingCompleted: true`. An install that was full-syncing but never
- * completed onboarding (full transcript sync was the ONLY behavior before the
- * tier concept) fell through both: level `full`, tier null. Once
- * `unified-auth-onboarding` turned on, the app.ts gates read that null tier as
- * "not consented yet" and HARD-DISABLED both the metadata and transcript lanes —
- * the install goes dark while the Data & Sync tab still shows "Full".
- *
- * Fix: whenever an install was already part of the sync world and never made an
- * explicit tier choice, grandfather the consent tier from what it was ACTUALLY
- * doing (see {@link grandfatherConsentTier}), so the level and the gate can never
- * disagree:
- *   - was full-syncing (transcript lane on) → `full`   — the behavior it had.
- *   - metadata-only (connected, transcript off) → `metadata`.
- *   - disconnected / nothing syncing → grandfather NOTHING (`null`), EXCEPT an
- *     onboarded legacy install floors at `metadata` (preserving the FEA-3462 floor
- *     so a later reconnect resumes the aggregate lane instead of staying gated on
- *     `null`).
- * Full transcript sync was the product's only pre-tier behavior, so restoring
- * `full` for a transcript-syncing legacy install is continuity, not a new grant
- * (product decision: a full-syncer is not silently downgraded).
- *
- * The consent inference is ONE connectivity-aware SSOT (`grandfatherConsentTier`),
- * called identically whether or not the level was already settled — replacing the
- * older split that derived a tier from a *level* (the reconciled `getDataSyncLevel`
- * on the already-leveled path, the legacy-flag level on the other) and then
- * special-cased `local`. Both paths computed the same answer two different ways.
- *
- * Two guards keep this from over-reaching:
- *   1. "Never made an explicit tier choice" means the `syncObservabilityTier` key
- *      is ABSENT — not merely null-valued. The SyncConsent UI persists an explicit
- *      `null` ("not consented yet") through `SettingsStore.update`, so a present-but-
- *      null tier is an authoritative choice we must not overwrite.
- *   2. `grandfatherConsentTier` reads live connectivity, so a persisted `full` on a
- *      now-disconnected store grandfathers no `full` tier (it is disconnected →
- *      nothing was syncing), exactly as reconciling the stale level to Off did.
- *
- * A BRAND-NEW install matches nothing here: no level is derived and — critically —
- * no `syncObservabilityTier` is written, so a fresh device stays in the
- * not-yet-consented (`null`) state and a deliberate `setDataSyncLevel` (the
- * Settings control) remains the only path that establishes a tier from scratch.
+ * Reconcile legacy connectivity without manufacturing consent. ISS-12523:
+ * an old profile with no explicit answer stays unset, even if its effective
+ * flags allowed sync. Persist null before any level writes so older builds
+ * also preserve that unanswered state rather than infer a grant on next boot.
  */
 function migrateDataSyncLevel(
   target: SettingsMigrationTarget,
-  raw: Record<string, unknown>
+  raw: Record<string, unknown>,
+  firstLaunch: boolean
 ): void {
   // The tier is the one dimension we may never overwrite: an explicit choice is
   // authoritative — INCLUDING an explicit `null` ("not consented yet") that the
@@ -468,15 +386,20 @@ function migrateDataSyncLevel(
   const tierAbsent = !("syncObservabilityTier" in raw);
   const onboardingCompleted = raw.onboardingCompleted === true;
 
-  // Path 1: the LEVEL was already settled by a prior boot. A pre-fix FEA-3907
-  // migration settled it but never established the tier, so an upgraded install can
-  // carry a syncing level with an absent tier — the exact go-dark state. Grandfather
-  // the consent tier from the live legacy flags (which reflect the persisted level's
-  // own connectivity/transcript booleans plus any out-of-band Relay toggle).
+  // ISS-10554 — FIRST LAUNCH: nothing had ever been persisted when this boot
+  // started, so the device has made no choice to preserve and is the one case a
+  // new default may establish. `runSettingsMigrations` already seeded it, ahead of
+  // every other migration, so there is nothing here to reconcile. An install that
+  // merely never touched sync is NOT this case — it already carries keys from an
+  // earlier boot — and is left alone.
+  if (firstLaunch) {
+    return;
+  }
+
+  if (tierAbsent) {
+    target.rawStore.set("syncObservabilityTier", null);
+  }
   if ("dataSyncLevel" in raw && raw.dataSyncLevel != null) {
-    if (tierAbsent) {
-      grandfatherConsent(target, onboardingCompleted);
-    }
     return;
   }
 
@@ -496,8 +419,7 @@ function migrateDataSyncLevel(
   if (hasLegacyFlags) {
     // Persist the level AND its derived connectivity booleans so the two can never
     // disagree from the first boot after upgrade. The level here is the display
-    // anchor (connectivity-baked, reconciled on read); the durable consent tier is
-    // established separately below via `grandfatherConsentTier`.
+    // anchor (connectivity-baked, reconciled on read), not evidence of consent.
     const level = legacyFlagsToDataSyncLevel(liveLegacyFlags(target));
     const derived = dataSyncLevelToBooleans(level);
     target.rawStore.set("dataSyncLevel", level);
@@ -513,30 +435,55 @@ function migrateDataSyncLevel(
     }
     target.setFlag("transcriptSyncEnabled", derived.transcriptSyncEnabled);
   }
-
-  // Establish the durable consent tier (unless the user already chose one).
-  if (tierAbsent) {
-    grandfatherConsent(target, onboardingCompleted);
-  }
 }
 
 /**
- * Grandfather an upgrading install's PRD-532 §7 consent tier from its live legacy
- * flags, persisting it only when one is warranted. The caller guards on the
- * `syncObservabilityTier` key being ABSENT, so this never overwrites an explicit
- * choice. See {@link grandfatherConsentTier} for the non-escalating inference.
+ * ISS-10554 — put a FIRST-LAUNCH install on `level` and persist the connectivity
+ * booleans it derives, so `getDataSyncLevel`'s reconciliation against the live
+ * flags agrees with it instead of pulling it back down to the metadata floor.
+ *
+ * `syncObservabilityTier` is written as an EXPLICIT `null` — "this device has
+ * recorded an answer, and the answer is not-consented". Leaving the key absent
+ * instead is what makes the seed dangerous, because absence is the signal every
+ * build reads as "never chose, infer from behavior": the seeded transcript flag
+ * is exactly the evidence older builds read as "this device was
+ * full-syncing", so a later boot — of THIS build without the key, or of an OLDER
+ * build that cannot know about any marker this one invents — would grandfather a
+ * `full` consent tier nobody agreed to. An explicit `null` is authoritative and
+ * never overwritten, so the tier stays the user's to answer. It grants nothing:
+ * `hasRecordedSyncConsent` and the egress gate both read the VALUE, and a null
+ * tier fails closed.
+ *
+ * ONE object write, for the same reason {@link SettingsStore.setDataSyncLevel}
+ * uses one: electron-store persists the whole config file per `set`, so separate
+ * calls can be torn by a crash, and a tear that landed the level without the
+ * tier is precisely the state above.
+ *
+ * Only the flags the level actually CHANGES are written. A persisted key is what
+ * `getFlagSource` reports as a user choice, so writing a flag whose registry
+ * default already equals the derived value would relabel a default as a decision
+ * the user never made — and `migrateDataSyncLevel` reads exactly that source to
+ * decide whether an upgrading install's pause is deliberate.
  */
-function grandfatherConsent(
+function seedRecommendedDataSyncLevel(
   target: SettingsMigrationTarget,
-  onboardingCompleted: boolean
+  level: DataSyncLevel
 ): void {
-  const tier = grandfatherConsentTier(
-    liveLegacyFlags(target),
-    onboardingCompleted
-  );
-  if (tier !== null) {
-    target.rawStore.set("syncObservabilityTier", tier);
+  const derived = dataSyncLevelToBooleans(level);
+  const seed: Partial<DesktopSettings> = {
+    dataSyncLevel: level,
+    syncObservabilityTier: null,
+  };
+  for (const [key, value] of [
+    ["cloudConnectionEnabled", derived.cloudConnectionEnabled],
+    ["cloudCommandsPaused", derived.cloudCommandsPaused],
+    ["transcriptSyncEnabled", derived.transcriptSyncEnabled],
+  ] as const) {
+    if (target.getFlag(key) !== value) {
+      seed[key] = value;
+    }
   }
+  target.rawStore.set(seed);
 }
 
 /**
@@ -560,26 +507,23 @@ function liveLegacyFlags(target: SettingsMigrationTarget): LegacyDataSyncFlags {
 function migrateSavedConfigManagedFields(
   target: SettingsMigrationTarget
 ): void {
-  const configs = target.getSavedConfigs();
-  let changed = false;
-  const migrated = configs.map((config) => {
-    const hasManagedIdentity =
-      typeof config.gatewayId === "string" &&
-      isUuidV4(config.gatewayId) &&
-      typeof config.gatewayPublicKeyPem === "string" &&
-      config.gatewayPublicKeyPem.includes("BEGIN PUBLIC KEY");
-    const apiKeySource: SavedConfig["apiKeySource"] =
-      config.apiKeySource === "DESKTOP_MANAGED" && hasManagedIdentity
-        ? "DESKTOP_MANAGED"
-        : "USER_CREATED";
-    if (config.apiKeySource !== apiKeySource) {
-      changed = true;
-      return { ...config, apiKeySource };
-    }
-    return config;
-  });
-
+  const { configs, changed } = reconcileManagedApiKeySources(
+    target.getSavedConfigs()
+  );
   if (changed) {
-    target.setSavedConfigs(migrated);
+    target.setSavedConfigs(configs);
+  }
+}
+
+/**
+ * PRD-797 (Q-004): the pre-rename `scheduledTasks` shadow of the retired
+ * `routines` Labs key. It was never a registry flag, so it is not on the ledger
+ * `RETIRED_LABS_SETTING_KEYS` is checked against.
+ */
+function removeRetiredScheduledTasksShadow(
+  store: SettingsMigrationTarget["rawStore"]
+): void {
+  if ("scheduledTasks" in store.store) {
+    store.delete("scheduledTasks" as keyof DesktopSettings);
   }
 }

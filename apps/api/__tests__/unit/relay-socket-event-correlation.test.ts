@@ -12,7 +12,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // --- Mocks (must come before imports) ---
 
 vi.mock("@repo/observability/log", () => ({
-  log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+  log: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    flush: vi.fn(async () => undefined),
+  },
 }));
 
 vi.mock("@/env", () => ({
@@ -20,25 +25,24 @@ vi.mock("@/env", () => ({
 }));
 
 vi.mock("@/lib/internal-auth", () => ({
-  validateInternalSecret: vi.fn().mockReturnValue(true),
+  validateInternalSecret: vi.fn(() => true),
 }));
 
 vi.mock("@/lib/desktop-command-store", () => ({
   desktopCommandStore: {
-    ingestCommandEvent: vi.fn().mockResolvedValue({
+    ingestCommandEvent: vi.fn(async () => ({
       accepted: true,
       duplicate: false,
       sequence: 1,
-    }),
-    acknowledgeCommand: vi.fn().mockResolvedValue(undefined),
-    getCommandById: vi.fn().mockResolvedValue(null),
-    listNonTerminalDispatchCommands: vi.fn().mockResolvedValue([]),
+    })),
+    acknowledgeCommand: vi.fn(async () => undefined),
+    getCommandById: vi.fn(async () => null),
+    listNonTerminalDispatchCommands: vi.fn(async () => []),
   },
 }));
 
 vi.mock("@/lib/relay-event-bus", () => ({
   relayEventBus: {
-    publishResult: vi.fn(),
     clearOperationBacklog: vi.fn(),
     publishOperation: vi.fn(),
   },
@@ -46,10 +50,10 @@ vi.mock("@/lib/relay-event-bus", () => ({
 
 vi.mock("@/app/compute-targets/service", () => ({
   computeTargetsService: {
-    register: vi.fn().mockResolvedValue({ id: "target-1" }),
-    updateOwned: vi.fn().mockResolvedValue(null),
-    setOnlineState: vi.fn().mockResolvedValue(undefined),
-    heartbeat: vi.fn().mockResolvedValue(undefined),
+    register: vi.fn(async () => ({ id: "target-1" })),
+    updateOwned: vi.fn(async () => null),
+    setOnlineState: vi.fn(async () => undefined),
+    heartbeat: vi.fn(async () => undefined),
   },
 }));
 

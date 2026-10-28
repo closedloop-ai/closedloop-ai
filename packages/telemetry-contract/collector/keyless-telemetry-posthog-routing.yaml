@@ -5,7 +5,7 @@
 # the Datadog ops leg; every other span is dropped from the PostHog pipeline.
 # `error_mode: ignore` keeps a span on a malformed condition rather than
 # dropping it — redaction has already run, so an over-send is harmless.
-# Vendor this into the example-infrastructure collector config (cross-repo) and regenerate
+# Vendor this into the infrastructure collector config (cross-repo) and regenerate
 # from @closedloop-ai/telemetry-contract on any
 # CollectorProductSignalAttributeKeys change (FEA-1991):
 #   pnpm --filter @closedloop-ai/telemetry-contract generate:collector-posthog-routing

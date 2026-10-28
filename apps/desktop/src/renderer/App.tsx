@@ -2,19 +2,19 @@ import {
   SidebarInset,
   SidebarProvider,
 } from "@closedloop-ai/design-system/components/ui/sidebar";
-import type { BranchCommentsControl } from "@repo/app/branches/components/branch-detail-page";
-import { BranchCommentsToggle } from "@repo/app/branches/components/comments/branch-comments-toggle";
 import { useBranchCommentsControl } from "@repo/app/branches/components/comments/use-branch-comments-control";
 import {
   resolveBranchBackHref,
   resolveBranchBackLabel,
 } from "@repo/app/branches/lib/branch-back-href";
+import { DevToolsOverlay } from "@repo/app/shared/dev-tools/components/dev-tools-overlay";
 import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import {
   NAV_FROM_PARAM,
   resolveNavReferrerSurface,
 } from "@repo/app/shared/lib/nav-referrer";
-import { parsePath } from "@repo/navigation/href-store";
+import { UndoKeybindingLayer } from "@repo/app/undo/components/undo-keybinding-layer";
+import { UndoStackProvider } from "@repo/app/undo/hooks/use-undo-stack";
 import { NavigationProvider } from "@repo/navigation/provider";
 import { useNavigation } from "@repo/navigation/use-navigation";
 import { usePath } from "@repo/navigation/use-path";
@@ -25,46 +25,42 @@ import {
   useCallback,
   useDeferredValue,
   useEffect,
-  useLayoutEffect,
   useRef,
   useState,
 } from "react";
-import { DESKTOP_COMPUTE_PROGRESS_COUNT_FEATURE_FLAG_KEY } from "../shared/desktop-compute-progress-count-flag";
 import {
   DESKTOP_DB_AHEAD_BANNER_FEATURE_FLAG_KEY,
   DESKTOP_SESSIONS_BRANCHES_TAB_TITLES_FEATURE_FLAG_KEY,
-  DESKTOP_STARTUP_READINESS_EXPERIENCE_FEATURE_FLAG_KEY,
-} from "../shared/feature-flags";
+} from "../shared/feature-flags-labs-surfaces";
+import { RendererReadyPhase } from "../shared/renderer-ready-phase";
 import { AgentMonitorDbAheadBanner } from "./components/agent-monitor-db-ahead-banner";
+import { DesktopAgentsDateWindowGate } from "./components/agents/agents-date-window-gate";
 import { BranchesLoading } from "./components/branches/branches-loading";
 import { CommandPalette } from "./components/command-palette/command-palette";
 import { DashboardFallback } from "./components/dashboard/dashboard-fallback";
 import { DesktopSessionExpiredBanner } from "./components/desktop-session-expired-banner";
 import { DesktopSyncPrompt } from "./components/desktop-sync-prompt";
-import { FirstLaunchImportBanner } from "./components/first-launch-import-banner";
+import { helpUnavailableAction } from "./components/help/help-unavailable-action";
 import { labsGatedPage } from "./components/labs-gate-surfaces";
 import { MacWindowControlsUnderlay } from "./components/layout/mac-window-controls-underlay";
 import { Sidebar } from "./components/layout/Sidebar";
 import { Topbar } from "./components/layout/Topbar";
-import { GuestLandingGate } from "./components/onboarding/guest-landing-gate";
-import { GuestSignupProvider } from "./components/onboarding/guest-signup-provider";
+import { AnalysisBannerOffsetProvider } from "./components/onboarding/analysis-banner-offset";
 import { InviteSpotlightProvider } from "./components/onboarding/invite-spotlight";
-import { SyncConsentTakeoverGate } from "./components/onboarding/sync-consent-takeover-gate";
 import { OptInDistributionsBanner } from "./components/opt-in-distributions-banner";
 import {
   DetailFallbackKind,
   detailFallbackFor,
   PageFallback,
 } from "./components/route-fallbacks";
-import { StartupReadinessPanel } from "./components/startup-readiness/startup-readiness-panel";
 import { UpdateBanner } from "./components/UpdateBanner";
-import { DesktopFeatureFlagProvider } from "./feature-flags/desktop-feature-flag-provider";
 import { lazyWithRetry } from "./lazy-with-retry";
 import {
   activeDetailTitleKey,
   buildBreadcrumbs,
   sessionsBreadcrumbHref,
 } from "./navigation/breadcrumb-model";
+import { contentViewportClasses } from "./navigation/content-viewport-classes";
 import {
   createDesktopNavigation,
   type DesktopNavigation,
@@ -80,32 +76,59 @@ import {
   useResolvedDocsAnchor,
 } from "./navigation/docs-anchor-context";
 import {
-  DEFAULT_NAV_ID,
+  lastHrefForNavId,
+  lastNavHrefFromHistory,
+  lastNavIdFromHistory,
+} from "./navigation/nav-history";
+import { RouteScrollerProvider } from "./navigation/route-scroller-context";
+import {
   hrefForNavId,
   matchRoute,
   NavId,
   normalizeNavId,
-  SETTINGS_TAB_PARAM,
 } from "./navigation/route-table";
+import { useContentScrollRestoration } from "./navigation/use-content-scroll-restoration";
 import { useDesktopDocumentTitle } from "./navigation/use-desktop-document-title";
 import {
   LabsPageOutcome,
+  resolveLabsItemGate,
   resolveLabsPageOutcome,
   useDesktopNavGates,
 } from "./navigation/use-nav-gates";
+import { DesktopSessionReplay } from "./session-replay/desktop-session-replay";
+import { DesktopSettingsModalHost } from "./settings-v2/settings-route-experience";
+import {
+  resolveKeepAliveNavIds,
+  resolveVisibleNavId,
+  useSettingsReturnHref,
+  useSettingsRouteExperience,
+} from "./settings-v2/use-settings-route-experience";
 import {
   readRendererBooleanPreference,
   writeRendererBooleanPreference,
 } from "./shared/renderer-preference-storage";
+import { useDesktopPageViewedEvent } from "./shared/use-desktop-page-viewed-event";
+
+const DocumentsView = lazyWithRetry(() =>
+  import("./components/documents/documents-view").then((m) => ({
+    default: m.DocumentsView,
+  }))
+);
+const DesktopDocumentDetailView = lazyWithRetry(() =>
+  import("./components/documents/desktop-document-detail-view").then((m) => ({
+    default: m.DesktopDocumentDetailView,
+  }))
+);
+
+const IssuesView = lazyWithRetry(() =>
+  import("./components/issues/issues-view").then((m) => ({
+    default: m.IssuesView,
+  }))
+);
 
 const DashboardPage = lazyWithRetry(() =>
   import("./components/dashboard/DashboardPage").then((m) => ({
     default: m.DashboardPage,
-  }))
-);
-const SettingsPanel = lazyWithRetry(() =>
-  import("./components/settings/SettingsPanel").then((m) => ({
-    default: m.SettingsPanel,
   }))
 );
 const BranchesView = lazyWithRetry(() =>
@@ -116,11 +139,6 @@ const BranchesView = lazyWithRetry(() =>
 const InsightsView = lazyWithRetry(() =>
   import("./components/insights/insights-view").then((m) => ({
     default: m.InsightsView,
-  }))
-);
-const AuditView = lazyWithRetry(() =>
-  import("./components/audit/audit-view").then((m) => ({
-    default: m.AuditView,
   }))
 );
 const PlansView = lazyWithRetry(() =>
@@ -166,6 +184,11 @@ const SessionReadSourceTopbarAction = lazyWithRetry(() =>
     (m) => ({ default: m.SessionReadSourceTopbarAction })
   )
 );
+const DetailCommentsTopbarAction = lazyWithRetry(() =>
+  import("./components/detail-comments-topbar-action").then((m) => ({
+    default: m.DetailCommentsTopbarAction,
+  }))
+);
 const BranchDetailView = lazyWithRetry(() =>
   import("./components/branches/branch-detail-view").then((m) => ({
     default: m.BranchDetailView,
@@ -179,11 +202,6 @@ const AgentsView = lazyWithRetry(() =>
 const PacksView = lazyWithRetry(() =>
   import("./components/packs/packs-view").then((m) => ({
     default: m.PacksView,
-  }))
-);
-const RoutinesView = lazyWithRetry(() =>
-  import("./components/routines/routines-view").then((m) => ({
-    default: m.RoutinesView,
   }))
 );
 const AgentDetailView = lazyWithRetry(() =>
@@ -212,11 +230,33 @@ function getDefaultDesktopNavigation(): DesktopNavigation {
 // mounted across tab switches at zero extra refetch cost).
 const KeepAliveExcludedNavIds = new Set<NavId>([NavId.Insights]);
 const DESKTOP_SIDEBAR_OPEN_STORAGE_KEY = "closedloop.desktop.sidebar.open";
-const MAX_CONTENT_SCROLL_RESTORE_ATTEMPTS = 30;
-const desktopContentScrollPositions = new Map<string, number>();
 
 function shouldKeepNavMounted(navId: NavId): boolean {
   return !KeepAliveExcludedNavIds.has(navId);
+}
+
+/** Synchronizes the sticky nav route during render when the active nav changes. */
+function syncLastNavRoute({
+  currentHref,
+  lastNavHref,
+  lastNavId,
+  routeNavId,
+  setLastNavHref,
+  setLastNavId,
+}: {
+  currentHref: string;
+  lastNavHref: string;
+  lastNavId: NavId;
+  routeNavId: NavId | null;
+  setLastNavHref: (href: string) => void;
+  setLastNavId: (navId: NavId) => void;
+}): void {
+  if (routeNavId !== null && routeNavId !== lastNavId) {
+    setLastNavId(routeNavId);
+  }
+  if (routeNavId !== null && currentHref !== lastNavHref) {
+    setLastNavHref(currentHref);
+  }
 }
 
 export default function App() {
@@ -229,57 +269,58 @@ export function DesktopNavigationApp({
 }: Readonly<{ navigation: DesktopNavigation }>) {
   return (
     <NavigationProvider adapter={navigation.adapter}>
-      <DesktopFeatureFlagProvider>
+      <UndoStackProvider>
+        <UndoKeybindingLayer />
+        {/* ISS-12048: shared with web; renders nothing unless Dev Mode is
+            on. */}
+        <DevToolsOverlay />
+        <DesktopSessionReplay />
         <DetailTitleProvider>
           <DocsAnchorProvider>
-            {/* ISS-5112 (PLN-1600 Step D): the guest sign-up ask and its
-                resume-after-signup intent. Mounted here because its four entry
-                points — the topbar, the sidebar's invite item, the dashboard's
-                scope toggle, and the tour — are siblings with no common owner
-                further down. Inert with the `guest-onboarding` flag off. */}
-            {/* ISS-5112 (PLN-1600 Step F): the first-run landing REPLACES the
-                shell rather than covering it, so the dashboard behind it cannot
-                play its reveal and burn the one-shot guided tour while nobody is
-                looking. Outside GuestSignupProvider because the landing makes
-                its own ask and needs none of that machinery. Inert with the
-                `guest-onboarding` flag off, and never shown to an install that
-                has already completed a first launch. */}
-            <GuestLandingGate>
-              <GuestSignupProvider>
-                {/* ISS-5489 (PLN-1694 M1): the post-auth consent takeover.
-                    Mounted here, not in DashboardPage, because a returning user
-                    lands on Sessions (DEFAULT_NAV_ID) — a Dashboard-scoped
-                    overlay would never fire. Inside GuestLandingGate so the
-                    pre-auth landing still wins on a first run, and inert with
-                    the `guest-onboarding` flag off. */}
-                <SyncConsentTakeoverGate>
-                  <AppShell navigation={navigation} />
-                </SyncConsentTakeoverGate>
-              </GuestSignupProvider>
-            </GuestLandingGate>
+            <AppShell navigation={navigation} />
           </DocsAnchorProvider>
         </DetailTitleProvider>
-      </DesktopFeatureFlagProvider>
+      </UndoStackProvider>
     </NavigationProvider>
   );
 }
 
+const ProjectContextView = lazyWithRetry(() =>
+  import("./components/projects/project-context-view").then((module) => ({
+    default: module.ProjectContextView,
+  }))
+);
+
 function AppShell({ navigation }: Readonly<{ navigation: DesktopNavigation }>) {
   const { navigate } = useNavigation();
+  const navigationReadyNotified = useRef(false);
   const [sidebarOpen, setSidebarOpen] = useState(readDesktopSidebarOpen);
   const path = usePath();
   const searchParams = useSearchParamsValue();
-  const settingsDeepLinkTab = searchParams.get(SETTINGS_TAB_PARAM);
   const query = searchParams.toString();
   const currentHref = query ? `${path}?${query}` : path;
   const route = matchRoute(path);
-  const routeNavId = route?.kind === "nav" ? route.navId : null;
+  const requestedNavId = route?.kind === "nav" ? route.navId : null;
+  // ISS-8370 D6: `#/settings` is the modal over the last nav page rather than a
+  // page of its own, so every route-keyed read below sees `null` for it —
+  // exactly as they do for a detail route.
+  const settingsRoute = useSettingsRouteExperience(requestedNavId);
+  const routeNavId = settingsRoute.routeNavId;
   const detailSessionId =
     route?.kind === "session-detail" ? route.sessionId : null;
   const detailBranchId =
     route?.kind === "branch-detail" ? route.branchId : null;
+  const detailDocumentSlug =
+    route?.kind === "document-detail" ? route.slug : null;
   const detailAgentSlug =
     route?.kind === "agent-detail" ? route.agentSlug : null;
+  const navMapVisible = isNavMapVisible({
+    projectRoute: route,
+    detailDocumentSlug,
+    detailAgentSlug,
+    detailBranchId,
+    detailSessionId,
+  });
   const branchCommentsControl = useBranchCommentsControl(detailBranchId);
 
   // The session detail keeps the originating tab highlighted (and labeled in
@@ -295,12 +336,21 @@ function AppShell({ navigation }: Readonly<{ navigation: DesktopNavigation }>) {
       ? lastNavHrefFromHistory(navigation.getHistory(), initialNavId)
       : currentHref
   );
-  if (routeNavId !== null && routeNavId !== lastNavId) {
-    setLastNavId(routeNavId);
-  }
-  if (routeNavId !== null && currentHref !== lastNavHref) {
-    setLastNavHref(currentHref);
-  }
+  syncLastNavRoute({
+    currentHref,
+    lastNavHref,
+    lastNavId,
+    routeNavId,
+    setLastNavHref,
+    setLastNavId,
+  });
+  // ISS-8370 D6: the Settings modal's close target — the last route but
+  // Settings, nav page or DETAIL, unlike `lastNavHref` above (see the hook).
+  const settingsReturnHref = useSettingsReturnHref(
+    requestedNavId,
+    currentHref,
+    navigation.getHistory()
+  );
   // Flag-derived nav decisions, resolved once (see `use-nav-gates.ts`).
   //
   // ISS-5037: the Labs flag snapshot arrives asynchronously, and until it does a
@@ -316,39 +366,26 @@ function AppShell({ navigation }: Readonly<{ navigation: DesktopNavigation }>) {
   // it (see `labs-gate-surfaces.tsx`), so the hash, the breadcrumb, and the body
   // all keep naming the destination the user actually asked for.
   const {
-    auditFlagOn,
+    labsItemGates,
     agentsFlagOn,
+    closedItemOutcomeFor,
     labsNavOn,
     desktopFlagsResolved,
     hiddenNavIds,
   } = useDesktopNavGates();
-  const navId = routeNavId ?? lastNavId;
+  const navId = resolveVisibleNavId(settingsRoute, lastNavId);
+  // A document detail highlights Documents whichever list opened it (Kerensa Whitlock,
+  // 2026-10-21, PLN-2217 Q-001/Q-003).
+  const sidebarActiveNav = detailDocumentSlug ? NavId.Documents : navId;
   // FEA-3846 / PRD-555 M4: the docs anchor for the active list screen. Resolved
   // only for a nav route (routeNavId) — detail views (session/branch/agent) get
   // no "Help on this" affordance, so it stays null while a detail is open.
   const docsAnchor = useResolvedDocsAnchor(routeNavId);
-  const activeNavScrollKey = routeNavId === null ? null : currentHref;
-  const contentViewportRef = useRef<HTMLDivElement | null>(null);
-  const handleContentViewportScroll = useCallback(() => {
-    if (!(activeNavScrollKey && contentViewportRef.current)) {
-      return;
-    }
-    rememberContentScrollPosition(
-      activeNavScrollKey,
-      contentViewportRef.current.scrollTop
-    );
-  }, [activeNavScrollKey]);
-
-  useLayoutEffect(() => {
-    if (!(activeNavScrollKey && contentViewportRef.current)) {
-      return;
-    }
-    const scrollTop = desktopContentScrollPositions.get(activeNavScrollKey);
-    if (scrollTop === undefined) {
-      return;
-    }
-    return restoreContentScrollPosition(contentViewportRef.current, scrollTop);
-  }, [activeNavScrollKey]);
+  const {
+    contentViewportRef,
+    handleContentViewportScroll,
+    registerRouteScroller,
+  } = useContentScrollRestoration(routeNavId === null ? null : currentHref);
 
   // Deferred nav id keeps the previous list view on screen while a lazily-loaded
   // chunk resolves (the pre-port code got this from startTransition around
@@ -360,6 +397,16 @@ function AppShell({ navigation }: Readonly<{ navigation: DesktopNavigation }>) {
   // chunk load, where doing so is harmless.
   const deferredNavId = useDeferredValue(navId);
 
+  // PRD-736 (ISS-10502): `page_viewed` on the activation edge, off the LIVE
+  // route values — the keep-alive map below never remounts a visited view, so
+  // the web pages' per-mount emit has no desktop equivalent. `session_detail`
+  // is owned by `SessionDetailView` (success-gated), not this hook.
+  useDesktopPageViewedEvent({
+    detailOpen: !navMapVisible,
+    navId,
+    settingsOpen: requestedNavId === NavId.Settings,
+  });
+
   // The open detail page (if any) publishes its name through this context; the
   // Topbar breadcrumb shows it as the trailing "> [name]" segment. The published
   // title is keyed to its detail and only used when that key matches the detail
@@ -369,7 +416,8 @@ function AppShell({ navigation }: Readonly<{ navigation: DesktopNavigation }>) {
   const activeDetailKey = activeDetailTitleKey(
     detailSessionId,
     detailBranchId,
-    detailAgentSlug
+    detailAgentSlug,
+    detailDocumentSlug
   );
   const detailTitle = resolveDetailTitle(publishedDetail, activeDetailKey);
   // ISS-4839 (codex review on #4266): a settled-but-nameless detail (not-found,
@@ -386,8 +434,8 @@ function AppShell({ navigation }: Readonly<{ navigation: DesktopNavigation }>) {
   // other surface keeps the entry HTML's title.
   //
   // `routeNavId`, NOT the sticky `navId` below: a non-nav route (agent detail)
-  // borrows the last nav id, which on a direct load is DEFAULT_NAV_ID (Sessions),
-  // and would title an agent-detail window "Sessions". See the resolver's doc.
+  // borrows the last nav id, so an agent detail reached from Sessions would keep
+  // that window titled "Sessions". See the resolver's doc.
   useDesktopDocumentTitle({
     enabled: useFeatureFlagEnabled(
       DESKTOP_SESSIONS_BRANCHES_TAB_TITLES_FEATURE_FLAG_KEY
@@ -418,6 +466,10 @@ function AppShell({ navigation }: Readonly<{ navigation: DesktopNavigation }>) {
       );
     };
     window.addEventListener("desktop:navigate-tab", handler as EventListener);
+    if (!navigationReadyNotified.current) {
+      navigationReadyNotified.current = true;
+      window.desktopApi.notifyRendererReady(RendererReadyPhase.NavigationReady);
+    }
     return () =>
       window.removeEventListener(
         "desktop:navigate-tab",
@@ -431,76 +483,83 @@ function AppShell({ navigation }: Readonly<{ navigation: DesktopNavigation }>) {
   }, []);
 
   const renderPage = useCallback(
-    (pageId: NavId, active: boolean) => {
+    (pageId: NavId, active: boolean, visible: boolean) => {
       const labsOutcome = resolveLabsPageOutcome({
         active,
         desktopFlagsResolved,
-        // ISS-5310: Agents is the one Labs destination with a per-item flag
-        // nested inside the container gate, so it is the only page that passes
-        // a `labsItemOn`. Both gates must be on for `#/agents` to render;
-        // everything else in Labs is container-gated only. The `#/agents/<slug>`
-        // DETAIL tier is decided by the same call below — this one only covers
-        // the keep-alive nav map.
-        labsItemOn: pageId === NavId.Agents ? agentsFlagOn : true,
+        // ISS-5310 / ISS-9715 / ISS-9731: both gates must be on for a per-item
+        // Labs destination to render, and which gate that is is derived from the
+        // shared navigation contract by nav id rather than named inline here —
+        // see `resolveLabsItemGate`. The `#/agents/<slug>` DETAIL tier is decided
+        // by the same call below; this one only covers the keep-alive nav map.
+        closedItemOutcome: closedItemOutcomeFor(pageId),
+        labsItemOn: resolveLabsItemGate({ labsItemGates, pageId }),
         labsNavOn,
         pageId,
       });
       if (labsOutcome !== LabsPageOutcome.Render) {
-        return labsGatedPage(labsOutcome, pageId, labsNavOn);
+        // ISS-9731: the destination supplies its own extra action, so the panel
+        // never branches on which gate is closed. Only Help has one.
+        return labsGatedPage(
+          labsOutcome,
+          pageId,
+          helpUnavailableAction(pageId)
+        );
       }
       switch (pageId) {
+        case NavId.Documents:
+          return <DocumentsView />;
+        case NavId.Issues:
+          return <IssuesView />;
         case NavId.Sessions:
-          return <SessionsView />;
+          return <SessionsView isActive={visible} />;
         case NavId.Dashboard:
-          return <DashboardPage />;
+          return (
+            <DashboardPage
+              isActive={visible && requestedNavId !== NavId.Settings}
+            />
+          );
         case NavId.Branches:
           // Dedicated Suspense boundary so the first-navigation chunk load shows
           // the branches skeleton (cards + table scaffold) instead of the shared
           // blank "Loading…" PageFallback flashing across the whole body (FEA-2932).
           return (
             <Suspense fallback={<BranchesLoading />}>
-              <BranchesView />
+              <BranchesView isActive={visible} />
             </Suspense>
           );
         case NavId.Agents:
-          return <AgentsView />;
+          return (
+            <DesktopAgentsDateWindowGate>
+              <AgentsView />
+            </DesktopAgentsDateWindowGate>
+          );
         case NavId.Packs:
           return <PacksView />;
         case NavId.Insights:
           return <InsightsView />;
-        case NavId.Audit:
-          // Flag-off hides the view entirely (the sidebar entry is already
-          // hidden); a direct #/audit nav while off falls through to Sessions.
-          return auditFlagOn ? <AuditView /> : <SessionsView />;
         case NavId.Plans:
           return <PlansView />;
-        case NavId.Routines:
-          return <RoutinesView />;
         case NavId.Approvals:
           return <ApprovalsPanel />;
         case NavId.Requests:
           return <ActivityPanel />;
         case NavId.Diagnostics:
           return <DiagnosticsView isActive={active} />;
-        case NavId.Settings:
-          // ISS-5310: the shell reads `?tab=` and hands it down, because the
-          // shell is what sits inside the NavigationProvider — see the prop's
-          // docstring in `SettingsPanel.tsx`.
-          return <SettingsPanel deepLinkTab={settingsDeepLinkTab} />;
         case NavId.Help:
-          // Flag-off hides the sidebar entry; HelpView also self-guards to null
-          // so a direct #/help nav while off renders nothing (FEA-3844).
+          // ISS-9731: the `docsHelp` gate is applied at the route above, so this
+          // mounts only when Help is actually available.
           return <HelpView />;
         default:
-          return <SessionsView />;
+          return <SessionsView isActive={visible} />;
       }
     },
     [
-      auditFlagOn,
-      agentsFlagOn,
+      labsItemGates,
+      closedItemOutcomeFor,
       labsNavOn,
       desktopFlagsResolved,
-      settingsDeepLinkTab,
+      requestedNavId,
     ]
   );
 
@@ -511,11 +570,14 @@ function AppShell({ navigation }: Readonly<{ navigation: DesktopNavigation }>) {
       ? lastNavHref
       : lastNavHrefFromHistory(navigation.getHistory(), navId);
 
-  // The breadcrumb's "Sessions" parent returns to the originating sessions list
-  // (preserving its page/filter and restored scroll) when the detail was opened
-  // from there, else the canonical list — so the segment's label always matches
-  // where it goes. This is the back affordance now that the in-page "Back to
-  // Sessions" control is gone.
+  // The coerced Sessions destination: the originating sessions list (preserving
+  // its page/filter and restored scroll) when the detail was opened from there,
+  // else the canonical list — so a control labelled "Sessions" always matches
+  // where it goes. `sessionBackHref` above is the last nav route of ANY section,
+  // so it is only ever safe to hand to something that does NOT name Sessions.
+  // Both Sessions-labelled affordances resolve from this one value: the
+  // breadcrumb parent segment, and the session detail's own "Back to Sessions"
+  // link on its not-found and provider-error states.
   const sessionsListHref = sessionsBreadcrumbHref(sessionBackHref);
 
   // Branch/agent details always return to their OWN list (see the render
@@ -557,6 +619,12 @@ function AppShell({ navigation }: Readonly<{ navigation: DesktopNavigation }>) {
   // a deferred background render that never commits after long uptime would
   // otherwise leave the breadcrumb stuck on the list while the route changed.
   const breadcrumbs = buildBreadcrumbs({
+    projectContext: projectRouteContext(route),
+    detailDocumentSlug,
+    documentsListHref: lastHrefForNavId(
+      navigation.getHistory(),
+      NavId.Documents
+    ),
     detailSessionId,
     detailBranchId,
     detailAgentSlug,
@@ -584,13 +652,13 @@ function AppShell({ navigation }: Readonly<{ navigation: DesktopNavigation }>) {
     labsNavOn,
   });
 
-  let content: ReactNode = (
-    // FEA-2933: the dashboard renders its own PageShell + skeleton loading
-    // treatment, so falling back to the generic centered "Loading…" while its
-    // lazy chunk resolves produced a blank → skeleton → values two-stage
-    // flicker. Show the dashboard-shaped fallback (same title + skeleton) when
-    // the dashboard is the resolving route so the first frame already matches
-    // the in-page loading state instead of a blank.
+  // FEA-2933: the dashboard renders its own PageShell + skeleton loading
+  // treatment, so falling back to the generic centered "Loading…" while its
+  // lazy chunk resolves produced a blank → skeleton → values two-stage
+  // flicker. Show the dashboard-shaped fallback (same title + skeleton) when
+  // the dashboard is the resolving route so the first frame already matches
+  // the in-page loading state instead of a blank.
+  const keepAliveContent: ReactNode = (
     <Suspense
       fallback={
         deferredNavId === NavId.Dashboard ? (
@@ -600,18 +668,35 @@ function AppShell({ navigation }: Readonly<{ navigation: DesktopNavigation }>) {
         )
       }
     >
-      {visitedNavIds.map((pageId) => {
+      {resolveKeepAliveNavIds(visitedNavIds).map((pageId) => {
         const active = pageId === deferredNavId;
         if (!(active || shouldKeepNavMounted(pageId))) {
           return null;
         }
+        // `data-nav-panel*` names WHICH view this panel is and WHETHER the shell
+        // has committed to it. Both are read by desktop e2e (`activeNavPanel` in
+        // `test/e2e/helpers/desktop-app.ts`) and neither affects rendering.
+        // Without them the suite has no way to say "inside the view the shell
+        // actually settled on": keep-alive leaves every visited view mounted, so
+        // a page-global locator can resolve a control or a value belonging to a
+        // DIFFERENT, hidden view. `:visible` only samples that — the panel is
+        // mid-transition while the deferred render commits — so scoping has to
+        // key off the committed panel, not off visibility at one instant.
         return (
           <div
             aria-hidden={active ? undefined : true}
             className={active ? "block h-full" : "hidden h-full"}
+            data-nav-panel={pageId}
+            data-nav-panel-state={active ? "active" : "inactive"}
             key={pageId}
           >
-            {renderPage(pageId, active)}
+            <RouteScrollerProvider
+              activeNavId={routeNavId}
+              navId={pageId}
+              registerRouteScroller={registerRouteScroller}
+            >
+              {renderPage(pageId, active, active && navMapVisible)}
+            </RouteScrollerProvider>
           </div>
         );
       })}
@@ -629,43 +714,22 @@ function AppShell({ navigation }: Readonly<{ navigation: DesktopNavigation }>) {
   // default on `agentSessionKeys.details()` never fires, and B's `staleTime:
   // Infinity` cache entry renders stale/empty without a read. The key forces the
   // mount that arms the refetch on every switch.
-  if (detailSessionId) {
-    content = (
-      <Suspense fallback={detailFallbackFor(DetailFallbackKind.Session)}>
-        <SessionDetailView
-          backHref={sessionBackHref}
-          key={detailSessionId}
-          sessionId={detailSessionId}
-        />
-      </Suspense>
-    );
-  } else if (detailBranchId) {
-    content = (
-      <Suspense fallback={detailFallbackFor(DetailFallbackKind.Branch)}>
-        {/* Branch detail's Back targets the resolved destination explicitly —
-            not the contextual `navId`, which on a direct #/branches/:id load (or
-            arrival from another section) would point "Back to Branches" at
-            Sessions. Default: the Branches list via its last-visited href, which
-            keeps the list's query (FEA-3560 facets, page) so Back reopens the
-            filtered view. FEA-4262: a `?from=session` referrer instead resolves
-            to the sessions list, with the label matched by `branchBackLabel`. */}
-        <BranchDetailView
-          backHref={branchBackHref}
-          backLabel={branchBackLabel}
-          branchId={detailBranchId}
-          commentsControl={branchCommentsControl}
-          key={detailBranchId}
-        />
-      </Suspense>
-    );
-  } else if (detailAgentSlug) {
-    content = agentDetailContent({
-      agentSlug: detailAgentSlug,
-      agentsListHref,
-      labsNavOn,
-      outcome: agentDetailGate.outcome,
-    });
-  }
+  const content = selectRouteContent({
+    route,
+    keepAliveContent,
+    detailSessionId,
+    detailBranchId,
+    detailAgentSlug,
+    sessionsListHref,
+    branchBackHref,
+    branchBackLabel,
+    branchCommentsControl,
+    agentsListHref,
+    agentDetailOutcome: agentDetailGate.outcome,
+    labsItemGates,
+    labsNavOn,
+    desktopFlagsResolved,
+  });
 
   // Session AND branch detail own their own internal scroll container (the
   // single `.sd3-scroll` / `.bq-page-scroll`), so the outer viewport must clip
@@ -675,10 +739,12 @@ function AppShell({ navigation }: Readonly<{ navigation: DesktopNavigation }>) {
   // ISS-5310: a gated-off agent detail is NOT the agent detail view — it is the
   // shared "turned off" `PageShell`, which owns no inner scroller — so it takes
   // the scrolling-viewport branch with every other page.
-  const contentViewportClassName =
-    detailSessionId || detailBranchId || agentDetailGate.open
-      ? "flex min-h-0 flex-1 flex-col overflow-hidden"
-      : "flex-1 overflow-auto";
+  const contentViewportClassName = contentViewportClasses({
+    detailSessionId,
+    detailBranchId,
+    detailDocumentSlug,
+    agentDetailOpen: agentDetailGate.open,
+  });
 
   return (
     <SidebarProvider
@@ -695,121 +761,99 @@ function AppShell({ navigation }: Readonly<{ navigation: DesktopNavigation }>) {
           team". Mounted INSIDE SidebarProvider because which control it anchors
           to depends on `isMobile`, and around both the sidebar and the topbar
           because those are the two hosts. Renders no DOM of its own, so the
-          provider's flex layout is untouched. Inert with `guest-onboarding`
-          off. */}
+          provider's flex layout is untouched. */}
       <InviteSpotlightProvider>
-        <Sidebar activeNav={navId} hiddenNavIds={hiddenNavIds} />
-        <SidebarInset className="min-w-0 overflow-hidden">
-          <Topbar
-            actions={
-              <>
-                {/* ISS-5607: the session detail's read-source badge, beside the
-                    "Sessions / <name>" breadcrumb it qualifies. Both actions are
-                    route-scoped and mutually exclusive — each returns null off
-                    its own detail route — so this row holds at most one.
-                    Its own Suspense with a NULL fallback: the badge is lazy, and
-                    a shared boundary would let its chunk load blank the Topbar
-                    (breadcrumbs included) on first navigation to a session. A
-                    disclosure that is not there yet shows nothing, which is also
-                    the honest state while the read it describes is in flight. */}
-                <Suspense fallback={null}>
-                  <SessionReadSourceTopbarAction sessionId={detailSessionId} />
-                </Suspense>
-                <BranchDetailTopbarAction
-                  branchId={detailBranchId}
-                  commentsControl={branchCommentsControl}
+        {/* ISS-10492: the ambient analysis bar is `position: fixed`, so nothing
+            beneath it moves on its own. This reserves the space it occupies on
+            the REAL `SidebarInset` below — a wrapper standing in for the inset
+            would let the offset be deleted from the shell with the test still
+            green. No `transition` on that margin, deliberately: animating it
+            re-lays-out the bar's own box for 300ms and was half of the
+            ISS-10492 feedback loop. */}
+        <AnalysisBannerOffsetProvider>
+          {(analysisBannerOffsetPx) => (
+            <>
+              <Sidebar
+                activeNav={sidebarActiveNav}
+                hiddenNavIds={hiddenNavIds}
+              />
+              <SidebarInset
+                className="min-w-0 overflow-hidden"
+                // No inline style at all at rest: `variant="inset"` gives this
+                // element an `m-2`, and an unconditional `marginTop: 0` would
+                // override that top margin and shift the whole shell up by 8px
+                // whenever the bar is absent — which is almost always.
+                style={
+                  analysisBannerOffsetPx > 0
+                    ? { marginTop: `${analysisBannerOffsetPx}px` }
+                    : undefined
+                }
+              >
+                <Topbar
+                  actions={
+                    <>
+                      {/* ISS-5607: the session detail's read-source badge, beside the
+                      "Sessions / <name>" breadcrumb it qualifies. Both actions are
+                      route-scoped — each returns null off its own detail routes.
+                      Its own Suspense with a NULL fallback: the badge is lazy, and
+                      a shared boundary would let its chunk load blank the Topbar
+                      (breadcrumbs included) on first navigation to a session. A
+                      disclosure that is not there yet shows nothing, which is also
+                      the honest state while the read it describes is in flight. */}
+                      <Suspense fallback={null}>
+                        <SessionReadSourceTopbarAction
+                          sessionId={detailSessionId}
+                        />
+                      </Suspense>
+                      <Suspense fallback={null}>
+                        <DetailCommentsTopbarAction
+                          branchCommentsControl={branchCommentsControl}
+                          branchId={detailBranchId}
+                          sessionId={detailSessionId}
+                        />
+                      </Suspense>
+                    </>
+                  }
+                  breadcrumbs={breadcrumbs}
+                  docsAnchor={docsAnchor}
                 />
-              </>
-            }
-            breadcrumbs={breadcrumbs}
-            docsAnchor={docsAnchor}
-          />
-          {/* ISS-4714: the local DB is newer than this app build, so the Agent
-            Monitor runtime is dead. Pinned first — a dead local runtime (parsing
-            + cloud sync down) is the highest-severity app-wide signal.
-            ISS-4792 (ISS-4779 closed-by-default): the gate reads a desktop Labs
-            flag (default OFF) — the banner is not rendered until the user opts
-            in. */}
-          <DbAheadBannerGate />
-          <UpdateBanner />
-          <DesktopSessionExpiredBanner />
-          <DesktopSyncPrompt />
-          <StartupReadinessBannerGate />
-          {/* FEA-4007: app-level opt-in install prompt. Mounted here (not inside
-            the Labs-gated Agents view) so a targeted user is prompted for an
-            org-distributed opt-in install on startup regardless of the Agents
-            Workspace flag or the current tab. */}
-          <OptInDistributionsBanner />
-          <div
-            className={contentViewportClassName}
-            data-testid="desktop-content-viewport"
-            onScroll={handleContentViewportScroll}
-            ref={contentViewportRef}
-          >
-            {content}
-          </div>
-        </SidebarInset>
+                {/* ISS-4714: the local DB is newer than this app build, so the Agent
+              Monitor runtime is dead. Pinned first — a dead local runtime (parsing
+              + cloud sync down) is the highest-severity app-wide signal.
+              ISS-4792 (ISS-4779 closed-by-default): the gate reads a desktop Labs
+              flag (default OFF) — the banner is not rendered until the user opts
+              in. */}
+                <DbAheadBannerGate />
+                <UpdateBanner />
+                <DesktopSessionExpiredBanner />
+                <DesktopSyncPrompt />
+                {/* FEA-4007: app-level opt-in install prompt. Mounted here (not inside
+              the Labs-gated Agents view) so a targeted user is prompted for an
+              org-distributed opt-in install on startup regardless of the Agents
+              Workspace flag or the current tab. Operator instruction 2026-09-30:
+              gated behind `distribution-opt-in-banner`, default OFF, read inside
+              the banner so its one-shot push subscription survives a PENDING
+              assignment. */}
+                <OptInDistributionsBanner />
+                <div
+                  className={contentViewportClassName}
+                  data-testid="desktop-content-viewport"
+                  onScroll={handleContentViewportScroll}
+                  ref={contentViewportRef}
+                >
+                  {content}
+                </div>
+                <DesktopSettingsModalHost
+                  requestedNavId={requestedNavId}
+                  returnHref={settingsReturnHref}
+                />
+              </SidebarInset>
+            </>
+          )}
+        </AnalysisBannerOffsetProvider>
       </InviteSpotlightProvider>
     </SidebarProvider>
   );
-}
-
-function lastNavIdFromHistory(history: readonly string[]): NavId {
-  for (let i = history.length - 1; i >= 0; i -= 1) {
-    const match = matchRoute(parsePath(history[i]));
-    if (match?.kind === "nav") {
-      return match.navId;
-    }
-  }
-  return DEFAULT_NAV_ID;
-}
-
-/**
- * Most recent nav-route href in history — any section by default, or only
- * `onlyNavId`'s section when given. Falls back to `fallbackNavId`'s canonical
- * href when history has no match.
- */
-function lastNavHrefFromHistory(
-  history: readonly string[],
-  fallbackNavId: NavId,
-  onlyNavId?: NavId
-): string {
-  for (let i = history.length - 1; i >= 0; i -= 1) {
-    const href = history[i];
-    const match = matchRoute(parsePath(href));
-    if (
-      match?.kind === "nav" &&
-      (onlyNavId === undefined || match.navId === onlyNavId)
-    ) {
-      return href;
-    }
-  }
-  return hrefForNavId(fallbackNavId);
-}
-
-/**
- * Last visited href of ONE SPECIFIC nav section, canonical when never visited.
- * Backs the branch/agent detail back targets: those always belong under their
- * own list (never the contextual nav), but a plain canonical href would drop
- * the list's query — its FEA-3560 facet params and page — so a detail visit
- * would return to an unfiltered list.
- */
-function lastHrefForNavId(history: readonly string[], navId: NavId): string {
-  return lastNavHrefFromHistory(history, navId, navId);
-}
-
-function rememberContentScrollPosition(href: string, scrollTop: number): void {
-  if (!Number.isFinite(scrollTop)) {
-    return;
-  }
-  desktopContentScrollPositions.set(href, Math.max(0, scrollTop));
-  while (desktopContentScrollPositions.size > 50) {
-    const firstKey = desktopContentScrollPositions.keys().next().value;
-    if (firstKey === undefined) {
-      return;
-    }
-    desktopContentScrollPositions.delete(firstKey);
-  }
 }
 
 /**
@@ -829,47 +873,6 @@ function writeDesktopSidebarOpen(open: boolean): void {
   writeRendererBooleanPreference(DESKTOP_SIDEBAR_OPEN_STORAGE_KEY, open);
 }
 
-function restoreContentScrollPosition(
-  element: HTMLElement,
-  scrollTop: number
-): () => void {
-  let frame: number | null = null;
-  let attempts = 0;
-  let cancelled = false;
-
-  function applyScroll() {
-    if (cancelled) {
-      return;
-    }
-    attempts += 1;
-    const maxScrollTop = Math.max(
-      0,
-      element.scrollHeight - element.clientHeight
-    );
-    element.scrollTop =
-      maxScrollTop > 0 ? Math.min(scrollTop, maxScrollTop) : scrollTop;
-    if (
-      scrollTop > 0 &&
-      element.scrollTop <= 0 &&
-      attempts < MAX_CONTENT_SCROLL_RESTORE_ATTEMPTS &&
-      typeof globalThis.requestAnimationFrame === "function"
-    ) {
-      frame = globalThis.requestAnimationFrame(applyScroll);
-    }
-  }
-
-  applyScroll();
-  return () => {
-    cancelled = true;
-    if (
-      frame !== null &&
-      typeof globalThis.cancelAnimationFrame === "function"
-    ) {
-      globalThis.cancelAnimationFrame(frame);
-    }
-  };
-}
-
 /**
  * ISS-4792 (ISS-4779 closed-by-default policy for the ISS-4714 UI): the mount
  * gate for the "DB ahead / update required" banner. Reads the desktop
@@ -887,31 +890,6 @@ export function DbAheadBannerGate(): ReactNode {
     return null;
   }
   return <AgentMonitorDbAheadBanner />;
-}
-
-/**
- * ISS-4715 closed-by-default gate. OFF keeps the existing first-launch banner
- * mounted unchanged; ON swaps in the non-blocking, ordered readiness panel.
- */
-export function StartupReadinessBannerGate(): ReactNode {
-  const enabled = useFeatureFlagEnabled(
-    DESKTOP_STARTUP_READINESS_EXPERIENCE_FEATURE_FLAG_KEY
-  );
-  // ISS-6241: read HERE rather than inside the banner. ISS-6118 left the banner
-  // reading no flags at all, which is what keeps its many bare test mounts
-  // working without a `FeatureFlagAdapterProvider`; this gate already has one.
-  const showComputeProgress = useFeatureFlagEnabled(
-    DESKTOP_COMPUTE_PROGRESS_COUNT_FEATURE_FLAG_KEY
-  );
-  // ISS-6241 (whitlockk review): BOTH surfaces honour the count flag. The readiness
-  // panel replaces the splash wholesale, so passing the flag to only one of them
-  // left the Labs toggle reading ON while the visible surface named no
-  // population at all.
-  return enabled ? (
-    <StartupReadinessPanel showComputeProgress={showComputeProgress} />
-  ) : (
-    <FirstLaunchImportBanner showComputeProgress={showComputeProgress} />
-  );
 }
 
 /**
@@ -956,16 +934,14 @@ function resolveAgentDetailGate({
 function agentDetailContent({
   agentSlug,
   agentsListHref,
-  labsNavOn,
   outcome,
 }: {
   agentSlug: string;
   agentsListHref: string;
-  labsNavOn: boolean;
   outcome: LabsPageOutcome;
 }): ReactNode {
   if (outcome !== LabsPageOutcome.Render) {
-    return labsGatedPage(outcome, NavId.Agents, labsNavOn);
+    return labsGatedPage(outcome, NavId.Agents);
   }
   return (
     <Suspense fallback={detailFallbackFor(DetailFallbackKind.Agent)}>
@@ -983,22 +959,183 @@ function agentDetailContent({
   );
 }
 
-/** Render the approved Branch comments action only on Branch detail routes. */
-function BranchDetailTopbarAction({
-  branchId,
-  commentsControl,
-}: Readonly<{
-  branchId: string | null;
-  commentsControl: BranchCommentsControl;
-}>) {
-  if (!branchId) {
-    return null;
+/**
+ * ISS-7249 (whitlockk review): whether the keep-alive nav map is the body the user
+ * is looking at. `active` alone is NOT "on screen" — a detail route replaces
+ * `content` wholesale while the nav map underneath stays mounted, and on a
+ * detail route `routeNavId` is null, so the originating list still reads as the
+ * active nav id. A page that reports what its own body is showing needs both.
+ */
+function isNavMapVisible({
+  projectRoute,
+  detailDocumentSlug,
+  detailAgentSlug,
+  detailBranchId,
+  detailSessionId,
+}: {
+  projectRoute?: ReturnType<typeof matchRoute>;
+  detailAgentSlug: string | null;
+  detailBranchId: string | null;
+  detailSessionId: string | null;
+  detailDocumentSlug: string | null;
+}): boolean {
+  return !(
+    projectRoute?.kind === "project-context" ||
+    detailSessionId ||
+    detailBranchId ||
+    detailAgentSlug ||
+    detailDocumentSlug
+  );
+}
+
+function documentDetailContent({
+  slug,
+  labsItemGates,
+  labsNavOn,
+  desktopFlagsResolved,
+}: {
+  slug: string;
+  labsItemGates: Readonly<Record<string, boolean>>;
+  labsNavOn: boolean;
+  desktopFlagsResolved: boolean;
+}) {
+  const pageId = NavId.Documents;
+  const outcome = resolveLabsPageOutcome({
+    pageId,
+    active: true,
+    labsItemOn: resolveLabsItemGate({ labsItemGates, pageId }),
+    labsNavOn,
+    desktopFlagsResolved,
+  });
+  if (outcome !== LabsPageOutcome.Render) {
+    return labsGatedPage(outcome, pageId);
   }
   return (
-    <BranchCommentsToggle
-      onOpenChange={commentsControl.onOpenChange}
-      open={commentsControl.open}
-      toggleRef={commentsControl.toggleRef}
-    />
+    <Suspense fallback={<PageFallback />}>
+      <DesktopDocumentDetailView key={slug} slug={slug} />
+    </Suspense>
   );
+}
+
+function projectContextContent(
+  route: Extract<
+    NonNullable<ReturnType<typeof matchRoute>>,
+    { kind: "project-context" }
+  >
+): ReactNode {
+  const key = route.projectId ?? `${route.teamId}:${route.archived}`;
+  return (
+    <Suspense fallback={<PageFallback />}>
+      <ProjectContextView
+        archived={route.archived}
+        key={key}
+        projectId={route.projectId}
+        teamId={route.teamId}
+      />
+    </Suspense>
+  );
+}
+
+function projectRouteContext(route: ReturnType<typeof matchRoute>) {
+  if (route?.kind === "project-context") {
+    return route;
+  }
+  return undefined;
+}
+
+/**
+ * The shell body for the current route: a detail tier when one matches, in the
+ * order project-context → session → branch → document → agent, else the
+ * keep-alive nav map.
+ */
+function selectRouteContent({
+  route,
+  keepAliveContent,
+  detailSessionId,
+  detailBranchId,
+  detailAgentSlug,
+  sessionsListHref,
+  branchBackHref,
+  branchBackLabel,
+  branchCommentsControl,
+  agentsListHref,
+  agentDetailOutcome,
+  labsItemGates,
+  labsNavOn,
+  desktopFlagsResolved,
+}: {
+  route: ReturnType<typeof matchRoute>;
+  keepAliveContent: ReactNode;
+  detailSessionId: string | null;
+  detailBranchId: string | null;
+  detailAgentSlug: string | null;
+  sessionsListHref: string;
+  branchBackHref: string;
+  branchBackLabel: ReturnType<typeof resolveBranchBackLabel>;
+  branchCommentsControl: ReturnType<typeof useBranchCommentsControl>;
+  agentsListHref: string;
+  agentDetailOutcome: LabsPageOutcome;
+  labsItemGates: Readonly<Record<string, boolean>>;
+  labsNavOn: boolean;
+  desktopFlagsResolved: boolean;
+}): ReactNode {
+  if (route?.kind === "project-context") {
+    return projectContextContent(route);
+  }
+  if (detailSessionId) {
+    return (
+      <Suspense fallback={detailFallbackFor(DetailFallbackKind.Session)}>
+        {/* The COERCED href, not the raw `sessionBackHref`: this prop feeds only
+            the not-found and provider-error states, whose sole control is a link
+            that says "Back to Sessions". `sessionBackHref` is the last nav route
+            of ANY section, so a detail reached from another surface aimed that
+            link at that surface instead — with Dashboard as the landing, "Back to
+            Sessions" navigated to /dashboard. `sessionsListHref` keeps the
+            originating sessions query (page, filters) when there is one and falls
+            back to the canonical list when there is not, so the label and the
+            destination always agree. */}
+        <SessionDetailView
+          backHref={sessionsListHref}
+          key={detailSessionId}
+          sessionId={detailSessionId}
+        />
+      </Suspense>
+    );
+  }
+  if (detailBranchId) {
+    return (
+      <Suspense fallback={detailFallbackFor(DetailFallbackKind.Branch)}>
+        {/* Branch detail's Back targets the resolved destination explicitly —
+            not the contextual `navId`, which on a direct #/branches/:id load (or
+            arrival from another section) would point "Back to Branches" at
+            Sessions. Default: the Branches list via its last-visited href, which
+            keeps the list's query (FEA-3560 facets, page) so Back reopens the
+            filtered view. FEA-4262: a `?from=session` referrer instead resolves
+            to the sessions list, with the label matched by `branchBackLabel`. */}
+        <BranchDetailView
+          backHref={branchBackHref}
+          backLabel={branchBackLabel}
+          branchId={detailBranchId}
+          commentsControl={branchCommentsControl}
+          key={detailBranchId}
+        />
+      </Suspense>
+    );
+  }
+  if (route?.kind === "document-detail") {
+    return documentDetailContent({
+      slug: route.slug,
+      labsItemGates,
+      labsNavOn,
+      desktopFlagsResolved,
+    });
+  }
+  if (detailAgentSlug) {
+    return agentDetailContent({
+      agentSlug: detailAgentSlug,
+      agentsListHref,
+      outcome: agentDetailOutcome,
+    });
+  }
+  return keepAliveContent;
 }

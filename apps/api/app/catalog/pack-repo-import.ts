@@ -15,9 +15,8 @@ const MAX_COMPONENT_FILES = 300;
 /**
  * Cap on in-flight blob fetches. Each candidate is an independent GitHub read,
  * so we fan them out concurrently instead of paying N serial round-trips, but
- * bound the concurrency to keep GitHub rate-limit pressure in check. Mirrors the
- * `PR_READ_REPAIR_CONCURRENCY = 5` cap used for GitHub reads in
- * apps/api/lib/pr-read-repair.ts.
+ * bound the concurrency to keep GitHub rate-limit pressure in check. Same value
+ * as `DB_FANOUT_MAX_CONCURRENCY` (lib/db-fanout.ts).
  */
 const BLOB_FETCH_CONCURRENCY = 5;
 

@@ -1,3 +1,4 @@
+import { TeamRole } from "@repo/api/src/types/teams";
 import { v7 as uuidv7 } from "uuid";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GET, POST } from "@/app/teams/[teamId]/members/route";
@@ -13,8 +14,10 @@ import {
 let mockAuthContext: AuthContext;
 
 vi.mock("@/lib/auth/with-auth", () => ({
-  withAuth: (handler: any) => async (request: any, context: any) =>
-    handler(mockAuthContext, request, context.params),
+  withAuth:
+    (handler: (...args: unknown[]) => Promise<Response>) =>
+    async (request: unknown, context: { params: Promise<unknown> }) =>
+      handler(mockAuthContext, request, context.params),
 }));
 vi.mock("@/app/teams/service");
 vi.mock("@/app/users/service");
@@ -23,21 +26,24 @@ describe("GET /teams/:teamId/members", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAuthContext = createTestAuthContext({
-      user: { id: "user-1", organizationId: "org-1" } as any,
+      user: {
+        ...createTestAuthContext().user,
+        id: "user-1",
+        organizationId: "org-1",
+      },
     });
+    // `clearAllMocks` does not reset implementations, so this default must be
+    // set per-block rather than inherited from a sibling describe.
+    vi.mocked(teamsService.existsInOrganization).mockResolvedValue(true);
   });
 
   it("returns all team members", async () => {
-    const mockTeam = {
-      id: "team-1",
-      organizationId: "org-1",
-    };
     const mockMembers = [
       {
         id: "member-1",
         teamId: "team-1",
         userId: "user-1",
-        role: "OWNER",
+        role: TeamRole.Owner,
         createdAt: new Date(),
         user: {
           id: "user-1",
@@ -51,7 +57,7 @@ describe("GET /teams/:teamId/members", () => {
         id: "member-2",
         teamId: "team-1",
         userId: "user-2",
-        role: "MEMBER",
+        role: TeamRole.Member,
         createdAt: new Date(),
         user: {
           id: "user-2",
@@ -63,8 +69,7 @@ describe("GET /teams/:teamId/members", () => {
       },
     ];
 
-    vi.mocked(teamsService.findById).mockResolvedValue(mockTeam as any);
-    vi.mocked(teamsService.getMembers).mockResolvedValue(mockMembers as any);
+    vi.mocked(teamsService.getMembers).mockResolvedValue(mockMembers);
 
     const request = createMockRequest({
       url: "http://localhost:3002/teams/team-1/members",
@@ -76,12 +81,15 @@ describe("GET /teams/:teamId/members", () => {
     const json = await response.json();
     expect(json.success).toBe(true);
     expect(json.data).toHaveLength(2);
-    expect(teamsService.findById).toHaveBeenCalledWith("team-1", "org-1");
+    expect(teamsService.existsInOrganization).toHaveBeenCalledWith(
+      "team-1",
+      "org-1"
+    );
     expect(teamsService.getMembers).toHaveBeenCalledWith("team-1");
   });
 
-  it("returns 404 when team not found", async () => {
-    vi.mocked(teamsService.findById).mockResolvedValue(null);
+  it("maps a team the caller cannot see to 404", async () => {
+    vi.mocked(teamsService.existsInOrganization).mockResolvedValue(false);
 
     const request = createMockRequest({
       url: "http://localhost:3002/teams/nonexistent/members",
@@ -97,9 +105,6 @@ describe("GET /teams/:teamId/members", () => {
   });
 
   it("returns empty array when team has no members", async () => {
-    const mockTeam = { id: "team-1", organizationId: "org-1" };
-
-    vi.mocked(teamsService.findById).mockResolvedValue(mockTeam as any);
     vi.mocked(teamsService.getMembers).mockResolvedValue([]);
 
     const request = createMockRequest({
@@ -115,7 +120,7 @@ describe("GET /teams/:teamId/members", () => {
   });
 
   it("returns 500 on service failure", async () => {
-    vi.mocked(teamsService.findById).mockRejectedValue(
+    vi.mocked(teamsService.existsInOrganization).mockRejectedValue(
       new Error("Database error")
     );
 
@@ -138,8 +143,15 @@ describe("POST /teams/:teamId/members", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAuthContext = createTestAuthContext({
-      user: { id: "user-1", organizationId: "org-1" } as any,
+      user: {
+        ...createTestAuthContext().user,
+        id: "user-1",
+        organizationId: "org-1",
+      },
     });
+    // `clearAllMocks` does not reset implementations, so this default must be
+    // set per-block rather than inherited from a sibling describe.
+    vi.mocked(teamsService.existsInOrganization).mockResolvedValue(true);
   });
 
   it("adds member with valid data", async () => {
@@ -147,7 +159,7 @@ describe("POST /teams/:teamId/members", () => {
       id: "member-1",
       teamId: "team-1",
       userId: targetUserId,
-      role: "MEMBER",
+      role: TeamRole.Member,
       createdAt: new Date(),
       user: {
         id: targetUserId,
@@ -160,9 +172,10 @@ describe("POST /teams/:teamId/members", () => {
 
     vi.mocked(teamsService.hasRole).mockResolvedValue(true);
     vi.mocked(usersService.findById).mockResolvedValue({
+      ...createTestAuthContext().user,
       id: targetUserId,
-    } as any);
-    vi.mocked(teamsService.addMember).mockResolvedValue(mockMember as any);
+    });
+    vi.mocked(teamsService.addMember).mockResolvedValue(mockMember);
 
     const request = createMockRequest({
       method: "POST",
@@ -175,11 +188,12 @@ describe("POST /teams/:teamId/members", () => {
     const json = await response.json();
     expect(json.success).toBe(true);
     expect(json.data.userId).toBe(targetUserId);
-    expect(teamsService.hasRole).toHaveBeenCalledWith(
-      "team-1",
-      "user-1",
-      "ADMIN"
-    );
+    expect(teamsService.hasRole).toHaveBeenCalledWith({
+      teamId: "team-1",
+      organizationId: "org-1",
+      userId: "user-1",
+      requiredRole: TeamRole.Admin,
+    });
     expect(teamsService.addMember).toHaveBeenCalledWith({
       teamId: "team-1",
       userId: targetUserId,
@@ -191,7 +205,7 @@ describe("POST /teams/:teamId/members", () => {
       id: "member-1",
       teamId: "team-1",
       userId: targetUserId,
-      role: "ADMIN",
+      role: TeamRole.Admin,
       createdAt: new Date(),
       user: {
         id: targetUserId,
@@ -204,9 +218,10 @@ describe("POST /teams/:teamId/members", () => {
 
     vi.mocked(teamsService.hasRole).mockResolvedValue(true);
     vi.mocked(usersService.findById).mockResolvedValue({
+      ...createTestAuthContext().user,
       id: targetUserId,
-    } as any);
-    vi.mocked(teamsService.addMember).mockResolvedValue(mockMember as any);
+    });
+    vi.mocked(teamsService.addMember).mockResolvedValue(mockMember);
 
     const request = createMockRequest({
       method: "POST",
@@ -221,6 +236,28 @@ describe("POST /teams/:teamId/members", () => {
       userId: targetUserId,
       role: "ADMIN",
     });
+  });
+
+  it("maps a team the caller cannot see to 404, before consulting the role", async () => {
+    vi.mocked(teamsService.existsInOrganization).mockResolvedValue(false);
+
+    const request = createMockRequest({
+      method: "POST",
+      body: { userId: targetUserId },
+    });
+    const routeContext = createMockRouteContext({ teamId: "team-1" });
+    const response = await POST(request, routeContext);
+
+    expect(response.status).toBe(404);
+    // This route has a SECOND 404 (`notFoundResponse("User")`) further down, so
+    // asserting the status alone would stay green even if the guard's response
+    // were computed and dropped. The body plus the not-called set is what pins
+    // which 404 this is.
+    const json = await response.json();
+    expect(json.error).toBe("Team not found");
+    expect(teamsService.hasRole).not.toHaveBeenCalled();
+    expect(usersService.findById).not.toHaveBeenCalled();
+    expect(teamsService.addMember).not.toHaveBeenCalled();
   });
 
   it("returns 403 when user is not admin/owner", async () => {
@@ -308,8 +345,9 @@ describe("POST /teams/:teamId/members", () => {
   it("returns 500 on service failure", async () => {
     vi.mocked(teamsService.hasRole).mockResolvedValue(true);
     vi.mocked(usersService.findById).mockResolvedValue({
+      ...createTestAuthContext().user,
       id: targetUserId,
-    } as any);
+    });
     vi.mocked(teamsService.addMember).mockRejectedValue(
       new Error("Database error")
     );

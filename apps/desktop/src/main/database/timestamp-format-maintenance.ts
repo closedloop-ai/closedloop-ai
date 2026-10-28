@@ -23,7 +23,7 @@
  * `agentDatabase.normalizeStoredTimestampFormats()` method (see sqlite.ts).
  */
 
-import { toCanonicalIso, validIso } from "./db-helpers.js";
+import { readZoneLessAsUtc, toCanonicalIso, validIso } from "./db-helpers.js";
 import type { DesktopPrisma } from "./prisma-client.js";
 import {
   CANONICAL_UTC_TIMESTAMP_GLOB_SQL,
@@ -209,7 +209,7 @@ const HEALED_COLUMNS: readonly TimestampColumn[] = [
   //     own `firstPushedAt` from `artifactRef.observedAt`);
   //   - `artifacts.observed_at` rides only as `resolveLinkObservedAt`'s fallback
   //     behind `sal.observed_at`, which is TEXT NOT NULL and so always wins;
-  //   - sync-source emits `merged_at`/`closed_at`/`is_draft` from
+  //   - sync-source emits `closed_at` from
   //     `pull_requests`, never its `observed_at`.
   { table: "artifacts", column: "first_pushed_at", healByRowId: true },
   { table: "artifacts", column: "observed_at", healByRowId: true },
@@ -589,13 +589,6 @@ async function requeueOwningSessionsForSync(
   );
 }
 
-// ISS-5496: a date-TIME with no zone designator at all — `2026-06-22T10:00:00`,
-// `2026-06-22T10:00`, `2026-06-22T10:00:00.5`. The character class is positive
-// (digits, `:`, `.`) rather than a negated "no Z and no sign", so a trailing
-// `Z`/`z` or a `+HH:MM`/`-HHMM` offset falls out on its own and no unlisted
-// suffix can be mistaken for a zone-less tail.
-const ZONE_LESS_DATE_TIME_RE = /^\d{4}-\d{2}-\d{2}T[\d:.]+$/;
-
 /**
  * ISS-5496: {@link toCanonicalIso} for a value read back OUT of the store.
  *
@@ -627,10 +620,13 @@ const ZONE_LESS_DATE_TIME_RE = /^\d{4}-\d{2}-\d{2}T[\d:.]+$/;
  * on every machine, and every other reader of the column was already treating
  * the digits as UTC. The new instant is the one the store already believed.
  *
- * Only the ZONE is supplied. A value the probe still cannot parse is returned
- * as the ORIGINAL stored text — never the 'Z'-suffixed probe string — so an
- * unparseable row is skipped by the callers' `canonical === value` guard exactly
- * as before rather than being churned into a new spelling of junk.
+ * Only the ZONE is supplied, by the shared {@link readZoneLessAsUtc} rule that
+ * ISS-8398 moved to `db-helpers.ts` when the legacy Agent bucket arm became its
+ * second caller; only the FAILURE contract below is still this function's own. A
+ * value the probe still cannot parse is returned as the ORIGINAL stored text —
+ * never the 'Z'-suffixed probe string — so an unparseable row is skipped by the
+ * callers' `canonical === value` guard exactly as before rather than being
+ * churned into a new spelling of junk.
  *
  * Parseability is tested with {@link validIso} rather than by comparing
  * `toCanonicalIso`'s output against the probe (review). Those two are NOT the
@@ -642,6 +638,6 @@ const ZONE_LESS_DATE_TIME_RE = /^\d{4}-\d{2}-\d{2}T[\d:.]+$/;
  * whole family permanently — the exact non-convergence ISS-5429 removed.
  */
 function canonicalizeStoredTimestamp(value: string): string {
-  const readable = ZONE_LESS_DATE_TIME_RE.test(value) ? `${value}Z` : value;
+  const readable = readZoneLessAsUtc(value);
   return validIso(readable) === null ? value : toCanonicalIso(readable);
 }

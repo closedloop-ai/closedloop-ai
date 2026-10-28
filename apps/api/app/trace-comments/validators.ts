@@ -1,6 +1,7 @@
 import {
+  CommentTargetType,
   TRACE_COMMENT_LIST_MAX_LIMIT,
-  TraceCommentTargetType,
+  TRACE_COMMENT_LIST_MAX_OFFSET,
 } from "@repo/api/src/types/comment";
 import { z } from "zod";
 
@@ -15,7 +16,9 @@ import { z } from "zod";
  *
  * Pagination is offset-based: `cursor` is the opaque token echoed from a prior
  * response's `nextCursor` (it encodes the next offset) and takes precedence over
- * a raw `offset` when both are present.
+ * a raw `offset` when both are present. Both carry the same ceiling, and the
+ * service withholds a `nextCursor` past it, so no token this endpoint issues is
+ * one it then rejects.
  */
 export const traceCommentListQuerySchema = z.object({
   resolved: z
@@ -23,7 +26,7 @@ export const traceCommentListQuerySchema = z.object({
     .transform((value) => value === "true")
     .optional(),
   targetType: z
-    .enum([TraceCommentTargetType.Session, TraceCommentTargetType.Branch])
+    .enum([CommentTargetType.Session, CommentTargetType.Branch])
     .optional(),
   // `authorId`/`sessionId` filter uuid columns (`createdById`/`artifactId`), so
   // reject non-uuid input up front rather than letting Prisma throw at the DB.
@@ -35,8 +38,20 @@ export const traceCommentListQuerySchema = z.object({
     .positive()
     .max(TRACE_COMMENT_LIST_MAX_LIMIT)
     .optional(),
-  offset: z.coerce.number().int().nonnegative().optional(),
-  cursor: z.coerce.number().int().nonnegative().optional(),
+  offset: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .max(TRACE_COMMENT_LIST_MAX_OFFSET)
+    .optional(),
+  // The cursor encodes the next offset, and the service prefers it over a raw
+  // `offset`, so it carries the same ceiling or the bound is a rename away.
+  cursor: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .max(TRACE_COMMENT_LIST_MAX_OFFSET)
+    .optional(),
 });
 
 export type TraceCommentListQuery = z.infer<typeof traceCommentListQuerySchema>;

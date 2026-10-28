@@ -1,10 +1,9 @@
 import {
   SESSION_LINKED_ISSUES_OVERFLOW_TEST_ID,
-  SESSION_LINKED_PROJECTS_OVERFLOW_TEST_ID,
   type SessionLinkedEntityChip,
 } from "@repo/app/agents/lib/session-linked-entity-chips";
 import type { Meta, StoryObj } from "@storybook/react";
-import { FolderIcon, TicketIcon } from "lucide-react";
+import { TicketIcon } from "lucide-react";
 import { SessionLinkedChipsCell } from "./session-linked-chips-cell";
 
 /**
@@ -18,7 +17,8 @@ import { SessionLinkedChipsCell } from "./session-linked-chips-cell";
  */
 const meta: Meta<typeof SessionLinkedChipsCell> = {
   component: SessionLinkedChipsCell,
-  title: "App Core/Sessions/SessionLinkedChipsCell",
+  title: "Composites v1.0/Sessions/Session Linked Chips Cell",
+  tags: ["deprecated"],
 };
 
 export default meta;
@@ -33,7 +33,6 @@ function issueChip(
 }
 
 const TICKET_ICON = <TicketIcon aria-hidden />;
-const FOLDER_ICON = <FolderIcon aria-hidden />;
 
 /** The ordinary row: a couple of issues, each a real link. */
 export const LinkedIssues: Story = {
@@ -69,22 +68,6 @@ export const OverflowingIssues: Story = {
  */
 export const UncappedForCardFallback: Story = {
   args: { ...OverflowingIssues.args, uncapped: true },
-};
-
-/**
- * A session's project. Inert by design: the project detail route needs a team id
- * the session list contract does not carry, so the chip names the project rather
- * than guessing a destination.
- */
-export const Projects: Story = {
-  args: {
-    chips: [
-      { key: "project-1", label: "Platform Core", href: null, title: null },
-    ],
-    icon: FOLDER_ICON,
-    overflowNoun: "project",
-    testId: SESSION_LINKED_PROJECTS_OVERFLOW_TEST_ID,
-  },
 };
 
 /**

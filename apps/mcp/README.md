@@ -95,6 +95,52 @@ Use these steps to connect Claude Code CLI to Closedloop MCP:
 - `MCP_SERVER_CACHE_TTL_MS` (optional)
   - Defaults to `60000`.
   - Controls how long idle cached MCP server instances are retained.
+- `MCP_MAX_SESSIONS` (optional)
+  - Defaults to `200`. Unit: sessions. Range: `1`..`9007199254740991`.
+  - Hard ceiling on live MCP sessions. Each session retains a whole `McpServer`
+    (all tools with their Zod schemas), so this — not the TTL — is what bounds
+    heap under a reconnect storm. A slot is claimed before the server is built,
+    so servers still in flight count against the ceiling too.
+  - A POST carrying a session id this task does not hold rebuilds the same
+    `McpServer` on the stateless path — the routine result of a task restart, a
+    TTL expiry, an eviction, or a non-sticky load balancer — so that rebuild
+    claims a slot too, whatever JSON-RPC method it carries. Both the
+    `initialize` and the rebuild are bounded by this one ceiling.
+  - At the ceiling, the least-recently-used session is evicted to make room. An
+    evicted client's next POST carries an unknown session id and takes the
+    stateless path; it is served if a slot can be found for the rebuild, and
+    shed if not. When a burst is large enough that every slot is held by a
+    server still being built, there is nothing left to evict and the surplus
+    requests are refused with `503 temporarily_unavailable` and `Retry-After: 1`
+    (logged as `session-capacity-refused`). Refusing is what bounds the peak:
+    granting them would put one `McpServer` per in-flight request on the heap,
+    which is the spike this ceiling exists to prevent.
+  - **Triaging a `session-capacity-refused` spike:** the event's `reason` facet
+    is what separates the two causes, because `method` is `POST` for both.
+    `reason=initialize` is a client that has no session yet.
+    `reason=stateless-rebuild` is an established client whose in-flight call was
+    shed — not a new-client problem, and the one that also correlates with
+    `session-evicted`.
+  - Set it from the container's memory limit, not from expected client count.
+    Lowering it is safe at any time; raising it past what the heap can hold
+    reintroduces the OOM this bound exists to prevent. Memory is not the only
+    axis, though: a rebuild holds its slot for the whole request, including a
+    long `tools/call`, so this value is also a hard concurrency ceiling on
+    stateless tool calls. Enough slow concurrent rebuilds refuse every arrival,
+    `initialize` included, until they drain.
+- `MCP_SESSION_SWEEP_INTERVAL_MS` (optional)
+  - Defaults to `30000`. Unit: milliseconds. Range: `1`..`2147483647`
+    (Node's maximum timer delay).
+  - How often idle sessions past `MCP_SERVER_CACHE_TTL_MS` are reaped. The
+    sweep also runs per request; this interval is what reclaims a burst that
+    then goes quiet and sends no further traffic.
+
+Both retention settings, and every other numeric `MCP_*` variable above, are
+read as a whole positive integer. Absent or empty takes the default silently; a
+value that is non-numeric, fractional, out of range, or carrying a suffix is
+rejected with a warning and the default is used — the process does not fail to
+start. Set them where the rest of the container environment is set
+(`apps/mcp/Dockerfile` / the task definition), not per request.
 
 ## Redirect URI Policy
 
@@ -130,6 +176,31 @@ They are also IP-filtered by `MCP_INTERNAL_ALLOWED_IPS` in non-local environment
 - `POST /internal/oauth/revoke`
   - JSON body: `{ "token": "mcp_at_..." }` or `{ "token": "mcp_rt_..." }`
   - Revokes an issued MCP OAuth token (access token, or entire refresh-token family).
+
+## HTTP Method Contract At `/mcp`
+
+- `POST` carries every JSON-RPC message, including `initialize` and tool calls.
+- `DELETE` terminates a session.
+- `GET` carrying an `Mcp-Session-Id` or an `Authorization` header is answered
+  `405` with `Allow: POST, DELETE`. This server does not offer the Streamable
+  HTTP standalone SSE stream, because it never sends a server-initiated message:
+  tool results return on their own `POST` response, and nothing registers a
+  resource, a prompt, or the `logging` capability. `405` is the status the MCP
+  spec defines for that, and clients treat it as "no SSE offered" rather than as
+  an error.
+- `GET` carrying *neither* header is answered `401` with
+  `WWW-Authenticate: Bearer resource_metadata=...` and never reaches the `405`.
+  The auth challenge is method-agnostic and is checked first, so an
+  unauthenticated discovery probe — the bare `GET /mcp` an OAuth-capable client
+  opens with to find the authorization server — still starts OAuth rather than
+  being told the method is unsupported. The refusal is deliberately placed after
+  that probe and before credential validation: presenting either header is what
+  reaches the `405`, so a `GET` with an expired or invalid token is refused by
+  method, not by auth.
+- Consequence to know before adding one: a message sent without a related
+  request id has no channel to travel on. A notification is silently dropped; a
+  server-to-client request would hang. Restore the `GET` stream in the same
+  change that adds either (ISS-8272).
 
 ## Persistence
 

@@ -12,14 +12,13 @@ import fs from "node:fs";
 import { mkdtemp, rm, truncate, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
-import { vi } from "vitest";
+import { afterAll, test, vi } from "vitest";
 import { parseChatSessionFile } from "../src/main/collectors/copilot/copilot-parser.js";
 import { extractTranscriptTokens } from "../src/main/database/transcript.js";
 
 const tempDirs: string[] = [];
 
-test.after(async () => {
+afterAll(async () => {
   await Promise.all(
     tempDirs.map((dir) => rm(dir, { recursive: true, force: true }))
   );

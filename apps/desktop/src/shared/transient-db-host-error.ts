@@ -25,8 +25,19 @@ import { findDbHostExitError } from "./db-host-exit-error.js";
 // no message): that is a real operation failure, not a restart, so it must stay a
 // fatal read that surfaces the hard error + Retry rather than being masked as a
 // transient recover.
+/**
+ * The signature a db-host LIFECYCLE failure carries.
+ *
+ * Named separately because it has a producer as well as consumers: the store
+ * thread's death (`db-store-client.ts`) has to mint a rejection that classifies
+ * transient, and hard-coding the token there would put the same string in two
+ * places with nothing tying them together — which is exactly how ISS-8246 M1
+ * shipped a store-thread death that read as a FATAL error.
+ */
+export const DB_HOST_EXITED_SIGNATURE = "db-host exited";
+
 export const TRANSIENT_DB_HOST_ERROR_SIGNATURES = [
-  "db-host exited",
+  DB_HOST_EXITED_SIGNATURE,
   "db-host is not running",
   "db-host is closed",
 ] as const;
@@ -94,4 +105,53 @@ export function isTransientDbHostError(error: unknown): boolean {
     return exit.restartScheduled;
   }
   return isTransientDbHostErrorMessage(extractDbHostErrorMessage(error));
+}
+
+/**
+ * ISS-9197: the signature the store-open DEADLINE mints.
+ *
+ * Owned here for the reason {@link DB_HOST_EXITED_SIGNATURE} is owned here: the
+ * producer is `db-store-client.ts` and the consumer is the boot path, and a
+ * token hard-coded at both ends is how ISS-8246 M1 shipped a store-thread death
+ * that read as a fatal error.
+ *
+ * Deliberately NOT a member of {@link TRANSIENT_DB_HOST_ERROR_SIGNATURES}. That
+ * set drives the renderer's read-retry treatment, and the message this signature
+ * appears in is minted through `storeDeathError`, so it already carries
+ * {@link DB_HOST_EXITED_SIGNATURE} and already classifies transient there.
+ * Adding it would change nothing and would imply a second axis that does not
+ * exist.
+ */
+export const STORE_OPEN_TIMEOUT_SIGNATURE = "store thread did not open within";
+
+// The exit can arrive before any IPC reply; reserve a code outside signal numbers.
+export const STORE_OPEN_TIMEOUT_EXIT_CODE = 124;
+
+/**
+ * True when `error` is the store-open deadline — the ONE db-host open failure
+ * that is not a property of the store's contents.
+ *
+ * This is the whole of ISS-9197. A corrupt file, a migration refusal and a
+ * schema mismatch are deterministic: retrying reproduces them exactly, so
+ * terminating without a crash loop is the right answer and has been since
+ * ISS-4714. A deadline is a function of store size, migration count and machine
+ * load at that instant, and the same open succeeds on a quieter boot — the
+ * install that produced this classification had completed the identical open in
+ * 8m05s and 7m38s earlier the same week. Routing it into the deterministic
+ * bucket takes an install dark until a human notices, with nothing retrying and
+ * nothing escalating.
+ *
+ * The typed exit code survives a deadline-driven process exit without relying
+ * on IPC delivery. Keep the message fallback for errors rebuilt from older
+ * workers' Ready replies and the store client's own deadline rejection.
+ */
+export function isStoreOpenTimeoutError(error: unknown): boolean {
+  if (findDbHostExitError(error)?.exitCode === STORE_OPEN_TIMEOUT_EXIT_CODE) {
+    return true;
+  }
+  const message = extractDbHostErrorMessage(error);
+  if (!message) {
+    return false;
+  }
+  return message.toLowerCase().includes(STORE_OPEN_TIMEOUT_SIGNATURE);
 }

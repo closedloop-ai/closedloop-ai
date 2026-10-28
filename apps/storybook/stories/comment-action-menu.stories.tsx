@@ -25,9 +25,9 @@ function CommentActionMenuStory() {
 }
 
 const meta = {
-  title: "Design System/Documents & Conversation/Comment Action Menu",
+  title: "Composites v1.0/Documents/Comment Action Menu",
   component: CommentActionMenuStory,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
 } satisfies Meta<typeof CommentActionMenuStory>;
 

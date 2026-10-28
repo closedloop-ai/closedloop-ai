@@ -1,81 +1,95 @@
 "use client";
 
 import { TagEntityType } from "@repo/api/src/types/tag";
-import { TagChip } from "@repo/app/tags/components/tag-chip";
+import { TagChip } from "@repo/app/shared/components/tag-chip";
+// Tags owns the picker chrome shared with Session and Branch bulk addition.
+import { BulkTagPicker } from "@repo/app/tags/components/bulk-tag-picker";
 import { useBatchApplyTag, useTags } from "@repo/app/tags/hooks/use-tags";
-import { Button } from "@repo/design-system/components/ui/button";
 import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@repo/design-system/components/ui/popover";
+  appliedTagMessage,
+  BULK_TAG_ACTION_ID,
+  BULK_TAG_ACTION_LABEL,
+  BULK_TAG_EMPTY_LABEL,
+} from "@repo/app/tags/lib/bulk-tag-labels";
 import { toast } from "@repo/design-system/components/ui/sonner";
+import type {
+  TableBulkActionDescriptor,
+  TableBulkActionOption,
+} from "@repo/design-system/components/ui/table-bulk-actions";
+import { TableBulkActionUndo } from "@repo/design-system/components/ui/table-bulk-actions";
+import type { CountNoun } from "@repo/design-system/lib/count-noun";
 import { TagIcon } from "lucide-react";
 import { useState } from "react";
 
-type BulkTagPickerProps = {
-  selectedIds: Set<string>;
-  onComplete: () => void;
-};
-
-export function BulkTagPicker({ selectedIds, onComplete }: BulkTagPickerProps) {
+/**
+ * Applying a tag to the selection, as a bulk-action descriptor (ISS-8942).
+ *
+ * Like its status sibling it keeps its own `render` — the project table's
+ * selection bar is not the Sessions rail — while the options and the handler
+ * under it are the descriptor's own.
+ */
+export function useBulkTagAction(
+  noun?: CountNoun
+): TableBulkActionDescriptor & {
+  id: typeof BULK_TAG_ACTION_ID;
+} {
   const [open, setOpen] = useState(false);
   const { data: tags } = useTags();
   const batchApplyTag = useBatchApplyTag();
+  const options: readonly TableBulkActionOption[] = (tags ?? []).map((tag) => ({
+    content: <TagChip tag={tag} />,
+    id: tag.id,
+    label: tag.name,
+  }));
 
-  function handleTagSelect(tagId: string, tagName: string) {
-    const entityIds = [...selectedIds];
-    batchApplyTag.mutate(
-      {
-        tagId,
-        entityType: TagEntityType.Artifact,
-        entityIds,
-      },
-      {
-        onSuccess: (result) => {
-          toast.success(
-            `Applied "${tagName}" to ${result.appliedCount} ${result.appliedCount === 1 ? "item" : "items"}`
-          );
-          setOpen(false);
-          onComplete();
+  function select(
+    rowIds: readonly string[],
+    option: TableBulkActionOption
+  ): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      batchApplyTag.mutate(
+        {
+          tagId: option.id,
+          entityType: TagEntityType.Artifact,
+          entityIds: [...rowIds],
         },
-      }
-    );
+        {
+          // Operator ruling on the ISS-12305 review, following Asana: a tag
+          // write keeps the selection; the reader clears it.
+          onSuccess: (result) => {
+            toast.success(
+              appliedTagMessage(option.label, result.appliedCount, noun)
+            );
+            setOpen(false);
+            resolve(true);
+          },
+          onError: () => resolve(false),
+        }
+      );
+    });
   }
 
-  return (
-    <Popover onOpenChange={setOpen} open={open}>
-      <PopoverTrigger asChild>
-        <Button
-          className="h-8 text-xs"
-          disabled={batchApplyTag.isPending}
-          size="sm"
-          variant="outline"
-        >
-          <TagIcon className="h-4 w-4" />
-          Add Tag
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align="center" className="w-56 p-2">
-        {tags && tags.length > 0 ? (
-          <div className="flex flex-col gap-1">
-            {tags.map((tag) => (
-              <button
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent"
-                key={tag.id}
-                onClick={() => handleTagSelect(tag.id, tag.name)}
-                type="button"
-              >
-                <TagChip tag={tag} />
-              </button>
-            ))}
-          </div>
-        ) : (
-          <p className="py-2 text-center text-muted-foreground text-sm">
-            No tags available
-          </p>
-        )}
-      </PopoverContent>
-    </Popover>
-  );
+  return {
+    emptyLabel: BULK_TAG_EMPTY_LABEL,
+    icon: <TagIcon className="h-4 w-4" />,
+    id: BULK_TAG_ACTION_ID,
+    isPending: batchApplyTag.isPending,
+    kind: "picker",
+    // ISS-10161: bulk tag is non-destructive and so IS undoable under the
+    // 2026-09-16 ruling — the undo is simply not built yet. Declared as the gap
+    // it is rather than sharing a value with a destructive action.
+    undo: TableBulkActionUndo.NotImplemented,
+    label: BULK_TAG_ACTION_LABEL,
+    onSelect: select,
+    options,
+    render: ({ selectOption }) => (
+      <BulkTagPicker
+        isPending={batchApplyTag.isPending}
+        onOpenChange={setOpen}
+        onSelect={selectOption}
+        open={open}
+        options={options}
+      />
+    ),
+  };
 }

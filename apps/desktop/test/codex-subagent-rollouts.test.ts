@@ -12,7 +12,7 @@
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
-import { afterEach, test } from "node:test";
+import { afterEach, test } from "vitest";
 import type { CodexRolloutLinkage } from "../src/main/collectors/codex/codex-subagent-rollouts.js";
 import {
   buildCodexChildrenById,

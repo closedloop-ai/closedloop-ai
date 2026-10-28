@@ -50,9 +50,9 @@ const diffRoutes = [
  * the immutable inline-diff interaction reviewable without a live API.
  */
 const meta = {
-  title: "App Core/Branches/Branch Files Changed Panel",
+  title: "Composites v1.0/Branches/Branch Files Changed Panel",
   component: BranchFilesChangedPanel,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { appCore: { apiRoutes: diffRoutes } },
   decorators: [
     (Story) => (
@@ -151,6 +151,8 @@ function selectedDetail() {
       closedAt: null,
       mergedAt: null,
       body: "Description",
+      baseRefName: "main",
+      authorLogin: "octocat",
       headRefOid: HEAD_SHA,
       mergeCommitSha: null,
       changedFiles: 3,

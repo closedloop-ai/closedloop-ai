@@ -18,16 +18,23 @@
  *    revisit happens at most once per idle cycle.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
-  INGESTION_FAILED_BACKOFF_MS,
-  MAX_CONSECUTIVE_INGESTION_FAILED,
   MAX_CONSECUTIVE_VALIDATION_FAILED,
   MAX_DEAD_LETTERED_IDS,
+  SESSION_LANE_STALL_CEILING_MS,
   VALIDATION_FAILED_BACKOFF_MS,
 } from "../src/main/agent-sync/agent-session-sync-backoff-policy.js";
+import type {
+  AgentSessionSyncTransportPayload,
+  SyncedAgentSession,
+} from "../src/main/agent-sync/agent-session-sync-contract.js";
+import type { DeadLetterLifecycleDeps } from "../src/main/agent-sync/agent-session-sync-dead-letter-lifecycle.js";
+import { markDeadLettered } from "../src/main/agent-sync/agent-session-sync-dead-letter-lifecycle.js";
 import { buildAgentSessionSyncSourceKey } from "../src/main/agent-sync/agent-session-sync-source.js";
+import type { DesktopAgentSessionsAck } from "../src/main/cloud/cloud-protocol.js";
 import { DesktopAgentSessionsAckReason } from "../src/main/cloud/cloud-protocol.js";
+import { laneReArmDelayMs } from "../src/shared/lane-give-up.js";
 import {
   flushAgentSessionSync,
   makeServiceWithIdentity,
@@ -176,6 +183,248 @@ test("agent-session sync caps the persisted dead-letter set at MAX_DEAD_LETTERED
   );
 });
 
+test("ISS-7216: a dead-letter evicted by the cap is returned to the durable pending outbox, not forgotten", async () => {
+  // SILENT DATA LOSS. `deadLetteredIds` has three exits, and the cap was the only
+  // one that did not durably re-pend the row on the way out. That mattered because
+  // a `dead_lettered` outbox row is invisible to EVERY other re-entry door:
+  // `loadPendingOutboxIds` and stranded-row adoption both filter `status =
+  // pending`, and the incremental scan cannot reach it because the watermark has
+  // already advanced past it. So the in-memory Map was the only remaining record
+  // that the session was still owed — and evicting an id destroyed it.
+  //
+  // The eviction docblock used to argue this was harmless because "a future
+  // cold-restart re-backfill re-walks it". It does not:
+  // `initializeBackfillQueueIfNeeded` early-returns as soon as a cursor is
+  // resumed, so a device past its first backfill never re-walks the corpus. The
+  // row stayed on disk as `dead_lettered` forever — never sent, and never purged
+  // either, because `selectUndeliveredSessionIds` matches any status.
+  //
+  // This drives the REAL hydration path (`enforceDeadLetterCap` is called from
+  // `hydratePersistedCursorIfNeeded` on an over-cap legacy cursor), and asserts
+  // the observable DURABLE state rather than a spy call, so deleting the re-pend
+  // reddens it. `main/sync/AGENTS.md` invariant 10 is the contract under test:
+  // "Eviction must degrade to 're-discovered later', never to 'lost'."
+  const overCap = MAX_DEAD_LETTERED_IDS + 25;
+  const seededDeadIds = Array.from({ length: overCap }, (_, i) => `dl-${i}`);
+  const top = "2026-06-08T12:05:00.000Z";
+  // Insertion order decides eviction, so the oldest 25 (`dl-0`..`dl-24`) are the
+  // ones evicted. One evicted id and one RETAINED id get a real local session
+  // plus a real `dead_lettered` durable row. The retained one is the positive
+  // sibling: it proves the assertion below can tell the two apart, and that the
+  // fix re-pends only what it actually evicts rather than flipping the whole set
+  // back indiscriminately.
+  //
+  // Both sessions must genuinely EXIST locally and sit below the watermark. A
+  // re-pended row whose session the store cannot produce is confirmed-absent and
+  // legitimately disposed, which would make this test pass or fail for a reason
+  // that has nothing to do with eviction.
+  const evictedId = "dl-0";
+  const retainedId = `dl-${MAX_DEAD_LETTERED_IDS}`;
+  const source = new FakeSyncSource([
+    makeSyncedSession(evictedId, "2026-06-08T11:00:00.000Z"),
+    makeSyncedSession(retainedId, "2026-06-08T11:01:00.000Z"),
+    makeSyncedSession("top", top),
+  ]);
+  const key = buildAgentSessionSyncSourceKey("target-a");
+  source.seedSyncState(key, {
+    observedTopUpdatedAt: top,
+    observedIdsAtTopUpdatedAt: ["top"],
+    deadLetteredIds: seededDeadIds,
+  });
+  source.seedOutbox(key, evictedId, "dead_lettered");
+  source.seedOutbox(key, retainedId, "dead_lettered");
+
+  // Reject every send as `unauthenticated`. That is the one class that defers
+  // with budgets INTACT and can never dead-letter, so a re-pended row cannot be
+  // flipped back to `dead_lettered` by the very drain this test triggers — the
+  // assertions below then observe the eviction's durable effect and nothing else.
+  const service = makeServiceWithIdentity(
+    source,
+    () =>
+      Promise.resolve({
+        accepted: false as const,
+        reason: DesktopAgentSessionsAckReason.Unauthenticated,
+      }),
+    "target-a"
+  );
+  service.start();
+  await flushAgentSessionSync();
+  service.stop();
+
+  const pendingIds = await source.loadPendingOutboxIds(key);
+  assert.ok(
+    pendingIds.includes(evictedId),
+    "an evicted dead-letter must be handed back to the pending outbox so it stays re-discoverable"
+  );
+  assert.ok(
+    !pendingIds.includes(retainedId),
+    "a dead-letter still inside the cap is NOT re-pended — the eviction is what re-pends, and this proves the assertion above can distinguish the two"
+  );
+});
+
+test("ISS-7216: the LIVE dead-letter path enforces the cap, and the eviction it triggers re-pends", async () => {
+  // WIRING. `enforceDeadLetterCap` has two call sites: the hydration one the test
+  // above drives, and `markDeadLettered` — the live door, taken when a RUNNING
+  // lane dead-letters its 1001st distinct session. Both share one `deps` object
+  // and one function body, so a bug inside the eviction reddens either way; what
+  // is uncovered without this test is the CALL. Delete the `enforceDeadLetterCap`
+  // call from `markDeadLettered` and nothing else in the suite notices, because
+  // no test drives 1000+ distinct live dead-letters through the service.
+  //
+  // Driven directly against the lifecycle module rather than through 1001 real
+  // sends: the service round-trip adds minutes of CI time and proves nothing this
+  // does not. The service's own wiring of the hand-off is what the hydration
+  // tests above and below cover end to end.
+  const probe = makeCapProbe(() => Promise.resolve(true));
+  const { deps, deadLetteredIds, handedOff } = probe;
+
+  // Fill to exactly the cap through the live path. `dl-0` is the oldest.
+  for (let i = 0; i < MAX_DEAD_LETTERED_IDS; i += 1) {
+    markDeadLettered(`dl-${i}`, true, "ingestion_failed", 5, null, deps);
+  }
+  assert.equal(
+    deadLetteredIds.size,
+    MAX_DEAD_LETTERED_IDS,
+    "the set fills to the cap without evicting"
+  );
+  // The negative sibling, on the same spy: at exactly the cap nothing is evicted,
+  // so nothing is re-pended. Without this, the assertion below could pass on a
+  // build that re-pends on EVERY dead-letter rather than only on eviction.
+  assert.deepEqual(
+    handedOff,
+    [],
+    "no eviction has happened yet, so nothing has been handed back to the outbox"
+  );
+
+  // One more distinct session crosses the cap and must evict the oldest.
+  markDeadLettered("dl-overflow", true, "ingestion_failed", 5, null, deps);
+  assert.deepEqual(
+    handedOff,
+    ["dl-0"],
+    "the evicted oldest id — and only it — is handed back to the durable pending outbox"
+  );
+  // ISS-7216 (PR #5708 review): the release is now SEQUENCED on that hand-off,
+  // so the id leaves the set when the durable write confirms — not on the line
+  // after the write was requested. The assertion is unchanged in substance
+  // (the cap is enforced, the evicted id is gone); it moved after the await
+  // because the behavior under test deliberately became a confirmed hand-off.
+  await flushAgentSessionSync();
+  assert.equal(
+    deadLetteredIds.size,
+    MAX_DEAD_LETTERED_IDS,
+    "the live dead-letter path enforces the cap"
+  );
+  assert.ok(
+    !deadLetteredIds.has("dl-0"),
+    "the evicted id is gone from the in-memory set once its re-pend is confirmed"
+  );
+});
+
+test("ISS-7216: a durable re-pend that THROWS must not lose the evicted dead-letter", async () => {
+  // COUNTERFACTUAL 1 of 2 (PR #5708 review, whitlockk). The cap deletes the only
+  // in-memory reference to the id, so it cannot inherit the sibling doors'
+  // "a failed write only costs a hint" argument — they leave the id in
+  // `deadLetteredIds` for the next persist, and this one cannot, because
+  // removing it is the point. A re-pend that rejects (a locked or closing DB, a
+  // db-host IPC fault) therefore used to lose the session outright: no durable
+  // `pending` row, no in-memory entry, no persisted entry, and no other door
+  // that can reach a `dead_lettered` row.
+  //
+  // Drives the REAL wiring — hydration → enforceDeadLetterCap →
+  // OutboxWriters.handOffEvicted → the source — so the writer's catch and the
+  // lifecycle's release gate are both under test, not a stub of them.
+  const overCap = MAX_DEAD_LETTERED_IDS + 25;
+  const evictedId = "dl-0";
+  class RejectingRePendSource extends FakeSyncSource {
+    rePendAttempts = 0;
+    override reEnqueueRecoveredDeadLetter(): Promise<boolean> {
+      this.rePendAttempts += 1;
+      return Promise.reject(new Error("db-host exited"));
+    }
+  }
+  const source = new RejectingRePendSource(capFixtureSessions(evictedId));
+  const key = seedOverCapCursor(source, "cap-a", overCap, evictedId);
+
+  const service = makeServiceWithIdentity(
+    source,
+    acceptFreshRejectDeadLetters,
+    "cap-a"
+  );
+  service.start();
+  await flushAgentSessionSync();
+
+  assert.ok(
+    source.rePendAttempts > 0,
+    "the eviction did attempt the durable hand-off (otherwise this proves nothing)"
+  );
+  assert.deepEqual(
+    await source.loadPendingOutboxIds(key),
+    [],
+    "the write rejected, so the row was NOT re-pended — this is the failure being survived"
+  );
+  assert.equal(
+    service.getSyncProgress().deadLetteredSessions,
+    overCap,
+    "no id is released on a failed hand-off; the in-memory set still holds every one"
+  );
+  service.stop();
+  assert.ok(
+    persistedDeadLetterSets(source).some((ids) => ids.includes(evictedId)),
+    "the evicted id is still written to the persisted cursor, so a restart sets it aside again — degraded to 're-discovered later', never 'lost'"
+  );
+});
+
+test("ISS-7216: a durable re-pend that reports ZERO ROWS without throwing must not lose the evicted dead-letter", async () => {
+  // COUNTERFACTUAL 2 of 2 (PR #5708 review, whitlockk), and the nastier of the pair:
+  // nothing throws. `sqliteReEnqueueRecoveredDeadLetter` is an `updateMany`
+  // guarded on `status = dead_lettered`, so a write that matches nothing
+  // resolves normally — a try/catch around it stays silent and the caller
+  // "succeeds" over a row it never touched. A fix that only handled rejections
+  // would pass counterfactual 1 and still drop the session here, which is why
+  // the source reports the CONFIRMATION (`false` = the row is still
+  // `dead_lettered`) rather than just not throwing.
+  const overCap = MAX_DEAD_LETTERED_IDS + 25;
+  const evictedId = "dl-0";
+  class NoOpRePendSource extends FakeSyncSource {
+    rePendAttempts = 0;
+    /** Resolves — but leaves the row `dead_lettered` and says so. */
+    override reEnqueueRecoveredDeadLetter(): Promise<boolean> {
+      this.rePendAttempts += 1;
+      return Promise.resolve(false);
+    }
+  }
+  const source = new NoOpRePendSource(capFixtureSessions(evictedId));
+  const key = seedOverCapCursor(source, "cap-b", overCap, evictedId);
+
+  const service = makeServiceWithIdentity(
+    source,
+    acceptFreshRejectDeadLetters,
+    "cap-b"
+  );
+  service.start();
+  await flushAgentSessionSync();
+
+  assert.ok(
+    source.rePendAttempts > 0,
+    "the eviction did attempt the durable hand-off (otherwise this proves nothing)"
+  );
+  assert.deepEqual(
+    await source.loadPendingOutboxIds(key),
+    [],
+    "the update matched nothing, so the row is still dead_lettered — invisible to every durable re-entry door"
+  );
+  assert.equal(
+    service.getSyncProgress().deadLetteredSessions,
+    overCap,
+    "an unconfirmed hand-off releases nothing; the in-memory set still holds every id"
+  );
+  service.stop();
+  assert.ok(
+    persistedDeadLetterSets(source).some((ids) => ids.includes(evictedId)),
+    "the evicted id is still written to the persisted cursor, so the session keeps a path back"
+  );
+});
+
 test("agent-session sync sets a persisted validation_failed row aside on restart and revisits it last", async () => {
   // RESUME: the fix persists the cursor with the validation_failed id recorded
   // as a dead-letter, so a cold start (new instance, same target + source) does
@@ -246,8 +495,9 @@ test("agent-session sync sets a persisted validation_failed row aside on restart
 test("FEA-2258: a dead-lettered ingestion_failed row is recorded, set aside on restart, and revisited last", async () => {
   // The recovery path for the FEA-2258 NUL/lone-surrogate fix, updated to the
   // dead-letter-cursor-poison contract: a session the server keeps rejecting with
-  // ingestion_failed dead-letters locally after MAX_CONSECUTIVE_INGESTION_FAILED
-  // attempts. Previously `deadLetteredIds` blocked persistCursorIfCaughtUp, so the
+  // ingestion_failed dead-letters locally once its LANE-WIDE stall clock passes
+  // SESSION_LANE_STALL_CEILING_MS (ISS-7730 — the class burns no per-row budget,
+  // so wall clock is the terminal path). Previously `deadLetteredIds` blocked persistCursorIfCaughtUp, so the
   // cursor never advanced and every restart re-walked the whole corpus. Now the
   // cursor advances and RECORDS the id; a restart (the user relaunching after the
   // server sanitization deploys) sets it aside and revisits it last, re-attempting
@@ -263,17 +513,21 @@ test("FEA-2258: a dead-lettered ingestion_failed row is recorded, set aside on r
     }),
     "target-a"
   );
+  // ISS-8610: pin the ORIGIN, because the ceiling this row dead-letters on is
+  // now also the lane's environmental give-up ceiling, and that give-up is
+  // DURABLE. Both instances have to read one timeline: a stamp written on the
+  // virtual clock and read back on the real one is in the future, normalizes to
+  // "gave up just now", and holds the relaunch for its whole re-arm window.
+  const originMs = Date.parse("2026-06-08T12:00:00.000Z");
   await runWithMockedNow(async ({ advance }) => {
     first.start();
     await flushAgentSessionSync();
-    // Drive the remaining attempts past the per-session backoff until it
-    // dead-letters at the threshold.
-    for (let i = 1; i < MAX_CONSECUTIVE_INGESTION_FAILED; i += 1) {
-      advance(INGESTION_FAILED_BACKOFF_MS + 1);
-      first.refresh();
-      await flushAgentSessionSync();
-    }
-  });
+    // ISS-7730: the first rejection stamped the row's lane-stall clock; one
+    // more past the ceiling is what dead-letters it.
+    advance(SESSION_LANE_STALL_CEILING_MS + 1);
+    first.refresh();
+    await flushAgentSessionSync();
+  }, originMs);
   first.stop();
   assert.ok(
     source.advanceCalls.length >= 1,
@@ -294,12 +548,19 @@ test("FEA-2258: a dead-lettered ingestion_failed row is recorded, set aside on r
     },
     "target-a"
   );
-  restarted.start();
-  await flushAgentSessionSync();
-  // Revisited last: only after the (empty) queues drain does the idle-cycle
-  // promotion enqueue the set-aside dead-letter for a retry.
-  restarted.refresh();
-  await flushAgentSessionSync();
+  // The relaunch happens after the give-up's re-arm window: the server fix has
+  // shipped, and the window arm is what buys this launch its one attempt.
+  await runWithMockedNow(
+    async () => {
+      restarted.start();
+      await flushAgentSessionSync();
+      // Revisited last: only after the (empty) queues drain does the idle-cycle
+      // promotion enqueue the set-aside dead-letter for a retry.
+      restarted.refresh();
+      await flushAgentSessionSync();
+    },
+    originMs + SESSION_LANE_STALL_CEILING_MS + laneReArmDelayMs(1) + 2
+  );
   restarted.stop();
 
   assert.equal(
@@ -445,3 +706,108 @@ test("agent-session sync drains pending work before any dead-letter, and revisit
 
   service.stop();
 });
+
+/**
+ * ISS-7216: the local sessions the cap counterfactuals need. Both the id that
+ * gets evicted and the watermark row must genuinely EXIST locally — a re-pended
+ * row whose session the store cannot produce is confirmed-absent and
+ * legitimately disposed, which would make an assertion pass or fail for a reason
+ * that has nothing to do with eviction. `fresh` sits above the watermark so it
+ * drains, which is what triggers the cursor persist the assertions read.
+ */
+function capFixtureSessions(evictedId: string): SyncedAgentSession[] {
+  return [
+    makeSyncedSession(evictedId, "2026-06-08T11:00:00.000Z"),
+    makeSyncedSession(CAP_FIXTURE_TOP, "2026-06-08T12:05:00.000Z"),
+    makeSyncedSession("fresh", "2026-06-08T12:06:00.000Z"),
+  ];
+}
+
+/**
+ * Seed a legacy cursor carrying more than `MAX_DEAD_LETTERED_IDS` set-aside ids
+ * plus a real `dead_lettered` outbox row for `evictedId`, so hydration takes the
+ * cap door. Returns the source key the assertions read the outbox under.
+ */
+function seedOverCapCursor(
+  source: FakeSyncSource,
+  targetId: string,
+  overCap: number,
+  evictedId: string
+): string {
+  const key = buildAgentSessionSyncSourceKey(targetId);
+  source.seedSyncState(key, {
+    observedTopUpdatedAt: CAP_FIXTURE_TOP_UPDATED_AT,
+    observedIdsAtTopUpdatedAt: [CAP_FIXTURE_TOP],
+    deadLetteredIds: Array.from({ length: overCap }, (_, i) => `dl-${i}`),
+  });
+  source.seedOutbox(key, evictedId, "dead_lettered");
+  return key;
+}
+
+/**
+ * Accept genuinely-new work (so a cursor persist happens and the assertions have
+ * a persisted dead-letter array to read) and keep every set-aside `dl-` id
+ * dead-lettered, so the cap's population is not changed out from under the
+ * assertions by a promotion draining successfully.
+ */
+function acceptFreshRejectDeadLetters(
+  batch: AgentSessionSyncTransportPayload
+): Promise<DesktopAgentSessionsAck> {
+  const ids = batch.sessions.map((session) => session.externalSessionId);
+  return Promise.resolve(
+    ids.some((id) => id.startsWith("dl-"))
+      ? {
+          accepted: false as const,
+          reason: DesktopAgentSessionsAckReason.ValidationFailed,
+        }
+      : { accepted: true as const }
+  );
+}
+
+/** Every dead-letter id array this source has been asked to persist. */
+function persistedDeadLetterSets(source: FakeSyncSource): string[][] {
+  return source.advanceCalls.map((call) => call.state.deadLetteredIds);
+}
+
+/**
+ * A minimal `DeadLetterLifecycleDeps` for driving the lifecycle module directly,
+ * with the cap's durable hand-off under the caller's control. `handedOff`
+ * records what the cap ASKED to hand over, which is separate from what it
+ * released — the point of ISS-7216's review fix is that those are no longer the
+ * same event.
+ */
+function makeCapProbe(handOff: (id: string) => Promise<boolean>): {
+  deps: DeadLetterLifecycleDeps;
+  deadLetteredIds: Map<string, number>;
+  handedOff: string[];
+} {
+  const handedOff: string[] = [];
+  const deadLetteredIds = new Map<string, number>();
+  const deps: DeadLetterLifecycleDeps = {
+    deadLetteredIds,
+    deadLetterCountById: new Map<string, number>(),
+    chunkValidationCycleById: new Map<string, number>(),
+    ackOmittedCycleById: new Map<string, number>(),
+    backfillQueue: [],
+    backfillQueuedIds: new Set<string>(),
+    incrementalQueue: [],
+    incrementalQueuedIds: new Set<string>(),
+    hasPendingChunks: () => false,
+    isHistoricalBackfillEnabled: () => true,
+    wasDeadLetterRevisitedThisIdleCycle: () => false,
+    setDeadLetterRevisitedThisIdleCycle: () => undefined,
+    clearFailureStateForId: () => undefined,
+    recordOutboxDeadLetter: () => undefined,
+    recordOutboxReEnqueue: (id) => {
+      handedOff.push(id);
+      return handOff(id);
+    },
+    logInfo: () => undefined,
+    logWarn: () => undefined,
+  };
+  return { deps, deadLetteredIds, handedOff };
+}
+
+/** The watermark row every cap fixture resumes on. */
+const CAP_FIXTURE_TOP = "top";
+const CAP_FIXTURE_TOP_UPDATED_AT = "2026-06-08T12:05:00.000Z";

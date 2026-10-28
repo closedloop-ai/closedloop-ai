@@ -50,13 +50,15 @@ import {
   TEST_ORG_ID,
 } from "@/__tests__/support/custom-fields/values-service.test-fixtures";
 import {
+  EntityNotFoundError,
+  FieldNotFoundError,
+} from "../custom-field-errors";
+import {
   ATTACH_TX_MAX_ATTEMPTS,
   CASCADE_CHILD_BATCH_SIZE,
   CASCADE_TX_TIMEOUT_MS,
-  customFieldValuesService,
-  EntityNotFoundError,
-  FieldNotFoundError,
-} from "../values-service";
+} from "../project-field-cascade";
+import { customFieldValuesService } from "../values-service";
 
 const mockWithDb = withDb as unknown as Mock;
 const TEST_PROJECT_ID = "project-1";

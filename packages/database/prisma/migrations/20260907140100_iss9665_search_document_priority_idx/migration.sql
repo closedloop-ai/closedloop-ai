@@ -1,0 +1,71 @@
+-- ISS-9665: give the `:priority` filter an index it can seek, instead of a
+-- post-filter over every document and project row in the org.
+--
+-- WHAT ASKS FOR IT. `priority:none` / `priority!=none` (search-fts-service.ts,
+-- `priorityPredicate`) can run with NO full-text term, and in that filter-only
+-- mode `rank` is a literal `0::float8`, so the query is
+-- `WHERE organization_id = ? AND priority IS [NOT] NULL [AND entity_type IN
+-- ('document','project')] ORDER BY updated_at DESC, …`. Raised in review by
+-- whitlockk on #6796.
+--
+-- WHY THE EXISTING INDEXES DO NOT SETTLE IT. Not one of the four indexes on
+-- this table carries `priority`, so the planner can only narrow by
+-- `organization_id` (+ `entity_type`) and then discard on the heap. Measured on
+-- Postgres 16.10, a 1,000,000-row table over 50 orgs with the shipped index set
+-- and the target org holding 100,479 rows (7,533 of them unset document/project
+-- rows):
+--
+--   priority:none  — Bitmap Index Scan on the (org, entity_type, entity_id)
+--                    unique key, then `Filter: (priority IS NULL)` discarding
+--                    17,551 of 25,084 heap-fetched rows; 16,795 heap blocks.
+--   priority!=none — Bitmap Index Scan on (org, entity_id), then
+--                    `Filter: (priority IS NOT NULL)` discarding 82,928 of
+--                    100,479; 26,500 heap blocks.
+--
+-- WITH THIS INDEX both predicates move INTO the `Index Cond` and the filter
+-- disappears entirely: `Rows Removed by Filter` goes to 0 on both arms, and
+-- heap blocks fall to 6,893 and 13,308 respectively.
+--
+-- WHY THIS SHAPE — priority BEFORE the recency key, which is what the review
+-- asked for. `entity_type` sits second to match the `IN ('document','project')`
+-- scoping the `IS NULL` arm carries (six of the eight projections hardcode
+-- `priority: null` because the field does not apply to them).
+--
+-- BE PRECISE ABOUT WHAT THE ORDER BUYS, because the obvious claim is wrong and
+-- was measured rather than assumed. Putting priority FOURTH —
+-- (organization_id, entity_type, updated_at, priority) — does NOT push the
+-- predicate back onto the heap: Postgres still reports it in the `Index Cond`
+-- and still builds an identical 6,893-block heap bitmap. What it loses is the
+-- SEEK. With priority third the scan descends straight to the NULL bucket and
+-- reads 68 index pages in 1.5 ms; with priority fourth it must walk the whole
+-- (org, entity_type) range — all 25,084 entries — filtering inside the index,
+-- and reads 198 index pages in 17.3 ms. Same fixture, same bitmap, ~2.9x the
+-- index pages. That is the whole difference, and it is why the DDL test asserts
+-- an ORDERED key list.
+--
+-- WHAT IT DELIBERATELY DOES NOT HELP, so a later reader does not file it as a
+-- regression. The ordinal arms (`:priority >= medium`) compare a `CASE
+-- "priority" …` expression, which no btree on the raw column can serve; that
+-- arm keeps the org-only scan it already had. Verified unchanged on the same
+-- fixture: 28,493 rows removed by filter both with and without this index
+-- (27,340 vs 27,285 buffers).
+--
+-- NOT PARTIAL. A `WHERE priority IS NULL` partial index would be smaller but
+-- would serve only the `none` arm, leaving `!=none` on the post-filter above,
+-- and partial indexes have to be declared in `schema.prisma` with a
+-- byte-exact normalized `raw(...)` predicate (packages/database/AGENTS.md). A
+-- plain composite serves both arms and is an ordinary `@@index`. It measured
+-- 59 MB against the same fixture, the smallest btree already on the table.
+--
+-- WHY CONCURRENTLY. A plain CREATE INDEX holds a lock on `search_document` for
+-- the whole build, which would block the projection write hooks. `IF NOT
+-- EXISTS` is deliberately absent: with CONCURRENTLY a failed build leaves a
+-- same-named INVALID index behind, and the guard in
+-- `scripts/lint/destructive-migrations/index-ddl.ts` requires the retry to fail
+-- closed on it rather than silently mark the migration applied.
+--
+-- ORDERED AFTER 20260907120000. That migration rewrites the `priority` column
+-- on the stale rows; building the index first would mean building it over
+-- values about to change and then maintaining it through the rewrite.
+CREATE INDEX CONCURRENTLY "search_document_org_type_priority_updated_idx"
+  ON "search_document" ("organization_id", "entity_type", "priority", "updated_at");

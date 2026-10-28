@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  type Artifact,
   ArtifactSubtype,
+  type Comment,
+  type CustomField,
   DocumentStatus,
   FeatureStatus,
+  type PrismaClient,
+  type Project,
 } from "../../../../generated/client";
 import { deterministicUuid } from "../../helpers";
 import {
@@ -11,8 +16,8 @@ import {
 } from "../../non-empty-org-guard";
 import { BASELINE_ORG_ID } from "../fixtures/baseline-org";
 import {
-  type AnyDelegate,
   buildSeedOwnedOrgMock,
+  type OrgGuardPrismaMock,
   seedBranchArtifactRow,
   seedDeploymentArtifactRow,
   seedDocumentArtifactRow,
@@ -21,6 +26,12 @@ import {
   seedSessionArtifactRow,
   seedTemplateArtifactRow,
 } from "../fixtures/org-guard-mocks";
+import {
+  artifactRow,
+  commentRow,
+  customFieldRow,
+  projectRow,
+} from "../fixtures/org-guard-rows";
 
 /*
  * The per-model "is this row seed-owned?" predicates, split from
@@ -41,19 +52,18 @@ import {
  * Conflicted rather than SeedOwned.
  */
 
-async function detect(prisma: unknown) {
-  return await detectOrgConflicts(
-    prisma as Parameters<typeof detectOrgConflicts>[0],
-    BASELINE_ORG_ID
-  );
+async function detect(prisma: PrismaClient) {
+  return await detectOrgConflicts(prisma, BASELINE_ORG_ID);
 }
 
 /** The seed-owned org, with one model's findMany swapped for `rows`. */
-async function withRows(model: string, rows: unknown[], count?: number) {
+async function withRows<M extends keyof SampledRows>(
+  model: M,
+  rows: SampledRows[M][],
+  count?: number
+) {
   const prisma = buildSeedOwnedOrgMock();
-  const p = prisma as AnyDelegate;
-  p[model].findMany.mockResolvedValue(rows);
-  p[model].count.mockResolvedValue(count ?? rows.length);
+  SAMPLE_STUBS[model](prisma, rows, count ?? rows.length);
   return await detect(prisma);
 }
 
@@ -190,23 +200,27 @@ describe("seed ownership — artifacts", () => {
  * silently demoting a legitimately seeded org to Conflicted.
  */
 describe("seed ownership — artifact id derivation covers every enum member", () => {
-  it.each(
-    Object.values(DocumentStatus)
-  )("recognises the seed document artifact for DocumentStatus.%s", async (status) => {
-    const result = await withRows("artifact", [
-      seedDocumentArtifactRow(status),
-    ]);
+  it.each(Object.values(DocumentStatus))(
+    "recognises the seed document artifact for DocumentStatus.%s",
+    async (status) => {
+      const result = await withRows("artifact", [
+        seedDocumentArtifactRow(status),
+      ]);
 
-    expect(result.status).toBe(SeedOrgPreflightStatus.SeedOwned);
-  });
+      expect(result.status).toBe(SeedOrgPreflightStatus.SeedOwned);
+    }
+  );
 
-  it.each(
-    Object.values(FeatureStatus)
-  )("recognises the seed feature artifact for FeatureStatus.%s", async (status) => {
-    const result = await withRows("artifact", [seedFeatureArtifactRow(status)]);
+  it.each(Object.values(FeatureStatus))(
+    "recognises the seed feature artifact for FeatureStatus.%s",
+    async (status) => {
+      const result = await withRows("artifact", [
+        seedFeatureArtifactRow(status),
+      ]);
 
-    expect(result.status).toBe(SeedOrgPreflightStatus.SeedOwned);
-  });
+      expect(result.status).toBe(SeedOrgPreflightStatus.SeedOwned);
+    }
+  );
 
   it.each(
     Object.values(ArtifactSubtype).filter(
@@ -214,55 +228,29 @@ describe("seed ownership — artifact id derivation covers every enum member", (
         subtype !== ArtifactSubtype.TEMPLATE &&
         subtype !== ArtifactSubtype.ISSUE
     )
-  )("recognises the seed template artifact for ArtifactSubtype.%s", async (subtype) => {
-    const result = await withRows("artifact", [
-      seedTemplateArtifactRow(subtype),
-    ]);
+  )(
+    "recognises the seed template artifact for ArtifactSubtype.%s",
+    async (subtype) => {
+      const result = await withRows("artifact", [
+        seedTemplateArtifactRow(subtype),
+      ]);
 
-    expect(result.status).toBe(SeedOrgPreflightStatus.SeedOwned);
-  });
+      expect(result.status).toBe(SeedOrgPreflightStatus.SeedOwned);
+    }
+  );
 });
 
-describe("seed ownership — loops", () => {
-  it.each([
-    "Generate an implementation plan for X",
-    "Execute the approved implementation plan",
-    "Discuss architectural trade-offs for Y",
-    "Evaluate the PRD against the rubric",
-    "Generate implementation plan for event streaming",
-    "Execute the webhook delivery system",
-    "Discuss design options for the observability stack",
-    "Execute the billing integration",
-  ])("recognises the seed loop prompt %#", async (prompt) => {
-    const result = await withRows("loop", [
-      { id: deterministicUuid("l"), prompt },
-    ]);
+// ISS-12435: the seed writes no loop, so a loop row that still carries a former
+// seed prompt is foreign like any other.
+describe("seed ownership: loops", () => {
+  it("REFUSES any loop row, whatever its prompt", async () => {
+    const prisma = buildSeedOwnedOrgMock();
+    prisma.loop.count.mockResolvedValue(1);
 
-    expect(result.status).toBe(SeedOrgPreflightStatus.SeedOwned);
-  });
-
-  it("REFUSES a loop with a null prompt", async () => {
-    const result = await withRows("loop", [
-      { id: deterministicUuid("l"), prompt: null },
-    ]);
+    const result = await detect(prisma);
 
     expect(result.status).toBe(SeedOrgPreflightStatus.Conflicted);
-  });
-
-  it("REFUSES a loop with an empty prompt", async () => {
-    const result = await withRows("loop", [
-      { id: deterministicUuid("l"), prompt: "" },
-    ]);
-
-    expect(result.status).toBe(SeedOrgPreflightStatus.Conflicted);
-  });
-
-  it("REFUSES a real user prompt", async () => {
-    const result = await withRows("loop", [
-      { id: deterministicUuid("l"), prompt: "Fix the checkout bug" },
-    ]);
-
-    expect(result.status).toBe(SeedOrgPreflightStatus.Conflicted);
+    expect(result.conflicts).toContain("Loop (1 row)");
   });
 });
 
@@ -308,6 +296,8 @@ describe("seed ownership — custom fields", () => {
     "Labels",
     "Target Date",
     "Reviewers",
+    "Parent Issue",
+    "Related Work",
   ])("recognises the seed custom field %s", async (name) => {
     const result = await withRows("customField", [
       { id: deterministicUuid("f"), name },
@@ -325,8 +315,13 @@ describe("seed ownership — custom fields", () => {
   });
 
   it("REFUSES a custom field with no name", async () => {
+    // `CustomField.name` is non-nullable; force the null the guard defends against.
+    const field: SampledRows["customField"] = {
+      id: deterministicUuid("f"),
+      name: "",
+    };
     const result = await withRows("customField", [
-      { id: deterministicUuid("f"), name: null },
+      Object.assign(field, { name: null }),
     ]);
 
     expect(result.status).toBe(SeedOrgPreflightStatus.Conflicted);
@@ -359,3 +354,36 @@ describe("seed ownership — row-count agreement", () => {
     expect(result.status).toBe(SeedOrgPreflightStatus.Conflicted);
   });
 });
+
+/** The fields the guard selects from each sampled model. */
+type SampledRows = {
+  project: Pick<Project, "id" | "slug">;
+  artifact: Pick<Artifact, "id" | "slug">;
+  comment: Pick<Comment, "id" | "plainText">;
+  customField: Pick<CustomField, "id" | "name">;
+};
+
+const SAMPLE_STUBS: {
+  [M in keyof SampledRows]: (
+    prisma: OrgGuardPrismaMock,
+    rows: SampledRows[M][],
+    count: number
+  ) => void;
+} = {
+  project: (prisma, rows, count) => {
+    prisma.project.findMany.mockResolvedValue(rows.map(projectRow));
+    prisma.project.count.mockResolvedValue(count);
+  },
+  artifact: (prisma, rows, count) => {
+    prisma.artifact.findMany.mockResolvedValue(rows.map(artifactRow));
+    prisma.artifact.count.mockResolvedValue(count);
+  },
+  comment: (prisma, rows, count) => {
+    prisma.comment.findMany.mockResolvedValue(rows.map(commentRow));
+    prisma.comment.count.mockResolvedValue(count);
+  },
+  customField: (prisma, rows, count) => {
+    prisma.customField.findMany.mockResolvedValue(rows.map(customFieldRow));
+    prisma.customField.count.mockResolvedValue(count);
+  },
+};

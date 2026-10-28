@@ -4,7 +4,6 @@ export const DESKTOP_POP_GATEWAY_ID_HEADER = "X-Desktop-Gateway-Id";
 export const DESKTOP_POP_TIMESTAMP_HEADER = "X-Desktop-Timestamp";
 export const DESKTOP_POP_SIGNATURE_HEADER = "X-Desktop-Signature";
 export const RELAY_API_KEY_VERIFY_PATH = "/internal/api-keys/verify";
-export const LOCAL_AUTH_VERIFY_PATH = "/compute-targets/local-auth/verify";
 
 export type DesktopPopHeaders = Record<
   | typeof DESKTOP_POP_GATEWAY_ID_HEADER

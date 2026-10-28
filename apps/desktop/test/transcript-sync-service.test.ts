@@ -10,18 +10,17 @@
  * `transcript-sync-activity.test.ts`.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import {
-  TranscriptSkipReason,
-  TranscriptUploadStatus,
-} from "@repo/api/src/types/desktop-transcripts";
+import { TranscriptUploadStatus } from "@repo/api/src/types/desktop-transcripts";
+import { TranscriptSkipReason } from "@repo/api/src/types/transcript-skip-reason-constants";
+import { test } from "vitest";
 import {
   type TranscriptSyncExecutor,
   TranscriptSyncRevokedError,
 } from "../src/main/transcript-sync/transcript-sync-executor.js";
-import type {
-  TranscriptFileRef,
-  TranscriptFingerprint,
+import {
+  TRANSCRIPT_UPLOAD_LEASE_MS,
+  type TranscriptFileRef,
+  type TranscriptFingerprint,
 } from "../src/main/transcript-sync/transcript-sync-types.js";
 import {
   emptyTranscriptStatusCounts,
@@ -299,15 +298,11 @@ test("the transcript lane runs when the consent tier allows it", async () => {
   assert.deepEqual(calls, ["allowed"]);
 });
 
-test("the first sweep requeues crash-stranded uploading rows exactly once", async () => {
-  const store = fakeStore();
-  const { service } = makeService({ store });
-
-  await service.sweepOnce();
-  await service.sweepOnce();
-  // Boot recovery is one-shot per start (not repeated every 30-min sweep).
-  assert.equal(store.requeueCalls, 1);
-});
+// ISS-7097 retired the "exactly once per start" expectation that used to live
+// here. That latch (`staleRequeued`) WAS the defect: a settle lost at minute 31
+// waited for the next app START — 21+ hours of `LANE NOT DRAINING` on the
+// reporting install. The recurring replacement is asserted below, and the lease
+// is what makes running it on a tick safe.
 
 test("ISS-4647: stranded missing-blob recovery runs on EVERY sweep, not once per boot", async () => {
   const store = fakeStore();
@@ -375,11 +370,11 @@ test("ISS-4647: a rejected stranded re-arm does NOT abort the sweep and retries 
   assert.equal(calls, 2);
 });
 
-test("ISS-4647: a rejected stale-upload recovery does NOT abort the sweep and retries next sweep", async () => {
+test("ISS-4647: a rejected upload-lease reclaim does NOT abort the sweep and retries next sweep", async () => {
   const store = fakeStore();
   const logs: string[] = [];
   let calls = 0;
-  store.requeueStale = () => {
+  store.requeueExpiredUploadLeases = () => {
     calls += 1;
     return calls === 1
       ? Promise.reject(new Error("db-host busy"))
@@ -393,18 +388,46 @@ test("ISS-4647: a rejected stale-upload recovery does NOT abort the sweep and re
   await service.sweepOnce();
   assert.ok(logs.some((line) => line.includes("db-host busy")));
 
-  // The latch is not burned by a failure, so the next sweep re-attempts it — and
-  // once it succeeds the one-shot semantics resume (no third call).
-  await service.sweepOnce();
+  // A rejection retires nothing: the next sweep re-attempts it.
   await service.sweepOnce();
   assert.equal(calls, 2);
+});
+
+// ISS-7097. This is the regression the ticket was actually filed on, and the
+// one its predecessor could not have caught: `recoverStaleUploads` was latched
+// to the first SUCCESSFUL sweep per process (`staleRequeued`), so a settle lost
+// at minute 31 waited for the next app START — 21+ hours on the reporting
+// install. Every earlier test asserted the reclaim happened, never that it kept
+// happening, so the latch was invisible to the suite. Assert the cadence.
+test("ISS-7097: the upload-lease reclaim runs on EVERY sweep, not once per process", async () => {
+  const store = fakeStore();
+  const { service } = makeService({ store });
+
+  await service.sweepOnce();
+  await service.sweepOnce();
+  await service.sweepOnce();
+
+  assert.equal(
+    store.requeueCalls,
+    3,
+    "a latched reclaim would stop at 1 and strand every settle lost after the first sweep"
+  );
+  assert.deepEqual(
+    store.requeueLeaseMs,
+    [
+      TRANSCRIPT_UPLOAD_LEASE_MS,
+      TRANSCRIPT_UPLOAD_LEASE_MS,
+      TRANSCRIPT_UPLOAD_LEASE_MS,
+    ],
+    "the sweep must pass the real lease bound, not a local literal"
+  );
 });
 
 test("stranded missing-blob recovery runs even while the consent tier is closed (ISS-4621)", async () => {
   // It only RE-ARMS existing rows (never grows the queue with new files) and the
   // drain's own shouldRun still gates egress by tier, so it must run before the
   // tier gate — otherwise a tier-off install could never terminate a stranded
-  // transcript. Mirrors the requeueStale boot-recovery placement.
+  // transcript. Mirrors the lease-reclaim recovery's placement.
   const store = fakeStore();
   const { service } = makeService({ store, tierAllowed: false });
 
@@ -838,6 +861,31 @@ test("ISS-4716: getStatusSnapshot exposes the tier and store preconditions shoul
   assert.equal(snapshot.storeReady, true);
 });
 
+test("ISS-7516: getStatusSnapshot publishes the lane's own compute-target identity", async () => {
+  // The renderer's never-expected disclosure compares this id against the
+  // session's, so a session recorded on ANOTHER machine cannot be blamed on
+  // this machine's data sync level. Without the id on the snapshot there is
+  // nothing to compare and the disclosure has to guess.
+  const { service } = makeService({
+    enabled: true,
+    getComputeTargetId: () => "compute-target-this",
+  });
+
+  const snapshot = await service.getStatusSnapshot();
+
+  assert.equal(snapshot.computeTargetId, "compute-target-this");
+});
+
+test("ISS-7516: getStatusSnapshot reports a null identity when the lane has none", async () => {
+  // Offline / signed out / unwired. `null` is "cannot attribute", and the
+  // renderer must withhold the claim rather than read it as a match.
+  const { service } = makeService({ enabled: true });
+
+  const snapshot = await service.getStatusSnapshot();
+
+  assert.equal(snapshot.computeTargetId, null);
+});
+
 test("ISS-4716: getStatusSnapshot reports storeReady false when the store is not up", async () => {
   const { service } = makeService({ store: null, enabled: true });
 
@@ -856,36 +904,4 @@ test("ISS-4716: an unwired tier gate reports Allowed (the documented fail-open)"
   const snapshot = await service.getStatusSnapshot();
 
   assert.equal(snapshot.tierGate, TranscriptEgressGate.Allowed);
-});
-
-test("ISS-5348: an unresolved org policy surfaces as Unresolved but still blocks the drain", async () => {
-  // The whole point of the tri-state: the SNAPSHOT can say "no verdict yet",
-  // while egress keeps failing closed exactly as the boolean gate did.
-  const synced: string[] = [];
-  const executor = fakeExecutor({
-    syncFile: (fp: TranscriptFingerprint) => {
-      synced.push(fp.externalSessionId);
-      return Promise.resolve({ kind: "noop" as const });
-    },
-  });
-  const store = fakeStore([fingerprint({ externalSessionId: "s1" })]);
-  const { service } = makeService({
-    store,
-    executor,
-    enabled: true,
-    online: true,
-    tierGateFn: () => TranscriptEgressGate.Unresolved,
-  });
-
-  const snapshot = await service.getStatusSnapshot();
-  assert.equal(snapshot.tierGate, TranscriptEgressGate.Unresolved);
-
-  service.start();
-  await flush();
-  assert.deepEqual(
-    synced,
-    [],
-    "an unresolved policy must not egress a single file"
-  );
-  service.stop();
 });

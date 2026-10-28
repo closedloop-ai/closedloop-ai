@@ -228,32 +228,39 @@ export function useLocalSessionSourceStatus(): {
  * ISS-4772 (whitlockk/codex/logical-QA review): the mode-aware Sessions read gate.
  * The gate must not flap off when a healthy local source latches back to
  * "starting" after a dropped `getAgentMonitorUrl` transition. Once we have
- * positive evidence the local source is up this render session — it has EVER
+ * positive evidence the local source is up this render session: it has EVER
  * reported ready (`canReadLocalSessions`), or the boot import has been observed
- * complete (`ingestComplete`) — the gate latches open so the page-data query and
+ * settled (`ingestSettled`) — the gate latches open so the page-data query and
  * the import-progress poll keep running rather than freezing cached rows behind a
  * disabled query or promoting the display to "ready" over a scope the disabled
- * query never read. This latches the read gate to the SAME two signals that
- * collapse the display state below, so the two halves of the view can never
- * disagree about whether the source is up. A genuine cold start with no completed
- * import keeps reads gated. Cloud mode reads the HTTP source over the D-G bridge,
- * so it is never gated on the local monitor.
+ * query never read. The display collapse below has its own render-local data
+ * signal, because a current settled list read, including a real empty response,
+ * is enough to hide a stale "starting" label without latching future reads. A
+ * genuine cold start with no completed import keeps reads gated. Cloud mode reads
+ * the HTTP source over the D-G bridge, so it is never gated on the local monitor.
  */
 export function useSessionsReadGate({
   isCloudMode,
   canReadLocalSessions,
-  ingestComplete,
+  ingestSettled,
 }: {
   isCloudMode: boolean;
   canReadLocalSessions: boolean;
-  ingestComplete: boolean;
+  /**
+   * ISS-6207: the boot import reached ANY terminal state, not just completion.
+   * A degraded terminal is the same positive evidence that the local source came
+   * up and was written to, so gating this heal arm on `complete` alone would
+   * make it unreachable in exactly the degraded launch where a source stranded
+   * on "starting" is most likely. Use `isImportSettled`.
+   */
+  ingestSettled: boolean;
 }): boolean {
   const [localSourceProvenUp, setLocalSourceProvenUp] = useState(false);
   useEffect(() => {
-    if ((canReadLocalSessions || ingestComplete) && !localSourceProvenUp) {
+    if ((canReadLocalSessions || ingestSettled) && !localSourceProvenUp) {
       setLocalSourceProvenUp(true);
     }
-  }, [canReadLocalSessions, ingestComplete, localSourceProvenUp]);
+  }, [canReadLocalSessions, ingestSettled, localSourceProvenUp]);
   return isCloudMode || canReadLocalSessions || localSourceProvenUp;
 }
 
@@ -276,27 +283,39 @@ export function getSessionsDisplayState(
 
 /**
  * ISS-4772: collapse a latched "starting" display state to "ready" once the
- * evidence says the source is actually up — the page-data read already holds
- * rows, or the boot import has been observed complete. After long uptime a
+ * evidence says the source is actually up: the page-data read has landed for the
+ * active scope, including a real empty response, or the boot import has reached a
+ * terminal state. After long uptime a
  * dropped `getAgentMonitorUrl` transition can strand `localSessionSourceStatus`
  * on "starting" while the query and backend are healthy, blanking the list to an
- * infinite "Loading". Held data (or a settled import) always outranks the stale
- * "starting" label. The "unavailable"/errored state is a genuine breakage and is
- * returned untouched — never promoted to "ready". The read gate is promoted by
- * the same two signals in `SessionsView`, so the display and the read can never
- * disagree about whether the source is up.
+ * infinite "Loading". Current list data (or a settled import) always outranks
+ * the stale "starting" label. The "unavailable"/errored state is a genuine
+ * breakage and is returned untouched — never promoted to "ready".
  */
 export function collapseStartingWhenDataHeld({
   rawDisplayState,
   hasHeldListData,
-  ingestComplete,
+  ingestSettled,
 }: {
   rawDisplayState: SessionsDisplayState;
   hasHeldListData: boolean;
-  ingestComplete: boolean;
+  /** ISS-6207: any terminal boot-import state, not just completion. */
+  ingestSettled: boolean;
 }): SessionsDisplayState {
   if (rawDisplayState !== "starting") {
     return rawDisplayState;
   }
-  return hasHeldListData || ingestComplete ? "ready" : "starting";
+  return hasHeldListData || ingestSettled ? "ready" : "starting";
+}
+
+/**
+ * ISS-9106: is the local session source still coming up? The shared loading-copy
+ * helper takes this as a boolean rather than the display state, so a surface
+ * with no local source at all is not made to speak a desktop enum. The word
+ * stays in the module that defines it.
+ */
+export function isSessionsSourceStarting(
+  displayState: SessionsDisplayState
+): boolean {
+  return displayState === "starting";
 }

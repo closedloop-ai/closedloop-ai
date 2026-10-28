@@ -19,7 +19,7 @@
  * they still hold across the two-class scheduler).
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   createWriteQueue,
   WriteQueueCancelledError,

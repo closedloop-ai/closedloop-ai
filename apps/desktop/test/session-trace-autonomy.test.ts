@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { buildSessionTraceSyncFields } from "../src/main/database/session-trace.js";
 import {
   baseSessionTraceInput as baseInput,

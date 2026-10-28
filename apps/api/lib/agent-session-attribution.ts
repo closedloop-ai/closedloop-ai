@@ -2,79 +2,30 @@ import type {
   AgentSessionUsageByBranch,
   AgentSessionUsageByPr,
 } from "@repo/api/src/types/agent-session-usage-breakdown";
+import { normalizeRepoFullName } from "@repo/api/src/types/branch";
 import type {
   ArtifactSessionUsageByModel,
   ArtifactSessionUsageSummary,
   SessionPrPurpose,
+  SessionPrRelationType,
 } from "@repo/api/src/types/session-artifact-link";
 import {
-  deriveSessionPrPurposeFromMetadata,
+  allowsUniqueBranchPrFallback,
+  commandDerivedSessionPrRefsFromMetadata,
+  deriveSessionPrPurposeFromRelationTypes,
   parseSessionPrLinkMetadata,
   SESSION_PR_PURPOSE_LABELS,
   SessionPrPurpose as SessionPrPurposeValues,
+  sessionPrIdentityKey,
 } from "@repo/api/src/types/session-artifact-link";
 import { type Prisma, withDb } from "@repo/database";
-import { toNumber } from "./prisma-number";
+import type { LimitFunction } from "p-limit";
+import { branchCandidatePullRequests } from "@/app/branches/branch-canonical-pull-request";
 import {
-  hasMatchingSessionPrLinks,
-  SESSION_PR_LINK_WHERE,
-  scopeToSessionsWithPrLinks,
-  visitSessionDetailPages,
-} from "./session-pr-links";
-
-const attributionLensSelect = {
-  artifactId: true,
-  inputTokens: true,
-  outputTokens: true,
-  cacheReadTokens: true,
-  cacheWriteTokens: true,
-  estimatedCost: true,
-  artifact: {
-    select: {
-      organizationId: true,
-      sourceLinks: {
-        where: SESSION_PR_LINK_WHERE,
-        orderBy: { createdAt: "asc" as const },
-        select: {
-          metadata: true,
-          targetId: true,
-          target: {
-            select: {
-              organizationId: true,
-              branch: {
-                select: {
-                  branchName: true,
-                  repository: {
-                    select: {
-                      fullName: true,
-                    },
-                  },
-                  currentPullRequestDetail: {
-                    select: {
-                      number: true,
-                      title: true,
-                      isCurrent: true,
-                      lastVerifiedAt: true,
-                      repository: {
-                        select: {
-                          fullName: true,
-                        },
-                      },
-                    },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-  },
-} satisfies Prisma.SessionDetailSelect;
-
-type AttributionLensRecord = Prisma.SessionDetailGetPayload<{
-  select: typeof attributionLensSelect;
-}>;
+  type AttributionLensRecord,
+  readSessionAttributionRecords,
+} from "./agent-session-attribution-read";
+import { toNumber } from "./prisma-number";
 
 type AttributionAccumulator = {
   sessionCount: number;
@@ -119,37 +70,37 @@ export type AttributionLenses = {
 };
 
 /**
- * Builds the PR/branch attribution lenses from bounded session pages. Callers
- * receive only the aggregate lenses, so dashboard reads do not materialize the
- * full historical attribution row set in service memory.
+ * Builds the PR/branch attribution lenses from the matched sessions and their
+ * session→PR links. Callers receive only the aggregate lenses; the read behind
+ * them lives in `agent-session-attribution-read.ts`.
+ *
+ * ISS-7598: `limiter` is passed straight through to that read, so a caller
+ * running this lens concurrently with other DB reads can hold all of them to one
+ * shared connection budget.
  */
 export async function aggregateSessionAttributionLenses(
-  where: Prisma.SessionDetailWhereInput
+  organizationId: string,
+  where: Prisma.SessionDetailWhereInput,
+  limiter?: LimitFunction
 ): Promise<AttributionLenses> {
-  if (!(await hasMatchingSessionPrLinks(where))) {
-    return { byBranch: [], byPr: [] };
-  }
-
   const branchMap = new Map<string, BranchAttributionAccumulator>();
   const prMap = new Map<string, PrAttributionAccumulator>();
 
-  await visitSessionDetailPages(
-    scopeToSessionsWithPrLinks(where),
-    attributionLensSelect,
-    (sessions: AttributionLensRecord[]) => {
-      for (const session of sessions) {
-        accumulateAttributionLensSession({ branchMap, prMap, session });
-      }
-    }
-  );
+  for (const session of await readSessionAttributionRecords(
+    organizationId,
+    where,
+    limiter
+  )) {
+    accumulateAttributionLensSession({ branchMap, prMap, session });
+  }
 
   return formatAttributionLenses(branchMap, prMap);
 }
 
 /**
  * Splits a branch artifact usage summary by each session's distinct PR/branch
- * targets. The helper owns attribution-row paging and denominator calculation
- * so callers cannot accidentally double-count N-target sessions.
+ * targets. The helper owns the denominator calculation so callers cannot
+ * accidentally double-count N-target sessions.
  */
 export async function aggregateArtifactUsageByTargetShare(input: {
   artifactId: string;
@@ -161,23 +112,18 @@ export async function aggregateArtifactUsageByTargetShare(input: {
   const sessionShares = new Map<string, ArtifactUsageTargetShare>();
   const totals: AttributionAccumulator = createAttributionAccumulator();
 
-  await visitSessionDetailPages(
-    {
-      artifactId: { in: input.sessionArtifactIds },
-      artifact: { organizationId: input.organizationId },
-    },
-    attributionLensSelect,
-    (sessions: AttributionLensRecord[]) => {
-      for (const session of sessions) {
-        accumulateArtifactUsageSession({
-          session,
-          sessionShares,
-          targetArtifactId: input.targetArtifactId,
-          totals,
-        });
-      }
-    }
-  );
+  const sessions = await readSessionAttributionRecords(input.organizationId, {
+    artifactId: { in: input.sessionArtifactIds },
+    artifact: { organizationId: input.organizationId },
+  });
+  for (const session of sessions) {
+    accumulateArtifactUsageSession({
+      session,
+      sessionShares,
+      targetArtifactId: input.targetArtifactId,
+      totals,
+    });
+  }
 
   const tokenRows = await findArtifactUsageTokenRows({
     organizationId: input.organizationId,
@@ -350,7 +296,8 @@ function dedupeSessionBranches(session: AttributionLensRecord) {
       branch: NonNullable<
         AttributionLensRecord["artifact"]["sourceLinks"][number]["target"]["branch"]
       >;
-      purpose: SessionPrPurpose;
+      pullRequestDetails: AttributionLensRecord["artifact"]["sourceLinks"][number]["target"]["pullRequestDetails"];
+      prRefs: Map<string, PrAttributionRef>;
     }
   >();
 
@@ -362,25 +309,26 @@ function dedupeSessionBranches(session: AttributionLensRecord) {
     if (!branch) {
       continue;
     }
-    const purpose = deriveSessionPrPurposeFromMetadata(
-      parseSessionPrLinkMetadata(link.metadata)
-    );
+    const metadata = parseSessionPrLinkMetadata(link.metadata);
+    const prRefs = attributionRefs(link, metadata);
     const existing = byBranchArtifactId.get(link.targetId);
     if (existing) {
-      existing.purpose = chooseStrongerSessionPrPurpose(
-        existing.purpose,
-        purpose
-      );
+      mergePrAttributionRefs(existing.prRefs, prRefs);
     } else {
-      byBranchArtifactId.set(link.targetId, { branch, purpose });
+      byBranchArtifactId.set(link.targetId, {
+        branch,
+        pullRequestDetails: link.target.pullRequestDetails,
+        prRefs,
+      });
     }
   }
 
   return [...byBranchArtifactId.entries()].map(
-    ([branchArtifactId, { branch, purpose }]) => ({
+    ([branchArtifactId, { branch, prRefs, pullRequestDetails }]) => ({
       branchArtifactId,
       branch,
-      purpose,
+      pullRequestDetails,
+      prRefs: [...prRefs.values()],
     })
   );
 }
@@ -410,40 +358,170 @@ function accumulatePrShare(
   link: ReturnType<typeof dedupeSessionBranches>[number],
   share: Omit<AttributionAccumulator, "sessionCount">
 ): void {
-  const pr = link.branch.currentPullRequestDetail;
-  const branchRepository = link.branch.repository?.fullName;
-  const prRepository = pr?.repository?.fullName;
-  if (
-    !(
-      pr?.isCurrent &&
-      pr.lastVerifiedAt &&
-      branchRepository &&
-      prRepository === branchRepository
-    )
-  ) {
+  if (link.prRefs.length === 0) {
     return;
   }
+  const prShare = divideAttributionShare(share, link.prRefs.length);
+  for (const ref of link.prRefs) {
+    const pr = matchingAttributionDetail(link, ref);
+    if (!pr) {
+      continue;
+    }
+    const key = sessionPrIdentityKey(ref.repositoryFullName, ref.prNumber);
+    const existing = map.get(key);
+    if (existing) {
+      addAttributionShare(existing, prShare);
+      existing.purpose = chooseStrongerSessionPrPurpose(
+        existing.purpose,
+        ref.purpose
+      );
+      continue;
+    }
+    map.set(key, {
+      sessionCount: 1,
+      repositoryFullName: ref.repositoryFullName,
+      prNumber: ref.prNumber,
+      prTitle: pr.title,
+      branchArtifactId: link.branchArtifactId,
+      purpose: ref.purpose,
+      ...prShare,
+    });
+  }
+}
 
-  const key = `${prRepository}#${pr.number}`;
-  const existing = map.get(key);
-  if (existing) {
-    addAttributionShare(existing, share);
-    existing.purpose = chooseStrongerSessionPrPurpose(
-      existing.purpose,
-      link.purpose
+type PrAttributionRef = {
+  repositoryFullName: string;
+  prNumber: number;
+  purpose: SessionPrPurpose;
+};
+
+function attributionRefs(
+  link: AttributionLensRecord["artifact"]["sourceLinks"][number],
+  metadata: ReturnType<typeof parseSessionPrLinkMetadata>
+): Map<string, PrAttributionRef> {
+  // ISS-5823: identities that feed a per-PR COST share come from
+  // command-derived evidence only.
+  const refs = commandDerivedSessionPrRefsFromMetadata(link.metadata);
+  let candidates: readonly {
+    repositoryFullName: string;
+    prNumber: number;
+    relationTypes: readonly SessionPrRelationType[];
+  }[] = refs;
+  if (refs.length === 0 && allowsUniqueBranchPrFallback(link.metadata)) {
+    candidates = uniqueLegacyPrRef(link, metadata);
+  }
+  return new Map(
+    candidates.map((ref) => {
+      const identity = sessionPrIdentityKey(
+        ref.repositoryFullName,
+        ref.prNumber
+      );
+      return [
+        identity,
+        {
+          repositoryFullName: ref.repositoryFullName,
+          prNumber: ref.prNumber,
+          purpose: deriveSessionPrPurposeFromRelationTypes(
+            ref.relationTypes,
+            metadata?.confidence
+          ),
+        },
+      ];
+    })
+  );
+}
+
+function uniqueLegacyPrRef(
+  link: AttributionLensRecord["artifact"]["sourceLinks"][number],
+  metadata: ReturnType<typeof parseSessionPrLinkMetadata>
+) {
+  const details = branchCandidatePullRequests(
+    link.target.branch,
+    link.target.pullRequestDetails
+  ).filter((detail) => detail?.number != null);
+  const byIdentity = new Map<
+    string,
+    {
+      repositoryFullName: string;
+      prNumber: number;
+      relationTypes: readonly SessionPrRelationType[];
+    }
+  >();
+  for (const detail of details) {
+    if (!detail?.number) {
+      continue;
+    }
+    const repositoryFullName =
+      detail.repository?.fullName ??
+      detail.repositoryFullName ??
+      link.target.branch?.repository?.fullName;
+    if (!repositoryFullName) {
+      continue;
+    }
+    byIdentity.set(sessionPrIdentityKey(repositoryFullName, detail.number), {
+      repositoryFullName,
+      prNumber: detail.number,
+      relationTypes: metadata?.relationTypes ?? [],
+    });
+  }
+  return byIdentity.size === 1 ? [...byIdentity.values()] : [];
+}
+
+function mergePrAttributionRefs(
+  target: Map<string, PrAttributionRef>,
+  incoming: Map<string, PrAttributionRef>
+): void {
+  for (const [identity, ref] of incoming) {
+    const existing = target.get(identity);
+    target.set(
+      identity,
+      existing
+        ? {
+            ...ref,
+            purpose: chooseStrongerSessionPrPurpose(
+              existing.purpose,
+              ref.purpose
+            ),
+          }
+        : ref
     );
-    return;
   }
+}
 
-  map.set(key, {
-    sessionCount: 1,
-    repositoryFullName: prRepository,
-    prNumber: pr.number,
-    prTitle: pr.title,
-    branchArtifactId: link.branchArtifactId,
-    purpose: link.purpose,
-    ...share,
-  });
+function matchingAttributionDetail(
+  link: ReturnType<typeof dedupeSessionBranches>[number],
+  ref: PrAttributionRef
+) {
+  const candidates = branchCandidatePullRequests(
+    link.branch,
+    link.pullRequestDetails
+  );
+  return (
+    candidates.find((detail) => {
+      const repositoryFullName =
+        detail?.repository?.fullName ?? detail?.repositoryFullName;
+      return (
+        detail?.lastVerifiedAt != null &&
+        detail.number === ref.prNumber &&
+        repositoryFullName != null &&
+        normalizeRepoFullName(repositoryFullName) ===
+          normalizeRepoFullName(ref.repositoryFullName)
+      );
+    }) ?? null
+  );
+}
+
+function divideAttributionShare(
+  share: Omit<AttributionAccumulator, "sessionCount">,
+  denominator: number
+): Omit<AttributionAccumulator, "sessionCount"> {
+  return {
+    inputTokens: share.inputTokens / denominator,
+    outputTokens: share.outputTokens / denominator,
+    cacheReadTokens: share.cacheReadTokens / denominator,
+    cacheWriteTokens: share.cacheWriteTokens / denominator,
+    estimatedCost: share.estimatedCost / denominator,
+  };
 }
 
 // Purpose precedence (strongest first): Authored > Reviewed > Referenced. FEA-3585:

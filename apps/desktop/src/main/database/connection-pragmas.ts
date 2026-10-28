@@ -28,10 +28,14 @@ const BUSY_TIMEOUT_MS = 15_000;
 // for the multi-GB first-launch backfill and the dashboard's grouped aggregations
 // over `events`/`agents` — hot b-tree and index pages get evicted and re-read
 // constantly. 16 MiB (negative = KiB, NOT pages) gives a large hit-rate win.
-// Bounded deliberately: the page cache is heap (NOT reclaimable like mmap), so
+// Bounded deliberately: the page cache is heap (not file-backed like mmap), so
 // with one writer + the reader pool the worst-case total is
 // (1 + pool) × 16 MiB — a real RSS cost, but well within the FEA-2038 db-host
 // budget and a fraction of what an unbounded WAL or hydration spike uses.
+// ISS-12023: unlike mmap it is not reclaimed by the OS under pressure, but it IS
+// reclaimable ON DEMAND — see SQLITE_SHRINK_MEMORY_SQL below, which releases it
+// after a heavy-gate op and on an idle timer, so the figure above is the
+// WORKING peak rather than a resident floor.
 const CACHE_SIZE_KIB = 16_384;
 
 // Memory-map the DB file for reads so hot-page access skips read() syscalls. 128
@@ -61,12 +65,16 @@ export type ConnectionRole = "writer" | "reader";
  */
 export function connectionPragmaStatements(role: ConnectionRole): string[] {
   const statements = [
+    // busy_timeout absorbs the brief write lock, so it must precede every
+    // statement that can take one: switching a fresh file to WAL needs an
+    // exclusive lock, and with no timeout set yet a second connection opening
+    // the same file at that moment fails SQLITE_BUSY at once (ISS-11381).
+    `PRAGMA busy_timeout=${BUSY_TIMEOUT_MS}`,
     // WAL lets the reader pool read concurrently with the writer (the backfill).
     // It is a persistent database setting, but re-asserting it per connection is
     // harmless and keeps every connection self-describing.
     "PRAGMA journal_mode=WAL",
-    // busy_timeout absorbs the brief write lock; foreign_keys matches legacy FKs.
-    `PRAGMA busy_timeout=${BUSY_TIMEOUT_MS}`,
+    // foreign_keys matches legacy FKs.
     "PRAGMA foreign_keys=ON",
     // NORMAL (not the WAL default of FULL) fsyncs the WAL only at checkpoint, not
     // on every commit. Under the first-launch backfill that is the difference
@@ -93,17 +101,19 @@ export function connectionPragmaStatements(role: ConnectionRole): string[] {
   // more aggressively, keeping the WAL — and thus RSS — small throughout the
   // backfill. This is a passive checkpoint: it only folds pages readers no
   // longer pin, so it never blocks the writer or invalidates a live reader.
-  statements.push("PRAGMA wal_autocheckpoint=256");
-  // FEA-3132 (D5): cap the persistent WAL high-water mark (see the constant's
-  // note). Applied after wal_autocheckpoint so it governs what every subsequent
-  // checkpoint truncates the WAL down to.
-  statements.push(`PRAGMA journal_size_limit=${JOURNAL_SIZE_LIMIT_BYTES}`);
-  // Read-path tuning (see constants above): a larger page cache and a file mmap
-  // cut page re-reads and read() syscalls across both the backfill and the
-  // dashboard's aggregations. Connection-local settings — query_only does not
-  // block them (they change cache/mmap state, not the database).
-  statements.push(`PRAGMA cache_size=-${CACHE_SIZE_KIB}`);
-  statements.push(`PRAGMA mmap_size=${MMAP_SIZE_BYTES}`);
+  statements.push(
+    "PRAGMA wal_autocheckpoint=256",
+    // FEA-3132 (D5): cap the persistent WAL high-water mark (see the constant's
+    // note). Applied after wal_autocheckpoint so it governs what every
+    // subsequent checkpoint truncates the WAL down to.
+    `PRAGMA journal_size_limit=${JOURNAL_SIZE_LIMIT_BYTES}`,
+    // Read-path tuning (see constants above): a larger page cache and a file
+    // mmap cut page re-reads and read() syscalls across both the backfill and
+    // the dashboard's aggregations. Connection-local settings — query_only does
+    // not block them (they change cache/mmap state, not the database).
+    `PRAGMA cache_size=-${CACHE_SIZE_KIB}`,
+    `PRAGMA mmap_size=${MMAP_SIZE_BYTES}`
+  );
   return statements;
 }
 
@@ -178,3 +188,32 @@ export const SQLITE_DEFAULT_PAGE_SIZE_BYTES = 4096;
 // read concurrently with the backfill; we lose almost no parallelism vs 4 because
 // the dashboard issues reads in small bursts, not a sustained 4-wide fan-out.
 export const DEFAULT_READER_POOL_SIZE = 2;
+
+// ISS-12023 (PRD-785): release a connection's cached memory back to the
+// allocator. `PRAGMA shrink_memory` runs `sqlite3_db_release_memory()`, which
+// frees every page the connection's pcache holds but does not currently need,
+// plus its other per-connection caches — so it undoes the `cache_size` above
+// (16 MiB per connection, writer + reader pool) without giving up the hit rate
+// while the store is actually working. Pinned pages (an open transaction, an
+// in-flight statement) are kept, so this is never a correctness lever: a
+// connection that has nothing releasable simply releases nothing.
+//
+// Measured on a 17 MB store (2026-10-06): a `query_only` reader's aggregate scan
+// took process RSS 222 → 239 MB, and this pragma on that one connection brought
+// it to 167 MB. Verified accepted on libSQL 0.17.3 on both a writer and a
+// `query_only=ON` reader (it is not a write, so `query_only` does not reject it).
+export const SQLITE_SHRINK_MEMORY_SQL = "PRAGMA shrink_memory";
+
+// ISS-12023: how long the store must go without a read or a write before its
+// connections release their caches, AND the period at which that idleness is
+// re-checked — one knob, because the two have no reason to differ. A pass
+// therefore lands between 1× and 2× this span after the last activity, and fires
+// at most ONCE per idle stretch (the next read/write re-arms it), so a store
+// nobody is using does not pay a pragma every interval forever.
+//
+// 15s is the same order as DEFAULT_READER_RECYCLE_INTERVAL_MS (30s, in
+// `prisma-client.ts`), which already drops an idle READER's cache by reopening
+// the connection outright. The writer is never recycled, so before this it held
+// its page cache for the life of the process no matter how long the app sat in
+// the background — which is the footprint PRD-785 is about.
+export const IDLE_SHRINK_MEMORY_INTERVAL_MS = 15_000;

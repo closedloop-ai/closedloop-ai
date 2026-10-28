@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { afterEach, describe, test } from "node:test";
-import { vi } from "vitest";
+import { afterEach, describe, test, vi } from "vitest";
 import { handleUncaughtException } from "../src/main/lifecycle/error-handlers.js";
 import {
   ConsoleChannel,

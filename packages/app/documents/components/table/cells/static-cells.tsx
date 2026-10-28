@@ -1,16 +1,15 @@
 "use client";
 
+import type { ProjectTeamOption } from "@repo/api/src/types/teams";
+import { useDocumentCellClasses } from "@repo/app/documents/components/table/cells/cell-frame";
 import { CellTooltip } from "@repo/app/documents/components/table/cells/cell-tooltip";
-import {
-  CELL_CLASSES,
-  CELL_LINK_CLASSES,
-} from "@repo/app/documents/components/table/cells/shared-cell-styles";
 import type { DocumentRowItem } from "@repo/app/documents/components/table/document-row";
 import { RowEditContext } from "@repo/app/documents/components/table/row-edit-context";
 import { getRowTypeConfig } from "@repo/app/documents/components/table/row-type-registry";
 import { formatRelativeTime } from "@repo/app/shared/lib/date-utils";
 import { cn } from "@repo/design-system/lib/utils";
 import { Link } from "@repo/navigation/link";
+import { useOrgPath } from "@repo/navigation/use-org-path";
 import type { MouseEvent } from "react";
 import { useContext } from "react";
 
@@ -27,9 +26,10 @@ import { useContext } from "react";
  * which derives from the same canonical type-color source the badge used.
  */
 export function TypeCell({ item }: { item: DocumentRowItem }) {
+  const cells = useDocumentCellClasses();
   const config = getRowTypeConfig(item);
   return (
-    <div className={CELL_CLASSES}>
+    <div className={cells.box}>
       {config && (
         <span
           className={cn("truncate font-medium text-xs", config.labelClassName)}
@@ -43,10 +43,11 @@ export function TypeCell({ item }: { item: DocumentRowItem }) {
 
 export function ParentCell({ item: _item }: { item: DocumentRowItem }) {
   const { parentTitle, parentHref } = useContext(RowEditContext);
+  const cells = useDocumentCellClasses();
 
   if (parentTitle && parentHref) {
     return (
-      <div className={CELL_LINK_CLASSES}>
+      <div className={cells.bareBox}>
         <CellTooltip text={parentTitle}>
           <Link
             className="flex h-full w-full items-center px-3 py-2 hover:bg-muted/50"
@@ -64,7 +65,7 @@ export function ParentCell({ item: _item }: { item: DocumentRowItem }) {
 
   return (
     <CellTooltip text={parentTitle}>
-      <div className={CELL_CLASSES}>
+      <div className={cells.box}>
         <span className="truncate font-medium text-muted-foreground text-xs">
           {parentTitle ?? "—"}
         </span>
@@ -74,10 +75,12 @@ export function ParentCell({ item: _item }: { item: DocumentRowItem }) {
 }
 
 export function ProjectCell({ item }: { item: DocumentRowItem }) {
+  const buildOrgPath = useOrgPath();
+  const cells = useDocumentCellClasses();
   let project: {
     id: string;
     name: string;
-    teams?: { id: string; name: string }[];
+    teams?: ProjectTeamOption[];
   } | null = null;
 
   if (item.kind === "project") {
@@ -93,11 +96,13 @@ export function ProjectCell({ item }: { item: DocumentRowItem }) {
   const projectName = project?.name ?? null;
   const teamId = project?.teams?.[0]?.id;
   const projectHref =
-    teamId && project?.id ? `/teams/${teamId}/projects/${project.id}` : null;
+    teamId && project?.id
+      ? buildOrgPath(`/teams/${teamId}/projects/${project.id}`)
+      : null;
 
   if (projectName && projectHref) {
     return (
-      <div className={CELL_LINK_CLASSES}>
+      <div className={cells.bareBox}>
         <CellTooltip text={projectName}>
           <Link
             className="flex h-full w-full items-center px-3 py-2 hover:bg-muted/50"
@@ -115,7 +120,7 @@ export function ProjectCell({ item }: { item: DocumentRowItem }) {
 
   return (
     <CellTooltip text={projectName}>
-      <div className={CELL_CLASSES}>
+      <div className={cells.box}>
         <span className="truncate font-medium text-muted-foreground text-xs">
           {projectName ?? "—"}
         </span>
@@ -125,8 +130,9 @@ export function ProjectCell({ item }: { item: DocumentRowItem }) {
 }
 
 export function UpdatedCell({ item }: { item: DocumentRowItem }) {
+  const cells = useDocumentCellClasses();
   return (
-    <div className={CELL_CLASSES}>
+    <div className={cells.box}>
       <span className="truncate font-medium text-muted-foreground text-xs">
         {formatRelativeTime(item.data.updatedAt)}
       </span>

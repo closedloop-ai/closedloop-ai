@@ -98,6 +98,7 @@ function testDetailSource(
 ): AgentComponentsDataSource {
   return {
     scope: "test-detail-resolution",
+    honorsDateWindow: false,
     list: () => Promise.reject(new Error("list unused in resolution tests")),
     detail: () => Promise.resolve(detail),
   };

@@ -14,6 +14,8 @@ import type {
   ReadableLogRecord,
 } from "@opentelemetry/sdk-logs";
 import type {
+  AggregationTemporality,
+  InstrumentType,
   PushMetricExporter,
   ResourceMetrics,
 } from "@opentelemetry/sdk-metrics";
@@ -29,6 +31,7 @@ import {
   normalizeSpanKind,
   normalizeSpanStatus,
 } from "../../shared/renderer-otel-bridge-utils.js";
+import { selectDesktopMetricTemporality } from "./desktop-metric-temporality.js";
 
 export class DesktopOtelLocalBuffer {
   private readonly records: DesktopOtelBufferedRecord[] = [];
@@ -181,6 +184,15 @@ export class DesktopOtelMetricExporter implements PushMetricExporter {
       }
     }
     resultCallback({ code: 0 });
+  }
+
+  // ISS-9246: DELTA for gauges, so a burn-down series the device stopped
+  // measuring goes absent instead of being re-exported at its last value. See
+  // `desktop-metric-temporality.ts`.
+  selectAggregationTemporality(
+    instrumentType: InstrumentType
+  ): AggregationTemporality {
+    return selectDesktopMetricTemporality(instrumentType);
   }
 
   // Genuinely nothing to flush: `buffer.append()` above is synchronous, so by

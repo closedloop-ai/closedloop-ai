@@ -10,6 +10,7 @@ import {
 } from "@closedloop-ai/design-system/components/ui/card";
 import { ChevronRight, Plus, WandSparkles, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { cleanIpcError } from "../../clean-ipc-error";
 import { createAgentCoachingApi } from "./agent-coaching-api";
 import { buildActionDraft } from "./agent-coaching-drafts";
 import { groundedMetricsHaveActivity } from "./agent-coaching-lookback";
@@ -58,9 +59,8 @@ const CATEGORY_LABELS: Record<AgentCoachingTip["category"], string> = {
 };
 
 function formatInstallError(error: unknown): string {
-  return error instanceof Error
-    ? `Install failed: ${error.message}`
-    : "Install failed.";
+  const reason = cleanIpcError(error, "");
+  return reason ? `Install failed: ${reason}` : "Install failed.";
 }
 
 /**

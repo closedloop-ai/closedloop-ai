@@ -2,8 +2,6 @@ import type {
   ActivityBucket,
   AgentSessionDetail,
 } from "@repo/api/src/types/agent-session";
-import { TIMELINE_VISIBLE_COLUMNS } from "@repo/app/agents/lib/session-timeline-scale";
-import { SESSION_TIMELINE_COLUMN_HIT_TARGET_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { AppCoreStoryProviders } from "@repo/app/shared/storybook/decorators";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
@@ -101,9 +99,9 @@ function session(): AgentSessionDetail {
   });
 }
 
-function renderTimeline(enabledFlags: string[]): HTMLElement[] {
+function renderTimeline(): HTMLElement[] {
   render(
-    <AppCoreStoryProviders enabledFlags={enabledFlags}>
+    <AppCoreStoryProviders>
       <AgentSessionDetailView
         backHref="/sessions"
         isLoading={false}
@@ -115,10 +113,8 @@ function renderTimeline(enabledFlags: string[]): HTMLElement[] {
 }
 
 describe("Session Timeline column hit target (ISS-5548)", () => {
-  it("gives a low-value bar the full-column hit target once the flag is on", () => {
-    const [tinyBar] = renderTimeline([
-      SESSION_TIMELINE_COLUMN_HIT_TARGET_FEATURE_FLAG_KEY,
-    ]);
+  it("gives a low-value bar the full-column hit target", () => {
+    const [tinyBar] = renderTimeline();
 
     // The bar a reader can barely hit today is the one that must grow a target.
     expect(tinyBar).toHaveClass(REACH_CLASS);
@@ -128,24 +124,20 @@ describe("Session Timeline column hit target (ISS-5548)", () => {
   });
 
   it("leaves a bucket with no transcript anchor at its original target", () => {
-    const anchorlessBar = lastBar(
-      renderTimeline([SESSION_TIMELINE_COLUMN_HIT_TARGET_FEATURE_FLAG_KEY])
-    );
+    const anchorlessBar = lastBar(renderTimeline());
 
     // ISS-5479 (PR #4615) fixed bars that LOOKED live and dropped the click.
     // Growing this one's hit box would rebuild that defect at four times the
-    // size, so an anchorless bucket is deliberately excluded even flag-on.
+    // size, so an anchorless bucket is deliberately excluded.
     expect(anchorlessBar).not.toHaveClass(REACH_CLASS);
   });
 
-  it("does not name an anchorless bucket as a jump, flag on", () => {
-    const anchorlessBar = lastBar(
-      renderTimeline([SESSION_TIMELINE_COLUMN_HIT_TARGET_FEATURE_FLAG_KEY])
-    );
+  it("does not name an anchorless bucket as a jump", () => {
+    const anchorlessBar = lastBar(renderTimeline());
 
     // The accessible name still refuses to promise a jump it cannot make, so an
     // unreachable bar and a reachable-but-inert bar stay distinguishable to a
-    // screen-reader user with this flag on and #4615 not yet landed.
+    // screen-reader user with #4615 not yet landed.
     //
     // ISS-5761 appended the bucket's COST to the name. That is additive to the
     // contract this test guards — the ACTION clause is still "Activity bucket",
@@ -154,23 +146,6 @@ describe("Session Timeline column hit target (ISS-5548)", () => {
     expect(anchorlessBar.getAttribute("aria-label")).toMatch(
       ANCHORLESS_NAME_RE
     );
-  });
-
-  it("keeps every bar at today's hit target while the flag is off", () => {
-    const bars = renderTimeline([]);
-
-    // ISS-4779 closed-by-default: nothing about the strip may change until the
-    // COLUMN-HIT-TARGET flag is deliberately turned on, on each surface.
-    //
-    // The count is the WINDOW's, not the producer's two bins — ISS-5999 retired
-    // the prototype-parity gate that used to be the other half of this render.
-    // Pinned exactly rather than `toBeGreaterThan(0)`: a render that collapsed
-    // to a single bar would still be "greater than 0", so the loose form could
-    // not fail on the very thing that changed here.
-    expect(bars).toHaveLength(TIMELINE_VISIBLE_COLUMNS);
-    for (const bar of bars) {
-      expect(bar).not.toHaveClass(REACH_CLASS);
-    }
   });
 });
 

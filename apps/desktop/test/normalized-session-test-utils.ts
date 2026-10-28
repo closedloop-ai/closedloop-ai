@@ -166,6 +166,12 @@ type FakeCollectorOptions = {
   sessions?: NormalizedSession[];
   parse?: (source: string) => Promise<NormalizedSession[]>;
   sessionIdForSource?: (source: string) => string | null;
+  /**
+   * File-collector only. The burst-artifact seam is the ONE branch that reaches
+   * `deleteSessionRow` from an empty parse, so a test covering deletion has to be
+   * able to set it (ISS-8601).
+   */
+  isBurstArtifactSource?: (source: string) => boolean;
   listSourcesForRebuild?: () => string[];
   batch?: boolean;
   /** Non-empty to make the manager attach a live watcher for this collector. */
@@ -219,6 +225,7 @@ export function fakeCollector(
   return {
     ...base,
     sessionIdForSource: opts.sessionIdForSource,
+    isBurstArtifactSource: opts.isBurstArtifactSource,
   } satisfies FileHarnessCollector;
 }
 

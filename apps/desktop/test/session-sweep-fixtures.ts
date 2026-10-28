@@ -7,6 +7,7 @@
  * re-declaring the same seeds twice.
  */
 import type { Prisma } from "../src/main/database/generated/client.js";
+import { createMaintenanceFacade } from "../src/main/database/sqlite-maintenance-facade.js";
 import type { OpenTestPrisma } from "./prisma-test-utils.js";
 
 export const NOW = "2026-06-22T12:00:00.000Z";
@@ -47,11 +48,15 @@ export async function seedAgent(
   startedAt: string | null = null,
   // ISS-4586: the agent `type` — `main` agents of an error-ending swept session
   // are set to `error`; subagents stay `completed`. Defaults to null (subagent).
-  type: string | null = null
+  type: string | null = null,
+  // ISS-7069: a pre-set `ended_at`, so a fixture can seed an ALREADY-SWEPT agent
+  // carrying the value the pre-ISS-6893 byte-wise fold stored. Defaults to null
+  // so every existing caller keeps seeding an un-ended agent.
+  endedAt: string | null = null
 ): Promise<void> {
   await store.query(
-    "INSERT INTO agents (id, session_id, status, started_at, type) VALUES ($1, $2, $3, $4, $5)",
-    [id, sessionId, status, startedAt, type]
+    "INSERT INTO agents (id, session_id, status, started_at, type, ended_at) VALUES ($1, $2, $3, $4, $5, $6)",
+    [id, sessionId, status, startedAt, type, endedAt]
   );
 }
 
@@ -109,6 +114,11 @@ export type SeedSessionRow = {
   lastActivityAt: string;
   startedAt: string | null;
   endsWithError: number | null;
+  // ISS-9283: the stored derivation stamp, so a suite can seed the sentinel and
+  // above-current values the rebuild's set-inequality selection must still
+  // pick up. Defaults to the column DEFAULT (1) — the value every caller that
+  // predates the revision-bound suites was already getting.
+  dataRevision?: number;
 };
 
 export type SeedAgentRow = {
@@ -148,7 +158,7 @@ export async function seedSessions(
       row.updatedAt,
       row.lastActivityAt,
       row.startedAt,
-      1,
+      row.dataRevision ?? 1,
       row.endsWithError,
     ]
   );
@@ -274,4 +284,29 @@ async function bulkInsert<TRow>(
       .join(", ");
     await store.query(prefix + tuples, batch.flatMap(toParams));
   }
+}
+
+/**
+ * Build the maintenance facade over a real test store. `supportsRowDigest` and
+ * `tokenUsage` are minimal stand-ins: no suite that uses this helper reaches
+ * either, and constructing a real token-usage surface would drag the whole
+ * store in for methods these suites never call. `log` defaults to a no-op —
+ * only the rebuild suite asserts on the facade's progress output.
+ */
+export function maintenanceFacadeFor(
+  prisma: OpenTestPrisma["prisma"],
+  log: (message: string) => void = () => {
+    /* most suites assert return values, not logs */
+  }
+) {
+  return createMaintenanceFacade({
+    prisma,
+    log,
+    nowFn: () => NOW,
+    detectBillingMode: () => "unknown",
+    supportsRowDigest: () => Promise.resolve(false),
+    tokenUsage: {} as Parameters<
+      typeof createMaintenanceFacade
+    >[0]["tokenUsage"],
+  });
 }

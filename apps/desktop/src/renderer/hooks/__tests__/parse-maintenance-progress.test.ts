@@ -1,5 +1,4 @@
 /**
- * @file parse-maintenance-progress.test.ts
  * @description ISS-6241 — the IPC boundary for the maintenance counts.
  *
  * This is the regression suite for the boundary-strip trap: the renderer reads
@@ -43,15 +42,18 @@ describe("parseMaintenanceProgress (ISS-6241)", () => {
   it.each([
     ["a lone total", { total: 1299 }],
     ["a lone processed", { processed: 412 }],
-  ])("drops %s rather than pairing it with a fabricated counterpart", (_, half) => {
-    const parsed = parseMaintenanceProgress({
-      active: true,
-      phase: "rebuild",
-      ...half,
-    });
+  ])(
+    "drops %s rather than pairing it with a fabricated counterpart",
+    (_, half) => {
+      const parsed = parseMaintenanceProgress({
+        active: true,
+        phase: "rebuild",
+        ...half,
+      });
 
-    expect(parsed).toEqual({ active: true, phase: "rebuild" });
-  });
+      expect(parsed).toEqual({ active: true, phase: "rebuild" });
+    }
+  );
 
   it("rejects a zero total instead of admitting a 0/0", () => {
     // ISS-5932 in one line: a zero denominator is what a displayed 100% was once

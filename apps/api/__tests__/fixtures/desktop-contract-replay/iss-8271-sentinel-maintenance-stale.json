@@ -1,0 +1,30 @@
+{
+  "provenance": {
+    "warning": "DERIVED fixture — produced by the real desktop payload builders and never hand-edited. Regenerate with the command in `regenCommand`; `apps/desktop/test/contract-replay-fixtures.test.ts` reds until you do.",
+    "incident": "ISS-8271",
+    "standsFor": "The sentinel 0 (maintenance stale) on an UNCHUNKED payload: content is complete and sealed, so it folds to `no revision` and the session is applied additively. Distinct outcome from the -1 hold above, and a schema `min(1)` rejects both identically.",
+    "generatedBy": "apps/desktop/test/contract-replay/fixtures-build.ts",
+    "regenCommand": "CONTRACT_REPLAY_WRITE_FIXTURES=1 pnpm --filter desktop exec vitest run --config vitest.node.config.ts test/contract-replay-fixtures.test.ts",
+    "builders": [
+      "apps/desktop/src/main/agent-sync/agent-session-sync-payload.ts"
+    ]
+  },
+  "schemaVersion": 2,
+  "kind": "session",
+  "sessions": [
+    {
+      "externalSessionId": "contract-replay-iss8271-sentinel-zero",
+      "name": "contract replay session",
+      "status": "active",
+      "harness": "claude",
+      "cwd": "/tmp/contract-replay",
+      "startedAt": "2026-09-01T10:00:00.000Z",
+      "updatedAt": "2026-09-01T11:00:00.000Z",
+      "agents": [],
+      "events": [],
+      "tokenUsageByModel": [],
+      "dataRevision": 0,
+      "metadata": null
+    }
+  ]
+}

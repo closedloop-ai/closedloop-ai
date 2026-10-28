@@ -1,12 +1,10 @@
-import { TraceCommentTargetType } from "@repo/api/src/types/comment";
+import { CommentTargetType } from "@repo/api/src/types/comment";
 import {
   createTraceCommentsDeleteHandler,
   createTraceCommentsPatchHandler,
 } from "@/app/trace-comments/route-handlers";
 
-export const PATCH = createTraceCommentsPatchHandler(
-  TraceCommentTargetType.Branch
-);
+export const PATCH = createTraceCommentsPatchHandler(CommentTargetType.Branch);
 export const DELETE = createTraceCommentsDeleteHandler(
-  TraceCommentTargetType.Branch
+  CommentTargetType.Branch
 );

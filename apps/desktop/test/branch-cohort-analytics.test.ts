@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import { encodeBranchId } from "@repo/api/src/types/branch.js";
 import { BRANCH_ANALYTICS_COHORT_MAX_REQUEST_BYTES } from "@repo/api/src/types/branch-analytics-cohort.js";
 import { makeOversizedBranchIds } from "@repo/api/src/types/branch-analytics-cohort-fixtures.test-helpers.js";
@@ -7,8 +6,13 @@ import {
   BranchMetricComparisonLabel,
   BranchMetricPeriod,
 } from "@repo/api/src/types/branch-metrics.js";
+import { describe, test } from "vitest";
 import { getSharedBranchCohortAnalytics } from "../src/main/branch/branch-cohort-analytics.js";
-import { link, makeSource } from "./shared-branches-test-helpers.js";
+import {
+  canonicalActivity,
+  link,
+  makeSource,
+} from "./shared-branches-test-helpers.js";
 
 const existingId = encodeBranchId({
   repoFullName: "acme/web",
@@ -45,8 +49,18 @@ describe("getSharedBranchCohortAnalytics", () => {
     ]);
     assert.equal(scopedEvidenceParameters[0]?.at(-2), null);
     assert.equal(typeof scopedEvidenceParameters[0]?.at(-1), "string");
+    // ISS-9862 review (PR #7098): the LIFECYCLE cohort now binds once, as a
+    // json_each array, rather than two variables per key — a 20,000-id branch
+    // list would otherwise fault that read at SQLite's 999-variable ceiling.
+    // The provenance read asserted above still expands per key, which is why
+    // only this expectation moved.
     assert.deepEqual(scopedEvidenceParameters.slice(1), [
-      ["acme/web", "feature/missing", "acme/web", "feature/x"],
+      [
+        JSON.stringify([
+          { repoFullName: "acme/web", branchName: "feature/missing" },
+          { repoFullName: "acme/web", branchName: "feature/x" },
+        ]),
+      ],
     ]);
   });
 
@@ -86,9 +100,14 @@ describe("getSharedBranchCohortAnalytics", () => {
     assert.equal(response?.canonicalMetrics.cohortSize, 101);
   });
 
-  test("accepts an inclusive UTC-day cohort window", async () => {
+  test("preserves exact requested identity before the metric window", async () => {
     const response = await getSharedBranchCohortAnalytics(
-      makeSource({ links: [link({})] }),
+      makeSource({
+        links: [link({})],
+        canonicalActivity: [
+          canonicalActivity({ occurredAt: "2026-06-10T10:00:00.000Z" }),
+        ],
+      }),
       {
         branchIds: [existingId],
         startDate: "2026-06-14T00:00:00.000Z",

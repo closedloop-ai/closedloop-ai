@@ -1,0 +1,260 @@
+{
+  "spans": [
+    {
+      "attributes": {
+        "custom": {
+          "app": {
+            "installation": {
+              "id": "620a2a70-8516-43e7-a35d-b3419be83639"
+            },
+            "operating_mode": "single_player"
+          },
+          "deployment": {
+            "environment": {
+              "name": "stage"
+            }
+          },
+          "device": {
+            "id": "620a2a70-8516-43e7-a35d-b3419be83639"
+          },
+          "duration": 420000000,
+          "env": "stage",
+          "git": {
+            "repository": {
+              "id": "bitbucket.org/closedloopai/cl-expression"
+            }
+          },
+          "otel": {
+            "library": {
+              "name": "closedloop-desktop-activity"
+            },
+            "status_code": "Unset",
+            "trace_id": "afafe9fdcc98a19c88ce2dd7679dba47"
+          },
+          "service": {
+            "version": "0.17.0"
+          },
+          "span": {
+            "kind": "internal"
+          },
+          "version": "0.17.0"
+        },
+        "end_timestamp": "2026-10-09T21:14:28.074Z",
+        "env": "stage",
+        "error": null,
+        "host": "",
+        "ingestion_reason": "",
+        "operation_name": "closedloop_desktop_activity.internal",
+        "parent_id": "0",
+        "resource_hash": "1121cf29e14b589f",
+        "resource_name": "cl-desktop",
+        "retained_by": "diversity_sampling",
+        "service": "cl-desktop",
+        "single_span": false,
+        "span_id": "18175254916050836482",
+        "start_timestamp": "2026-10-09T21:14:27.654Z",
+        "status": "ok",
+        "tags": [
+          "ingestion_reason:probabilistic",
+          "issue_type:empty_hostname",
+          "source:apm"
+        ],
+        "trace_id": "afafe9fdcc98a19c88ce2dd7679dba47",
+        "type": "custom"
+      },
+      "id": "AaEiiVZWAADN9PHo2Mahac6I",
+      "type": "spans"
+    },
+    {
+      "attributes": {
+        "custom": {
+          "app": {
+            "exception": {
+              "origin": "main"
+            },
+            "installation": {
+              "id": "620a2a70-8516-43e7-a35d-b3419be83639"
+            }
+          },
+          "deployment": {
+            "environment": {
+              "name": "stage"
+            }
+          },
+          "device": {
+            "id": "620a2a70-8516-43e7-a35d-b3419be83639"
+          },
+          "duration": 0,
+          "env": "stage",
+          "exception": {
+            "message": "ISS-12211 AC4 egress parity probe",
+            "stacktrace": "Error: ISS-12211 AC4 egress parity probe at send ([redacted-path]) at main ([redacted-path]) at <anonymous> ([redacted-path]) at ModuleJob.run (node:internal/modules/esm/module_job:439:25) at async node:internal/modules/esm/loader:643:26 at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)",
+            "type": "Error"
+          },
+          "git": {
+            "repository": {
+              "id": "bitbucket.org/closedloopai/cl-expression"
+            }
+          },
+          "otel": {
+            "library": {
+              "name": "closedloop-desktop-app-lifecycle"
+            },
+            "status_code": "Error",
+            "trace_id": "afafe9fdcc98a19c88ce2dd7679dba47"
+          },
+          "service": {
+            "version": "0.17.0"
+          },
+          "span": {
+            "kind": "internal"
+          },
+          "version": "0.17.0"
+        },
+        "end_timestamp": "2026-10-09T21:14:27.659Z",
+        "env": "stage",
+        "error": null,
+        "host": "",
+        "ingestion_reason": "",
+        "operation_name": "closedloop_desktop_app_lifecycle.internal",
+        "parent_id": "18175254916050836482",
+        "resource_hash": "d38559b1372f4f14",
+        "resource_name": "exception",
+        "retained_by": "retention_filter",
+        "service": "cl-desktop",
+        "single_span": false,
+        "span_id": "7435361204675043588",
+        "start_timestamp": "2026-10-09T21:14:27.659Z",
+        "status": "error",
+        "tags": [
+          "ingestion_reason:probabilistic",
+          "issue_type:empty_hostname",
+          "source:apm"
+        ],
+        "trace_id": "afafe9fdcc98a19c88ce2dd7679dba47",
+        "type": "custom"
+      },
+      "id": "AaEiiVZWAADC83emQfwYks6I",
+      "type": "spans"
+    },
+    {
+      "attributes": {
+        "custom": {
+          "app": {
+            "installation": {
+              "id": "620a2a70-8516-43e7-a35d-b3419be83639"
+            },
+            "lifecycle": {
+              "event": "start"
+            },
+            "operating_mode": "single_player"
+          },
+          "deployment": {
+            "environment": {
+              "name": "stage"
+            }
+          },
+          "device": {
+            "id": "620a2a70-8516-43e7-a35d-b3419be83639"
+          },
+          "duration": 0,
+          "env": "stage",
+          "git": {
+            "repository": {
+              "id": "bitbucket.org/closedloopai/cl-expression"
+            }
+          },
+          "otel": {
+            "library": {
+              "name": "closedloop-desktop-app-lifecycle"
+            },
+            "status_code": "Unset",
+            "trace_id": "afafe9fdcc98a19c88ce2dd7679dba47"
+          },
+          "service": {
+            "version": "0.17.0"
+          },
+          "span": {
+            "kind": "internal"
+          },
+          "version": "0.17.0"
+        },
+        "end_timestamp": "2026-10-09T21:14:27.654Z",
+        "env": "stage",
+        "error": null,
+        "host": "",
+        "ingestion_reason": "",
+        "operation_name": "closedloop_desktop_app_lifecycle.internal",
+        "parent_id": "18175254916050836482",
+        "resource_hash": "4e3f89d51141ba00",
+        "resource_name": "app.lifecycle",
+        "retained_by": "diversity_sampling",
+        "service": "cl-desktop",
+        "single_span": false,
+        "span_id": "6390009118176740254",
+        "start_timestamp": "2026-10-09T21:14:27.654Z",
+        "status": "ok",
+        "tags": [
+          "ingestion_reason:probabilistic",
+          "issue_type:empty_hostname",
+          "source:apm"
+        ],
+        "trace_id": "afafe9fdcc98a19c88ce2dd7679dba47",
+        "type": "custom"
+      },
+      "id": "AaEiiVZWAADK1ZfQq606V86I",
+      "type": "spans"
+    }
+  ],
+  "logs": [
+    {
+      "attributes": {
+        "attributes": {
+          "@timestamp": "2026-10-09T21:14:27.656Z",
+          "app": {
+            "agent_monitor": {
+              "runtime_status": "ready"
+            },
+            "installation": {
+              "id": "620a2a70-8516-43e7-a35d-b3419be83639"
+            },
+            "lifecycle": {
+              "event": "heartbeat"
+            },
+            "operating_mode": "single_player"
+          },
+          "deployment": {
+            "environment": {
+              "name": "stage"
+            }
+          },
+          "device": {
+            "id": "620a2a70-8516-43e7-a35d-b3419be83639"
+          },
+          "otel": {
+            "timestamp": "1791580467656000000"
+          },
+          "service": {
+            "name": "cl-desktop",
+            "version": "0.17.0"
+          },
+          "status": ""
+        },
+        "host": "",
+        "service": "cl-desktop",
+        "status": "info",
+        "tags": [
+          "datadog.submission_auth:api_key",
+          "env:stage",
+          "otel_source:datadog_exporter",
+          "service:cl-desktop",
+          "source:otlp_log_ingestion",
+          "version:0.17.0"
+        ],
+        "timestamp": "2026-10-09T21:14:27.656Z"
+      },
+      "id": "AwAAAaEihHHINLS1DQAAABhBYUVpaEg1QkFBQkk2VDlMZU5aa1ZBQUEAAAAkZjFhMTIyODQtYTM3OS00MGJhLWJiOGQtNDNiOWYxNTQ0ZGE4AAADDA",
+      "type": "log"
+    }
+  ]
+}

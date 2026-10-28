@@ -81,7 +81,7 @@ describe.skipIf(!DATABASE_URL_SET)("seed reset integration", () => {
     }
   });
 
-  it("resets target org data, clears identity scalars, preserves unrelated org data, and reseeds", async () => {
+  it("resets target org data, preserves unrelated org data, and reseeds", async () => {
     await runSeed(ctx.prisma, baselineContext, MINIMAL_PLAN);
     const unrelated = await createUnrelatedOrg(ctx);
     const computeTarget = await ctx.prisma.computeTarget.create({
@@ -90,23 +90,6 @@ describe.skipIf(!DATABASE_URL_SET)("seed reset integration", () => {
         userId: BASELINE_USER_ID,
         machineName: `reset-target-${randomUUID()}`,
         platform: "darwin",
-      },
-    });
-    await ctx.prisma.user.update({
-      where: { id: BASELINE_USER_ID },
-      data: {
-        claudeApiKeyEncrypted: "secret-user-key",
-        claudeApiKeyLastFour: "1234",
-        claudeApiKeySetAt: new Date(),
-        preferredComputeTargetId: computeTarget.id,
-      },
-    });
-    await ctx.prisma.organization.update({
-      where: { id: BASELINE_ORG_ID },
-      data: {
-        claudeApiKeyEncrypted: "secret-org-key",
-        claudeApiKeyLastFour: "5678",
-        claudeApiKeySetAt: new Date(),
       },
     });
     const parentLoop = await ctx.prisma.loop.create({
@@ -141,25 +124,6 @@ describe.skipIf(!DATABASE_URL_SET)("seed reset integration", () => {
 
     const resetSummary = await resetOrgData(ctx.prisma, BASELINE_ORG_ID);
     expect(resetSummary.totalRows).toBeGreaterThan(0);
-    await expect(
-      ctx.prisma.organization.findUniqueOrThrow({
-        where: { id: BASELINE_ORG_ID },
-      })
-    ).resolves.toMatchObject({
-      id: BASELINE_ORG_ID,
-      claudeApiKeyEncrypted: null,
-      claudeApiKeyLastFour: null,
-      claudeApiKeySetAt: null,
-    });
-    await expect(
-      ctx.prisma.user.findUniqueOrThrow({ where: { id: BASELINE_USER_ID } })
-    ).resolves.toMatchObject({
-      id: BASELINE_USER_ID,
-      claudeApiKeyEncrypted: null,
-      claudeApiKeyLastFour: null,
-      claudeApiKeySetAt: null,
-      preferredComputeTargetId: null,
-    });
     await expect(
       ctx.prisma.project.findUniqueOrThrow({
         where: { id: unrelated.projectId },
@@ -204,29 +168,12 @@ describe.skipIf(!DATABASE_URL_SET)("seed reset integration", () => {
         createdById: BASELINE_USER_ID,
       },
     });
-    const computeTarget = await ctx.prisma.computeTarget.create({
+    await ctx.prisma.computeTarget.create({
       data: {
         organizationId: BASELINE_ORG_ID,
         userId: BASELINE_USER_ID,
         machineName: `reset-cli-target-${randomUUID()}`,
         platform: "darwin",
-      },
-    });
-    await ctx.prisma.user.update({
-      where: { id: BASELINE_USER_ID },
-      data: {
-        claudeApiKeyEncrypted: "secret-user-key",
-        claudeApiKeyLastFour: "1234",
-        claudeApiKeySetAt: new Date(),
-        preferredComputeTargetId: computeTarget.id,
-      },
-    });
-    await ctx.prisma.organization.update({
-      where: { id: BASELINE_ORG_ID },
-      data: {
-        claudeApiKeyEncrypted: "secret-org-key",
-        claudeApiKeyLastFour: "5678",
-        claudeApiKeySetAt: new Date(),
       },
     });
     const env = buildCliEnv();
@@ -262,25 +209,6 @@ describe.skipIf(!DATABASE_URL_SET)("seed reset integration", () => {
     expect(resetResult.stdout).not.toContain("Type the organization UUID");
     expect(collectPrivateOutputLeaks(resetResult)).toEqual([]);
 
-    await expect(
-      ctx.prisma.organization.findUniqueOrThrow({
-        where: { id: BASELINE_ORG_ID },
-      })
-    ).resolves.toMatchObject({
-      id: BASELINE_ORG_ID,
-      claudeApiKeyEncrypted: null,
-      claudeApiKeyLastFour: null,
-      claudeApiKeySetAt: null,
-    });
-    await expect(
-      ctx.prisma.user.findUniqueOrThrow({ where: { id: BASELINE_USER_ID } })
-    ).resolves.toMatchObject({
-      id: BASELINE_USER_ID,
-      claudeApiKeyEncrypted: null,
-      claudeApiKeyLastFour: null,
-      claudeApiKeySetAt: null,
-      preferredComputeTargetId: null,
-    });
     await expect(
       ctx.prisma.project.findUnique({ where: { id: staleProjectId } })
     ).resolves.toBeNull();
@@ -841,8 +769,11 @@ async function seedResetOnlyFixture(
       action: "consumed",
     },
   });
-  // SESSION artifact + its CTI session_detail (FEA-1699). The artifact id is the
-  // session_detail primary key and the FK target for events/token usage.
+  /*
+   * SESSION artifact + its CTI session_detail (FEA-1699). The artifact id is the
+   * session_detail primary key and the FK target for events/token usage.
+   * `lastActivityAt` is NOT NULL since ISS-6463.
+   */
   const sessionArtifact = await ctx.prisma.artifact.create({
     data: {
       organizationId,
@@ -851,11 +782,11 @@ async function seedResetOnlyFixture(
       status: "active",
       session: {
         create: {
-          userId,
           computeTargetId: computeTarget.id,
           externalSessionId: `as-${uniq}`,
           sessionStartedAt: new Date(),
           sessionUpdatedAt: new Date(),
+          lastActivityAt: new Date(),
         },
       },
     },

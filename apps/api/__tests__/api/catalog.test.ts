@@ -2,10 +2,10 @@
  * Route tests for the admin catalog endpoints (FEA-2923 PR2).
  *
  * Exercises the real GET/POST /catalog route handlers and the admin RBAC gate
- * (isOrgAdmin) at the HTTP layer:
+ * (requireOrgAdmin) at the HTTP layer:
  * - GET /catalog — org-visible list (no admin gate);
  * - POST /catalog — 200 for an admin caller;
- * - POST /catalog — 403 for a non-admin caller (isOrgAdmin=false), before any
+ * - POST /catalog — 403 for a non-admin caller (requireOrgAdmin refuses), before any
  *   service work;
  * - POST /catalog — 400 for an invalid body.
  *
@@ -23,7 +23,7 @@ import {
 } from "../utils/auth-helpers";
 
 const mocks = vi.hoisted(() => ({
-  isOrgAdmin: vi.fn(),
+  requireOrgAdmin: vi.fn(),
   listCatalogItemsForOrg: vi.fn(),
   createCatalogItem: vi.fn(),
 }));
@@ -38,7 +38,7 @@ vi.mock("@/lib/auth/with-any-auth", () => ({
 }));
 
 vi.mock("@/lib/auth/org-admin", () => ({
-  isOrgAdmin: mocks.isOrgAdmin,
+  requireOrgAdmin: mocks.requireOrgAdmin,
 }));
 
 vi.mock("@/app/catalog/service", () => ({
@@ -46,6 +46,10 @@ vi.mock("@/app/catalog/service", () => ({
   createCatalogItem: mocks.createCatalogItem,
 }));
 
+import {
+  ORG_ADMIN_ADMITTED,
+  orgAdminRefused,
+} from "@/__tests__/support/auth/org-admin-gate.test-fixtures";
 import { GET, POST } from "@/app/catalog/route";
 
 const mockItem = {
@@ -93,7 +97,7 @@ describe("GET /catalog", () => {
     expect(json.success).toBe(true);
     expect(json.data).toHaveLength(1);
     // Admin gate is NOT applied to reads.
-    expect(mocks.isOrgAdmin).not.toHaveBeenCalled();
+    expect(mocks.requireOrgAdmin).not.toHaveBeenCalled();
     expect(mocks.listCatalogItemsForOrg).toHaveBeenCalledWith(
       expect.objectContaining({ organizationId: "org-1" })
     );
@@ -102,7 +106,7 @@ describe("GET /catalog", () => {
 
 describe("POST /catalog", () => {
   it("creates a catalog item for an admin caller", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(true);
+    mocks.requireOrgAdmin.mockResolvedValue(ORG_ADMIN_ADMITTED);
     mocks.createCatalogItem.mockResolvedValue(Result.ok(mockItem));
 
     const response = await POST(
@@ -124,12 +128,13 @@ describe("POST /catalog", () => {
         userId: "user-1",
         targetKind: "plugin",
         name: "My Plugin",
-      })
+      }),
+      undefined
     );
   });
 
-  it("returns 403 for a non-admin caller (isOrgAdmin=false)", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(false);
+  it("returns 403 for a non-admin caller (requireOrgAdmin refuses)", async () => {
+    mocks.requireOrgAdmin.mockImplementation(orgAdminRefused);
 
     const response = await POST(
       createMockRequest({
@@ -146,7 +151,7 @@ describe("POST /catalog", () => {
   });
 
   it("returns 400 for an invalid body (missing name)", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(true);
+    mocks.requireOrgAdmin.mockResolvedValue(ORG_ADMIN_ADMITTED);
 
     const response = await POST(
       createMockRequest({
@@ -162,7 +167,7 @@ describe("POST /catalog", () => {
   });
 
   it("returns 404 when the service rejects an unattachable parentPackId (cross-org child-leak guard)", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(true);
+    mocks.requireOrgAdmin.mockResolvedValue(ORG_ADMIN_ADMITTED);
     // Service returns 404 when the parent pack is missing / not visible to the org.
     mocks.createCatalogItem.mockResolvedValue(Result.err(404));
 
@@ -183,7 +188,7 @@ describe("POST /catalog", () => {
   });
 
   it("returns 403 when the service rejects a non-pack parentPackId", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(true);
+    mocks.requireOrgAdmin.mockResolvedValue(ORG_ADMIN_ADMITTED);
     // Service returns 403 when the org-owned parent is not a Pack container.
     mocks.createCatalogItem.mockResolvedValue(Result.err(403));
 

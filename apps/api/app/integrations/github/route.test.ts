@@ -47,6 +47,9 @@ describe("/integrations/github", () => {
     const body = await response.json();
 
     expect(response.status).toBe(200);
+    // PLN-1742 M5 removed the clerkLinkingEnabled enrichment: the linking
+    // page no longer forwards on enrollment, so the payload is the service
+    // result verbatim.
     expect(body).toEqual({
       success: true,
       data: { connected: false },
@@ -65,6 +68,9 @@ describe("/integrations/github", () => {
       success: true,
       data: { disconnected: true },
     });
-    expect(mocks.disconnectInstallation).toHaveBeenCalledWith("org-1");
+    expect(mocks.disconnectInstallation).toHaveBeenCalledWith(
+      "org-1",
+      undefined
+    );
   });
 });

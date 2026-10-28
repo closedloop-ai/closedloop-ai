@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import { test } from "vitest";
 import type { AgentSessionSyncSource } from "../src/main/agent-sync/agent-session-sync-source.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 import {
@@ -103,6 +103,10 @@ test("Model facet options come from the primary model, distinct from byModel —
         `${label}: facet options are the two PRIMARY models, null dropped`
       );
 
+      // Optional on the contract since ISS-8554 (the SQL producer omits it), but
+      // the producer under test here still emits it. Narrowing on an explicit
+      // assertion keeps the parity check able to fail.
+      assert.ok(usage.byModel, `${label}: byModel is produced on this path`);
       const byModelModels = usage.byModel.map((row) => row.model).sort();
       // byModel spans every token-usage model, INCLUDING the subagent-only one.
       assert.ok(

@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { ArtifactRefRelation } from "@repo/api/src/types/session-artifact-link";
+import type { DbHostPrisma } from "../src/main/database/prisma-client.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 
 // ---------------------------------------------------------------------------
@@ -161,9 +162,9 @@ export async function insertPullRequestRow(
 ): Promise<void> {
   await db.run(
     `INSERT INTO pull_requests
-       (id, pr_url, pr_number, repo_full_name, branch_name, state,
+       (id, pr_url, pr_number, repo_full_name, branch_name,
         observed_at, created_at)
-     VALUES ($1, $2, $3, 'acme/web', $4, 'open', $5, $5)`,
+     VALUES ($1, $2, $3, 'acme/web', $4, $5, $5)`,
     opts.id,
     `https://github.com/acme/web/pull/${opts.prNumber ?? 42}`,
     opts.prNumber ?? 42,
@@ -232,4 +233,38 @@ export async function insertCommitArtifact(
     ArtifactRefRelation.Created,
     opts.observedAt ?? AC_T0
   );
+}
+
+/** Host parameters bound by every `$queryRawUnsafe` issued through the spy. */
+export type BindSpy = { prisma: DbHostPrisma; boundParameterCounts: number[] };
+
+/**
+ * Wrap a db host so every raw statement's bound-parameter COUNT is recorded.
+ * The bind-limit suites (ISS-10324, ISS-10365) assert on that count rather than
+ * on a row count, because the runtime these tests run on carries the modern
+ * 32,766-variable ceiling — a row-count assertion stays green on the very shape
+ * the fix removed and so cannot fail.
+ */
+export function spyOnBoundParameters(prisma: DbHostPrisma): BindSpy {
+  const boundParameterCounts: number[] = [];
+  const client = new Proxy(prisma.client, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (property !== "$queryRawUnsafe") {
+        return value;
+      }
+      return (sql: string, ...parameters: unknown[]) => {
+        boundParameterCounts.push(parameters.length);
+        return (value as (...args: unknown[]) => unknown).call(
+          target,
+          sql,
+          ...parameters
+        );
+      };
+    },
+  });
+  return {
+    prisma: { ...prisma, client } as DbHostPrisma,
+    boundParameterCounts,
+  };
 }

@@ -12,7 +12,14 @@ type PersistedIdentity = {
 type ReadOutcome = { kind: "found"; gatewayId: string } | { kind: "missing" };
 
 export class GatewayIdentityStore {
+  private current: string | null = null;
+
   constructor(private readonly configDir: string) {}
+
+  /** The identity {@link loadSync} or {@link rotateSync} last settled on. */
+  currentSync(): string {
+    return this.current ?? this.loadSync();
+  }
 
   async load(): Promise<string> {
     const filePath = this.filePath();
@@ -31,18 +38,29 @@ export class GatewayIdentityStore {
   }
 
   loadSync(): string {
-    const filePath = this.filePath();
-    const existing = this.readExistingSync(filePath);
+    const existing = this.readExistingSync(this.filePath());
     if (existing.kind === "found") {
+      this.current = existing.gatewayId;
       return existing.gatewayId;
     }
+    return this.rotateSync();
+  }
+
+  /**
+   * ISS-11843: replace the persisted identity with a fresh one. Operator ruling
+   * (Marisol Ashgrove, 2026-10-05): on an account change the desktop creates a new
+   * gateway identity, so the next account never declares one the cloud has
+   * bound to another account's compute target.
+   */
+  rotateSync(): string {
     const fresh = randomUUID();
     fs.mkdirSync(this.configDir, { recursive: true });
     fs.writeFileSync(
-      filePath,
+      this.filePath(),
       JSON.stringify({ gatewayId: fresh } satisfies PersistedIdentity),
       "utf-8"
     );
+    this.current = fresh;
     return fresh;
   }
 

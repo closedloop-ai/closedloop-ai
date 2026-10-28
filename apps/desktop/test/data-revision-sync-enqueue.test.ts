@@ -11,7 +11,7 @@
  * enqueue cannot silently stop reaching the cloud.
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import { AgentSessionSyncClass } from "../src/main/agent-sync/agent-session-sync-contract.js";
 import { buildAgentSessionSyncSourceKey } from "../src/main/agent-sync/agent-session-sync-source.js";
 import type { RunDataRevisionSyncEnqueueInput } from "../src/main/dashboard/data-revision-sync-enqueue.js";

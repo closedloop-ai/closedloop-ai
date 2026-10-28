@@ -33,12 +33,32 @@ describe("nodeAnalytics", () => {
     expect(nodeAnalytics.capture({ distinctId: "user", event: "event" })).toBe(
       undefined
     );
+    // ISS-10503: the alias sink must no-op too, or an unconfigured deployment
+    // crashes on the pre-auth alias handshake instead of skipping it.
+    expect(
+      nodeAnalytics.alias({ distinctId: "user", alias: "onboarding" })
+    ).toBe(undefined);
     expect(nodeAnalytics.identify({ distinctId: "user" })).toBe(undefined);
     expect(
       nodeAnalytics.groupIdentify({ groupKey: "org", groupType: "org" })
     ).toBe(undefined);
     await expect(nodeAnalytics.shutdown()).resolves.toBeUndefined();
     expect(mockPostHog).not.toHaveBeenCalled();
+  });
+
+  it("runs a request's work when PostHog is disabled and the browser sent a session id", async () => {
+    // ISS-11929: every signed-in browser request reaches this with a valid
+    // header, so the stub must still run the handler rather than crash on it.
+    const { withPostHogRequestContext } = await import("./node");
+
+    const result = withPostHogRequestContext(
+      new Headers({
+        "X-POSTHOG-SESSION-ID": "019a0f3e-8c2b-7a4d-9e1f-0123456789ab",
+      }),
+      () => "handled"
+    );
+
+    expect(result).toBe("handled");
   });
 
   it("constructs the real Node client with immediate flushing when enabled", async () => {

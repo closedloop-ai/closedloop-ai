@@ -5,10 +5,14 @@
 import { type Mock, vi } from "vitest";
 
 export const mocks: {
+  anyNull: symbol;
   dbNull: symbol;
   withDb: Mock & { tx: Mock };
   emitTelemetryMetric: Mock;
 } = {
+  // ISS-9859: distinct from `dbNull`, because a NULL-safe JSON-path filter uses
+  // both and a test that cannot tell them apart proves neither.
+  anyNull: Symbol("any-null"),
   dbNull: Symbol("db-null"),
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
   emitTelemetryMetric: vi.fn(),
@@ -77,9 +81,13 @@ export function databaseModuleMock(): {
   };
   GitHubInstallationStatus: { ACTIVE: string };
   Prisma: {
+    AnyNull: symbol;
     DbNull: symbol;
+    empty: ReturnType<typeof sqlTag>;
     sql: typeof sqlTag;
+    raw: (text: string) => SqlFragment;
     join: typeof sqlJoin;
+    TransactionIsolationLevel: { RepeatableRead: string };
   };
   withDb: Mock & { tx: Mock };
 } {
@@ -95,9 +103,17 @@ export function databaseModuleMock(): {
       ACTIVE: "ACTIVE",
     },
     Prisma: {
+      AnyNull: mocks.anyNull,
       DbNull: mocks.dbNull,
+      empty: sqlTag([""] as const),
       sql: sqlTag,
+      // Prisma.raw: literal text, no bound values.
+      raw: (text: string) => sqlTag([text]),
       join: sqlJoin,
+      // ISS-6892: the sorted list paths open their page read at
+      // `RepeatableRead` so the count and the streamed page share one snapshot
+      // (`withSessionListSnapshot`). Mirrors the Prisma enum member by value.
+      TransactionIsolationLevel: { RepeatableRead: "RepeatableRead" },
     },
     withDb: mocks.withDb,
   };

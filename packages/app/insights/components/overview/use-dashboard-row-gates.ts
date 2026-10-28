@@ -10,8 +10,10 @@ import type { DashboardRowGates } from "./dashboard-tiles";
  *
  * ONE hook read by both shells (the web `InsightsOverviewDashboard` and the
  * desktop first-launch dashboard) so a row can never be gated off on one surface
- * and drawn on the other. Resolution goes through the injected feature-flag port:
- * PostHog on web, the desktop shell's Labs-backed adapter in the renderer.
+ * and drawn on the other. Resolution goes through the injected feature-flag
+ * port, and both shells answer it out of the same PostHog key space: the web
+ * adapter reads PostHog directly, while `DesktopFeatureFlagProvider` reads the
+ * signed-in account's PostHog assignment delivered over the IPC bridge.
  *
  * Uses the OPTIONAL adapter deliberately: the shared overview also mounts in
  * Storybook and in tests that do not wrap a `FeatureFlagAdapterProvider`, where

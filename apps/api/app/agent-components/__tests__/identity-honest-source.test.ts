@@ -25,7 +25,7 @@ import {
   resolveMergedHonestSource,
   resolveMergedSource,
 } from "../identity";
-import { inventoryRow, MAX_ROWS, orphanUsage } from "./identity-test-fixtures";
+import { inventoryRow, orphanUsage } from "./identity-test-fixtures";
 
 /**
  * ISS-5009: the legacy `source` chain ends at the component's own identity key,
@@ -207,11 +207,9 @@ describe("resolveMergedHonestSource", () => {
 
   it("carries no provenance for a synthetic usage-only bucket (no inventory row)", () => {
     const mergedMap = mergeComponentRows([]);
-    foldOrphanUsageIntoMerged(
-      mergedMap,
-      [orphanUsage({ componentKind: AgentComponentKind.Mcp })],
-      MAX_ROWS
-    );
+    foldOrphanUsageIntoMerged(mergedMap, [
+      orphanUsage({ componentKind: AgentComponentKind.Mcp }),
+    ]);
     const [entry] = [...mergedMap.values()];
 
     expect(resolveMergedHonestSource(entry)).toEqual({

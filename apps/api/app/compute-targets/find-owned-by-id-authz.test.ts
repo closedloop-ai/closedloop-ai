@@ -14,7 +14,6 @@ const mocks = vi.hoisted(() => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
   isDesktopManagedPopEnforcementEnabled: vi.fn(),
   loadActiveDesktopManagedGatewayIds: vi.fn(),
-  isAgentSessionSyncSupportedForUser: vi.fn(),
   deleteTranscriptObjects: vi.fn(),
 }));
 
@@ -26,7 +25,7 @@ vi.mock("@repo/database", () => ({
   withDb: mocks.withDb,
 }));
 
-vi.mock("@repo/aws", () => ({
+vi.mock("@repo/aws/transcript-storage", () => ({
   deleteTranscriptObjects: mocks.deleteTranscriptObjects,
 }));
 
@@ -48,10 +47,6 @@ vi.mock("@/lib/compute-target-signing-eligibility", () => ({
   loadActiveDesktopManagedGatewayIds: mocks.loadActiveDesktopManagedGatewayIds,
 }));
 
-vi.mock("@/lib/agent-session-sync-feature", () => ({
-  isAgentSessionSyncSupportedForUser: mocks.isAgentSessionSyncSupportedForUser,
-}));
-
 import { computeTargetsService } from "./service";
 
 const now = new Date("2026-07-29T00:00:00.000Z");
@@ -64,7 +59,7 @@ function buildRow(overrides: Record<string, unknown> = {}) {
     machineName: "machine-1",
     platform: "darwin",
     capabilities: {},
-    supportedOperations: ["symphony_plan_loop"],
+    supportedOperations: ["git_action"],
     lastSeenAt: now,
     isOnline: true,
     isSharedWithOrg: false,
@@ -108,10 +103,14 @@ describe("computeTargetsService.findOwnedById authz predicate", () => {
 
     // The owner-only gate lives in the query itself — dropping either the org or
     // the user predicate would let a cross-org / non-owner caller resolve a
-    // foreign node. Assert all three are present.
-    expect(findFirst).toHaveBeenCalledWith({
-      where: { id: "target-1", organizationId: "org-1", userId: "user-1" },
-    });
+    // foreign node. The `where` stays EXACT so an added or relaxed predicate
+    // still fails; `objectContaining` scopes the assertion to the predicate this
+    // suite owns, so a sibling `select` change is not read as an authz change.
+    expect(findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "target-1", organizationId: "org-1", userId: "user-1" },
+      })
+    );
   });
 
   it("returns null (never a foreign node) when the owner-scoped row is absent", async () => {
@@ -128,12 +127,14 @@ describe("computeTargetsService.findOwnedById authz predicate", () => {
     expect(result).toBeNull();
     // A cross-org caller's org/user still reach the predicate, so the DB — not a
     // post-filter — is what excludes the foreign node.
-    expect(findFirst).toHaveBeenCalledWith({
-      where: {
-        id: "target-1",
-        organizationId: "org-OTHER",
-        userId: "user-2",
-      },
-    });
+    expect(findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          id: "target-1",
+          organizationId: "org-OTHER",
+          userId: "user-2",
+        },
+      })
+    );
   });
 });

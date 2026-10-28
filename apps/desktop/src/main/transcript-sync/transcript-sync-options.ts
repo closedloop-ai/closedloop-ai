@@ -9,7 +9,10 @@
  * one of them. Declarations only — no behavior beyond {@link defaultScheduler}.
  */
 import type { TranscriptEgressGate } from "../../shared/transcript-sync-status-contract.js";
+import type { SyncLaneBatchEmit } from "../agent-sync/sync-lane-cloud-health.js";
 import type { TranscriptSyncStore } from "../database/transcript-sync-store.js";
+import type { MaterializeImportHealthEvent } from "../telemetry/app-otel-runtime-import-health.js";
+import type { SignedInUserIdentity } from "../util/user-identity.js";
 import type { TranscriptSyncExecutor } from "./transcript-sync-executor.js";
 import type {
   TranscriptFileRef,
@@ -114,6 +117,27 @@ export type TranscriptSyncServiceOptions = {
    */
   stopMaterialize?: () => void;
   /**
+   * ISS-8600: report one materialize outcome as a desktop import-health record.
+   * Best-effort and non-fatal — the sweep's "a materialize failure must not
+   * abort discovery" posture covers this seam too, so a throwing or omitted
+   * sink changes nothing about the pass.
+   *
+   * Only the two EMITTING outcomes reach it: a deliberate `stop()` cancel and a
+   * clean pass are filtered at the sweep, which is the layer that can still
+   * tell them apart.
+   *
+   * Carries no harness, deliberately. The sweep calls {@link materialize}
+   * without knowing whose store it regenerates, so the wiring that SUPPLIES
+   * this sink is the layer that names the harness on the record — see
+   * `desktop-transcript-sync-factory.ts`.
+   *
+   * Called at most ONCE per materialize pass, not once per sweep. `sweepOnce`
+   * has no single-flight, so overlapping sweeps await the same pass and would
+   * otherwise each report its one failure; the runner marks a joining caller's
+   * rejection so only the pass owner files the record.
+   */
+  noteMaterializeOutcome?: (kind: MaterializeImportHealthEvent) => void;
+  /**
    * FEA-3932: one-shot automatic dead-letter redrive run once on service start,
    * BEFORE the first sweep. Flips a harness's `dead` rows back to `queued` (see
    * `TranscriptSyncStore.redriveDeadLettered`) so sessions dead-lettered under a
@@ -150,6 +174,13 @@ export type TranscriptSyncServiceOptions = {
    */
   getComputeTargetId?: () => string | null;
   /**
+   * ISS-7096: the signed-in identity pair, or null when unknown. Threaded to
+   * the store's observe gate so another identity's transcripts (on a
+   * multi-environment device, the other environment's) never queue for this
+   * environment's cloud.
+   */
+  getSyncIdentity?: () => SignedInUserIdentity | null;
+  /**
    * Guard for hook-supplied transcript paths — the hook listener is an
    * unauthenticated localhost endpoint, so a path MUST be validated (anchored
    * under the known transcript root) before it can drive an archive byte upload.
@@ -181,4 +212,11 @@ export type TranscriptSyncServiceOptions = {
   log?: (message: string) => void;
   concurrency?: number;
   scheduler?: Scheduler;
+  /**
+   * ISS-6338: emit this lane's cloud batch health (`sync.batch` tagged
+   * `transcript_archive`). Wired to the desktop OTel runtime's
+   * `emitSyncBatchEvent`; omitted in contexts without a telemetry runtime, in
+   * which case the lane drains uninstrumented exactly as before.
+   */
+  emitSyncBatch?: SyncLaneBatchEmit;
 };

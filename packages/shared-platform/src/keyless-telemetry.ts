@@ -21,9 +21,15 @@
  * on a dedicated connection to the same relay origin. The desktop keyless
  * exporter (C5 / FEA-1993) uses a dedicated, isolated `/telemetry` connection so
  * telemetry uptime is independent of the authenticated `/desktop-gateway`
- * client's reconnect/PoP lifecycle. Either topology preserves PRD-481's egress
- * invariant — all telemetry is relay-mediated to a single destination (the
- * relay), never a direct desktop→Collector egress.
+ * client's reconnect/PoP lifecycle. Either topology keeps this lane's egress
+ * relay-mediated to a single destination (the relay), never a direct
+ * desktop→Collector egress.
+ *
+ * Since ISS-12211 (ISS-11866 R1a) new desktop builds send the same opaque OTLP
+ * bodies over HTTPS to {@link KEYLESS_TELEMETRY_API_ROUTE_PREFIX} on the API
+ * host instead, which forwards them to the same Collector, and use this relay
+ * lane only when that route answers 404. The relay lane keeps serving
+ * installed builds.
  */
 
 import { z } from "zod";
@@ -36,8 +42,8 @@ import { z } from "zod";
  * Dedicated Socket.IO namespace for keyless telemetry, separate from the
  * authenticated `/desktop-gateway` namespace. The client may multiplex it over
  * an existing relay connection or use a dedicated connection to the same relay
- * origin (see the transport-model note above); both keep egress relay-mediated
- * to a single destination, honoring PRD-481's invariant.
+ * origin (see the transport-model note above); both keep this lane's egress
+ * relay-mediated to a single destination.
  */
 export const KEYLESS_TELEMETRY_NAMESPACE = "/telemetry";
 
@@ -307,3 +313,10 @@ export function validateKeylessTelemetryEnvelope(
     envelope: { sessionId, signal, contentType, body },
   };
 }
+
+/**
+ * ISS-12211: the API route that carries keyless OTLP over HTTPS. The signal
+ * path ({@link keylessTelemetrySignalPath}) is appended, the same suffix the
+ * route then forwards to on the Collector.
+ */
+export const KEYLESS_TELEMETRY_API_ROUTE_PREFIX = "/desktop/otlp";

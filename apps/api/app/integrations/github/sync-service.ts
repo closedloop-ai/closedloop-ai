@@ -1,4 +1,5 @@
-import { LinkType } from "@repo/api/src/types/artifact";
+import { parseRepositoryFullName } from "@repo/api/src/types/branch-repository";
+import { GitHubAccessDenialReason } from "@repo/api/src/types/github";
 import {
   GitHubFetchCredentialType,
   GitHubFetchTrigger,
@@ -6,11 +7,9 @@ import {
   GitHubSyncResultReason,
   type GitHubSyncResultReason as GitHubSyncResultReasonValue,
 } from "@repo/api/src/types/github-read-model";
-import { SessionArtifactLinkKind } from "@repo/api/src/types/session-artifact-link";
 import {
   ArtifactType,
   GitHubInstallationStatus,
-  type Prisma,
   type TransactionClient,
   withDb,
 } from "@repo/database";
@@ -22,22 +21,46 @@ import {
 } from "@repo/github";
 import { getUserTokenOctokit } from "@repo/github/user-token-auth";
 import { log } from "@repo/observability/log";
-import { z } from "zod";
+import {
+  branchOwnsPullRequestDetail,
+  TOMBSTONED_REPOSITORY_WHERE,
+  type TombstonedRepositoryIdentity,
+  tombstonedRepositoryWhere,
+} from "@/app/branches/branch-canonical-pull-request";
+import {
+  cloudBranchCanonicalPullRequestSelect,
+  resolveCloudBranchCanonicalDetail,
+} from "@/app/branches/branch-canonical-pull-request-cloud";
+import { seedBranchOwners } from "@/app/branches/branch-owner-seed/branch-owner-seed";
+import { ensurePullRequestAuthorIdentity } from "@/app/branches/pull-request-author-identity";
 import {
   createPullRequestRestAuthorityProvenance,
   persistPullRequestProviderFailure,
   toPullRequestRestAuthorityObservation,
 } from "@/app/branches/pull-request-authority-producer";
 import {
+  needsGitHubHeadRefile,
+  pullRequestGitHubHead,
+} from "@/app/branches/pull-request-github-head-filing";
+import { refilePullRequestUnderGitHubHead } from "@/app/branches/pull-request-github-head-refile";
+import {
   persistPullRequestHeadRepositoryAuthority,
   pullRequestHeadRepositoryObservation,
 } from "@/app/branches/pull-request-head-authority";
-import { pullRequestLocData } from "@/app/branches/pull-request-loc-data";
+import {
+  PullRequestLifecycleActivityPersistenceError,
+  persistPullRequestLifecycleActivityInTransaction,
+} from "@/app/branches/pull-request-lifecycle-activity";
+import { resolveGitHubUserCredential } from "@/lib/github/github-user-credential";
 import {
   gitHubFetchProvenanceData,
   userOAuthRestFetchProvenance,
 } from "@/lib/github-fetch-provenance";
-import { decryptIntegrationToken } from "@/lib/integration-encryption";
+import {
+  parseNullableDate,
+  tombstonedPullRequestSettleData,
+} from "./tombstoned-pr-settle-data";
+import { hasOwnedSessionPullRequestReference } from "./user-token-pull-request-authorization";
 
 export type RefreshTombstonedBranchPullRequestInput = {
   actorUserId: string;
@@ -95,8 +118,6 @@ export type GitHubServerSyncResult =
         | typeof GitHubSyncResultReason.NoActiveRepository
         | typeof GitHubSyncResultReason.NoCredential
         | typeof GitHubSyncResultReason.CredentialRevoked
-        | typeof GitHubSyncResultReason.CredentialExpired
-        | typeof GitHubSyncResultReason.CredentialDecryptionFailed
         | typeof GitHubSyncResultReason.CredentialInsufficientScope
         | typeof GitHubSyncResultReason.CrossUserDenied
         | typeof GitHubSyncResultReason.NoEligibleSessionReference
@@ -127,6 +148,12 @@ type BranchSyncTargetWithRepository = BranchSyncTarget & {
   };
 };
 
+/**
+ * `CredentialExpired`/`CredentialDecryptionFailed` are deliberately absent:
+ * both described the stored token this lane no longer reads. They survive in
+ * `GitHubSyncResultReason` as accept-only wire values, so `toBranchRefreshReason`
+ * still maps them.
+ */
 type GitHubUserSyncCredential =
   | {
       ok: true;
@@ -137,18 +164,9 @@ type GitHubUserSyncCredential =
       reason:
         | typeof GitHubSyncResultReason.NoCredential
         | typeof GitHubSyncResultReason.CredentialRevoked
-        | typeof GitHubSyncResultReason.CredentialExpired
-        | typeof GitHubSyncResultReason.CredentialDecryptionFailed
         | typeof GitHubSyncResultReason.CredentialInsufficientScope;
     };
 
-const SESSION_PR_LINK_METADATA_SCHEMA = z
-  .object({
-    linkKind: z.literal(SessionArtifactLinkKind.SessionPr).optional(),
-    repositoryFullName: z.string().min(1),
-    prNumber: z.number().int().positive(),
-  })
-  .passthrough();
 const REFRESH_WINDOW_MS = 30_000;
 
 /**
@@ -189,7 +207,7 @@ async function refreshTombstonedBranchPullRequestWithClient(
     return failed(GitHubSyncResultReason.NoActiveRepository);
   }
 
-  const currentPullRequest = target.branch.currentPullRequestDetail;
+  const currentPullRequest = syncTargetCanonicalPullRequest(target);
   if (!currentPullRequest) {
     return notApplicable(GitHubServerSyncReason.NoCurrentPullRequest);
   }
@@ -226,10 +244,9 @@ async function refreshTombstonedBranchPullRequestWithClient(
     return failed(GitHubSyncResultReason.NoEligibleSessionReference);
   }
 
-  const credential = await resolveUserSyncCredential(db, {
+  const credential = await resolveUserSyncCredential({
     actorUserId: input.actorUserId,
     organizationId: input.organizationId,
-    repositoryPrivate: target.branch.repository.private,
     now,
   });
   if (!credential.ok) {
@@ -263,7 +280,7 @@ async function refreshTombstonedBranchPullRequestWithClient(
   const providerResult = await getSinglePullRequestWithProviderResult(
     getUserTokenOctokit(credential.token),
     repositoryIdentity.owner,
-    repositoryIdentity.name,
+    repositoryIdentity.repo,
     currentPullRequest.number,
     toPullRequestRestAuthorityObservation(authorityProvenance)
   );
@@ -369,7 +386,7 @@ async function refreshTombstonedBranchPullRequestWithClient(
     return failed(GitHubSyncResultReason.Unsupported);
   }
 
-  const settled = await settleTombstonedPullRequestRefresh(db, {
+  const settled = await settleTombstonedPullRequestRefresh({
     actorUserId: input.actorUserId,
     organizationId: input.organizationId,
     pullRequest: providerResult.value,
@@ -405,20 +422,28 @@ async function findBranchSyncTarget(
     select: {
       id: true,
       organizationId: true,
+      pullRequestDetails: {
+        // ISS-8901: `removedAt` on top of the shared canonical select. This
+        // lane's guarded writes require the PR's OWN repository to be
+        // tombstoned, so the gate has to be able to see it.
+        select: {
+          ...cloudBranchCanonicalPullRequestSelect,
+          repository: {
+            select: { fullName: true, githubRepoId: true, removedAt: true },
+          },
+        },
+      },
       branch: {
         select: {
+          branchName: true,
           repositoryId: true,
-          currentPullRequestDetail: {
-            select: {
-              githubId: true,
-              id: true,
-              number: true,
-            },
-          },
+          currentPullRequestDetailId: true,
+          repositoryFullName: true,
           repository: {
             select: {
               id: true,
               fullName: true,
+              githubRepoId: true,
               owner: true,
               name: true,
               private: true,
@@ -437,140 +462,46 @@ async function findBranchSyncTarget(
   });
 }
 
-async function hasOwnedSessionPullRequestReference(
-  db: GitHubServerSyncClient,
-  input: {
-    actorUserId: string;
-    branchArtifactId: string;
-    organizationId: string;
-    pullNumber: number;
-    repositoryFullName: string;
+/**
+ * PLN-1742: acquisition is the shared one (Clerk, the only user-credential
+ * source since the M5 tail); this function owns only the translation into the
+ * sync lane's own reason vocabulary, and the scope floor — which is now the
+ * SAME predicate the pool applies. The two used to disagree: this lane
+ * demanded `repo` (or `public_repo` on a public repository) outright, so it
+ * rejected every App-family token, whose reach is governed by the installation
+ * and which reports no scopes at all.
+ */
+async function resolveUserSyncCredential(input: {
+  actorUserId: string;
+  organizationId: string;
+  now: Date;
+}): Promise<GitHubUserSyncCredential> {
+  const read = await resolveGitHubUserCredential({
+    organizationId: input.organizationId,
+    userId: input.actorUserId,
+    now: input.now,
+  });
+  if (!read.ok) {
+    return { ok: false, reason: mapSyncCredentialDenial(read.denial) };
   }
-): Promise<boolean> {
-  const link: { metadata: Prisma.JsonValue | null } | null =
-    await db.artifactLink.findFirst({
-      where: {
-        organizationId: input.organizationId,
-        targetId: input.branchArtifactId,
-        linkType: LinkType.RelatesTo,
-        AND: [
-          {
-            metadata: {
-              path: ["linkKind"],
-              equals: SessionArtifactLinkKind.SessionPr,
-            },
-          },
-          {
-            metadata: {
-              path: ["repositoryFullName"],
-              equals: input.repositoryFullName,
-            },
-          },
-          {
-            metadata: {
-              path: ["prNumber"],
-              equals: input.pullNumber,
-            },
-          },
-        ],
-        source: {
-          organizationId: input.organizationId,
-          type: ArtifactType.SESSION,
-          session: {
-            is: {
-              userId: input.actorUserId,
-            },
-          },
-        },
-        target: {
-          organizationId: input.organizationId,
-          type: ArtifactType.BRANCH,
-        },
-      },
-      select: {
-        metadata: true,
-      },
-    });
-  return (
-    !!link &&
-    sessionPrLinkMatches(link.metadata, {
-      pullNumber: input.pullNumber,
-      repositoryFullName: input.repositoryFullName,
-    })
-  );
+  return { ok: true, token: read.credential.token };
 }
 
-async function resolveUserSyncCredential(
-  db: GitHubServerSyncClient,
-  input: {
-    actorUserId: string;
-    organizationId: string;
-    repositoryPrivate: boolean;
-    now: Date;
+function mapSyncCredentialDenial(
+  denial: GitHubAccessDenialReason
+): Exclude<GitHubUserSyncCredential, { ok: true }>["reason"] {
+  if (denial === GitHubAccessDenialReason.InsufficientScope) {
+    return GitHubSyncResultReason.CredentialInsufficientScope;
   }
-): Promise<GitHubUserSyncCredential> {
-  const connection = await db.gitHubUserConnection.findUnique({
-    where: {
-      organizationId_userId: {
-        organizationId: input.organizationId,
-        userId: input.actorUserId,
-      },
-    },
-    select: {
-      id: true,
-      accessTokenEncrypted: true,
-      revokedAt: true,
-      tokenExpiresAt: true,
-      scopes: true,
-    },
-  });
-  if (!connection) {
-    return { ok: false, reason: GitHubSyncResultReason.NoCredential };
+  if (denial === GitHubAccessDenialReason.Revoked) {
+    return GitHubSyncResultReason.CredentialRevoked;
   }
-  if (connection.revokedAt !== null) {
-    return { ok: false, reason: GitHubSyncResultReason.CredentialRevoked };
-  }
-  if (
-    connection.tokenExpiresAt &&
-    connection.tokenExpiresAt.getTime() <= input.now.getTime()
-  ) {
-    return { ok: false, reason: GitHubSyncResultReason.CredentialExpired };
-  }
-  if (!hasRequiredReadScope(connection.scopes, input.repositoryPrivate)) {
-    return {
-      ok: false,
-      reason: GitHubSyncResultReason.CredentialInsufficientScope,
-    };
-  }
-
-  let token: string;
-  try {
-    token = await decryptIntegrationToken(connection.accessTokenEncrypted);
-  } catch (error) {
-    log.warn("[github/sync] Failed to decrypt GitHub user token", {
-      error,
-      organizationId: input.organizationId,
-      userId: input.actorUserId,
-    });
-    return {
-      ok: false,
-      reason: GitHubSyncResultReason.CredentialDecryptionFailed,
-    };
-  }
-
-  const updated = await db.gitHubUserConnection.updateMany({
-    where: {
-      id: connection.id,
-      organizationId: input.organizationId,
-      userId: input.actorUserId,
-      revokedAt: null,
-    },
-    data: { lastUsedAt: input.now },
-  });
-  if (updated.count !== 1) {
-    return { ok: false, reason: GitHubSyncResultReason.CredentialRevoked };
-  }
-  return { ok: true, token };
+  // No linked account, and the transient reasons (Clerk or GitHub unreachable,
+  // rate limited) that used to reach the stored fallback and land here as
+  // `no_credential` once the token-less row classified `not_connected`.
+  // `credential_expired` and `credential_decryption_failed` are NOT produced:
+  // both described the stored cipher, which this lane no longer reads.
+  return GitHubSyncResultReason.NoCredential;
 }
 
 async function claimTombstonedPullRequestRefresh(
@@ -579,32 +510,33 @@ async function claimTombstonedPullRequestRefresh(
   target: BranchSyncTarget,
   now: Date
 ): Promise<boolean> {
-  const currentPullRequest = target.branch.currentPullRequestDetail;
+  const currentPullRequest = syncTargetCanonicalPullRequest(target);
   if (!currentPullRequest) {
     return false;
   }
-  // Non-App branches (PRD-510 D2/FR8) have no installation-repo-keyed PR to
-  // claim; only tombstoned App repos reach the user-token refresh path.
-  const repositoryId = target.branch.repositoryId;
-  if (!repositoryId) {
+  // Non-App branches (PRD-510 D2/FR8) carry no installation-repo relation, so
+  // there is no tombstoned repository to key the claim on; only tombstoned App
+  // repos reach the user-token refresh path.
+  const repository = target.branch.repository;
+  if (!repository) {
     return false;
   }
+  // ISS-8901: the claim is the FIRST of this lane's three guarded writes, so it
+  // has to move with the other two. Left on the surrogate id it would reject a
+  // reinstall-split branch before the settle write it gates ever ran, turning
+  // the clean `not_applicable` the old ownership predicate produced into a
+  // `GuardedWriteFailed` — strictly worse than not fixing the lane at all.
+  const repositoryWhere = tombstonedRepositoryWhere(repository);
   const staleBefore = new Date(now.getTime() - REFRESH_WINDOW_MS);
   const result = await db.pullRequestDetail.updateMany({
     where: {
       id: currentPullRequest.id,
       branchArtifactId: target.id,
-      repositoryId,
-      branchArtifact: { organizationId },
-      repository: { removedAt: { not: null } },
-      currentForBranches: {
-        some: {
-          artifactId: target.id,
-          currentPullRequestDetailId: currentPullRequest.id,
-          artifact: { organizationId },
-          repository: { removedAt: { not: null } },
-        },
+      branchArtifact: {
+        organizationId,
+        branch: { is: { repository: repositoryWhere } },
       },
+      repository: repositoryWhere,
       OR: [
         { lastRefreshAttemptAt: null },
         { lastRefreshAttemptAt: { lt: staleBefore } },
@@ -615,8 +547,69 @@ async function claimTombstonedPullRequestRefresh(
   return result.count === 1;
 }
 
-async function settleTombstonedPullRequestRefresh(
-  db: GitHubServerSyncClient,
+async function settleTombstonedPullRequestRefresh(input: {
+  actorUserId: string;
+  organizationId: string;
+  pullRequest: GitHubSinglePullRequestResult;
+  target: BranchSyncTarget;
+  now: Date;
+  trigger: GitHubFetchTriggerValue;
+}): Promise<boolean> {
+  const currentPullRequest = syncTargetCanonicalPullRequest(input.target);
+  if (!currentPullRequest) {
+    return false;
+  }
+  // Non-App branches (PRD-510 D2/FR8) carry no installation-repo relation, so
+  // there is no tombstoned repository for the guarded writes to key on; only
+  // tombstoned App repos reach the user-token refresh path.
+  const repository = input.target.branch.repository;
+  if (!repository) {
+    return false;
+  }
+  try {
+    await withDb.tx(async (tx) => {
+      const settled = await settleTombstonedPullRequestRefreshInTransaction(
+        tx,
+        input,
+        repository
+      );
+      if (!settled) {
+        throw new TombstonedSettlementGuardError();
+      }
+      // ISS-12463: the settle write may be the PR's first author login. The
+      // seed's first stamp is final, so a PR the refile below moves (which
+      // seeds its head Branch) must not stamp the Branch it leaves.
+      if (
+        !needsGitHubHeadRefile(
+          {
+            repositoryFullName: repository.fullName,
+            branch: input.target.branch,
+          },
+          pullRequestGitHubHead(input.pullRequest)
+        )
+      ) {
+        await seedBranchOwners(tx, input.organizationId, [input.target.id]);
+      }
+    });
+  } catch (error) {
+    if (
+      error instanceof TombstonedSettlementGuardError ||
+      error instanceof PullRequestLifecycleActivityPersistenceError
+    ) {
+      return false;
+    }
+    throw error;
+  }
+  await refilePullRequestUnderGitHubHead(
+    input.organizationId,
+    currentPullRequest.id,
+    input.pullRequest
+  );
+  return true;
+}
+
+async function settleTombstonedPullRequestRefreshInTransaction(
+  db: TransactionClient,
   input: {
     actorUserId: string;
     organizationId: string;
@@ -624,60 +617,62 @@ async function settleTombstonedPullRequestRefresh(
     target: BranchSyncTarget;
     now: Date;
     trigger: GitHubFetchTriggerValue;
-  }
+  },
+  repository: TombstonedRepositoryIdentity
 ): Promise<boolean> {
-  const currentPullRequest = input.target.branch.currentPullRequestDetail;
+  const currentPullRequest = syncTargetCanonicalPullRequest(input.target);
   if (!currentPullRequest) {
     return false;
   }
-  // Non-App branches (PRD-510 D2/FR8) have no installation-repo-keyed PR to
-  // settle; only tombstoned App repos reach the user-token refresh path.
-  const repositoryId = input.target.branch.repositoryId;
-  if (!repositoryId) {
-    return false;
-  }
-  const provenance = gitHubFetchProvenanceData(
-    userOAuthRestFetchProvenance({
-      credentialOwnerId: input.actorUserId,
-      resultReason: GitHubSyncResultReason.Success,
-      trigger: input.trigger,
-    })
-  );
+  // Both writes use the same provider-first identity as ownership so rename and
+  // reinstall splits settle without widening past a conflicting provider id.
+  const repositoryWhere = tombstonedRepositoryWhere(repository);
+  const fetchProvenance = userOAuthRestFetchProvenance({
+    credentialOwnerId: input.actorUserId,
+    resultReason: GitHubSyncResultReason.Success,
+    trigger: input.trigger,
+  });
   const result = await db.pullRequestDetail.updateMany({
     where: {
       id: currentPullRequest.id,
       branchArtifactId: input.target.id,
-      repositoryId,
-      branchArtifact: { organizationId: input.organizationId },
-      repository: { removedAt: { not: null } },
-      currentForBranches: {
-        some: {
-          artifactId: input.target.id,
-          currentPullRequestDetailId: currentPullRequest.id,
-          artifact: { organizationId: input.organizationId },
-          repository: { removedAt: { not: null } },
+      lastRefreshAttemptAt: input.now,
+      branchArtifact: {
+        organizationId: input.organizationId,
+        branch: {
+          is: {
+            repository: repositoryWhere,
+            // Pointer-MOVEMENT CAS (PR #6453 review). This is deliberately not
+            // the `currentPullRequestDetailId === <row being refreshed>` term
+            // ISS-8522 removed: that one rejected exactly the stale and
+            // never-promoted pointers this lane exists to heal. This compares
+            // the pointer against the value snapshotted with the target, so a
+            // stale or null pointer still settles, while a webhook that
+            // PROMOTES a sibling during the provider fetch moves the column,
+            // matches zero rows, and aborts before either write lands.
+            currentPullRequestDetailId:
+              input.target.branch.currentPullRequestDetailId,
+          },
         },
       },
+      repository: repositoryWhere,
     },
-    data: {
-      prState: input.pullRequest.state,
-      title: input.pullRequest.title,
-      htmlUrl: input.pullRequest.htmlUrl,
-      isDraft: input.pullRequest.isDraft,
-      // FEA-3552: persist the GitHub PR createdAt (idempotent) so the rail's "PR
-      // opened" dot back-fills on sync for existing App rows too.
-      githubCreatedAt: parseNullableDate(input.pullRequest.createdAt),
-      closedAt: parseNullableDate(input.pullRequest.closedAt),
-      mergedAt: parseNullableDate(input.pullRequest.mergedAt),
-      mergeCommitSha: input.pullRequest.mergeCommitSha,
-      ...pullRequestLocData(input.pullRequest),
-      lastVerifiedAt: input.now,
-      ...provenance,
-    },
+    data: tombstonedPullRequestSettleData(
+      input.pullRequest,
+      input.now,
+      fetchProvenance
+    ),
   });
   if (result.count !== 1) {
     return false;
   }
+  await ensurePullRequestAuthorIdentity(db, {
+    organizationId: input.organizationId,
+    githubId: input.pullRequest.githubId,
+    authorProviderUserId: input.pullRequest.authorProviderUserId,
+    authorLogin: input.pullRequest.authorLogin,
+    authorActorType: input.pullRequest.authorActorType,
+  });
   await persistPullRequestHeadRepositoryAuthority(
     db,
     {
@@ -690,21 +685,44 @@ async function settleTombstonedPullRequestRefresh(
       oid: input.pullRequest.headSha,
     }
   );
+  await persistPullRequestLifecycleActivityInTransaction(db, {
+    organizationId: input.organizationId,
+    branchArtifactId: input.target.id,
+    pullRequestDetailId: currentPullRequest.id,
+    openedAt: parseNullableDate(input.pullRequest.createdAt),
+    mergedAt: parseNullableDate(input.pullRequest.mergedAt),
+    closedAt: parseNullableDate(input.pullRequest.closedAt),
+  });
+  // Claim exclusivity is INHERITED from the detail update above, whose
+  // `count !== 1` throws out of this transaction before reaching here.
+  // Reordering these two statements, or downgrading that throw, reopens a
+  // double-write window that nothing else here would catch. The pointer term
+  // below is the second guard and is this statement's own: it is what stops a
+  // concurrent promotion from taking this row's base branch and head SHA onto a
+  // branch that is no longer represented by it.
   const branchResult = await db.branchDetail.updateMany({
     where: {
       artifactId: input.target.id,
-      repositoryId,
+      currentPullRequestDetailId:
+        input.target.branch.currentPullRequestDetailId,
       artifact: { organizationId: input.organizationId },
-      repository: { removedAt: { not: null } },
+      repository: repositoryWhere,
     },
     data: {
       baseBranch: input.pullRequest.baseBranch,
       headSha: input.pullRequest.headSha,
       headShaObservedAt: input.now,
-      ...provenance,
+      ...gitHubFetchProvenanceData(fetchProvenance),
     },
   });
   return branchResult.count === 1;
+}
+
+class TombstonedSettlementGuardError extends Error {
+  constructor() {
+    super("Tombstoned pull request settlement guard was lost");
+    this.name = "TombstonedSettlementGuardError";
+  }
 }
 
 async function stampTombstonedRefreshFailure(
@@ -722,18 +740,21 @@ async function stampTombstonedRefreshFailure(
       trigger: input.trigger ?? GitHubFetchTrigger.UserAction,
     })
   );
-  const currentPullRequest = target.branch.currentPullRequestDetail;
-  // Non-App branches (PRD-510 D2/FR8) have no installation-repo-keyed PR row to
-  // stamp; skip that write. Only tombstoned App repos reach this failure path.
-  const repositoryId = target.branch.repositoryId;
-  if (currentPullRequest && repositoryId) {
+  const currentPullRequest = syncTargetCanonicalPullRequest(target);
+  // Non-App branches (PRD-510 D2/FR8) carry no installation-repo relation, so
+  // there is no tombstoned repository to key the PR-row stamp on; skip that
+  // write. Only tombstoned App repos reach this failure path.
+  const repository = target.branch.repository;
+  const repositoryWhere = repository
+    ? tombstonedRepositoryWhere(repository)
+    : null;
+  if (currentPullRequest && repositoryWhere) {
     await db.pullRequestDetail.updateMany({
       where: {
         id: currentPullRequest.id,
         branchArtifactId: target.id,
-        repositoryId,
         branchArtifact: { organizationId: input.organizationId },
-        repository: { removedAt: { not: null } },
+        repository: repositoryWhere,
       },
       data: {
         ...(options.recordRefreshAttempt === false
@@ -746,9 +767,10 @@ async function stampTombstonedRefreshFailure(
   await db.branchDetail.updateMany({
     where: {
       artifactId: target.id,
-      repositoryId,
       artifact: { organizationId: input.organizationId },
-      repository: { removedAt: { not: null } },
+      // A branch with no installation-repo relation matches nothing here, which
+      // is the same fail-closed outcome the surrogate-id term produced.
+      repository: repositoryWhere ?? TOMBSTONED_REPOSITORY_WHERE,
     },
     data: provenance,
   });
@@ -784,44 +806,6 @@ function hasBranchDetail(
   return target?.branch !== null && target?.branch !== undefined;
 }
 
-function sessionPrLinkMatches(
-  metadata: Prisma.JsonValue | null,
-  input: { pullNumber: number; repositoryFullName: string }
-): boolean {
-  const parsed = SESSION_PR_LINK_METADATA_SCHEMA.safeParse(metadata);
-  if (!parsed.success) {
-    return false;
-  }
-  return (
-    parsed.data.repositoryFullName === input.repositoryFullName &&
-    parsed.data.prNumber === input.pullNumber
-  );
-}
-
-function hasRequiredReadScope(
-  scopes: readonly string[],
-  repositoryPrivate: boolean
-): boolean {
-  if (scopes.includes("repo")) {
-    return true;
-  }
-  return !repositoryPrivate && scopes.includes("public_repo");
-}
-
-function parseRepositoryFullName(
-  fullName: string
-): { owner: string; name: string } | null {
-  const [owner, name, ...extra] = fullName.split("/");
-  if (!(owner && name) || extra.length > 0) {
-    return null;
-  }
-  return { owner, name };
-}
-
-function parseNullableDate(value: string | null): Date | null {
-  return value ? new Date(value) : null;
-}
-
 function retryable(
   reason:
     | typeof GitHubServerSyncReason.AlreadyRefreshing
@@ -852,4 +836,36 @@ function notApplicable(
   >["reason"]
 ): GitHubServerSyncResult {
   return { status: GitHubServerSyncStatus.NotApplicable, reason };
+}
+
+/**
+ * The PR this tombstoned-refresh lane speaks for. ISS-8522: derived from the
+ * branch's own rows, so a branch whose pointer is stale or was never promoted
+ * refreshes its real PR instead of reading as having none. Target and every
+ * guarded write below key on the row id this returns, never on the pointer, so
+ * the two cannot disagree mid-refresh.
+ */
+function syncTargetCanonicalPullRequest(
+  target: BranchSyncTarget
+): { id: string; number: number; githubId: string | null } | null {
+  const detail = resolveCloudBranchCanonicalDetail({
+    id: target.id,
+    currentPullRequestDetailId: target.branch.currentPullRequestDetailId,
+    branch: target.branch,
+    pullRequestDetails: target.pullRequestDetails,
+  }).detail;
+  // The canonical population is keyed on `branchArtifactId` alone, which the
+  // schema does not constrain to agree with the branch's repository. This lane
+  // spends a USER's OAuth token on `<branch repo>#<this number>`, so a row whose
+  // repository disagrees would read a stranger's PR in that namespace. Fail
+  // closed instead of relying on the downstream `githubId` compare to notice.
+  if (!(detail && branchOwnsPullRequestDetail(target.branch, detail))) {
+    return null;
+  }
+  // The row itself must remain tombstoned even when provider identity follows a
+  // rename or reinstall; user OAuth must not settle a live App-covered row.
+  if (detail.repository?.removedAt == null) {
+    return null;
+  }
+  return detail;
 }

@@ -1,4 +1,5 @@
 import {
+  PrototypeDeliveryMode,
   type PrototypeMeta,
   PrototypeStatus,
   PrototypeTag,
@@ -24,4 +25,5 @@ export const meta = {
   createdAt: "2026-08-10",
   linearIssue: null,
   closedloopDoc: null,
+  deliveryMode: PrototypeDeliveryMode.DisposableSketch,
 } satisfies PrototypeMeta;

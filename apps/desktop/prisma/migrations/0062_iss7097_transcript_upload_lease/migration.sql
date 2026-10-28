@@ -1,0 +1,35 @@
+-- ISS-7097: lease the transcript `uploading` state, and bound the lane-wide
+-- stall.
+--
+-- `uploading` was an unintended ABSORBING state. `listReady` selects
+-- `status IN ('queued','failed')` and `planObservation` deliberately skips an
+-- `uploading` row (an upload is supposed to be in flight), so a row whose settle
+-- never landed — crash, force-quit, a rejected settle write, a flush that
+-- exhausted its recovery attempts — was invisible to BOTH. The only unconditional
+-- re-arm was latched to the first sweep of each process, so recovery trailed by a
+-- whole app restart. A live install sat at `LANE NOT DRAINING` for 21+ hours on
+-- exactly this. Same shape as ISS-4647's stranded `idle` rows, and the same fix:
+-- a recurring, tightly-scoped re-arm — which needs a lease, because the existing
+-- unscoped `requeueStale` would have reset an overlapping in-process upload's
+-- own claim (db-host-exit-consumer-recovery.test.ts pins that).
+--
+-- `uploading_since` is the durable half of the claim `markUploading` already
+-- takes in memory. NULL on every pre-migration row, which the reclaim reads as
+-- EXPIRED: migrations run at boot before the drain starts, so nothing is
+-- genuinely in flight at that moment, and that is what heals the already-wedged
+-- rows on the first upgraded launch instead of requiring a manual repair.
+--
+-- `lane_stalled_since` exists because ISS-7097's second half stops a lane-wide
+-- failure (a 5xx/429 — the cloud is down, nothing about this row is wrong) from
+-- advancing `retry_count` toward the dead-letter. That removes the only bound
+-- those failures had, and `sync/AGENTS.md` invariant 5 requires every terminal
+-- path stay reachable, so the bound becomes wall-clock instead of attempts. It
+-- records the START of the current unbroken lane-wide run; a row-attributable
+-- failure clears it, because a 4xx is proof the lane answered.
+--
+-- Both are additive, nullable, and local-only — `transcript_sync_state` is
+-- desktop queue state and never crosses the cloud sync boundary, so no consumer
+-- contract changes. Plain `ADD COLUMN` (SQLite has no `IF NOT EXISTS` for it),
+-- matching the 0059 precedent.
+ALTER TABLE "transcript_sync_state" ADD COLUMN "uploading_since" TEXT;
+ALTER TABLE "transcript_sync_state" ADD COLUMN "lane_stalled_since" TEXT;

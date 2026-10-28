@@ -1,5 +1,6 @@
 import { computeDefinitionHash } from "@repo/api/src/definition-fingerprint";
 import {
+  AGENT_COMPONENT_INVOCATION_DEFINITION_CONTENT_MAX_BYTES,
   AgentComponentInvocationAttributionStatus,
   AgentComponentInvocationEvidenceClass,
   AgentComponentInvocationKind,
@@ -9,6 +10,7 @@ import {
   agentComponentInvocationSyncPartHashPreimage,
 } from "@repo/api/src/types/agent-component-invocation";
 import { SourceAccessState, SourceOccurrenceType } from "@repo/database";
+import { SYNTHETIC_GITHUB_TOKEN } from "@repo/lib/security/synthetic-secrets.test-helpers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -16,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   ensureDefinitionVersion: vi.fn(),
   recordDefinitionSourceOccurrence: vi.fn(),
   logError: vi.fn(),
+  logInfo: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => {
@@ -25,7 +28,7 @@ vi.mock("@repo/database", () => {
   });
   const withDb = Object.assign(vi.fn(), { tx: mocks.tx });
   return {
-    Prisma: { sql },
+    Prisma: { sql, join: (values: unknown[]) => values },
     SourceAccessState: { accessible: "accessible" },
     SourceOccurrenceType: {
       local: "local",
@@ -37,7 +40,7 @@ vi.mock("@repo/database", () => {
 });
 
 vi.mock("@repo/observability/log", () => ({
-  log: { error: mocks.logError },
+  log: { error: mocks.logError, info: mocks.logInfo },
 }));
 
 vi.mock("@/app/definition-registry/service", () => ({
@@ -60,6 +63,7 @@ import {
   sha256,
 } from "@/__tests__/support/agent-sessions/service/component-invocations.test-db";
 import { agentComponentInvocationsService } from "./component-invocations";
+import { SessionSyncMetric } from "./session-sync-metrics";
 
 /** Bind the shared in-memory store to THIS file's hoisted `withDb.tx` spy. */
 const installStatefulDb: (
@@ -116,7 +120,7 @@ describe("agentComponentInvocationsService.ingestPart", () => {
         externalSessionId: EXTERNAL_SESSION_ID,
         artifact: { organizationId: ORGANIZATION_ID },
       },
-      select: { artifactId: true },
+      select: { artifactId: true, computeTargetId: true },
     });
   });
 
@@ -234,7 +238,7 @@ describe("agentComponentInvocationsService.ingestPart", () => {
       },
     });
     expect(
-      db.agentComponentInvocationGeneration.upsert.mock.invocationCallOrder[0]
+      db.agentComponentInvocationGeneration.update.mock.invocationCallOrder[0]
     ).toBeGreaterThan(
       db.agentComponentInvocationGeneration.deleteMany.mock
         .invocationCallOrder[0] ?? 0
@@ -246,7 +250,7 @@ describe("agentComponentInvocationsService.ingestPart", () => {
       externalGenerationId: "a".repeat(64),
       sourceUpdatedAt: "2026-07-22T11:00:00.000Z",
     });
-    const { generations, invocations } = installStatefulDb({
+    const { db, generations, invocations } = installStatefulDb({
       activeGeneration,
     });
     const first = buildItem({
@@ -279,10 +283,20 @@ describe("agentComponentInvocationsService.ingestPart", () => {
     });
     expect(retried).toEqual(activated);
     expect(invocations).toHaveLength(2);
-    expect(activeGeneration.activeAt).toBeNull();
+    // ISS-5801: activation folds the activated set's row count onto the parent
+    // (the substantive/idle SQL twin reads it); the staged part must not fold.
+    expect(db.sessionDetail.update).toHaveBeenCalledTimes(1);
+    expect(db.sessionDetail.update).toHaveBeenCalledWith({
+      where: { artifactId: SESSION_ID },
+      data: { componentInvocationCount: 2 },
+      select: { artifactId: true },
+    });
     const newGeneration = generations.find(
       (row) => row.externalGenerationId === part0.externalGenerationId
     );
+    // ISS-12781: the active generation absorbs the new one and carries its
+    // identity, rather than being deactivated and deleted with its rows.
+    expect(newGeneration?.id).toBe(activeGeneration.id);
     expect(newGeneration?.activeAt).not.toBeNull();
     expect(newGeneration?.completedAt).not.toBeNull();
     expect(generations).toHaveLength(1);
@@ -328,6 +342,58 @@ describe("agentComponentInvocationsService.ingestPart", () => {
     expect(generations[0]?.externalGenerationId).toBe(generationId([first]));
     expect(generations[0]?.sourceSequence).toBe(3);
     expect(invocations).toHaveLength(1);
+  });
+
+  it("reports what each activation's row delta did once it commits", async () => {
+    installStatefulDb();
+    const [kept, changed, gone] = ["a", "b", "c"].map((id, sequence) =>
+      buildItem({ externalInvocationId: `invocation-${id}`, sequence })
+    );
+    const added = buildItem({
+      externalInvocationId: "invocation-d",
+      sequence: 2,
+    });
+    const generation1 = [kept, changed, gone];
+    const generation2 = [kept, { ...changed, rawName: "renamed" }, added];
+    const context = {
+      metric: SessionSyncMetric.InvocationGenerationActivated,
+      organizationId: ORGANIZATION_ID,
+      computeTargetId: COMPUTE_TARGET_ID,
+      externalSessionId: EXTERNAL_SESSION_ID,
+    };
+
+    await ingest(
+      buildPart({
+        allItems: generation1,
+        sourceUpdatedAt: "2026-07-22T12:00:00.000Z",
+      })
+    );
+    await ingest(
+      buildPart({
+        allItems: generation2,
+        sourceUpdatedAt: "2026-07-22T12:01:00.000Z",
+      })
+    );
+
+    expect(mocks.logInfo).toHaveBeenCalledTimes(2);
+    expect(mocks.logInfo).toHaveBeenNthCalledWith(1, expect.any(String), {
+      ...context,
+      externalGenerationId: generationId(generation1),
+      activeRows: 0,
+      unchanged: 0,
+      rewritten: 0,
+      inserted: 3,
+      deleted: 0,
+    });
+    expect(mocks.logInfo).toHaveBeenNthCalledWith(2, expect.any(String), {
+      ...context,
+      externalGenerationId: generationId(generation2),
+      activeRows: 3,
+      unchanged: 1,
+      rewritten: 1,
+      inserted: 1,
+      deleted: 1,
+    });
   });
 
   it("lets recurring active content supersede a newer partial generation", async () => {
@@ -425,6 +491,32 @@ describe("agentComponentInvocationsService.ingestPart", () => {
     expect(invocations).toHaveLength(1);
   });
 
+  it("reads the staged items only once every part has arrived", async () => {
+    const { db } = installStatefulDb();
+    const items = [
+      buildItem(),
+      buildItem({ externalInvocationId: "invocation-2", sequence: 1 }),
+    ];
+    const [part0, part1] = items.map((item, partIndex) =>
+      buildPart({ allItems: items, items: [item], partIndex, partCount: 2 })
+    ) as [AgentComponentInvocationSyncPart, AgentComponentInvocationSyncPart];
+    const stagedItemReads = () =>
+      db.agentComponentInvocationPart.findMany.mock.calls.filter(
+        ([args]) => args.select?.stagedItems
+      ).length;
+
+    expect(await ingest(part0)).toEqual({
+      ok: true,
+      value: { state: AgentComponentInvocationSyncAckState.Staged },
+    });
+    expect(stagedItemReads()).toBe(0);
+    expect(await ingest(part1)).toEqual({
+      ok: true,
+      value: { state: AgentComponentInvocationSyncAckState.Activated },
+    });
+    expect(stagedItemReads()).toBe(1);
+  });
+
   it("rejects an invocation ID reused by a different part in the same generation", async () => {
     const { invocations, parts } = installStatefulDb();
     const first = buildItem({ sequence: 0 });
@@ -449,7 +541,8 @@ describe("agentComponentInvocationsService.ingestPart", () => {
       error: AgentComponentInvocationSyncRejectReason.GenerationConflict,
     });
     expect(parts).toHaveLength(1);
-    expect(invocations).toHaveLength(1);
+    expect(parts[0]?.stagedItems).toEqual([first]);
+    expect(invocations).toHaveLength(0);
   });
 
   it("acknowledges a delayed older complete generation as stale without rolling active history backward", async () => {
@@ -578,7 +671,9 @@ describe("agentComponentInvocationsService.ingestPart", () => {
     const result = await ingest(buildPart({ allItems: [tool] }));
 
     expect(result.ok).toBe(true);
-    const updates = resolutionUpdatesFrom(db.$executeRaw);
+    const updates = resolutionUpdatesFrom(
+      db.agentComponentInvocation.createMany
+    );
     expect(updates).toEqual([
       expect.objectContaining({
         agentComponentId: "component-tool-1",
@@ -643,7 +738,9 @@ describe("agentComponentInvocationsService.ingestPart", () => {
       installPath: "/synthetic/skills/code-review/SKILL.md",
       observedAt: new Date(capturedAt),
     });
-    expect(resolutionUpdatesFrom(db.$executeRaw)).toEqual([
+    expect(
+      resolutionUpdatesFrom(db.agentComponentInvocation.createMany)
+    ).toEqual([
       expect.objectContaining({
         agentComponentId: "component-skill-1",
         attributionStatus: AgentComponentInvocationAttributionStatus.Matched,
@@ -719,6 +816,78 @@ describe("agentComponentInvocationsService.ingestPart", () => {
 
     expect(mocks.ensureDefinitionVersion).toHaveBeenCalledOnce();
     expect(mocks.recordDefinitionSourceOccurrence).not.toHaveBeenCalled();
+  });
+
+  // ISS-4965: the shape an older Desktop still sends — raw text, fingerprinted
+  // as the raw bytes, inside a generation id hashed over them.
+  it("redacts a raw old-client secret before staging and still activates the generation", async () => {
+    const content = `# Deploy\nexport TOKEN=${SYNTHETIC_GITHUB_TOKEN}\n`;
+    const item = buildItem({
+      status: AgentComponentInvocationAttributionStatus.Matched,
+      evidenceClass: AgentComponentInvocationEvidenceClass.TranscriptSnapshot,
+      definitionContent: content,
+      ...computeDefinitionHash({
+        body: content,
+        kind: AgentComponentInvocationKind.Skill,
+      }),
+    });
+    const { db } = installStatefulDb();
+
+    const result = await ingest(buildPart({ allItems: [item] }));
+
+    expect(result).toEqual({
+      ok: true,
+      value: { state: AgentComponentInvocationSyncAckState.Activated },
+    });
+    expect(mocks.ensureDefinitionVersion).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({
+        content: "# Deploy\nexport TOKEN=[REDACTED:ghp]\n",
+      })
+    );
+    expect(
+      JSON.stringify(db.agentComponentInvocation.createMany.mock.calls)
+    ).not.toContain(SYNTHETIC_GITHUB_TOKEN);
+    // ISS-12781: nor while the part's items wait on its ledger row.
+    expect(
+      JSON.stringify(db.agentComponentInvocationPart.create.mock.calls)
+    ).not.toContain(SYNTHETIC_GITHUB_TOKEN);
+  });
+
+  // ISS-12781: the staged items are read back after redaction, and a marker
+  // can be longer than the secret it replaced (15 bytes -> 29 here). A
+  // definition the route admitted at the byte ceiling must still activate.
+  it("activates a definition at the byte ceiling that redaction lengthened", async () => {
+    const secret = "ya29.AAAAAAAAAA";
+    const head = `# Deploy\nexport TOKEN=${secret}\n`;
+    const content = head.padEnd(
+      AGENT_COMPONENT_INVOCATION_DEFINITION_CONTENT_MAX_BYTES,
+      "x"
+    );
+    const item = buildItem({
+      status: AgentComponentInvocationAttributionStatus.Matched,
+      evidenceClass: AgentComponentInvocationEvidenceClass.TranscriptSnapshot,
+      definitionContent: content,
+      ...computeDefinitionHash({
+        body: content,
+        kind: AgentComponentInvocationKind.Skill,
+      }),
+    });
+    const { db } = installStatefulDb();
+
+    const result = await ingest(buildPart({ allItems: [item] }));
+
+    expect(result).toEqual({
+      ok: true,
+      value: { state: AgentComponentInvocationSyncAckState.Activated },
+    });
+    const [written] = resolutionUpdatesFrom(
+      db.agentComponentInvocation.createMany
+    );
+    expect(String(written?.definitionContent).length).toBeGreaterThan(
+      AGENT_COMPONENT_INVOCATION_DEFINITION_CONTENT_MAX_BYTES
+    );
+    expect(String(written?.definitionContent)).not.toContain(secret);
   });
 });
 

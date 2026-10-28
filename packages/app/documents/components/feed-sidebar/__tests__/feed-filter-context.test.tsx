@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CommentPermalinkProvider } from "../comment-permalink-context";
+import { eraseFeedSource } from "../erase-feed-source";
 import {
   ACTIVE_KIND_ALL,
   type FeedFilterContextValue,
@@ -12,6 +13,7 @@ import {
   FeedFilterSort,
   useFeedFilter,
 } from "../feed-filter-context";
+import type { FeedItem } from "../feed-item";
 import { FeedItemKind } from "../feed-item";
 import type { AnyFeedSource } from "../feed-source";
 import { FeedSourcesProvider } from "../feed-sources-context";
@@ -22,17 +24,17 @@ function makeSource(
   id: string,
   kind: FeedItemKind = FeedItemKind.PrComment
 ): AnyFeedSource {
-  return {
+  return eraseFeedSource<FeedItem, StubFilter>({
     id,
     kind,
     label: id,
     Icon: MessageSquare,
     useItems: () => ({ items: [], isLoading: false, isError: false }),
-    defaultFilterState: { tag: "all" } satisfies StubFilter,
+    defaultFilterState: { tag: "all" },
     applyFilter: (items) => items,
-    isFiltered: (state: StubFilter) => state.tag !== "all",
+    isFiltered: (state) => state.tag !== "all",
     renderItem: () => null,
-  };
+  });
 }
 
 type WrapperProps = {

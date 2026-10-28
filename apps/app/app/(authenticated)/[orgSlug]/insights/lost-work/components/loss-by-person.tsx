@@ -5,7 +5,6 @@ import {
   type LostWorkPersonRow,
 } from "@repo/api/src/types/session-analytics";
 import { Section } from "@repo/design-system/components/ui/layout/section";
-import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import {
   SortableColumnHeader,
   type SortDirection,
@@ -28,6 +27,7 @@ import {
   minutesToHours,
   NO_VALUE,
 } from "@/lib/analytics/format";
+import { renderTableSkeletonRows } from "@/lib/analytics/table-skeleton-rows";
 import { WidgetUnavailable } from "@/lib/analytics/unavailable";
 
 /**
@@ -249,20 +249,6 @@ function BaselineDelta({ deltaPts }: { readonly deltaPts: number | null }) {
   );
 }
 
-function renderSkeletonRows() {
-  return Array.from({ length: SKELETON_ROW_COUNT }, (_, index) => (
-    // biome-ignore lint/suspicious/noArrayIndexKey: fixed-length placeholder rows with no identity of their own
-    <TableRow key={index}>
-      {Array.from({ length: PERSON_COLUMN_COUNT }, (__, cell) => (
-        // biome-ignore lint/suspicious/noArrayIndexKey: fixed-length placeholder cells
-        <TableCell key={cell}>
-          <Skeleton className="h-5 w-full rounded" />
-        </TableCell>
-      ))}
-    </TableRow>
-  ));
-}
-
 /**
  * An empty people list is a real ANSWER — a Me-scoped window, or a young org —
  * not a failure and not a loading state. Without a row for it the two-tier
@@ -274,7 +260,7 @@ function renderPersonRows(
   rows: readonly LostWorkPersonRow[]
 ) {
   if (loading) {
-    return renderSkeletonRows();
+    return renderTableSkeletonRows(SKELETON_ROW_COUNT, PERSON_COLUMN_COUNT);
   }
   if (rows.length === 0) {
     return (

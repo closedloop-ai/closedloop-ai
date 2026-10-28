@@ -10,8 +10,7 @@
  * passes no `plan`, and the fakes answer every lookup with a miss. Where a seed
  * branch is gated on a prior module's rows the fake must therefore be taught to
  * answer, or the branch silently never runs and its writes are silently absent
- * from this list — see the `loop` read-back in `buildResolvingMock`, which is
- * what puts the `loopEvent` entries below within reach of the assertions.
+ * from this list.
  *
  * WHY IT IS PINNED LITERALLY (ISS-6317). The characterization case claims the
  * seed touches "the same models, the same number of times, targeting the same
@@ -37,9 +36,18 @@
  * assertion still runs under that flag: regenerating always costs a reviewable
  * diff and can never be mistaken for a green run.
  *
- * Held as one blob rather than 555 array elements so the golden data does not
+ * Held as one blob rather than 514 array elements so the golden data does not
  * dominate the module's line count.
  */
+// ISS-10992 adds an isolated Branch/Session/commenter fixture and qualified
+// default authority. Two scaled Document slots move to that pair at the same
+// profile size; the four added and four removed writes are intentional.
+// ISS-11767 adds two PR-comment proof Branches, each with a Wrote Session and
+// link, a merged pull request, and its COMPLETE lane rows: thirteen writes.
+// Their four artifacts take four scaled Document slots (artifact and version)
+// at the same profile size, so eight writes leave.
+// ISS-12435 retires Loops: the seed stops writing its Loop rows and their
+// LoopEvent rows, so those 48 writes leave.
 const FINGERPRINT_BLOB = `
 artifact.upsert(create+update+where) id=05980977-da39-5d2b-84c4-0a3b1315ae48
 artifact.upsert(create+update+where) id=0a23b277-8c62-5523-984c-fbb33b3e20b7
@@ -55,17 +63,19 @@ artifact.upsert(create+update+where) id=361e6405-eaf4-5c1f-9394-40669f917e3a
 artifact.upsert(create+update+where) id=37aebb98-62fc-5d4d-ba30-3714c5847335
 artifact.upsert(create+update+where) id=47cecae0-aa63-556a-9cdf-66469becee20
 artifact.upsert(create+update+where) id=4a848b49-2930-5248-a86d-d0125c986207
+artifact.upsert(create+update+where) id=4a8bedc9-8cd1-566f-a97c-29558e6a90d2
 artifact.upsert(create+update+where) id=4dce80c3-018d-5f0c-96be-585f5f9616a3
-artifact.upsert(create+update+where) id=4fba3e24-f15a-5ad5-a0f1-be433f0acafb
-artifact.upsert(create+update+where) id=55881ede-f57e-50c0-a7ff-2e0dca7094ae
 artifact.upsert(create+update+where) id=60736633-457a-564d-a18c-e7324f612e67
 artifact.upsert(create+update+where) id=6a090371-d1ba-583d-bcb4-76e024f03c03
+artifact.upsert(create+update+where) id=6a600c39-739c-5223-a1b2-20f39ab0ec4a
 artifact.upsert(create+update+where) id=70a5bf5d-b093-5d19-8079-3bddc4031bb6
 artifact.upsert(create+update+where) id=7391e72f-c03a-5460-80e8-7591557498ab
 artifact.upsert(create+update+where) id=76cd76bc-abb1-50c9-afc1-a63ae006559e
+artifact.upsert(create+update+where) id=77125683-50ae-54bf-be94-cb35399d3477
 artifact.upsert(create+update+where) id=77d085ac-4234-5b0e-b62c-d6442e6654f5
 artifact.upsert(create+update+where) id=7b3822c1-2c5c-5cf7-ac16-13724d78723b
 artifact.upsert(create+update+where) id=7cd1f719-b3f9-5f3d-9348-19a56fa9cf16
+artifact.upsert(create+update+where) id=7d653104-5eef-56fe-8212-d57011eefb43
 artifact.upsert(create+update+where) id=806c4440-953a-5bbb-bc84-a394fdc334fa
 artifact.upsert(create+update+where) id=84efac34-4d4b-5bae-861d-1efc129b1525
 artifact.upsert(create+update+where) id=86b2954b-2d00-5e54-b165-a93dba58e240
@@ -76,7 +86,6 @@ artifact.upsert(create+update+where) id=9d5a3d12-2f25-5f9c-be2c-f250efc30061
 artifact.upsert(create+update+where) id=a36092fb-816b-5644-9bba-795b2436ddb0
 artifact.upsert(create+update+where) id=a6051a01-34cb-5741-bb39-f818f8a2b179
 artifact.upsert(create+update+where) id=a87c103a-4f8c-510d-a41f-dcb225444811
-artifact.upsert(create+update+where) id=acb6fe74-d541-5816-9bc2-af0e27148241
 artifact.upsert(create+update+where) id=ad0c7cef-2160-5a65-8481-ec75753a85de
 artifact.upsert(create+update+where) id=b03e9607-f307-5267-bee1-38ea8a8cfddb
 artifact.upsert(create+update+where) id=b2a87297-479f-55d8-9fa4-6600a2c0ace5
@@ -86,28 +95,30 @@ artifact.upsert(create+update+where) id=b8f83e4c-d781-5bc3-a052-c70659841295
 artifact.upsert(create+update+where) id=ba976ad7-e7ae-5c52-82d5-e88726c0655a
 artifact.upsert(create+update+where) id=bca660eb-cc09-5a03-a87a-9804ebf116fe
 artifact.upsert(create+update+where) id=c26e46ce-3bc0-55ce-9a10-e7fd9107522c
-artifact.upsert(create+update+where) id=c2d63762-d44b-582d-9c87-79db0e4d565b
 artifact.upsert(create+update+where) id=c7bb670a-45f0-5f22-93cb-afe198515bbc
 artifact.upsert(create+update+where) id=cbb89960-52cb-5c7f-b6fc-8f1519c6e6e5
 artifact.upsert(create+update+where) id=dc6e24aa-1130-5051-98a3-c8c50eeefbd5
 artifact.upsert(create+update+where) id=dfb1afae-3900-5675-aee4-2f4968559326
+artifact.upsert(create+update+where) id=e5193c0c-a534-54da-a0b3-7d2991e4e7cf
 artifact.upsert(create+update+where) id=e9f31524-dbd2-5147-8d7e-60742a6322f9
 artifact.upsert(create+update+where) id=edc4ca49-eb4b-56d9-a9ce-c78dedcee19e
-artifact.upsert(create+update+where) id=f11c9c79-25a3-57f9-a68d-4d7bd837084a
 artifact.upsert(create+update+where) id=f21cfb99-fade-5a91-a74c-4dd836c6f115
+artifact.upsert(create+update+where) id=f2b2b91a-c814-55c6-8b41-99becc772945
 artifact.upsert(create+update+where) id=f32c8952-509c-55a9-8f5c-4a11f6e09a5b
 artifact.upsert(create+update+where) id=f407b5f8-7c5c-5ddd-8281-89c191ed9d1a
 artifact.upsert(create+update+where) id=f742e13d-5bcd-5582-8630-3e4c00dcadd2
 artifact.upsert(create+update+where) id=f8d25842-9e38-54b4-af5d-425cd4eb0faf
 artifact.upsert(create+update+where) id=f8d5f6fa-7dcd-5784-935e-15680d85db90
-artifact.upsert(create+update+where) id=fbb2b767-82be-5f5a-a8a7-31474c9ecb99
 artifactEvaluation.upsert(create+update+where) id=39a883ef-35d8-55b5-b6bb-aa8028b79d9d
 artifactEvaluation.upsert(create+update+where) id=3a43139b-45ae-545d-b28e-695f2bc01e38
 artifactEvaluation.upsert(create+update+where) id=793059ee-4d97-55f3-9731-f2c9d99b1fd4
 artifactEvaluation.upsert(create+update+where) id=e1a7085c-3a9a-5926-8d9a-78cd35c5904d
 artifactLink.upsert(create+update+where) id=23409e04-8fd3-54ea-9c43-ef0a9b3fcec5
+artifactLink.upsert(create+update+where) id=705ebeb0-3682-581e-8035-58c7ba8f113c
+artifactLink.upsert(create+update+where) id=b56e1b64-4690-5e9b-943b-3958875c8d71
 artifactLink.upsert(create+update+where) id=b60ffd09-2757-5a6b-8d9e-a46c7dbb28bb
 artifactLink.upsert(create+update+where) id=c7ed3f11-5622-51c6-b440-61956e82636e
+artifactLink.upsert(create+update+where) id=d9636360-c705-5ac5-bc18-5741c710a1b9
 artifactRating.upsert(create+update+where) id=879de8a9-2609-51ba-bdd7-136d380c7aa4
 artifactRating.upsert(create+update+where) id=ce176ed3-30fa-5b30-9e5a-138f23bc6c09
 artifactRating.upsert(create+update+where) id=da1fe6ef-8c80-5373-a416-f30d0851d0b4
@@ -420,8 +431,10 @@ commentThread.upsert(create+update+where) id=fe886207-c745-5202-85ad-38427bb4151
 commentThread.upsert(create+update+where) id=fee669f8-3915-5348-8fbe-1ae8aeea5fa9
 computeTarget.upsert(create+update+where) id=a28797d8-9e71-5855-8f39-6f7f12ce1f4c
 customField.upsert(create+update+where) id=37bfb6bc-5901-55b1-a1be-bfe55317102d
+customField.upsert(create+update+where) id=97a57eab-3a4d-556b-96cd-17870fcc1fb6
 customField.upsert(create+update+where) id=a5a46d49-de2c-5ae4-9f7e-50a0651e62f3
 customField.upsert(create+update+where) id=b5a4386e-0522-5eaa-b6b3-53840adff43a
+customField.upsert(create+update+where) id=cc48e3ce-f7b7-51b2-abdc-7b50446bfb8d
 customField.upsert(create+update+where) id=d3463965-b9b0-5dc8-bf1f-a6ceae750b06
 customField.upsert(create+update+where) id=fa9745c0-0910-5039-b541-c41a5120fc7a
 customField.upsert(create+update+where) id=fb5fc09e-1604-5c63-b6b3-763359c28c9f
@@ -452,9 +465,7 @@ documentVersion.upsert(create+update+where) id=01ad2032-8bd3-5a32-a46f-87f08fbb4
 documentVersion.upsert(create+update+where) id=064dff2c-fbd1-5579-9611-68165b637dc3
 documentVersion.upsert(create+update+where) id=0c44b9bc-4c5c-5b2f-9e14-1c6d35a7e46c
 documentVersion.upsert(create+update+where) id=10e4f59c-9415-5139-b8c4-2cfbd602955f
-documentVersion.upsert(create+update+where) id=11ccd73e-2295-577e-a4e1-4c7c0a66773b
 documentVersion.upsert(create+update+where) id=2470fba6-d866-5af0-b84a-c48cefef4080
-documentVersion.upsert(create+update+where) id=25a9a7de-087b-57b2-8082-54ad4451cc23
 documentVersion.upsert(create+update+where) id=2c0311d6-e66e-595b-9b08-79af04fc99f5
 documentVersion.upsert(create+update+where) id=2c821e9a-a16d-5798-995e-d19661c33b18
 documentVersion.upsert(create+update+where) id=2e3ce950-4440-5b73-93b3-2de3b20d8f42
@@ -467,11 +478,9 @@ documentVersion.upsert(create+update+where) id=5063aa6c-4cfd-5bb6-b1eb-138b93ff5
 documentVersion.upsert(create+update+where) id=5ccdd70a-5357-516b-9986-605c0ee7bfbc
 documentVersion.upsert(create+update+where) id=5dee4b6f-f672-58cc-b131-6045e7e26c30
 documentVersion.upsert(create+update+where) id=5e4b8e95-7675-56ac-a6ed-5d68ab347295
-documentVersion.upsert(create+update+where) id=62a8c55c-a6b9-58c2-9321-2c29d03e63e3
 documentVersion.upsert(create+update+where) id=6bb6c787-1669-520f-97ab-d575c27d8e90
 documentVersion.upsert(create+update+where) id=71ec7999-754d-5d87-b26b-154b66d9a8c7
 documentVersion.upsert(create+update+where) id=73a3ea8b-36bc-5100-8cd8-4fe3bb63f3fe
-documentVersion.upsert(create+update+where) id=765b5d6b-2a19-5e6b-883d-631960ce6c08
 documentVersion.upsert(create+update+where) id=7b422d4a-9eeb-5ff9-a7b5-7cd9eba5f3bd
 documentVersion.upsert(create+update+where) id=7c083435-c45e-5109-a323-23977bfab176
 documentVersion.upsert(create+update+where) id=7c3e44a6-5068-5135-aba2-ccc136749cc6
@@ -483,10 +492,8 @@ documentVersion.upsert(create+update+where) id=917aa0db-c51e-567c-bb29-a000cab3b
 documentVersion.upsert(create+update+where) id=9c8cb590-383a-523b-bab7-8634a393b0a1
 documentVersion.upsert(create+update+where) id=a11329ef-a9c7-5752-b195-ed53caf67973
 documentVersion.upsert(create+update+where) id=a157442c-30c4-581a-aaea-12528b3251d2
-documentVersion.upsert(create+update+where) id=a1c348d5-f653-5b76-b1ff-e756ee306b17
 documentVersion.upsert(create+update+where) id=a821fda4-67d1-50a0-89cd-6b7550f5df08
 documentVersion.upsert(create+update+where) id=af925c6f-7821-5834-9f86-84ea00bf279e
-documentVersion.upsert(create+update+where) id=b00b4790-e17b-51d4-9134-7f265c25e3e4
 documentVersion.upsert(create+update+where) id=b2de34b0-572f-5b56-b258-13b3cda7172b
 documentVersion.upsert(create+update+where) id=b3f352af-ad60-56d9-9edd-8f4616b0526e
 documentVersion.upsert(create+update+where) id=b3f82d6e-175f-59ac-9fe3-c680d4aaa7d3
@@ -507,6 +514,7 @@ documentVersion.upsert(create+update+where) id=f8d2b9a2-c725-52e8-a6ca-6c716344f
 fileAttachment.upsert(create+update+where) id=2321a353-3e73-5b28-8972-92a05ce924b2
 fileAttachment.upsert(create+update+where) id=ceba48be-f1a4-529a-9ded-e2ec17d9e2d6
 gitHubInstallation.upsert(create+update+where) id=9af183bb-c8a4-5508-97d2-c338e4730225
+gitHubInstallationRepository.update(data+where) id=9ec1fa7d-a4e8-56d1-a8c9-9c1abf269e17
 gitHubInstallationRepository.upsert(create+update+where) id=9ec1fa7d-a4e8-56d1-a8c9-9c1abf269e17
 gitHubPRReview.upsert(create+update+where) id=00364db3-9ab9-53ba-a8d2-a9ae661d1223
 gitHubUserConnection.upsert(create+update+where) id=5c0218ef-fe09-5b17-9ee9-44370c905675
@@ -526,54 +534,6 @@ judgeScore.upsert(create+update+where) id=9ac37c46-174b-5b26-94fa-a72f83206ed6
 judgeScore.upsert(create+update+where) id=a250e1d8-6796-528e-b879-b1d69885678b
 judgeScore.upsert(create+update+where) id=c4203e77-977d-57d2-a887-b98663b3418a
 judgeScore.upsert(create+update+where) id=d17bd4dc-5cb1-5434-9155-a14c937f6e04
-loop.upsert(create+update+where) id=05e5bbaa-ab7a-56c9-8a63-458658f9cba4
-loop.upsert(create+update+where) id=0af799d1-c552-506a-b60e-3ad1a27af266
-loop.upsert(create+update+where) id=0d68b756-76c1-565a-b188-5608eb3616c2
-loop.upsert(create+update+where) id=11703d04-7c00-59b3-b7bb-13bf695c7c8e
-loop.upsert(create+update+where) id=15d2f9f6-c6ae-507c-b2c3-fc7e4c4709c3
-loop.upsert(create+update+where) id=227bfb62-0803-53b3-8116-20b854dee9b4
-loop.upsert(create+update+where) id=284ce160-fb4c-50db-824b-f7a8b781df37
-loop.upsert(create+update+where) id=34a021c3-60a6-5b5b-871b-c715f851b08c
-loop.upsert(create+update+where) id=466cfc43-2a52-5144-ba0b-64915c85af11
-loop.upsert(create+update+where) id=46a30915-5b4a-52c1-a9c6-8cfe4a5739a4
-loop.upsert(create+update+where) id=48669c3b-6316-5554-914f-7eccb2659172
-loop.upsert(create+update+where) id=49d0918a-fe35-5951-874e-1e2cc6ca5695
-loop.upsert(create+update+where) id=4f9fa7a3-151e-5cd3-8b74-256caa555da3
-loop.upsert(create+update+where) id=5a216ebf-cae2-54da-b739-bf765d7e2ab7
-loop.upsert(create+update+where) id=5f2c9140-1feb-5f67-b85f-49a031e2cc1e
-loop.upsert(create+update+where) id=667cb30c-d35f-557b-a1e2-e652e31061a0
-loop.upsert(create+update+where) id=668d3a8e-be20-51e7-bee2-6083a109f8e7
-loop.upsert(create+update+where) id=67e60fbe-f995-598b-80aa-b0a2291f3966
-loop.upsert(create+update+where) id=71685144-e7a2-59eb-b854-4894d6a4b6f1
-loop.upsert(create+update+where) id=79cd53ca-3a52-5de3-a276-3dcd127eb808
-loop.upsert(create+update+where) id=80de4b09-ea4d-5430-a010-90a71d2942ea
-loop.upsert(create+update+where) id=85ae60a6-3fb7-5b3b-a5dc-5992a9d76927
-loop.upsert(create+update+where) id=8844438e-d759-517d-962e-b27fee70556f
-loop.upsert(create+update+where) id=8afd6405-1c7b-5e8a-ad6b-6d00f693fb3a
-loop.upsert(create+update+where) id=a1c04bfd-954b-58a0-be86-fde63d1239c3
-loop.upsert(create+update+where) id=ab96d2b0-3b4c-5ad7-8d10-ae0d1280d850
-loop.upsert(create+update+where) id=b0e9eda7-d7e5-5602-9564-6a2c382a68d1
-loop.upsert(create+update+where) id=b81da1bb-ebc5-5104-8fd6-e983a1024a1a
-loop.upsert(create+update+where) id=c71babf6-b85c-5ad7-9bcc-9285d4e5a953
-loop.upsert(create+update+where) id=ce7f57f7-0e4f-5c56-a243-94dec612610c
-loop.upsert(create+update+where) id=d42b523d-c0df-5e5c-9981-0b814b274b93
-loop.upsert(create+update+where) id=d4527691-5e63-55e2-9b47-6b0392403d7a
-loop.upsert(create+update+where) id=d5acf8fc-3aa5-5ba4-a9bb-fb7f941d1def
-loop.upsert(create+update+where) id=dfe4cc1c-7836-5722-971a-2f9717adb708
-loop.upsert(create+update+where) id=e0d23aa8-ca44-5185-8f16-55e573aad5a0
-loop.upsert(create+update+where) id=e1738420-c835-5acc-96c2-23f560d715c5
-loop.upsert(create+update+where) id=e294aee4-f21a-5da5-8e9d-8237d17ce505
-loop.upsert(create+update+where) id=e6196738-55d2-52be-a2fa-2d600892f911
-loop.upsert(create+update+where) id=e8b64a85-b69a-5086-9bd0-3f4cc04d0b8e
-loop.upsert(create+update+where) id=e90d7073-5920-525c-8b10-5d84cae97ab0
-loop.upsert(create+update+where) id=e9db72cf-1cbf-5fed-8267-576c00dec70b
-loop.upsert(create+update+where) id=eb6892eb-15a7-5fb3-b20c-6087c8a21002
-loop.upsert(create+update+where) id=edd74fbd-c866-550d-81a1-1cf32ed67e4b
-loop.upsert(create+update+where) id=f2bbf268-897a-5528-8ce3-b3cb352e069f
-loop.upsert(create+update+where) id=f79ba045-4c61-5bde-81fa-46f2295b018c
-loopEvent.upsert(create+update+where) id=914a6d3f-7184-55e9-b987-34bb382cd29d
-loopEvent.upsert(create+update+where) id=9c5da0bc-ffd9-5123-a3a5-1b67635f295c
-loopEvent.upsert(create+update+where) id=cdf357ae-f97d-512d-b38e-358e3f5207ce
 project.upsert(create+update+where) id=5465272d-bb06-5e6d-b346-5fea24386a11
 project.upsert(create+update+where) id=9d1fcc45-e6d2-5fc6-a8e9-12079b1a45ed
 project.upsert(create+update+where) id=c554765e-429f-5f4a-a427-c1e10b4d4230
@@ -584,7 +544,14 @@ project.upsert(create+update+where) id=fda60578-7b6b-589d-b420-bd4b548833ec
 project.upsert(create+update+where) id=fe99635b-762e-59f9-bf2c-a0b4b6b6af80
 prompt.upsert(create+update+where) id=b6d246c6-0196-5ce3-951c-2cb5546b0c47
 prompt.upsert(create+update+where) id=dcd8be5a-0ed9-5a0f-bc01-79718ba6bba2
+pullRequestCommentAcquisition.upsert(create+update+where) id=2f10935d-658b-5ad5-af35-5e94dcd50417:ISSUE_COMMENTS
+pullRequestCommentAcquisition.upsert(create+update+where) id=2f10935d-658b-5ad5-af35-5e94dcd50417:REVIEW_COMMENTS
+pullRequestCommentAcquisition.upsert(create+update+where) id=361afa8e-e02f-53a2-9631-0b357a6f8018:ISSUE_COMMENTS
+pullRequestCommentAcquisition.upsert(create+update+where) id=361afa8e-e02f-53a2-9631-0b357a6f8018:REVIEWS
+pullRequestCommentAcquisition.upsert(create+update+where) id=361afa8e-e02f-53a2-9631-0b357a6f8018:REVIEW_COMMENTS
 pullRequestDetail.upsert(create+update+where) id=20cebc39-2b90-583c-a86c-5f0d52edbfdb
+pullRequestDetail.upsert(create+update+where) id=2f10935d-658b-5ad5-af35-5e94dcd50417
+pullRequestDetail.upsert(create+update+where) id=361afa8e-e02f-53a2-9631-0b357a6f8018
 slackIntegration.upsert(create+update+where) id=f27bc16e-d30a-5132-b2ad-a2d399c36949
 slugCounter.upsert(create+update+where) id=866a0ab1-e6fe-5446-a7d6-390716bd287b
 slugCounter.upsert(create+update+where) id=97afb6e9-6e14-5a53-b22a-9b51ce2237ac

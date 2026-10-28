@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   logError: vi.fn(),
   organizationsService: {
     findById: vi.fn(),
+    findDetailById: vi.fn(),
   },
 }));
 
@@ -33,7 +34,7 @@ vi.mock("@repo/observability/error", () => ({
 vi.mock("@repo/observability/log", () => ({
   log: {
     error: mocks.logError,
-    flush: vi.fn().mockResolvedValue(undefined),
+    flush: vi.fn(async () => undefined),
     info: vi.fn(),
   },
 }));
@@ -71,20 +72,24 @@ describe("GET /organizations", () => {
   });
 
   it("returns the caller's organization as a single-item list", async () => {
-    mocks.organizationsService.findById.mockResolvedValue(BASE_ORGANIZATION);
+    mocks.organizationsService.findDetailById.mockResolvedValue(
+      BASE_ORGANIZATION
+    );
 
     const response = await GET(makeRequest(), { params: Promise.resolve({}) });
     const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(mocks.organizationsService.findById).toHaveBeenCalledWith(ORG_ID);
+    expect(mocks.organizationsService.findDetailById).toHaveBeenCalledWith(
+      ORG_ID
+    );
     expect(body.success).toBe(true);
     expect(body.data).toHaveLength(1);
     expect(body.data[0].id).toBe(ORG_ID);
   });
 
   it("returns an empty list when the organization is missing", async () => {
-    mocks.organizationsService.findById.mockResolvedValue(null);
+    mocks.organizationsService.findDetailById.mockResolvedValue(null);
 
     const response = await GET(makeRequest(), { params: Promise.resolve({}) });
     const body = await response.json();
@@ -95,7 +100,9 @@ describe("GET /organizations", () => {
   });
 
   it("returns an error response when the service throws", async () => {
-    mocks.organizationsService.findById.mockRejectedValue(new Error("boom"));
+    mocks.organizationsService.findDetailById.mockRejectedValue(
+      new Error("boom")
+    );
 
     const response = await GET(makeRequest(), { params: Promise.resolve({}) });
 

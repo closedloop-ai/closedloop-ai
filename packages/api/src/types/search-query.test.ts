@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
+import { Priority } from "./common";
 import { SearchEntityType } from "./search-entity-kind";
 import {
   hasStructuredFilters,
   PRIORITY_ORDINAL,
+  PRIORITY_UNSET_VALUE,
+  PriorityFilterKind,
   parseSearchQuery,
+  priorityOrdinal,
+  RETIRED_LOOP_STATUS_VALUES,
   SEARCH_FILTER_KEYS,
   SearchFilterKey,
   SearchFilterOperator,
@@ -100,6 +105,7 @@ describe("parseSearchQuery — priority filter (ordinal)", () => {
   it("parses priority:high equality", () => {
     const parsed = parseSearchQuery("priority:high", NOW);
     expect(parsed.filters.priority).toEqual({
+      kind: PriorityFilterKind.Ordinal,
       operator: SearchFilterOperator.Eq,
       value: "HIGH",
     });
@@ -108,6 +114,7 @@ describe("parseSearchQuery — priority filter (ordinal)", () => {
   it("parses priority>=medium with the >= operator", () => {
     const parsed = parseSearchQuery("priority>=medium", NOW);
     expect(parsed.filters.priority).toEqual({
+      kind: PriorityFilterKind.Ordinal,
       operator: SearchFilterOperator.Gte,
       value: "MEDIUM",
     });
@@ -116,6 +123,7 @@ describe("parseSearchQuery — priority filter (ordinal)", () => {
   it("parses priority<urgent with the < operator", () => {
     const parsed = parseSearchQuery("priority<urgent", NOW);
     expect(parsed.filters.priority).toEqual({
+      kind: PriorityFilterKind.Ordinal,
       operator: SearchFilterOperator.Lt,
       value: "URGENT",
     });
@@ -131,6 +139,80 @@ describe("parseSearchQuery — priority filter (ordinal)", () => {
     const parsed = parseSearchQuery("priority:huge", NOW);
     expect(parsed.filters.priority).toBeUndefined();
     expect(parsed.errors[0].message).toContain("Unknown priority value");
+  });
+});
+
+describe("parseSearchQuery — priority filter (unset)", () => {
+  it("parses priority:none into the unset arm, not an ordinal comparison", () => {
+    const parsed = parseSearchQuery("priority:none", NOW);
+    expect(parsed.filters.priority).toEqual({
+      kind: PriorityFilterKind.Unset,
+      operator: SearchFilterOperator.Eq,
+    });
+    expect(parsed.errors).toEqual([]);
+  });
+
+  it("parses priority!=none into the unset arm", () => {
+    const parsed = parseSearchQuery("priority!=none", NOW);
+    expect(parsed.filters.priority).toEqual({
+      kind: PriorityFilterKind.Unset,
+      operator: SearchFilterOperator.Neq,
+    });
+  });
+
+  it("rejects an ORDERING comparison against none", () => {
+    // "unset" is not a point on LOW<MEDIUM<HIGH<URGENT, so `>=none` has no
+    // meaning. Rejecting it is what keeps the sentinel out of the ordinal CASE,
+    // where it would match nothing and look like an empty result set.
+    const parsed = parseSearchQuery("priority>=none", NOW);
+    expect(parsed.filters.priority).toBeUndefined();
+    expect(parsed.errors[0].message).toContain(PRIORITY_UNSET_VALUE);
+  });
+
+  it("keeps NONE out of the ordinal map entirely", () => {
+    // The sibling structural fact: were the sentinel a member of
+    // PRIORITY_ORDINAL, `parsePriority` would accept `>=none` through the
+    // ordinal branch and the SQL CASE would silently bind it.
+    expect(priorityOrdinal(PRIORITY_UNSET_VALUE)).toBeUndefined();
+  });
+});
+
+describe("priorityOrdinal — direct", () => {
+  // The `NONE` case above reaches this helper, but it cannot fail on the guard:
+  // a direct `PRIORITY_ORDINAL[value]` lookup also answers `undefined` for
+  // "NONE", so reverting the guard leaves that expectation green. Only an
+  // INHERITED key separates the two implementations, and `isPriority`'s own
+  // suite exercises it one layer up — a guard dropped HERE would keep that
+  // suite green too. These cases are what fails instead.
+  it("answers undefined for a prototype key a direct map lookup would return", () => {
+    expect(priorityOrdinal("toString")).toBeUndefined();
+    expect(priorityOrdinal("constructor")).toBeUndefined();
+    expect(priorityOrdinal("__proto__")).toBeUndefined();
+    expect(priorityOrdinal("valueOf")).toBeUndefined();
+    expect(priorityOrdinal("hasOwnProperty")).toBeUndefined();
+  });
+
+  it("answers undefined for a member only a newer peer knows", () => {
+    // Version skew, not a typo: a peer that has added CRITICAL sends it on the
+    // wire. It must yield no ordinal rather than rank against this build's map.
+    expect(priorityOrdinal("CRITICAL")).toBeUndefined();
+    expect(priorityOrdinal("BLOCKER")).toBeUndefined();
+    expect(priorityOrdinal("urgent")).toBeUndefined();
+  });
+
+  it("still answers the ordinal for every member it does know", () => {
+    // The positive sibling: without it, a helper hardwired to `undefined`
+    // passes both cases above while silently dropping every real comparison.
+    expect(priorityOrdinal(Priority.Low)).toBe(PRIORITY_ORDINAL[Priority.Low]);
+    expect(priorityOrdinal(Priority.Medium)).toBe(
+      PRIORITY_ORDINAL[Priority.Medium]
+    );
+    expect(priorityOrdinal(Priority.High)).toBe(
+      PRIORITY_ORDINAL[Priority.High]
+    );
+    expect(priorityOrdinal(Priority.Urgent)).toBe(
+      PRIORITY_ORDINAL[Priority.Urgent]
+    );
   });
 });
 
@@ -192,6 +274,32 @@ describe("parseSearchQuery — updated date filter", () => {
     expect(parsed.filters.updated).toBeUndefined();
     expect(parsed.errors[0].message).toContain("Invalid :updated range");
   });
+
+  // Pins current behavior. Looks odd: parseUpdated reads only the first two
+  // `..` parts, so a trailing third part is dropped with no error.
+  it("ignores a third `..` part and keeps the first two as the range", () => {
+    const parsed = parseSearchQuery(
+      "updated:2026-07-01..2026-07-15..junk",
+      NOW
+    );
+    expect(parsed.filters.updated).toEqual({
+      kind: "range",
+      from: new Date("2026-07-01T00:00:00.000Z"),
+      to: new Date("2026-07-15T00:00:00.000Z"),
+    });
+    expect(parsed.errors).toEqual([]);
+  });
+
+  it("rejects a range written with a comparison operator instead of `:`", () => {
+    const parsed = parseSearchQuery("updated>=2026-07-01..2026-07-15", NOW);
+    expect(parsed.filters.updated).toBeUndefined();
+    expect(parsed.errors).toEqual([
+      {
+        token: "updated>=2026-07-01..2026-07-15",
+        message: `:updated range requires the ${SearchFilterOperator.Eq} form (updated:from..to)`,
+      },
+    ]);
+  });
 });
 
 describe("parseSearchQuery — combined + malformed", () => {
@@ -250,11 +358,14 @@ describe("parseSearchQuery — exact ID/slug lookup (FEA-3930)", () => {
     "PRO-9",
     // Evergreen Document artifacts (DOC-*, FEA-3949) carry a projected slug too.
     "DOC-8",
-  ])("lifts a known slug %s as an idLookup and empties the free text", (slug) => {
-    const parsed = parseSearchQuery(slug, NOW);
-    expect(parsed.idLookup).toEqual({ slug });
-    expect(parsed.text).toBe("");
-  });
+  ])(
+    "lifts a known slug %s as an idLookup and empties the free text",
+    (slug) => {
+      const parsed = parseSearchQuery(slug, NOW);
+      expect(parsed.idLookup).toEqual({ slug });
+      expect(parsed.text).toBe("");
+    }
+  );
 
   it("does NOT lift a session slug (SES-###) — sessions carry no projected slug", () => {
     // The search_document projection stores slug=null for sessions, so a
@@ -426,6 +537,26 @@ describe("SEARCH_FILTER_KEYS suggestion metadata", () => {
     );
     expect(status?.valueSource).toBe(SearchSuggestionSource.Static);
     expect(status?.staticValues).toContain("TODO");
+  });
+
+  // ISS-12435 (PRD-795 3.4): the typeahead offers no loop kind or loop status,
+  // while a saved query naming one still parses.
+  it("offers no retired loop kind or status, and still parses both", () => {
+    const type = SEARCH_FILTER_KEYS.find((k) => k.key === SearchFilterKey.Type);
+    const status = SEARCH_FILTER_KEYS.find(
+      (k) => k.key === SearchFilterKey.Status
+    );
+    expect(type?.staticValues).not.toContain(SearchEntityType.Loop);
+    for (const retired of RETIRED_LOOP_STATUS_VALUES) {
+      expect(status?.staticValues).not.toContain(retired);
+      const parsed = parseSearchQuery(
+        `type:${SearchEntityType.Loop} status:${retired}`,
+        NOW
+      );
+      expect(parsed.errors).toEqual([]);
+      expect(parsed.filters.type).toEqual({ kinds: [SearchEntityType.Loop] });
+      expect(parsed.filters.status?.value).toBe(retired);
+    }
   });
 
   it("marks owner/project as dynamic and names their endpoints", () => {

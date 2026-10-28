@@ -18,7 +18,6 @@
 
 import assert from "node:assert/strict";
 import { rm } from "node:fs/promises";
-import { after, test } from "node:test";
 import type { DeliveryInsightsResponse } from "@closedloop-ai/loops-api/insights";
 import {
   InsightsPeriod,
@@ -29,6 +28,7 @@ import {
   ArtifactRefRelation,
 } from "@repo/api/src/types/session-artifact-link";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
+import { afterAll, test } from "vitest";
 import { createSqliteDashboardQueries } from "../src/main/database/dashboard-queries.js";
 import { computeLocalInsights } from "../src/main/database/local-insights.js";
 import {
@@ -36,16 +36,14 @@ import {
   NON_DELIVERY_ID_INLINE_CAP,
   resolveNonDeliveryOnlyArtifactIds,
 } from "../src/main/database/non-delivery-artifacts.js";
-import type {
-  CapturedStatement,
-  DesktopPrismaReader,
-} from "../src/main/database/prisma-client.js";
+import type { DesktopPrismaReader } from "../src/main/database/prisma-client.js";
+import type { CapturedStatement } from "../src/main/database/prisma-statement-observers.js";
 import { openInsightsDb } from "./local-insights-test-helpers.js";
 
 const ORIGINAL_TZ = process.env.TZ;
 process.env.TZ = "America/Chicago";
 
-after(() => {
+afterAll(() => {
   if (ORIGINAL_TZ === undefined) {
     Reflect.deleteProperty(process.env, "TZ");
     return;
@@ -120,9 +118,9 @@ async function seedPrs(db: Db, prs: readonly SeededPr[]): Promise<void> {
   for (const pr of prs) {
     await db.query(
       `INSERT INTO artifacts
-         (id, identity_key, kind, repo_full_name, pr_number, pr_state,
+         (id, identity_key, kind, repo_full_name, pr_number,
           created_at, last_seen_at, observed_at)
-       VALUES ($1, $2, 'pull_request', $3, $4, 'merged', $5, $5, $5)`,
+       VALUES ($1, $2, 'pull_request', $3, $4, $5, $5, $5)`,
       [pr.id, `pr:gate:${pr.id}`, REPO, pr.prNumber, IN_WINDOW]
     );
     for (const [relation, method] of pr.links) {
@@ -145,12 +143,15 @@ async function seedPrs(db: Db, prs: readonly SeededPr[]): Promise<void> {
 }
 
 /**
- * The visible "Captured PRs" count. Desktop keys it `merged` — that tile
- * deliberately carries the CAPTURED population (all states), not the merged
- * count (FEA-2946) — so read it by key rather than by name.
+ * The captured-PR count the delivery-population gate retains. The `merged` KPI
+ * that used to carry it is unknown (ISS-12902), so this reads the coverage
+ * count, which is taken of the same gated rows.
  */
 function capturedPrKpi(delivery: DeliveryInsightsResponse): number | null {
-  return delivery.kpis.find((entry) => entry.key === "merged")?.value ?? null;
+  return (
+    delivery.kpis.find((entry) => entry.key === "capturedPrsScanned")?.value ??
+    null
+  );
 }
 
 async function capturedPrIds(
@@ -202,7 +203,6 @@ test("ISS-5936: a Delivery Insights call issues the gate aggregate exactly ONCE"
       `expected the Delivery section to issue multiple statements; saw ${statements.length}`
     );
     // ...and the section still answers, over the retained population only.
-    // The `merged` key carries the CAPTURED-PR count (label "Captured PRs").
     assert.equal(capturedPrKpi(delivery), RETAINED_IDS.length);
   } finally {
     await prisma.disconnect();

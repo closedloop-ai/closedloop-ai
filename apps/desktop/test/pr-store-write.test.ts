@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import { test } from "vitest";
 import { Harness } from "../src/main/collectors/types.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 import { upsertPullRequest } from "../src/main/pull-requests/pr-store.js";
@@ -83,8 +83,8 @@ test("session rebuild preserves PR provenance, removes stale rows, and converges
     assert.deepEqual(
       await db.rebuildSessionFromParse(rebuilt, Harness.Claude),
       // FEA-3659: the re-derived payload differs (PR observation timestamp), so
-      // the rebuild reports contentChanged=true (updated_at bumped; enqueued for sync).
-      { rebuilt: true, activeRace: false, contentChanged: true }
+      // the rebuild reports needsResync=true (updated_at bumped; enqueued for sync).
+      { rebuilt: true, activeRace: false, needsResync: true }
     );
     assert.deepEqual(await readSessionPullRequests(db, REBUILD_SESSION_ID), [
       initial[0],
@@ -133,7 +133,7 @@ async function writePullRequest(
           harness: Harness.Claude,
           prUrl: PR_URL,
           prNumber: 3229,
-          repoFullName: "closedloop-ai/example-repo",
+          repoFullName: "closedloop-ai/closedloop-ai",
           observedAt,
         },
         now
@@ -168,11 +168,11 @@ function makePrSession(observedAt: string, prUrls: string[]) {
     artifacts: {
       prs: prUrls.map((url, index) => ({
         number: String(index === 0 ? 3229 : 3230),
-        repo: "closedloop-ai/example-repo",
+        repo: "closedloop-ai/closedloop-ai",
         url,
       })),
       issues: [],
-      repo: "closedloop-ai/example-repo",
+      repo: "closedloop-ai/closedloop-ai",
     },
   });
 }
@@ -203,8 +203,8 @@ async function readSessionPullRequests(
 
 const SESSION_ID = "fea-3229-pr-store-session";
 const REBUILD_SESSION_ID = "fea-3229-pr-rebuild-session";
-const PR_URL = "https://github.com/closedloop-ai/example-repo/pull/3229";
-const STALE_PR_URL = "https://github.com/closedloop-ai/example-repo/pull/3230";
+const PR_URL = "https://github.com/closedloop-ai/closedloop-ai/pull/3229";
+const STALE_PR_URL = "https://github.com/closedloop-ai/closedloop-ai/pull/3230";
 const CREATED_AT = "2026-07-16T09:00:00.000Z";
 const ORIGINAL_OBSERVATION = "2026-07-16T10:00:00.000Z";
 const ADVANCED_OBSERVATION = "2026-07-16T10:00:00.000Z";

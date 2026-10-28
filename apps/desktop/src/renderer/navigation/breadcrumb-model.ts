@@ -23,13 +23,17 @@ import { hrefForNavId, matchRoute, NavId } from "./route-table";
 export function activeDetailTitleKey(
   detailSessionId: string | null,
   detailBranchId: string | null,
-  detailAgentSlug: string | null
+  detailAgentSlug: string | null,
+  detailDocumentSlug?: string | null
 ): string | null {
   if (detailSessionId) {
     return detailTitleKey("session", detailSessionId);
   }
   if (detailBranchId) {
     return detailTitleKey("branch", detailBranchId);
+  }
+  if (detailDocumentSlug) {
+    return detailTitleKey("document", detailDocumentSlug);
   }
   if (detailAgentSlug) {
     // Use a raw string key to avoid extending the DetailKind type in
@@ -76,9 +80,12 @@ export function sessionsBreadcrumbHref(sessionBackHref: string): string {
  * body instead of contradicting it.
  */
 export function buildBreadcrumbs({
+  projectContext,
   detailSessionId,
   detailBranchId,
   detailAgentSlug,
+  detailDocumentSlug,
+  documentsListHref,
   detailTitle,
   detailTitleSettled,
   navId,
@@ -90,6 +97,8 @@ export function buildBreadcrumbs({
   detailSessionId: string | null;
   detailBranchId: string | null;
   detailAgentSlug: string | null;
+  detailDocumentSlug?: string | null;
+  documentsListHref?: string;
   detailTitle: string | null;
   detailTitleSettled: boolean;
   navId: NavId;
@@ -97,7 +106,18 @@ export function buildBreadcrumbs({
   branchBackHref: string;
   branchBackLabel: BranchBackLabel;
   agentsListHref: string;
+  projectContext?: { teamId: string; projectId?: string; archived: boolean };
 }): TopbarBreadcrumb[] {
+  if (projectContext) {
+    const parent = {
+      label: "Projects",
+      href: `/teams/${projectContext.teamId}/projects`,
+    };
+    if (projectContext.archived) {
+      return [parent, { label: "Archived" }];
+    }
+    return [{ label: parent.label }];
+  }
   if (detailSessionId) {
     return detailCrumbs({
       detailTitle,
@@ -120,7 +140,19 @@ export function buildBreadcrumbs({
       detailTitleSettled,
       parent: { label: branchBackLabel, href: branchBackHref },
       pendingLabel: DETAIL_FALLBACK_LABELS.branch,
-      placeholderLabel: "Branch",
+      placeholderLabel: BRANCH_DETAIL_PLACEHOLDER_LABEL,
+    });
+  }
+  if (detailDocumentSlug) {
+    return detailCrumbs({
+      detailTitle,
+      detailTitleSettled,
+      parent: {
+        label: navEntryFor(NavId.Documents)?.label ?? "Documents",
+        href: documentsListHref ?? hrefForNavId(NavId.Documents),
+      },
+      pendingLabel: "Loading document",
+      placeholderLabel: "Document",
     });
   }
   if (detailAgentSlug) {
@@ -192,3 +224,6 @@ function detailCrumbs({
   }
   return [parent, { label: placeholderLabel }];
 }
+
+/** A settled branch detail's crumb when the detail published no name. */
+export const BRANCH_DETAIL_PLACEHOLDER_LABEL = "Branch";

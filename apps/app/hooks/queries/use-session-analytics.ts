@@ -9,6 +9,7 @@ import type {
   TokenOpsWasteInsightsResponse,
 } from "@repo/api/src/types/session-analytics";
 import { useApiClient } from "@repo/app/shared/api/use-api-client";
+import { resolveBrowserTimeZone } from "@repo/app/shared/lib/browser-time-zone";
 import { type UseQueryResult, useQuery } from "@tanstack/react-query";
 
 /**
@@ -41,24 +42,11 @@ function analyticsPath(
   scope: InsightsScope
 ): string {
   const params = new URLSearchParams({ period, scope });
-  const timeZone = resolveTimeZone();
+  const timeZone = resolveBrowserTimeZone();
   if (timeZone) {
     params.set("timeZone", timeZone);
   }
   return `/insights/${section}?${params.toString()}`;
-}
-
-/**
- * The viewer's IANA zone, so the daily buckets are labelled on the calendar
- * days they actually happened on. Resolved defensively: a browser that cannot
- * report one falls back to the server's UTC bucketing rather than failing.
- */
-function resolveTimeZone(): string | undefined {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 export function useLostWorkInsights(

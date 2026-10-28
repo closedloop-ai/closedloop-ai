@@ -12,14 +12,29 @@
 
 import type { DistributionDto } from "@repo/api/src/types/distribution";
 import { toOptInDistributionDto } from "@repo/api/src/types/distribution";
+import { DesktopRendererEventChannel } from "../../shared/desktop-renderer-event-channel.js";
 import type { AgentDashboardDesignSystemRuntime } from "../dashboard/agent-dashboard-design-system-runtime.js";
+import { reportDistributionInstallGaveUp } from "../telemetry/distribution-install-terminal-telemetry.js";
 import type { DesktopWindow } from "../window.js";
 import type {
   CoachingInstallOutcome,
   RequiredPluginInstallerOptions,
 } from "./required-plugin-installer.js";
+import {
+  notifyTerminalInstallFailure,
+  type TerminalInstallNotification,
+  type TerminalInstallNotificationOptions,
+} from "./terminal-install-notification.js";
 
-const OPT_IN_AVAILABLE_CHANNEL = "desktop:distributions:opt-in-available";
+/**
+ * The opt-in broadcast channel. EXPORTED so a test asserts the sender's own
+ * value rather than a copy of the string — a literal checked against another
+ * literal pins nothing. The receiving `ipcRenderer.on`/`removeListener` pair in
+ * `preload-design-system.ts` still spells it raw; pointing those at this symbol
+ * is the follow-up that closes the sender/receiver gap.
+ */
+export const OPT_IN_AVAILABLE_CHANNEL =
+  DesktopRendererEventChannel.DistributionsOptInAvailable;
 
 /**
  * Narrow accessor surface the installer options close over. All runtime values
@@ -44,18 +59,45 @@ export type RequiredPluginInstallerOptionsParams = {
   ) => Promise<CoachingInstallOutcome>;
   /** Live window for the opt-in-available broadcast. */
   getWindow: () => DesktopWindow;
+  /**
+   * The settings store, narrowed to the three reads/writes this module makes.
+   * A structural port rather than three hand-written adapter arrows at the call
+   * site: `SettingsStore` satisfies it as-is, and every member is still read at
+   * call time, so a Labs toggle flipped after boot takes effect without a
+   * relaunch.
+   */
+  settings: RequiredPluginInstallerSettingsPort;
+  /** ISS-6170: OS notification factory, injected as elsewhere in main. */
+  createNotification: (
+    options: TerminalInstallNotificationOptions
+  ) => TerminalInstallNotification;
+};
+
+/**
+ * The settings surface the installer options depend on. Deliberately the
+ * smallest shape that compiles against `SettingsStore`, so this module cannot
+ * quietly grow a dependency on the whole store.
+ */
+export type RequiredPluginInstallerSettingsPort = {
   /** FEA-4050 durable decline suppression check (compute-target scoped). */
-  isDistributionDeclined: (
+  isDistributionDeclined(
     distributionId: string,
     computeTargetId: string
-  ) => boolean;
+  ): boolean;
   /** FEA-4050 durable decline persistence sink. */
-  recordDeclinedDistribution: (record: {
+  recordDeclinedDistribution(record: {
     distributionId: string;
     catalogItemId: string;
     organizationId: string;
     computeTargetId: string;
-  }) => void;
+  }): void;
+  /**
+   * ISS-6170: reads the `terminalInstallFailureNotifications` Labs toggle. It
+   * gates ONLY the user-facing notification — the monitored telemetry give-up is
+   * not a UI surface and is never gated, because an operator who left the toggle
+   * off must still not lose the signal.
+   */
+  getFlag(key: "terminalInstallFailureNotifications"): boolean;
 };
 
 export function buildRequiredPluginInstallerOptions(
@@ -96,22 +138,46 @@ export function buildRequiredPluginInstallerOptions(
       // down to the renderer-safe fields (FEA-3043) — never broadcast the live
       // presigned `assetDownloadUrl`; the renderer installs by id and main
       // re-resolves the asset by id, never trusting renderer asset data.
-      const win = params.getWindow().getWindow();
-      if (win && !win.isDestroyed()) {
-        win.webContents.send(
+      params
+        .getWindow()
+        .sendToRenderer(
           OPT_IN_AVAILABLE_CHANNEL,
           distributions.map(toOptInDistributionDto)
         );
-      }
+    },
+    clearOptInSnapshot: () => {
+      params.getWindow().clearRendererSnapshot(OPT_IN_AVAILABLE_CHANNEL);
     },
     // FEA-4050: suppress an opt-in pack the user has durably declined so the
     // reconcile does not re-push it on the next app restart. Scoped by compute
     // target; keyed on the distribution assignment id, so an admin re-share (new
     // id) is still surfaced and another profile's decline does not suppress this.
-    isDistributionDeclined: params.isDistributionDeclined,
+    isDistributionDeclined: (distributionId, computeTargetId) =>
+      params.settings.isDistributionDeclined(distributionId, computeTargetId),
     // FEA-4050: durably persist a decline recorded via the renderer's
     // `declineDistribution` bridge. Identity is resolved cloud-authoritatively
     // inside `declineDistributionById`, never from renderer-supplied data.
-    recordDeclinedDistribution: params.recordDeclinedDistribution,
+    recordDeclinedDistribution: (record) =>
+      params.settings.recordDeclinedDistribution(record),
+    // ISS-6170: both sinks hang off this because a give-up nothing reports is
+    // indistinguishable from an install that worked — but they want DIFFERENT
+    // cadences, which is what `firstGiveUp` carries.
+    //
+    // Telemetry runs on EVERY raise. It self-latches per error code, and only
+    // once the lane actually accepted the event, so the repeats are what let a
+    // give-up raised while the authenticated HTTP lane was still coming up
+    // eventually land instead of being dropped for good.
+    //
+    // The notification runs on the FIRST raise only. It interrupts a human, so
+    // a repeat is not a retry, it is nagging about something they already saw.
+    onTerminalInstallFailure: (notice) => {
+      reportDistributionInstallGaveUp(notice.code);
+      if (
+        notice.firstGiveUp &&
+        params.settings.getFlag("terminalInstallFailureNotifications")
+      ) {
+        notifyTerminalInstallFailure(params.createNotification, notice.reason);
+      }
+    },
   };
 }

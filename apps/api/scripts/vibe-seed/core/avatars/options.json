@@ -1,0 +1,103 @@
+{
+  "base": {
+    "eyes": ["variant01"],
+    "eyebrows": ["variant01"],
+    "mouth": ["happy01"],
+    "nose": ["variant01"],
+    "head": ["variant01"],
+    "beardProbability": 0,
+    "glassesProbability": 0,
+    "earringsProbability": 0,
+    "frecklesProbability": 0,
+    "hairAccessoriesProbability": 0
+  },
+  "people": {
+    "mayaokafor": {
+      "seed": "mayaokafor",
+      "skinColor": ["614335"],
+      "hair": ["variant24"],
+      "hairColor": ["2c1b18"],
+      "backgroundColor": ["ffdfbf"]
+    },
+    "acme-dev": {
+      "seed": "jordanavery",
+      "skinColor": ["edb98a"],
+      "hair": ["variant04"],
+      "hairColor": ["724133"],
+      "backgroundColor": ["c0aede"]
+    },
+    "dreyes": {
+      "seed": "dreyes",
+      "skinColor": ["d08b5b"],
+      "hair": ["variant01"],
+      "hairColor": ["2c1b18"],
+      "beard": ["variant01"],
+      "beardProbability": 100,
+      "backgroundColor": ["b6e3ff"]
+    },
+    "priyaraman": {
+      "seed": "priyaraman",
+      "skinColor": ["ae5d29"],
+      "hair": ["variant23"],
+      "hairColor": ["2c1b18"],
+      "backgroundColor": ["d1d4f9"]
+    },
+    "tlindqvist": {
+      "seed": "tlindqvist",
+      "skinColor": ["ffdbb4"],
+      "hair": ["variant03"],
+      "hairColor": ["d6b370"],
+      "glasses": ["variant02"],
+      "glassesColor": ["262e33"],
+      "glassesProbability": 100,
+      "backgroundColor": ["ffd5dc"]
+    },
+    "gracechen": {
+      "seed": "gracechen",
+      "skinColor": ["edb98a"],
+      "hair": ["variant15"],
+      "hairColor": ["2c1b18"],
+      "backgroundColor": ["ffdfbf"]
+    },
+    "sadeyemi": {
+      "seed": "sadeyemi",
+      "skinColor": ["614335"],
+      "hair": ["variant39"],
+      "hairColor": ["2c1b18"],
+      "beard": ["variant02"],
+      "beardProbability": 100,
+      "backgroundColor": ["d1d4f9"]
+    },
+    "amaradiallo": {
+      "seed": "amaradiallo",
+      "skinColor": ["614335"],
+      "hair": ["variant26"],
+      "hairColor": ["2c1b18"],
+      "backgroundColor": ["b6e3ff"]
+    },
+    "elenamorales": {
+      "seed": "elenamorales",
+      "skinColor": ["d08b5b"],
+      "hair": ["variant32"],
+      "hairColor": ["4a312c"],
+      "backgroundColor": ["c0aede"]
+    },
+    "kainakamura": {
+      "seed": "kainakamura",
+      "skinColor": ["edb98a"],
+      "hair": ["variant07"],
+      "hairColor": ["2c1b18"],
+      "glasses": ["variant01"],
+      "glassesColor": ["262e33"],
+      "glassesProbability": 100,
+      "backgroundColor": ["ffd5dc"]
+    },
+    "leilahaddad": {
+      "seed": "leilahaddad",
+      "skinColor": ["d08b5b"],
+      "hair": ["variant35"],
+      "hairColor": ["4a312c"],
+      "backgroundColor": ["b6e3ff"]
+    }
+  }
+}

@@ -25,6 +25,7 @@
  */
 import { fileURLToPath } from "node:url";
 import { Prisma, type PrismaClient, withDb } from "@repo/database";
+import { type ScriptOutput, scriptOutput } from "./script-progress-output";
 
 export type PhantomCandidate = {
   artifactId: string;
@@ -78,24 +79,24 @@ export async function purgePhantoms(
   return result.count;
 }
 
-export async function main() {
+export async function main(output: ScriptOutput = scriptOutput) {
   const DRY_RUN = process.env.DRY_RUN !== "0";
   const ORG_ID = process.env.ORG_ID ?? null;
 
   if (!(DRY_RUN || ORG_ID)) {
-    console.error(
+    await output.error(
       "ERROR: ORG_ID is required in execute mode (DRY_RUN=0). " +
         "Refusing to run cross-org purge. Set ORG_ID=<uuid> to scope the operation."
     );
     process.exit(1);
   }
 
-  console.log(
+  await output.log(
     `Phantom purge — mode: ${DRY_RUN ? "DRY RUN" : "EXECUTE"}${ORG_ID ? `, org: ${ORG_ID}` : ""}`
   );
 
   const candidates = await withDb((db) => findPhantoms(db, ORG_ID));
-  console.log(`Found ${candidates.length} phantom session(s)`);
+  await output.log(`Found ${candidates.length} phantom session(s)`);
 
   const byOrg = new Map<string, PhantomCandidate[]>();
   for (const c of candidates) {
@@ -105,16 +106,16 @@ export async function main() {
   }
 
   for (const [orgId, orgCandidates] of byOrg) {
-    console.log(`\n  Org ${orgId}: ${orgCandidates.length} phantom(s)`);
+    await output.log(`\n  Org ${orgId}: ${orgCandidates.length} phantom(s)`);
     for (const c of orgCandidates) {
-      console.log(
+      await output.log(
         `    ${c.externalSessionId} — ${Number(c.eventCount)} events, ${Math.round(c.eventSpanMs)}ms span`
       );
     }
   }
 
   if (DRY_RUN) {
-    console.log("\nDry run complete. Set DRY_RUN=0 to execute.");
+    await output.log("\nDry run complete. Set DRY_RUN=0 to execute.");
     return;
   }
 
@@ -124,14 +125,15 @@ export async function main() {
     const freshCandidates = await findPhantoms(tx, ORG_ID);
     return purgePhantoms(tx, freshCandidates);
   });
-  console.log(
+  await output.log(
     `\nDeleted ${deleted} phantom session(s) (cascade removed children).`
   );
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   main().catch((err) => {
-    console.error("Phantom purge failed:", err);
-    process.exit(1);
+    scriptOutput
+      .error("Phantom purge failed:", err)
+      .finally(() => process.exit(1));
   });
 }

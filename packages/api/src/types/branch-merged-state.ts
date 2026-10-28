@@ -1,7 +1,7 @@
 import {
   GitHubPRState,
   type GitHubPRState as GitHubPRStateValue,
-} from "./github-status";
+} from "./github-status.ts";
 
 export const BranchMergedState = {
   Merged: "merged",

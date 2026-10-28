@@ -6,9 +6,8 @@
  * service's LIVE backfill queue so they drain this session instead of waiting for
  * the next restart's hydration.
  *
- * Extracted out of the grandfathered `agent-dashboard-design-system-runtime.ts`
- * (over the 1,000-line ceiling — PR #4098 review) so the runtime keeps only a thin
- * one-line call.
+ * Extracted out of `agent-dashboard-design-system-runtime.ts` (PR #4098 review)
+ * so the runtime keeps only a thin one-line call.
  *
  * ISS-5135 retired the FEA-3427 wall-clock heal this module used to carry. That
  * heal folded extra "stale cloud duration" candidates into the enqueued set and
@@ -152,9 +151,12 @@ export async function runDataRevisionSyncEnqueueAndFeed(
  *    be NO durable rows to hydrate from next boot.
  * Whatever rows the write did land stay durable and hydrate next boot; the ids
  * that never landed rely on the incremental cursor instead — the rebuild bumps
- * each session's `updated_at`, so the `updated_at > watermark` scan re-selects
- * them (see the SYNC INVARIANT in write-core.ts). Skipping the inject on `false`
- * is what keeps an unconfirmed attempt from being mistaken for a delivered one.
+ * the `updated_at` of each content-changed session, so the `updated_at >
+ * watermark` scan re-selects them (see the SYNC INVARIANT in write-core.ts). A
+ * `created_at`-only id (ISS-12251) has no bump, but its own rebuild transaction
+ * already wrote its outbox row (`session-created-at-sync-obligation.ts`), so a
+ * refusal here leaves it to that row. Skipping the inject on `false` is what
+ * keeps an unconfirmed attempt from being mistaken for a delivered one.
  */
 async function enqueueRebuiltSessionsForSync(
   input: RunDataRevisionSyncEnqueueInput,

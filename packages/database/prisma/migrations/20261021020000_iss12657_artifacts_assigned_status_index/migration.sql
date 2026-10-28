@@ -1,0 +1,40 @@
+-- ISS-12657: serves the My Tasks anchor scan when a STATUS facet is active
+-- (`resolveTreeAnchors` → `anchorStatusSql`):
+--   WHERE organization_id = $org AND assignee_id = $assignee
+--     AND type <> 'BRANCH' AND type <> 'SESSION'
+--     AND status IN (...)
+--   ORDER BY created_at DESC, id DESC
+-- `status` sits BEFORE the ordering keys so a selective value is an equality
+-- seek followed by an ordered range, rather than a walk that filters. Putting it
+-- after `created_at` would not narrow anything, and putting any facet column
+-- ahead of `organization_id`/`assignee_id` would lose the tenant scope.
+--
+-- Partial on `type <> 'SESSION'` to match the scan's own predicate, the same
+-- reason `artifacts_org_assignee_created_id_non_session_idx` is: every synced
+-- session carries its Owner as `assignee_id` and My Tasks never anchors on one.
+-- The BRANCH exclusion is NOT in the predicate — it is one value of a
+-- three-value column here and an index per exclusion earns nothing.
+--
+-- NOT the `hideCompletedItems` facet, structurally: `anchorHideCompletedSql`
+-- emits `NOT (CASE WHEN a.type::text = … AND a.subtype::text IN (…) THEN
+-- a.status IN (…) …)`. Neither `type` nor `subtype` is a key here and no status
+-- equality precedes the ordering keys, so that predicate has no index condition
+-- to be — it is a recheck over whichever ordered scan runs. Unmeasured.
+--
+-- MEASURED (scratch DB, 514,850 artifacts; one assignee holding 250,505 of
+-- them, 50.1% of its org; `status = 'OBSOLETE'` matching 1%), as the app sends
+-- it. Before: Index Scan on
+-- artifacts_org_assignee_created_id_non_session_idx, 52,075 rows removed by
+-- Filter, 53,053 buffers, 37.5 ms. After: Index Scan on this index, ZERO rows
+-- removed, 509 buffers, 0.40 ms. The unfiltered baseline is 220 buffers, so the
+-- facet goes from 241x that to 2.3x.
+--
+-- The fixture is synthetic and its heavy assignee holds half of its org, which
+-- FLATTERS every org-scoped alternative: a production org with a more even
+-- assignee distribution makes those worse, not better, so these numbers are a
+-- lower bound on the problem.
+--
+-- CONCURRENTLY, so this file is ONE bare statement: do not add BEGIN/COMMIT or a
+-- `DO` block. NO `IF NOT EXISTS`, per scripts/lint/destructive-migrations/
+-- index-ddl.ts: a retry over an INVALID remnant must fail closed (42P07).
+CREATE INDEX CONCURRENTLY "artifacts_org_assignee_status_created_id_idx" ON "artifacts"("organization_id", "assignee_id", "status", "created_at" DESC, "id" DESC) WHERE (type <> 'SESSION'::"ArtifactType");

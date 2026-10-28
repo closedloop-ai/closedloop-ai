@@ -1,13 +1,13 @@
 import type { ApiResult } from "@repo/api/src/types/common";
 import { NextResponse } from "next/server";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
-import { forbiddenResponse, parseQueryParams } from "@/lib/route-utils";
-import {
-  authorizeAgentSessionTeamScope,
-  resolveDisplayedStatusParity,
-} from "../route-helpers";
+import { parseQueryParams } from "@/lib/route-utils";
+import { teamScopeRefusalResponse } from "@/lib/team-scope-policy";
+import { listQueryRefusalMetadata } from "../list-query-param";
+import { authorizeAgentSessionTeamScope } from "../route-helpers";
 import { agentSessionsService } from "../service";
 import { baseAgentSessionQuerySchema } from "../validators";
+import { escapeCsvValue } from "./csv-escape";
 
 const CSV_HEADERS = [
   "Date",
@@ -24,20 +24,6 @@ const CSV_HEADERS = [
   "Estimated Cost",
 ] as const;
 
-const CSV_ESCAPED_VALUE_PATTERN = /[",\n]/;
-const CSV_FORMULA_PREFIX_PATTERN = /^[=+\-@]/;
-
-function escapeCsvValue(value: string | number): string {
-  let text = String(value);
-  if (CSV_FORMULA_PREFIX_PATTERN.test(text)) {
-    text = `'${text}`;
-  }
-  if (CSV_ESCAPED_VALUE_PATTERN.test(text)) {
-    return `"${text.replaceAll('"', '""')}"`;
-  }
-  return text;
-}
-
 const SAFE_FILENAME_PATTERN = /[^a-zA-Z0-9\-_]/g;
 
 function buildCsvFilename(orgSlug: string): string {
@@ -50,7 +36,10 @@ export const GET = withAnyAuth<never, "/agent-sessions/export">(
   async ({ user, clerkOrgId, clerkUserId }, request) => {
     const { params: filters, errorResponse } = parseQueryParams(
       request,
-      baseAgentSessionQuerySchema
+      baseAgentSessionQuerySchema,
+      {
+        errorMetadata: listQueryRefusalMetadata,
+      }
     );
     if (errorResponse) {
       return errorResponse;
@@ -65,20 +54,15 @@ export const GET = withAnyAuth<never, "/agent-sessions/export">(
       clerkUserId,
       filters,
     });
-    if (!teamScopeAllowed) {
-      return forbiddenResponse();
+    const teamScopeRefusal = teamScopeRefusalResponse(teamScopeAllowed);
+    if (teamScopeRefusal) {
+      return teamScopeRefusal;
     }
 
     const { rows, orgSlug } = await agentSessionsService.findExportRows({
       organizationId: user.organizationId,
       // FEA-3534: enforce `viewerScope=self` for Me-scoped CSV exports.
       viewerId: user.id,
-      // ISS-4556 / ISS-4559: the export must ship the same cohort the table
-      // shows, so it resolves the same Status-facet gate.
-      displayedStatusParity: await resolveDisplayedStatusParity({
-        userId: user.id,
-        clerkUserId,
-      }),
       filters,
     });
 

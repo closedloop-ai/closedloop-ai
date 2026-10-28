@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { ManagedOnboardingRunTracker } from "../src/main/onboarding/managed-onboarding-run.js";
 
 test("managed onboarding run token remains current until cancelled", () => {

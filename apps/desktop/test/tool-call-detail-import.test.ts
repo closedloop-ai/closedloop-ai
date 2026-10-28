@@ -12,7 +12,8 @@
  * tool row rendered "No detail captured for this call".
  *
  * These tests drive the SAME production pipeline the desktop detail page uses:
- *   importSession → events.data → loadSyncedSessions → projectAgentSessionTurnItems
+ *   importSession → events.data → loadSyncedSessions →
+ *   projectAgentSessionTurnItemsFromEvents
  * and assert the resulting ToolItem carries non-empty (redacted-form) input +
  * output, at parity with the live-hook path. Redaction stays intact: the parser
  * size-caps the output and the cloud sync sanitizer still strips `data`
@@ -23,11 +24,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
-import {
-  projectAgentSessionTimelineEvents,
-  projectAgentSessionTurnItems,
-} from "@repo/lib/sessions/agent-session-detail-projection.js";
+import { projectAgentSessionTurnItemsFromEvents } from "@repo/lib/sessions/agent-session-detail-projection.js";
+import { test } from "vitest";
 import { openTestDb } from "./agent-db-test-utils.js";
 import { emptyAttributionCache } from "./attribution-test-helpers.js";
 import { makeSession } from "./normalized-session-test-utils.js";
@@ -72,19 +70,15 @@ async function importAndProjectTools(
       throw new Error("expected the session to hydrate");
     }
 
-    // Same two-step projection the desktop detail page runs (mapDetail): build
-    // the timeline from the hydrated events, then the turn items from it.
-    const timeline = projectAgentSessionTimelineEvents(session.events, {
-      metadata: session.metadata,
-    });
-    const items = projectAgentSessionTurnItems({
+    // Same projection the desktop detail page runs (mapDetail).
+    const items = projectAgentSessionTurnItemsFromEvents({
       sessionId,
       harness: session.harness ?? "claude",
       primaryModel: session.model ?? null,
       humanActor: { name: "Me", color: "#64748B" },
       agents: session.agents,
       events: session.events,
-      timeline,
+      metadata: session.metadata,
     });
     const tools = items.find((item) => item.type === "tools");
     if (tools?.type !== "tools") {
@@ -233,6 +227,31 @@ test("imported tool error is preserved as an errored trace tool row (bug 019f881
     const [bash] = tools.items;
     assert.equal(bash?.err, true, "the tool row is flagged as an error");
     assert.ok(bash?.output, "an errored row still carries its captured output");
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("imported successful completion preserves explicit false and result time", async () => {
+  const resultTimestamp = "2026-06-07T12:00:01.000Z";
+  const { db, dir, toolEvent } = await importAndProjectTools(
+    "tool-detail-success-completion",
+    [
+      {
+        name: "Read",
+        kind: "builtin",
+        timestamp: NOW,
+        input: { file_path: "src/index.ts" },
+        output: "contents",
+        resultTimestamp,
+      },
+    ]
+  );
+  try {
+    const data = JSON.parse(toolEvent.data ?? "{}") as Record<string, unknown>;
+    assert.equal(data.isError, false);
+    assert.equal(data.resultTimestamp, resultTimestamp);
   } finally {
     await db.close();
     await rm(dir, { recursive: true, force: true });

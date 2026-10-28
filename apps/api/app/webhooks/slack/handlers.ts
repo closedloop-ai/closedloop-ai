@@ -1,5 +1,6 @@
 import { DocumentType } from "@repo/api/src/types/document";
 import { ArtifactType, withDb } from "@repo/database";
+import { priorityLabel } from "@repo/design-system/lib/vocabulary/priority-order";
 import { log } from "@repo/observability/log";
 import { documentService } from "@/app/documents/document-service";
 import { WHITESPACE_REGEX } from "./webhook-utils";
@@ -211,12 +212,7 @@ export async function handleGetStatus(
       `Type: ${artifact.type}`,
       `Status: ${artifact.status}`,
       `Version: v${artifact.latestVersion}`,
-      artifact.generationStatus
-        ? `Generation: ${artifact.generationStatus.status}`
-        : null,
-    ]
-      .filter(Boolean)
-      .join("\n");
+    ].join("\n");
 
     return {
       response_type: "ephemeral",
@@ -244,7 +240,7 @@ export async function handleGetStatus(
   if (project) {
     const statusText = [
       `*${project.name}*`,
-      `Priority: ${project.priority}`,
+      `Priority: ${priorityLabel(project.priority)}`,
       `Documents: ${project._count.artifacts}`,
     ].join("\n");
 

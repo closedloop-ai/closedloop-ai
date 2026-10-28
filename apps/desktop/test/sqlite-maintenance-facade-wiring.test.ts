@@ -3,15 +3,14 @@
  * @description ISS-5400: proves each method on the extracted maintenance facade
  * is bound to its OWN implementation.
  *
- * Why this exists, specifically. Four of the extracted methods share an
+ * Why this exists, specifically. Three of the extracted methods share an
  * identical signature and an identical argument list:
  *
  *   propagateAllBranchPrLinks():       Promise<number>
- *   correlateCommitShaPrLinks():       Promise<number>
  *   removeUnauthoredBranchPrLinks():   Promise<number>
  *   normalizeStoredTimestampFormats(): Promise<number>
  *
- * (A fifth, remediateMisattributedPrBranches, was removed with the
+ * (A fourth, remediateMisattributedPrBranches, was removed with the
  * `artifacts.enrichment_state` column its WHERE clause selected on.)
  *
  * They were moved out of `sqlite.ts` as one contiguous block, so a copy/paste
@@ -21,8 +20,8 @@
  * key reached the right function. That is the hole this file closes.
  *
  * The test is behavioral, not structural: it seeds a store in which exactly ONE
- * of the five has work to do, then asserts that method reports the work AND its
- * four same-signature siblings report zero on that same store. A transposition
+ * of the three has work to do, then asserts that method reports the work AND its
+ * two same-signature siblings report zero on that same store. A transposition
  * involving the seeded method flips both halves of that assertion.
  *
  * Fixture shape is borrowed from `maintenance-branch-pr-propagation.test.ts`,
@@ -30,47 +29,24 @@
  * WIRING, so it deliberately does not re-test FEA-4377's evidence rules.
  */
 import assert from "node:assert/strict";
-import test from "node:test";
-import { createMaintenanceFacade } from "../src/main/database/sqlite-maintenance-facade.js";
+import { test } from "vitest";
 import { type OpenTestPrisma, openTestPrisma } from "./prisma-test-utils.js";
+import { maintenanceFacadeFor, NOW } from "./session-sweep-fixtures.js";
 
 type Store = OpenTestPrisma["db"];
 
-const NOW = "2026-06-22T12:00:00.000Z";
-const REPO = "closedloop-ai/example-repo";
+const REPO = "closedloop-ai/closedloop-ai";
 const BRANCH = "fix/desktop-sessions-loading-stall";
 const PR_NUMBER = 3837;
 const BRANCH_ARTIFACT_ID = "art-branch-1";
 const PR_ARTIFACT_ID = "art-pr-1";
 const SESSION_ID = "authored-session";
 
-const noopLog = () => {
-  /* the facade logs progress; this test asserts return values only */
-};
-
-/**
- * Build the facade over a real store. `supportsRowDigest` and `tokenUsage` are
- * only reached by methods this file does not exercise, so they are supplied as
- * minimal stand-ins rather than a full store construction.
- */
-function facadeFor(prisma: OpenTestPrisma["prisma"]) {
-  return createMaintenanceFacade({
-    prisma,
-    log: noopLog,
-    nowFn: () => NOW,
-    detectBillingMode: () => "unknown",
-    supportsRowDigest: () => Promise.resolve(false),
-    tokenUsage: {} as Parameters<
-      typeof createMaintenanceFacade
-    >[0]["tokenUsage"],
-  });
-}
-
 /**
  * Seed the ONE scenario `propagateAllBranchPrLinks` acts on: a session whose
  * branch-link carries authoring evidence (relation='created', method='git_push')
  * plus a `pull_requests` row whose head ref is that branch. None of the other
- * four same-signature passes has anything to do on this store.
+ * two same-signature passes has anything to do on this store.
  */
 async function seedPropagationWork(store: Store): Promise<void> {
   await store.query(
@@ -129,16 +105,11 @@ test("ISS-5400: propagateAllBranchPrLinks is bound to the propagation pass, not 
   const { db: store, prisma, close } = await openTestPrisma();
   try {
     await seedPropagationWork(store);
-    const facade = facadeFor(prisma);
+    const facade = maintenanceFacadeFor(prisma);
 
-    // The three siblings run FIRST, on a store seeded only with propagation
+    // The two siblings run FIRST, on a store seeded only with propagation
     // work. Each must find nothing. If any of them were transposed onto the
     // propagation implementation it would consume the work and report 1 here.
-    assert.equal(
-      await facade.correlateCommitShaPrLinks(),
-      0,
-      "correlateCommitShaPrLinks acted on propagation-only fixture data"
-    );
     assert.equal(
       await facade.removeUnauthoredBranchPrLinks(),
       0,
@@ -149,7 +120,7 @@ test("ISS-5400: propagateAllBranchPrLinks is bound to the propagation pass, not 
       0,
       "normalizeStoredTimestampFormats acted on propagation-only fixture data"
     );
-    // The link must still be unmade at this point — proving none of the four
+    // The link must still be unmade at this point — proving neither of the two
     // siblings quietly did the propagation pass's job.
     assert.equal(await countSessionPrLinks(store), 0);
 
@@ -169,7 +140,7 @@ test("ISS-5400: removeUnauthoredBranchPrLinks is bound to the unauthored sweep",
   const { db: store, prisma, close } = await openTestPrisma();
   try {
     await seedPropagationWork(store);
-    const facade = facadeFor(prisma);
+    const facade = maintenanceFacadeFor(prisma);
 
     // Mint the PR link the sweep operates on, then downgrade the branch-link to
     // workspace/start_branch so the link is retroactively unauthored — the ONE
@@ -200,10 +171,9 @@ test("ISS-5400: removeUnauthoredBranchPrLinks is bound to the unauthored sweep",
 test("ISS-5400: every maintenance-facade member is callable", async () => {
   const { prisma, close } = await openTestPrisma();
   try {
-    const facade = facadeFor(prisma) as Record<string, unknown>;
+    const facade = maintenanceFacadeFor(prisma) as Record<string, unknown>;
     for (const name of [
       "captureRepoIdentity",
-      "correlateCommitShaPrLinks",
       "deleteSessionRow",
       "listExistingSessionIds",
       "listStaleRevisionSessions",

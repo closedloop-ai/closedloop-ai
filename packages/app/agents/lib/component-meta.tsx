@@ -45,9 +45,7 @@ import {
 } from "lucide-react";
 import { AGENTS_SOURCE_PROVENANCE_FEATURE_FLAG_KEY } from "../../shared/lib/feature-flags";
 
-// ---------------------------------------------------------------------------
 // Types
-// ---------------------------------------------------------------------------
 
 export type BadgeVariant = BadgeProps["variant"];
 
@@ -58,9 +56,7 @@ type KindMeta = {
   variant: BadgeVariant;
 };
 
-// ---------------------------------------------------------------------------
 // KIND_META — one entry per AgentComponentKind
-// ---------------------------------------------------------------------------
 
 export const KIND_META: Record<AgentComponentKind, KindMeta> = {
   [AgentComponentKind.Subagent]: {
@@ -163,9 +159,7 @@ export function kindMeta(kind: string): KindMeta {
   };
 }
 
-// ---------------------------------------------------------------------------
 // KIND_ORDER — canonical display order for AgentComponentKind values
-// ---------------------------------------------------------------------------
 
 export const KIND_ORDER: readonly AgentComponentKind[] = [
   AgentComponentKind.Subagent,
@@ -180,9 +174,7 @@ export const KIND_ORDER: readonly AgentComponentKind[] = [
   AgentComponentKind.Config,
 ];
 
-// ---------------------------------------------------------------------------
 // HARNESS_META — label and badge variant per Harness value
-// ---------------------------------------------------------------------------
 
 export const HARNESS_META: Record<
   Harness,
@@ -205,9 +197,7 @@ export const HARNESS_META: Record<
   [Harness.Both]: { label: "Multiple harnesses", variant: "info" },
 };
 
-// ---------------------------------------------------------------------------
 // PACK_COLORS — stable accent color per pack name (used by SourceLabel)
-// ---------------------------------------------------------------------------
 
 const PACK_COLORS: Record<string, string> = {
   code: "#41A3FF",
@@ -217,9 +207,7 @@ const PACK_COLORS: Record<string, string> = {
   "self-learning": "#8B5CF6",
 };
 
-// ---------------------------------------------------------------------------
 // USER_COLORS — stable accent color per display name (CollaboratorStack/UserPill)
-// ---------------------------------------------------------------------------
 
 const USER_COLORS: Record<string, string> = {
   "Maya Chen": "#e11d48",
@@ -230,9 +218,7 @@ const USER_COLORS: Record<string, string> = {
   "Ada Nunez": "#0891b2",
 };
 
-// ---------------------------------------------------------------------------
 // SOURCE_ICON — icon + title per non-pack SourceType
-// ---------------------------------------------------------------------------
 
 const SOURCE_ICON: Record<
   Exclude<SourceType, "pack">,
@@ -244,9 +230,7 @@ const SOURCE_ICON: Record<
   [SourceType.Scope]: { icon: LayersIcon, title: "Config scope" },
 };
 
-// ---------------------------------------------------------------------------
 // Kind predicate helpers
-// ---------------------------------------------------------------------------
 
 /**
  * Returns true for kinds that carry real invocation data sourced from session
@@ -326,9 +310,7 @@ export const isLocallyInstallable = (component: {
   sourceType: SourceType;
 }): boolean => component.sourceType === SourceType.Pack;
 
-// ---------------------------------------------------------------------------
 // LOC/$ metric helpers
-// ---------------------------------------------------------------------------
 //
 // ISS-5475: there is deliberately no per-row tone here. `locPerDollarToneClass`
 // graded every LOC/$ figure emerald/amber/rose off a `LOC_PER_DOLLAR_BASELINE`
@@ -350,9 +332,7 @@ export const isLocallyInstallable = (component: {
 
 export const NUMBER_FORMAT = new Intl.NumberFormat("en-US");
 
-// ---------------------------------------------------------------------------
 // Badge components
-// ---------------------------------------------------------------------------
 
 export const KindBadge = ({ kind }: { kind: AgentComponentKind }) => (
   <Badge variant={kindMeta(kind).variant}>{kindMeta(kind).label}</Badge>
@@ -375,9 +355,7 @@ export const KindLabel = ({ kind }: { kind: AgentComponentKind }) => {
   );
 };
 
-// ---------------------------------------------------------------------------
 // StatusDot — shared pulsing status-signal primitive (FEA-3620)
-// ---------------------------------------------------------------------------
 
 /**
  * Tone → CSS color mapping for {@link StatusDot}. Each tone reads from a design
@@ -389,7 +367,7 @@ export const KindLabel = ({ kind }: { kind: AgentComponentKind }) => {
  * Extend this map (not the component) when a new lightweight status signal
  * wants the same dot language.
  */
-const STATUS_DOT_TONE: Record<"active" | "new", string> = {
+export const STATUS_DOT_TONE: Record<"active" | "new", string> = {
   active: "var(--primary)",
   new: "var(--success)",
 };
@@ -432,9 +410,7 @@ export const StatusDot = ({
   />
 );
 
-// ---------------------------------------------------------------------------
 // "New" dot — flags components discovered within the recent-discovery window
-// ---------------------------------------------------------------------------
 
 /** Window (ms) within which a component's `firstSeenAt` counts as newly discovered. */
 const NEW_DISCOVERY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -471,9 +447,7 @@ export const NewDot = () => (
   />
 );
 
-// ---------------------------------------------------------------------------
 // Source label — pack dot + name, or icon + name for non-pack sources
-// ---------------------------------------------------------------------------
 
 /**
  * ISS-5009: the hover/assistive explanation attached to the em-dash a Source
@@ -565,9 +539,7 @@ export const SourceLabel = ({ component }: { component: AgentComponent }) => {
   );
 };
 
-// ---------------------------------------------------------------------------
 // Avatar helpers
-// ---------------------------------------------------------------------------
 
 const initialsOf = (name: string): string =>
   name
@@ -611,10 +583,10 @@ export const CollaboratorStack = ({
   }
   const shown = users.slice(0, max);
   const extra = users.length - shown.length;
+  // The overlapping initials are decorative (aria-hidden); the stack as a whole
+  // is one labelled image announcing the author names, so a screen reader reads
+  // "Dana Discoverer, Edith Editor" rather than a run of loose initials.
   return (
-    // The overlapping initials are decorative (aria-hidden); the stack as a whole
-    // is one labelled image announcing the author names, so a screen reader reads
-    // "Dana Discoverer, Edith Editor" rather than a run of loose initials.
     <div aria-label={users.join(", ")} className="flex items-center" role="img">
       {shown.map((user, index) => (
         <span
@@ -648,9 +620,7 @@ export const CollaboratorStack = ({
 // Connect-GitHub owner CTA (FEA-2923) went with them — authorship no longer
 // depends on a GitHub connection.
 
-// ---------------------------------------------------------------------------
 // Metric value cell
-// ---------------------------------------------------------------------------
 //
 // `LocPerDollarColumnValue` moved to
 // `../components/workspace/loc-per-dollar-cell.tsx` (review cid 3701349992) so

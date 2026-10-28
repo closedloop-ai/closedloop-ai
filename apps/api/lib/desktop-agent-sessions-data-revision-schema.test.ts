@@ -1,14 +1,22 @@
 /**
- * FEA-3595: `dataRevision` is bounded on the sync wire.
+ * FEA-3595 / ISS-8271: `dataRevision` is UNBOUNDED at the ingress and bounded
+ * at the apply.
  *
  * Revision gating is forward-only (`chunk-revision-gating.ts`): a payload below
  * a session's committed/pending high-water mark is rejected as stale. That makes
  * the accepted revision an effectively IRREVERSIBLE, client-supplied high-water
- * mark — so an unbounded field is a per-session denial of service. One payload
- * carrying Postgres `Int` max commits, and from then on every genuine repair
- * from a real desktop is stale forever while the next integer cannot even be
- * stored. Bounding it at `MAX_SUPPORTED_DATA_REVISION` keeps the poison values
- * out at the ingress instead.
+ * mark — so an unbounded COMMIT is a per-session denial of service (FEA-3595).
+ *
+ * The bound originally lived here as `.min(1).max(...)`. ISS-8271 moved it:
+ * schema rejection is batch-wide (one out-of-window value — a desktop sentinel
+ * `-1`/`0`, or a newer build's revision — 400'd up to 200 sessions), the
+ * rejection was deterministic, and the desktop's dead-letter plus the
+ * signal-free reseal stranded the session permanently. The ingress now CARRIES
+ * every integer intact and `resolveWireDataRevisionDisposition`
+ * (`wire-data-revision.ts`, tests beside it) folds or holds out-of-window
+ * values per session, so nothing outside `[1, MAX_SUPPORTED_DATA_REVISION]`
+ * can reach the gate or the column. The tests below pin the carry: an ingress
+ * rejection regression here would resurrect the batch-wide stranding.
  *
  * DB-free: exercises only `parseDesktopAgentSessionsPayload` (the pure ingress
  * contract).
@@ -79,18 +87,26 @@ describe("desktop sync schema — dataRevision bound (FEA-3595)", () => {
     }
   });
 
-  it("rejects a revision above the supported ceiling", () => {
+  it("carries a too-new revision intact — held at the apply, never a batch 400", () => {
     const parsed = parseDesktopAgentSessionsPayload(
       buildPayload({ dataRevision: MAX_SUPPORTED_DATA_REVISION + 1 })
     );
-    expect(parsed.ok).toBe(false);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.payload.sessions[0].dataRevision).toBe(
+        MAX_SUPPORTED_DATA_REVISION + 1
+      );
+    }
   });
 
-  it("rejects the int4-max poison value that would permanently strand the session", () => {
+  it("carries the int4-max poison value — the apply keeps it off the high-water mark", () => {
     const parsed = parseDesktopAgentSessionsPayload(
       buildPayload({ dataRevision: POSTGRES_INT_MAX })
     );
-    expect(parsed.ok).toBe(false);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.payload.sessions[0].dataRevision).toBe(POSTGRES_INT_MAX);
+    }
   });
 
   it("keeps the ceiling clear of any reachable real revision", () => {
@@ -101,10 +117,19 @@ describe("desktop sync schema — dataRevision bound (FEA-3595)", () => {
     expect(MAX_SUPPORTED_DATA_REVISION).toBeLessThan(POSTGRES_INT_MAX);
   });
 
-  it("still rejects a non-positive revision", () => {
-    const parsed = parseDesktopAgentSessionsPayload(
-      buildPayload({ dataRevision: 0 })
-    );
-    expect(parsed.ok).toBe(false);
+  it("carries both desktop sentinels intact — the apply folds 0 and holds -1", () => {
+    // ISS-8271: rejecting a sentinel here 400'd the WHOLE batch and permanently
+    // dead-lettered sessions the desktop legitimately parks at -1/0 mid-
+    // derivation. The disposition matrix lives in `wire-data-revision.test.ts`;
+    // the write-path consequences in `agent-session-revision-replace.test.ts`.
+    for (const sentinel of [0, -1]) {
+      const parsed = parseDesktopAgentSessionsPayload(
+        buildPayload({ dataRevision: sentinel })
+      );
+      expect(parsed.ok).toBe(true);
+      if (parsed.ok) {
+        expect(parsed.payload.sessions[0].dataRevision).toBe(sentinel);
+      }
+    }
   });
 });

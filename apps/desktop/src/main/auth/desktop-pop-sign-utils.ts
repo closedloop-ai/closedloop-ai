@@ -1,10 +1,13 @@
+import type { GatewaySigningKeyResult } from "../command-signing/gateway-signing-key-store.js";
 import { gatewayLog } from "../logging/gateway-logger.js";
 import type { ApiKeyProvenance } from "../settings/api-key-store.js";
 import {
   type DesktopPopHeaders,
   type DesktopPopSigner,
   type DesktopPopSigningRequest,
+  DesktopPopUnavailableError,
   getDesktopPopUnavailableReason,
+  signDesktopPopHeaders,
 } from "./desktop-pop.js";
 
 export type DesktopPopUnavailableReporter = (
@@ -47,4 +50,32 @@ export async function buildManagedDesktopPopHeaders(
   gatewayLog.warn("desktop-pop", options.unavailableMessage);
   options.onUnavailable?.(options.surface, reason);
   return undefined;
+}
+
+/**
+ * Sign one PoP request with the gateway's stored Ed25519 key.
+ *
+ * Lives beside the other PoP signing helpers rather than in the application
+ * god-object: it is pure given the key-store slice, and both failure modes
+ * (no usable key on disk, a signing failure) raise the same typed error the
+ * managed-key path above already classifies.
+ */
+export function signDesktopRequestWithStoredKey(options: {
+  request: DesktopPopSigningRequest;
+  gatewayId: string;
+  loadKeyPair: (gatewayId: string) => GatewaySigningKeyResult;
+}): DesktopPopHeaders {
+  const keyPair = options.loadKeyPair(options.gatewayId);
+  if (!keyPair.ok) {
+    throw new DesktopPopUnavailableError(keyPair.reason);
+  }
+  try {
+    return signDesktopPopHeaders({
+      ...options.request,
+      gatewayId: options.gatewayId,
+      privateKeyPkcs8Pem: keyPair.keyPair.privateKeyPkcs8Pem,
+    });
+  } catch {
+    throw new DesktopPopUnavailableError("sign_failed");
+  }
 }

@@ -7,12 +7,10 @@ import {
   useContext,
   useMemo,
 } from "react";
-import type { FeedItem } from "./feed-item";
-import type { AnyFeedSource, FeedSourceUseItemsResult } from "./feed-source";
+import type { AnyFeedSource, FeedSourceItems } from "./feed-source";
 
-export type RegisteredSource = {
+export type RegisteredSource = FeedSourceItems & {
   source: AnyFeedSource;
-  result: FeedSourceUseItemsResult<FeedItem>;
 };
 
 export type SourceItemsRegistry = ReadonlyMap<string, RegisteredSource>;
@@ -55,13 +53,13 @@ function SourceItemsProvider({
   source,
   children,
 }: Readonly<SourceItemsProviderProps>) {
-  const result = source.useItems() as FeedSourceUseItemsResult<FeedItem>;
+  const items = source.useItems();
   const parent = useContext(SourceItemsContext);
   const next = useMemo<SourceItemsRegistry>(() => {
     const merged = new Map(parent);
-    merged.set(source.id, { source, result });
+    merged.set(source.id, { source, ...items });
     return merged;
-  }, [parent, source, result]);
+  }, [parent, source, items]);
   return (
     <SourceItemsContext.Provider value={next}>
       {children}

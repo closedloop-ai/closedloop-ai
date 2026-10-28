@@ -9,10 +9,10 @@
  * `sessionId={detailSessionId}` with `null` would switch the feature off in
  * production while every one of them still passed (whitlockk cid 3776137737).
  *
- * These cases mount the shipped shell — real hash route, real Topbar, real
- * registry-backed `DesktopFeatureFlagProvider` reading `getAllFlags` — so the
- * badge only appears if App.tsx actually hands the route's session id to the
- * action and the Labs flag actually reaches it.
+ * These cases mount the shipped shell — real hash route, real Topbar, and the
+ * real `DesktopFeatureFlagProvider` resolving the seeded assignment (ISS-8753
+ * retired the local registry) — so the badge only appears if App.tsx actually
+ * hands the route's session id to the action and the Labs flag reaches it.
  *
  * Own file rather than a block in `app-shell-sessions.test.tsx`, following the
  * `agent-detail-labs-gate.test.tsx` precedent for a Labs gate on a detail route.

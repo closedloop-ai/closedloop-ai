@@ -17,8 +17,6 @@ import { render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import IssuesPage from "../issues/page";
-import LoopUsagePage from "../loops/usage/page";
-import RoutinesPage from "../routines/page";
 
 // Render ONLY the pending chrome: the branch under test is what the route
 // reserves while the flag is unresolved, not its loaded body.
@@ -42,14 +40,6 @@ vi.mock("../../components/header", () => ({
   ),
 }));
 
-vi.mock("../loops/usage/page-client", () => ({
-  default: () => <div />,
-}));
-
-vi.mock("../routines/components/routines-index-view", () => ({
-  RoutinesIndexView: () => <div />,
-}));
-
 vi.mock("@/components/coming-soon-page", () => ({
   ComingSoonPage: () => <div />,
 }));
@@ -59,17 +49,5 @@ describe("gated routes reserve their own Header while the flag resolves", () => 
     render(<IssuesPage />);
 
     expect(screen.getByRole("banner")).toHaveTextContent("Issues");
-  });
-
-  it("renders the Routines breadcrumb in the pending chrome", () => {
-    render(<RoutinesPage />);
-
-    expect(screen.getByRole("banner")).toHaveTextContent("Routines");
-  });
-
-  it("renders the Usage breadcrumb in the pending chrome", () => {
-    render(<LoopUsagePage />);
-
-    expect(screen.getByRole("banner")).toHaveTextContent("Usage");
   });
 });

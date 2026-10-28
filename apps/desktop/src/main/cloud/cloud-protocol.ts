@@ -1,12 +1,49 @@
 import type { DesktopAgentSessionsAck as CanonicalDesktopAgentSessionsAck } from "@repo/api/src/types/agent-session";
-import type { ComputeTargetServerCapabilities } from "@repo/api/src/types/compute-target";
-import type { CloudSocketState } from "../../shared/cloud-socket-error.js";
+import type {
+  ComputeTargetServerCapabilities,
+  DesktopHelloAckMintingOrigin,
+} from "@repo/api/src/types/compute-target";
+import { DesktopAnalyticsEventName as ApiDesktopAnalyticsEventName } from "@repo/api/src/types/desktop-analytics";
+import {
+  type CloudSocketDegradedReason,
+  CloudSocketState,
+} from "../../shared/cloud-socket-error.js";
 import type { AgentSessionSyncTransportPayload } from "../agent-sync/agent-session-sync-contract.js";
+
+export type OnlineCloudSocketStatus = {
+  state: typeof CloudSocketState.Online;
+  targetId: string;
+  /**
+   * ISS-9081: the origin the hello ack said minted `targetId`, carried on the
+   * status so it reaches the retained-identity record alongside the id it
+   * describes. Absent whenever the sender stated none — an older build, or one
+   * that cannot name its own API.
+   */
+  mintingApiOrigin?: string;
+};
 
 export type CloudSocketStatus =
   | { state: typeof CloudSocketState.Idle }
-  | { state: typeof CloudSocketState.Online; targetId: string }
-  | { state: typeof CloudSocketState.Degraded; error: string };
+  | OnlineCloudSocketStatus
+  | {
+      state: typeof CloudSocketState.Degraded;
+      error: string;
+      reason?: CloudSocketDegradedReason;
+    }
+  // `reason`, not `error`: nothing failed. The socket never reports this — only
+  // the app does, for a connection it was told not to open.
+  | { state: typeof CloudSocketState.Disabled; reason: string };
+
+/**
+ * The one "the user switched cloud egress off" status. Both main-process sites
+ * that report it — the boot decision and the runtime disable transition — read
+ * it from here, so the wording cannot drift between the two and the renderer
+ * sees one string for one fact.
+ */
+export const CLOUD_DISABLED_BY_USER_STATUS: CloudSocketStatus = {
+  state: CloudSocketState.Disabled,
+  reason: "Cloud connection disabled by user",
+};
 
 export type ProtocolVersion = "1";
 
@@ -38,7 +75,9 @@ export interface DesktopHelloEvent extends ProtocolEnvelope {
   capabilities?: Record<string, unknown>;
 }
 
-export interface DesktopHelloAckEvent extends ProtocolEnvelope {
+export interface DesktopHelloAckEvent
+  extends ProtocolEnvelope,
+    DesktopHelloAckMintingOrigin {
   computeTargetId: string;
   sessionId: string;
   serverTime: string;
@@ -61,9 +100,6 @@ export interface DesktopCommandEvent extends ProtocolEnvelope {
   lockKey?: string;
   requiresApproval?: boolean;
   approvalReason?: string;
-  signature?: string;
-  signaturePayload?: string;
-  publicKeyFingerprint?: string;
 }
 
 export interface DesktopCommandAckEvent extends ProtocolEnvelope {
@@ -104,30 +140,17 @@ export interface DesktopPresenceEvent extends ProtocolEnvelope {
   queueDepth?: number;
 }
 
-export const DESKTOP_ANALYTICS_SOCKET_EVENT = "desktop.analytics" as const;
-export const DESKTOP_AGENT_SESSIONS_SOCKET_EVENT =
-  "desktop.agent-sessions" as const;
-
-export const DesktopAnalyticsAckReason = {
-  FeatureDisabled: "feature_disabled",
-  RateLimited: "rate_limited",
-  ValidationFailed: "validation_failed",
-} as const;
-
-export type DesktopAnalyticsAckReason =
-  (typeof DesktopAnalyticsAckReason)[keyof typeof DesktopAnalyticsAckReason];
-
-export type DesktopAnalyticsAck =
-  | { accepted: true }
-  | { accepted: false; reason: DesktopAnalyticsAckReason };
-
 export const DesktopAgentSessionsAckReason = {
   /**
-   * The SERVER answered that it gave up on this batch (HTTP 408). Attributable
-   * to the batch itself (oversized/slow payload), so it burns the session's
-   * bounded timeout budget toward a dead-letter.
+   * An HTTP 408 arrived on the sync response (in practice from an intermediary
+   * proxy or CDN — the route itself was verified never to emit one).
    *
-   * ISS-5088: this no longer covers a CLIENT-side abort — see
+   * ISS-8605 (PRD-699 F2): ENVIRONMENTAL, not attributable to the batch. It used
+   * to burn a bounded per-session timeout budget toward a dead-letter; that
+   * budget is deleted. It now defers with every budget intact and terminates
+   * only on the durable 24h `lane_stalled_since` wall clock.
+   *
+   * ISS-5088: this does not cover a CLIENT-side abort — see
    * {@link DesktopAgentSessionsAckReason.TransportTimeout}.
    */
   AckTimeout: "ack_timeout",
@@ -140,6 +163,11 @@ export const DesktopAgentSessionsAckReason = {
   // post-hoc `isHttpReady()` re-read. `RateLimited` now means ONLY a server
   // throttle (received over the wire); `TransportUnavailable` is a desktop-local
   // reason the client returns without ever reaching the server.
+  //
+  // ISS-8605 (PRD-699 F1): ENVIRONMENTAL. The route's limiter is keyed on the
+  // compute target, never on a session, so a 429 cannot single one out — it
+  // burns no per-row budget (it used to dead-letter after 5 consecutive) and is
+  // bounded by the same durable 24h lane-stall clock as `ack_timeout`.
   RateLimited: "rate_limited",
   /**
    * FEA-3425, client-only: the HTTP transport's coded 403 — the sent
@@ -152,9 +180,12 @@ export const DesktopAgentSessionsAckReason = {
   /**
    * ISS-5088, client-only: the local request aborted at its own timeout without
    * the server ever answering. Split out of {@link
-   * DesktopAgentSessionsAckReason.AckTimeout} because the two mean opposite
-   * things for blame: a server-answered 408 is attributable to THIS batch, while
-   * a client-side abort is a LANE-WIDE stall (the transport, not the payload) —
+   * DesktopAgentSessionsAckReason.AckTimeout} because the two arrive by
+   * different ROUTES and carry different evidence: a 408 came back over the wire
+   * from something that answered, while a client-side abort means nothing
+   * answered at all. (Since ISS-8605 they no longer differ in BLAME — 408 is
+   * environmental too — but they still differ in what they prove.) A client-side
+   * abort is a LANE-WIDE stall (the transport, not the payload) —
    * production ISS-5088 windows show the session lane, the component lane, and
    * the relay socket's ping all timing out together, which one session's payload
    * cannot cause. Per `main/sync/AGENTS.md` invariant 4 a lane-wide failure must
@@ -196,46 +227,68 @@ export type DesktopAgentSessionsAcceptedAck = Extract<
   { accepted: true }
 >;
 
+/**
+ * ISS-8595: the reason a rejection carries when the cloud named a class NEITHER
+ * this build's {@link DesktopAgentSessionsAckReason} nor the shared
+ * `DesktopAgentSessionsSyncErrorCode` can map — the version-skew case, which is
+ * real rather than hypothetical because the cloud deploys independently of an
+ * installed desktop.
+ *
+ * RESOLVED at the transport boundary rather than echoed: the received string is
+ * untrusted JSON, and the sync lane switches on this value and writes it to a
+ * durable `last_error` column. One fixed spelling is what lets the lane classify
+ * the skew (PRD-699 Appendix A: environmental) without ever storing or
+ * dispatching on free text. Deliberately NOT a member of the reason const above
+ * — that const's members all have a `SyncReason` spelling, and this one has none.
+ */
+export const UNKNOWN_ACK_REASON = "unknown_ack_reason" as const;
+
 export type DesktopAgentSessionsAck =
   | DesktopAgentSessionsAcceptedAck
   | {
       accepted: false;
-      reason: DesktopAgentSessionsAckReason;
+      reason: DesktopAgentSessionsAckReason | typeof UNKNOWN_ACK_REASON;
       /**
        * ISS-5090: the server's stable, value-free field/path summary for a
        * rejection, when it sent one. Optional and additive (an older API omits
        * it); logged only, never used to classify or retry.
        */
       detail?: string;
+      /**
+       * ISS-8595: the code the server actually sent, carried ONLY alongside
+       * {@link UNKNOWN_ACK_REASON}. Its own field rather than folded into
+       * `detail`, which means something else — an operator asking "what did the
+       * newer cloud call this?" has no other way to find out once the reason has
+       * been resolved to a fixed spelling. Log-only, and never persisted: the
+       * durable `last_error` stays the fixed spelling.
+       */
+      unrecognizedReason?: string;
+      /**
+       * ISS-10014: how long the SERVER asked this lane to wait, in ms, parsed
+       * from the rejection's `Retry-After`. Present whenever the header was
+       * readable, on any reason; which consumers honor it is the dispatch's
+       * decision — the lane-stall fold (`ack_timeout`, `rate_limited`,
+       * `ingestion_failed`, an unrecognized reason) and the lane gate
+       * (`unauthenticated`, `target_not_owned`) both take it as a MINIMUM wait,
+       * while `validation_failed` and `feature_disabled` ignore it because a
+       * wait fixes neither.
+       *
+       * Additive and optional in both directions: an older cloud sends no
+       * header, and every consumer treats absence as "no instruction" rather
+       * than as a wait of zero.
+       */
+      retryAfterMs?: number;
     };
 
 export type DesktopAgentSessionsEvent = ProtocolEnvelope &
   AgentSessionSyncTransportPayload;
 
-export const DesktopAnalyticsEventName = {
-  CommandInitiated: "command_initiated",
-  CommandStarted: "command_started",
-  CommandCompleted: "command_completed",
-  CommandFailed: "command_failed",
-  ApprovalRequested: "approval_requested",
-  ApprovalResolved: "approval_resolved",
-  DesktopConnectionEstablished: "desktop_connection_established",
-  DesktopReconnectionResumed: "desktop_reconnection_resumed",
-  DesktopConnectionDegraded: "desktop_connection_degraded",
-  DesktopConnectionLost: "desktop_connection_lost",
-  DesktopPopUnavailable: "desktop_pop_unavailable",
-  PluginUpdateAttempted: "plugin_update_attempted",
-  PluginUpdateSucceeded: "plugin_update_succeeded",
-  PluginUpdateFailed: "plugin_update_failed",
-  SandboxBlockedOperation: "sandbox_blocked_operation",
-  HealthcheckFailureDetected: "healthcheck.failure_detected",
-  HealthcheckFailurePersistent: "healthcheck.failure_persistent",
-  HealthcheckRecovered: "healthcheck.recovered",
-  AgentSessionSyncBatchFailed: "agent_session_sync_batch_failed",
-} as const;
-
-export type DesktopAnalyticsEventName =
-  (typeof DesktopAnalyticsEventName)[keyof typeof DesktopAnalyticsEventName];
+// ISS-8752: the event-name set is owned by the shared wire contract in
+// @repo/api (the apps/api ingest schema derives from the same const). This
+// module used to re-declare it, and the two drifted the moment a member was
+// added; re-exporting keeps every desktop importer on the one declaration.
+export const DesktopAnalyticsEventName = ApiDesktopAnalyticsEventName;
+export type DesktopAnalyticsEventName = ApiDesktopAnalyticsEventName;
 
 export interface DesktopAnalyticsEvent extends ProtocolEnvelope {
   event: DesktopAnalyticsEventName;
@@ -248,3 +301,14 @@ export type CommandEventRecord = {
   eventType: CommandStreamEventType;
   data: unknown;
 };
+
+/**
+ * The live compute target while the socket is online, else null. Strict-online:
+ * no `lastComputeTargetId` fallback, unlike the persisted-fallback accessor. Lives
+ * beside {@link CloudSocketStatus} so every reader folds the status once.
+ */
+export function resolveOnlineComputeTargetId(
+  status: CloudSocketStatus
+): string | null {
+  return status.state === CloudSocketState.Online ? status.targetId : null;
+}

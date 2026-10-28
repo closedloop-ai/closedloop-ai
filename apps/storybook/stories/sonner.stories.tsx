@@ -23,10 +23,22 @@ const EVENT_TIMESTAMP_LABEL = EVENT_TIMESTAMP.toLocaleString("en-US", {
  * An opinionated toast component for React.
  */
 const meta: Meta<typeof Toaster> = {
-  title: "Design System/Primitives/Sonner",
+  title: "Primitives v1.0/Feedback & Status/Sonner",
   component: Toaster,
-  tags: ["autodocs"],
-  argTypes: {},
+  tags: ["deprecated", "autodocs"],
+  argTypes: {
+    position: {
+      control: { type: "select" },
+      options: [
+        "top-left",
+        "top-right",
+        "bottom-left",
+        "bottom-right",
+        "top-center",
+        "bottom-center",
+      ],
+    },
+  },
   args: {
     position: "bottom-right",
   },

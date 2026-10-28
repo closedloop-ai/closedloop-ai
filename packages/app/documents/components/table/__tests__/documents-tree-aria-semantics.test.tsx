@@ -1,32 +1,28 @@
-import { fireEvent } from "@testing-library/react";
+import { render } from "@repo/app/shared/test-fixtures/render-with-nav";
+import { fireEvent, screen } from "@testing-library/react";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { render } from "./render-with-nav";
 
 vi.mock(
   "@repo/app/documents/hooks/use-artifact-favorites",
   async () => await import("./__mocks__/use-artifact-favorites")
 );
 
-vi.mock("@repo/app/judges-analytics/hooks/use-judges", () => ({
-  useCodeJudgesFeedback: vi.fn(() => ({ data: null, isLoading: false })),
-  useFeatureJudgesFeedback: vi.fn(() => ({ data: null, isLoading: false })),
-  usePlanJudgesFeedback: vi.fn(() => ({ data: null, isLoading: false })),
-  usePrdJudgesFeedback: vi.fn(() => ({ data: null, isLoading: false })),
-}));
-
 import type { DocumentRowItem } from "@repo/app/documents/components/table/document-row";
 import type { DisplayGroup } from "@repo/app/documents/components/table/document-tree";
+import { documentTreeRoots } from "@repo/app/documents/lib/documents-grid-groups";
 import { DocumentColumn as Col } from "@repo/app/shared/hooks/use-column-visibility";
 import {
   makeArtifact,
   makePlanArtifact,
 } from "@repo/app/shared/test-fixtures/documents";
 import { ariaTableProps } from "@repo/design-system/lib/grid-table-aria";
+import { GRID_NAV_CELL_ROLE } from "@repo/design-system/lib/grid-table-navigation";
 import axe from "axe-core";
 import { getDocumentTableColumnCount } from "../document-row";
-import { DocumentsTreeSection } from "../documents-tree-section";
+import { DocumentsGridGroupsBody } from "../documents-grid-groups-body";
+import { DocumentsUngroupedTreeBody } from "../documents-ungrouped-tree-body";
 import { DocumentTableHeader } from "../table-header";
-import { TreeGroupRows } from "../tree-group-rows";
 
 /**
  * ISS-4761: the Documents tree was the last production caller opted OUT of the
@@ -89,6 +85,75 @@ function nestedGroup(): DisplayGroup {
   } as DisplayGroup;
 }
 
+function DocumentsSelectionHarness() {
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(
+    () => new Set()
+  );
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(
+    () => new Set(["ISS-1", "ISS-2"])
+  );
+  const groups = [
+    {
+      count: null,
+      items: documentTreeRoots([nestedGroup()]),
+      key: "features",
+      label: "Features",
+    },
+    {
+      count: null,
+      items: [makeRootItem("ISS-2")],
+      key: "plans",
+      label: "Plans",
+    },
+  ];
+  return (
+    <>
+      <output data-testid="selected-document-ids">
+        {[...selectedIds].sort().join(",")}
+      </output>
+      <DocumentsGridGroupsBody
+        allSelected={false}
+        groupCollapse={{
+          isCollapsed: (key) => collapsed.has(key),
+          setCollapsed: (key, isCollapsed) =>
+            setCollapsed((current) => {
+              const next = new Set(current);
+              if (isCollapsed) {
+                next.add(key);
+              } else {
+                next.delete(key);
+              }
+              return next;
+            }),
+        }}
+        groups={groups}
+        isNested
+        leadingSortOptions={[]}
+        onClearSort={noop}
+        onRenderedItemsChange={(items) =>
+          setSelectedIds((current) => {
+            const visible = new Set(items.map((item) => item.data.id));
+            return new Set([...current].filter((id) => visible.has(id)));
+          })
+        }
+        onSelectAll={noop}
+        onSelectionChange={noop}
+        onSort={noop}
+        parentMap={new Map()}
+        renderRowActions={() => null}
+        rowExpansion={{ isExpanded: () => true, setExpanded: noop }}
+        selectedIds={selectedIds}
+        selectMode
+        showCheckbox
+        someSelected={false}
+        sortBy={null}
+        sortDir="asc"
+        visibleColumns={VISIBLE_COLUMNS}
+      />
+    </>
+  );
+}
+
 /**
  * The production composition: the shared header, the caller-owned `role="table"`
  * wrapper, and the tree's own row renderer — the three that have to agree, and
@@ -103,15 +168,48 @@ function renderTree({
 } = {}) {
   const columnCount = getDocumentTableColumnCount(VISIBLE_COLUMNS.length);
   const rows = (
-    <TreeGroupRows
-      group={nestedGroup()}
+    <DocumentsUngroupedTreeBody
       insideAriaTable={insideAriaTable}
-      isGroupExpanded={() => true}
+      isExpanded={() => true}
+      items={documentTreeRoots([nestedGroup()])}
       parentMap={new Map()}
-      toggleGroup={noop}
+      toggleRow={noop}
       visibleColumns={VISIBLE_COLUMNS}
     />
   );
+  if (grouped) {
+    return render(
+      <DocumentsGridGroupsBody
+        allSelected={false}
+        groupCollapse={{ isCollapsed: () => false, setCollapsed: noop }}
+        groups={[
+          {
+            key: "features",
+            label: "Features",
+            count: null,
+            items: documentTreeRoots([nestedGroup()]),
+          },
+        ]}
+        isNested
+        leadingSortOptions={[]}
+        onClearSort={noop}
+        onRenderedItemsChange={noop}
+        onSelectAll={noop}
+        onSelectionChange={noop}
+        onSort={noop}
+        parentMap={new Map()}
+        renderRowActions={() => null}
+        rowExpansion={{ isExpanded: () => true, setExpanded: noop }}
+        selectedIds={new Set()}
+        selectMode={false}
+        showCheckbox={false}
+        someSelected={false}
+        sortBy={null}
+        sortDir="asc"
+        visibleColumns={VISIBLE_COLUMNS}
+      />
+    );
+  }
   return render(
     <div {...ariaTableProps(insideAriaTable, columnCount)}>
       <DocumentTableHeader
@@ -121,17 +219,7 @@ function renderTree({
         sortDir="asc"
         visibleColumns={VISIBLE_COLUMNS}
       />
-      {grouped ? (
-        <DocumentsTreeSection
-          columnCount={columnCount}
-          insideAriaTable={insideAriaTable}
-          sectionHeader={<button type="button">Features</button>}
-        >
-          {rows}
-        </DocumentsTreeSection>
-      ) : (
-        rows
-      )}
+      {rows}
     </div>
   );
 }
@@ -222,7 +310,9 @@ describe("Documents tree ARIA table semantics (ISS-4761)", () => {
     expect(await getAriaStructureViolations(grouped.container)).toEqual([]);
     const section = grouped.getAllByRole("rowgroup");
     expect(section).toHaveLength(1);
-    const sectionHeaderCell = section[0].querySelector('[role="cell"]');
+    const sectionHeaderCell = section[0].querySelector(
+      `[role="${GRID_NAV_CELL_ROLE}"]`
+    );
     expect(sectionHeaderCell).toHaveAttribute(
       "aria-colspan",
       String(COLUMN_COUNT)
@@ -250,6 +340,73 @@ describe("Documents tree ARIA table semantics (ISS-4761)", () => {
     fireEvent.click(toggle);
     // The button lives inside a table cell and stays operable; it is not
     // swallowed by the row/cell wrapper.
-    expect(toggle.closest('[role="cell"]')).not.toBeNull();
+    expect(toggle.closest(`[role="${GRID_NAV_CELL_ROLE}"]`)).not.toBeNull();
+  });
+
+  it("prunes only the selected rows hidden by a Documents group collapse", () => {
+    render(<DocumentsSelectionHarness />);
+    expect(screen.getByTestId("selected-document-ids").textContent).toBe(
+      "ISS-1,ISS-2"
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Features" }));
+    expect(screen.getByTestId("selected-document-ids").textContent).toBe(
+      "ISS-2"
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Features" }));
+    expect(screen.getByTestId("selected-document-ids").textContent).toBe(
+      "ISS-2"
+    );
+  });
+
+  it("routes the header checkbox and Ctrl/Cmd+A to the same select-all handler", () => {
+    const onSelectAll = vi.fn();
+    render(
+      <DocumentsGridGroupsBody
+        allSelected={false}
+        groupCollapse={{ isCollapsed: () => false, setCollapsed: noop }}
+        groups={[
+          {
+            count: null,
+            items: documentTreeRoots([nestedGroup()]).concat(
+              makeRootItem("ISS-2")
+            ),
+            key: "features",
+            label: "Features",
+          },
+        ]}
+        isNested
+        leadingSortOptions={[]}
+        onClearSort={noop}
+        onRenderedItemsChange={noop}
+        onSelectAll={onSelectAll}
+        onSelectionChange={noop}
+        onSort={noop}
+        parentMap={new Map()}
+        renderRowActions={() => null}
+        rowExpansion={{ isExpanded: () => false, setExpanded: noop }}
+        selectedIds={new Set()}
+        selectMode={false}
+        showCheckbox
+        someSelected={false}
+        sortBy={null}
+        sortDir="asc"
+        visibleColumns={VISIBLE_COLUMNS}
+      />
+    );
+
+    fireEvent.click(screen.getAllByRole("checkbox")[0]!);
+    expect(onSelectAll).toHaveBeenCalledExactlyOnceWith(true);
+
+    onSelectAll.mockClear();
+    const rootCell = document.querySelector<HTMLElement>(
+      '[data-grid-row-id="ISS-1"] [data-grid-cell]'
+    );
+    if (!rootCell) {
+      throw new Error("Expected the collapsed Documents root cell");
+    }
+    fireEvent.keyDown(rootCell, { ctrlKey: true, key: "a" });
+
+    expect(onSelectAll).toHaveBeenCalledExactlyOnceWith(true);
   });
 });

@@ -58,9 +58,9 @@ function Section({
 }
 
 const meta = {
-  title: "App Core/Shared/Feature Flag Pending",
+  title: "Primitives v1.0/Feedback & Status/Feature Flag Pending",
   component: PendingGallery,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
 } satisfies Meta<typeof PendingGallery>;
 
 export default meta;

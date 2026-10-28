@@ -185,7 +185,9 @@ export function foldTimeSeriesToMaxSeries<
  * identity. Vanishingly unlikely with model ids and provider names, and cheap
  * to make impossible.
  */
-function resolveAggregateKey(series: readonly FoldableSeriesDef[]): string {
+export function resolveAggregateKey(
+  series: readonly FoldableSeriesDef[]
+): string {
   const taken = new Set(series.map((entry) => entry.key));
   let key = CHART_OTHER_SERIES_KEY;
   let suffix = 2;

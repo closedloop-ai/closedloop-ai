@@ -1,0 +1,26 @@
+-- ISS-11325: WHY a findings row reads what it reads.
+--
+-- The desktop half, added in the same change as the cloud half
+-- (`20260927160000_iss11325_invocation_findings_disposition` under
+-- packages/database) so this table never repeats the FEA-4093 `succeeded`
+-- asymmetry — a desktop-only column the web surface can never read.
+--
+-- ISS-10725 gave this table exactly two findings columns and no room to say how
+-- a value got there, so three different ingest outcomes (an envelope refused by
+-- the ISS-11310 fold budget, one refused by the #7978 byte gate, one that could
+-- not be read at all) were one indistinguishable NULL, and a funnel carried
+-- forward from an EARLIER run by `preserveStrongerEvidence` read as this run's
+-- own measurement.
+--
+-- One nullable TEXT column with NO default, matching `attribution_source`
+-- (20260926140000). NULL means "this build recorded no disposition", which is
+-- every row written before this migration — never "measured" and never
+-- "withheld". The read resolves it to the `unrecorded` member so such a row is
+-- listed rather than dropped.
+--
+-- NOT a widening of `findings_emitted`/`findings_invalidated`: those hold the
+-- COUNTS, this holds the statement about them, and the pair is checked against
+-- this column at the write so a "withheld" row can never carry counts.
+--
+-- Plain `ADD COLUMN` (SQLite has no `IF NOT EXISTS` for it).
+ALTER TABLE "agent_component_invocations" ADD COLUMN "findings_disposition" TEXT;

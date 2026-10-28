@@ -1,6 +1,9 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WorkflowCompactionImpactData } from "@repo/app/agents/lib/session-types";
+import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
+import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
+import { METRIC_CARD_HIDE_UNAVAILABLE_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { render, screen } from "@testing-library/react";
 import ts from "typescript6";
 import { describe, expect, it } from "vitest";
@@ -139,3 +142,102 @@ describe("CompactionImpact render", () => {
     expect(screen.getByText("Compaction impact")).toBeInTheDocument();
   });
 });
+
+/**
+ * ISS-9749 wiring, gate ON. `WorkflowCompactionImpactData` types both counts as
+ * required numbers, so in-process nothing here is ever absent — but the shape
+ * arrives as a parsed API payload, which is a trust boundary the types do not
+ * constrain, so the nullish arms below are reachable and cast in deliberately.
+ */
+describe("CompactionImpact under metric-card-hide-unavailable", () => {
+  it("keeps both cards for a real zero", () => {
+    renderGated({ ...data, totalCompactions: 0, tokensRecovered: 0 });
+
+    expect(screen.getByText("Total compactions")).toBeInTheDocument();
+    expect(screen.getByText("Recovered tokens")).toBeInTheDocument();
+    const card = screen
+      .getByText("Total compactions")
+      .closest("[data-slot='card']");
+    expect(
+      card?.querySelector("[data-slot='card-title']")?.textContent
+    ).toContain("0");
+  });
+
+  it("retires only the absent card and keeps its rowmate", () => {
+    renderGated(withAbsent({ totalCompactions: null }));
+
+    expect(screen.queryByText("Total compactions")).not.toBeInTheDocument();
+    expect(screen.getByText("Recovered tokens")).toBeInTheDocument();
+  });
+
+  /**
+   * The Recovered tokens half, which only reddens while the availability check
+   * runs on the RAW count: `formatCompactNumber` turns an absent one into "0",
+   * and a card asked to hide on that string would keep a fabricated zero
+   * instead (whitlockk review on #6914).
+   */
+  it("retires the absent Recovered tokens card, not a formatted zero", () => {
+    renderGated(withAbsent({ tokensRecovered: null }));
+
+    expect(screen.queryByText("Recovered tokens")).not.toBeInTheDocument();
+    expect(screen.getByText("Total compactions")).toBeInTheDocument();
+  });
+
+  /**
+   * ISS-9730 acceptance 3. Both counts absent would retire every card, so the
+   * row keeps today's render rather than collapsing to a bare gap.
+   */
+  it("keeps the whole row when both counts are absent", () => {
+    renderGated(withAbsent({ totalCompactions: null, tokensRecovered: null }));
+
+    expect(screen.getByText("Total compactions")).toBeInTheDocument();
+    expect(screen.getByText("Recovered tokens")).toBeInTheDocument();
+    expect(screen.getByText("Compaction impact")).toBeInTheDocument();
+    expect(screen.getByText("session-a")).toBeInTheDocument();
+  });
+
+  it("keeps that same absent card with the gate off", () => {
+    render(
+      <FeatureFlagAdapterProvider
+        adapter={createStaticFeatureFlagAdapter({ enabledFlags: [] })}
+      >
+        <CompactionImpact data={withAbsent({ totalCompactions: null })} />
+      </FeatureFlagAdapterProvider>
+    );
+
+    expect(screen.getByText("Total compactions")).toBeInTheDocument();
+  });
+});
+
+function renderGated(impact: WorkflowCompactionImpactData) {
+  return render(
+    <FeatureFlagAdapterProvider
+      adapter={createStaticFeatureFlagAdapter({
+        enabledFlags: [METRIC_CARD_HIDE_UNAVAILABLE_FEATURE_FLAG_KEY],
+      })}
+    >
+      <CompactionImpact data={impact} />
+    </FeatureFlagAdapterProvider>
+  );
+}
+
+/** The same payload as it can actually arrive over the wire. */
+type WireCompactionImpact = Omit<
+  WorkflowCompactionImpactData,
+  "totalCompactions" | "tokensRecovered"
+> & {
+  totalCompactions: number | null;
+  tokensRecovered: number | null;
+};
+
+/**
+ * A payload whose counts did not survive the wire. The single narrowing cast is
+ * the point: the fields are non-nullable in TypeScript and nullable in a real
+ * response, and this is the only way to drive the boundary the component guards.
+ */
+function withAbsent(
+  over: Partial<WireCompactionImpact>
+): WorkflowCompactionImpactData {
+  const wire: WireCompactionImpact = { ...data, ...over };
+  return wire as WorkflowCompactionImpactData;
+}

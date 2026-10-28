@@ -1,4 +1,5 @@
 import type { AgentComponentListResponse } from "@repo/api/src/types/agent-component";
+import type { AgentComponentPageDataResult } from "@repo/api/src/utils/agent-component-page-data";
 
 /**
  * Local (desktop) agent-components read IPC channels (FEA-2923 / T-16.3).
@@ -20,11 +21,39 @@ import type { AgentComponentListResponse } from "@repo/api/src/types/agent-compo
 export const SHARED_AGENT_COMPONENTS_IPC_CHANNELS = {
   list: "desktop:db:list-agent-components",
   detail: "desktop:db:get-agent-component-detail",
+  frequency: "desktop:db:get-agent-component-frequency",
+  /**
+   * ISS-6822: the bounded page-data read. Returns the visible page, the matched
+   * total, the facet counts, and the current window's aggregate — the same
+   * reduction the renderer used to run, moved beside the SQLite read so the
+   * payload crossing IPC is bounded by the page size instead of by how many
+   * components the machine has.
+   *
+   * ADDITIVE. `list` is untouched and stays the read path for a renderer that
+   * has not adopted this channel; a renderer running against an older preload
+   * finds no `getAgentComponentsPageData` method, its data source omits
+   * `pageData`, and the shared list keeps using `list`.
+   */
+  pageData: "desktop:db:get-agent-components-page-data",
+  /**
+   * ISS-10467/ISS-10468: the component detail's per-CONTENT-VERSION usage
+   * drill-down and the side-by-side compare that reads through it.
+   *
+   * ADDITIVE, and its absence is a CAPABILITY answer rather than a zero. A
+   * renderer running against an older preload finds no
+   * `getAgentComponentVersionUsage` method, its data source omits
+   * `versionUsage`, and the shared panel renders its "this source cannot scope
+   * usage by version" state instead of figures nobody measured.
+   */
+  versionUsage: "desktop:db:get-agent-component-version-usage",
 } as const;
 
 export const SHARED_AGENT_COMPONENTS_IPC_CHANNEL_LIST = [
   SHARED_AGENT_COMPONENTS_IPC_CHANNELS.list,
   SHARED_AGENT_COMPONENTS_IPC_CHANNELS.detail,
+  SHARED_AGENT_COMPONENTS_IPC_CHANNELS.frequency,
+  SHARED_AGENT_COMPONENTS_IPC_CHANNELS.pageData,
+  SHARED_AGENT_COMPONENTS_IPC_CHANNELS.versionUsage,
 ] as const;
 
 export type SharedAgentComponentsIpcChannel =
@@ -41,6 +70,40 @@ export function emptyAgentComponentsListResponse(): AgentComponentListResponse {
     items: [],
     total: 0,
     hasMore: false,
+  };
+}
+
+/**
+ * ISS-6822: the page-data counterpart of {@link emptyAgentComponentsListResponse}
+ * for a disabled or unsupported local read.
+ *
+ * The same neutral answer the `list` channel already gives in that state — an
+ * empty population — expressed in the page-data shape: no rows, one (empty)
+ * page, no facet options, and an aggregate over nothing. `previous` is OMITTED
+ * rather than zeroed, so the summary cards render no delta instead of a
+ * fabricated "0% vs prev".
+ *
+ * `locPerDollar: null` and `hasVerifiableLocPerDollar: false` are the load-
+ * bearing pair: they make the LOC/$ card hide rather than publish a `0.0` for a
+ * population that was never read.
+ */
+export function emptyAgentComponentsPageDataResponse(): AgentComponentPageDataResult {
+  return {
+    items: [],
+    filteredTotal: 0,
+    totalPages: 1,
+    page: 0,
+    facets: { collaborators: [], sources: [], harnesses: [] },
+    current: {
+      components: 0,
+      invocations: 0,
+      locPerDollar: null,
+      locPerDollarSampleSize: 0,
+      collaborators: 0,
+      hasVerifiableLocPerDollar: false,
+      invocationsExact: true,
+      invocationsPluginCoverage: [],
+    },
   };
 }
 

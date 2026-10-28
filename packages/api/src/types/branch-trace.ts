@@ -4,6 +4,7 @@ import {
   type ToolItem,
 } from "./agent-session-tool-call.ts";
 import { BranchViewerScope } from "./branch.ts";
+import type { BranchTracePageResult } from "./branch-trace-paging.ts";
 
 /** Overall evidence state for Branch trace hydration and derived aggregates. */
 export const BranchTraceCompletenessState = {
@@ -52,6 +53,21 @@ export type BranchTraceSessionHydration =
   | {
       identity: BranchTraceSessionIdentity;
       state: typeof BranchTraceSessionHydrationState.Loaded;
+      /**
+       * ISS-9723: how many of this Session's built trace items
+       * {@link mergedTraceItemSchema} refused, and which were therefore dropped
+       * from `items` rather than repaired.
+       *
+       * The Session itself still LOADED — that is the ruling this field exists
+       * to make legible. It rides the loaded variant rather than `completeness`
+       * because the renderer needs to know WHICH Sessions are partial, not only
+       * that some are, and because a scalar total plus a per-Session breakdown
+       * would be two encodings of one fact that can drift.
+       *
+       * ABSENCE is the only encoding of "every item parsed", so a producer that
+       * dropped nothing is byte-identical to one predating this field.
+       */
+      unreadableItemCount?: number;
     }
   | {
       identity: BranchTraceSessionIdentity;
@@ -94,7 +110,10 @@ export type BranchTraceResult = BranchTraceState & {
 };
 
 /** Additive paged HTTP response. Older producers omit `traceState`. */
-export type BranchTraceResponse = {
+export type BranchTraceResponse = Pick<
+  BranchTracePageResult,
+  "nextCursor" | "overviewItems" | "reset"
+> & {
   branchId: string;
   viewerScope: BranchViewerScope;
   items: MergedTraceItem[];
@@ -187,6 +206,10 @@ export const branchTraceSessionIdentitySchema = z.object(
 const loadedSessionSchema = z.object({
   identity: branchTraceSessionIdentitySchema,
   state: z.literal(BranchTraceSessionHydrationState.Loaded),
+  // Positive, never zero: a `0` here would be a confident claim that this
+  // Session was checked and nothing was dropped, which is what absence already
+  // says without also having to be produced.
+  unreadableItemCount: z.number().int().positive().optional(),
 });
 
 const unavailableSessionSchema = z.object({
@@ -471,17 +494,28 @@ function validateTraceStateCount(
     (session) => session.state === BranchTraceSessionHydrationState.Unavailable
   ).length;
   const loadedCount = value.sessions.length - unavailableCount;
+  // ISS-9723: a Session can now LOAD and still have contributed fewer items
+  // than it built, so "every Session loaded" no longer implies complete. Both
+  // producers already refuse to claim `Complete` over a drop; enforcing it here
+  // makes it a boundary invariant rather than a convention two callers keep.
+  const anyItemUnreadable = value.sessions.some(
+    (session) =>
+      session.state === BranchTraceSessionHydrationState.Loaded &&
+      (session.unreadableItemCount ?? 0) > 0
+  );
   if (
     (value.completeness.state === BranchTraceCompletenessState.Complete ||
       value.aggregateCompleteness.state ===
         BranchTraceCompletenessState.Complete) &&
-    (value.qualifyingSessionCount === null || unavailableCount > 0)
+    (value.qualifyingSessionCount === null ||
+      unavailableCount > 0 ||
+      anyItemUnreadable)
   ) {
     context.addIssue({
       code: "custom",
       path: ["completeness"],
       message:
-        "Complete trace evidence requires every retained Session to load",
+        "Complete trace evidence requires every retained Session to load whole",
     });
   }
   if (
@@ -524,4 +558,88 @@ function validateTraceResult(
 
 function isValidTraceTimestamp(value: string): boolean {
   return Number.isFinite(Date.parse(value));
+}
+
+/** A built merged trace split into what parsed and what was dropped. */
+export type ReadableTracePartition = {
+  items: MergedTraceItem[];
+  /** Per-Session count of dropped items; a Session that lost none is absent. */
+  unreadableCountBySession: Map<string, number>;
+};
+
+/**
+ * ISS-9723: split a built merged trace into the items {@link
+ * mergedTraceItemSchema} accepts and a per-Session count of the ones it refused.
+ *
+ * Both producers of a branch trace call this — the cloud read path and the
+ * Desktop main-process builder — so the two surfaces drop the same items and
+ * report the same counts from one definition.
+ *
+ * A refused item is DROPPED, never repaired. There is no trustworthy value to
+ * fall back on for an item the contract cannot parse, and a substituted one
+ * would render as a confident measurement; the count is what the reader is told
+ * instead. Its Session survives: the ruling on ISS-9723 is that one unreadable
+ * item must not take every readable item in that Session with it.
+ *
+ * SYNTHESIZED `idle` MARKERS GO WITH THEM. `buildMergedTrace` sizes a pause
+ * against a running `activeUntilMs` that a refused item still extended — an item
+ * can fail this schema on a field that has nothing to do with its extent (a
+ * malformed `items[]` row) while its `endMs` was perfectly good. Keeping the
+ * marker would state a pause measured over evidence no longer in the trace, and
+ * the swimlane re-derives its own spans from the retained items alone
+ * (`activeIdleSpans`, which skips embedded markers) — so the two would disagree
+ * about one pause on one screen. Nothing here can recompute the marker, only
+ * refuse to restate it, so a trace that dropped anything keeps no synthesized
+ * pause at all. That is a gap, which the reader is told about; a contradiction
+ * is not.
+ */
+export function partitionReadableTraceItems(
+  built: readonly MergedTraceItem[],
+  // ISS-9723 (#6884 review, davetho): drops the BUILDER already made, before
+  // anything reached this schema. `buildMergedTrace` discards a turn whose `t`
+  // will not parse, so such an item never appears in `built` and this partition
+  // cannot see it — leaving "nothing was unreadable" and "an unreadable item was
+  // removed upstream" as one answer, and letting the trace claim `Complete` over
+  // an item it dropped. Seeded rather than merged by each caller so the two
+  // producers cannot diverge on how a builder drop is counted.
+  discardedBySession: ReadonlyMap<string, number> = new Map()
+): ReadableTracePartition {
+  const readable: MergedTraceItem[] = [];
+  const unreadableCountBySession = new Map<string, number>(discardedBySession);
+  for (const item of built) {
+    const parsed = mergedTraceItemSchema.safeParse(item);
+    if (parsed.success) {
+      readable.push(parsed.data);
+      continue;
+    }
+    const sessionId = item.sessionId;
+    unreadableCountBySession.set(
+      sessionId,
+      (unreadableCountBySession.get(sessionId) ?? 0) + 1
+    );
+  }
+  // Only a REFUSED ITEM counts as unreadable — a schema rejection here, or a
+  // turn the builder could not place in time. A marker withdrawn because it can
+  // no longer be measured is a consequence of that, not a second loss. The
+  // builder's drops withdraw markers for the same reason from the other
+  // direction: an unplaceable turn never entered the running `activeUntilMs`, so
+  // a pause spanning it is measured over a window activity is known to have
+  // occurred in, and restating it would call that window quiet.
+  const items =
+    unreadableCountBySession.size === 0
+      ? readable
+      : readable.filter((item) => item.type !== "idle");
+  return { items, unreadableCountBySession };
+}
+
+/** Attach a positive drop count to a loaded Session, omitting a zero. */
+export function withUnreadableItemCount(
+  session: BranchTraceSessionHydration,
+  unreadableCountBySession: ReadonlyMap<string, number>
+): BranchTraceSessionHydration {
+  if (session.state !== BranchTraceSessionHydrationState.Loaded) {
+    return session;
+  }
+  const count = unreadableCountBySession.get(session.identity.artifactId) ?? 0;
+  return count > 0 ? { ...session, unreadableItemCount: count } : session;
 }

@@ -1,12 +1,7 @@
 {
   "name": "@closedloop-ai/loops-api",
-  "version": "0.5.10",
+  "version": "0.0.0",
   "type": "module",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/closedloop-ai/example-repo.git",
-    "directory": "packages/loops-api"
-  },
   "exports": {
     "./attachment": {
       "types": "./dist/attachment.d.ts",
@@ -14,35 +9,17 @@
       "require": "./dist/attachment.cjs",
       "default": "./dist/attachment.js"
     },
-    "./artifacts": {
-      "types": "./dist/artifacts.d.ts",
-      "import": "./dist/artifacts.js",
-      "require": "./dist/artifacts.cjs",
-      "default": "./dist/artifacts.js"
-    },
     "./branch-view": {
       "types": "./dist/branch-view.d.ts",
       "import": "./dist/branch-view.js",
       "require": "./dist/branch-view.cjs",
       "default": "./dist/branch-view.js"
     },
-    "./bootstrap-result": {
-      "types": "./dist/bootstrap-result.d.ts",
-      "import": "./dist/bootstrap-result.js",
-      "require": "./dist/bootstrap-result.cjs",
-      "default": "./dist/bootstrap-result.js"
-    },
-    "./bundles": {
-      "types": "./dist/bundles.d.ts",
-      "import": "./dist/bundles.js",
-      "require": "./dist/bundles.cjs",
-      "default": "./dist/bundles.js"
-    },
-    "./commands": {
-      "types": "./dist/commands.d.ts",
-      "import": "./dist/commands.js",
-      "require": "./dist/commands.cjs",
-      "default": "./dist/commands.js"
+    "./column-limits": {
+      "types": "./dist/column-limits.d.ts",
+      "import": "./dist/column-limits.js",
+      "require": "./dist/column-limits.cjs",
+      "default": "./dist/column-limits.js"
     },
     "./common": {
       "types": "./dist/common.d.ts",
@@ -62,11 +39,11 @@
       "require": "./dist/context-pack.cjs",
       "default": "./dist/context-pack.js"
     },
-    "./desktop-request": {
-      "types": "./dist/desktop-request.d.ts",
-      "import": "./dist/desktop-request.js",
-      "require": "./dist/desktop-request.cjs",
-      "default": "./dist/desktop-request.js"
+    "./currency": {
+      "types": "./dist/currency.d.ts",
+      "import": "./dist/currency.js",
+      "require": "./dist/currency.cjs",
+      "default": "./dist/currency.js"
     },
     "./document": {
       "types": "./dist/document.d.ts",
@@ -74,23 +51,11 @@
       "require": "./dist/document.cjs",
       "default": "./dist/document.js"
     },
-    "./env-vars": {
-      "types": "./dist/env-vars.d.ts",
-      "import": "./dist/env-vars.js",
-      "require": "./dist/env-vars.cjs",
-      "default": "./dist/env-vars.js"
-    },
     "./error-codes": {
       "types": "./dist/error-codes.d.ts",
       "import": "./dist/error-codes.js",
       "require": "./dist/error-codes.cjs",
       "default": "./dist/error-codes.js"
-    },
-    "./events": {
-      "types": "./dist/events.d.ts",
-      "import": "./dist/events.js",
-      "require": "./dist/events.cjs",
-      "default": "./dist/events.js"
     },
     "./execution-result": {
       "types": "./dist/execution-result.d.ts",
@@ -116,41 +81,35 @@
       "require": "./dist/insights.cjs",
       "default": "./dist/insights.js"
     },
-    "./multi-repo-policy": {
-      "types": "./dist/multi-repo-policy.d.ts",
-      "import": "./dist/multi-repo-policy.js",
-      "require": "./dist/multi-repo-policy.cjs",
-      "default": "./dist/multi-repo-policy.js"
+    "./insights-branch-coverage": {
+      "types": "./dist/insights-branch-coverage.d.ts",
+      "import": "./dist/insights-branch-coverage.js",
+      "require": "./dist/insights-branch-coverage.cjs",
+      "default": "./dist/insights-branch-coverage.js"
     },
-    "./observability": {
-      "types": "./dist/observability.d.ts",
-      "import": "./dist/observability.js",
-      "require": "./dist/observability.cjs",
-      "default": "./dist/observability.js"
+    "./observability/truncate-utf8": {
+      "types": "./dist/observability/truncate-utf8.d.ts",
+      "import": "./dist/observability/truncate-utf8.js",
+      "require": "./dist/observability/truncate-utf8.cjs",
+      "default": "./dist/observability/truncate-utf8.js"
     },
-    "./tokens": {
-      "types": "./dist/tokens.d.ts",
-      "import": "./dist/tokens.js",
-      "require": "./dist/tokens.cjs",
-      "default": "./dist/tokens.js"
+    "./secret-value-pattern": {
+      "types": "./dist/secret-value-pattern.d.ts",
+      "import": "./dist/secret-value-pattern.js",
+      "require": "./dist/secret-value-pattern.cjs",
+      "default": "./dist/secret-value-pattern.js"
     },
-    "./token-refresh": {
-      "types": "./dist/token-refresh.d.ts",
-      "import": "./dist/token-refresh.js",
-      "require": "./dist/token-refresh.cjs",
-      "default": "./dist/token-refresh.js"
+    "./security/plain-record": {
+      "types": "./dist/security/plain-record.d.ts",
+      "import": "./dist/security/plain-record.js",
+      "require": "./dist/security/plain-record.cjs",
+      "default": "./dist/security/plain-record.js"
     },
-    "./genai-cost": {
-      "types": "./dist/genai-cost.d.ts",
-      "import": "./dist/genai-cost.js",
-      "require": "./dist/genai-cost.cjs",
-      "default": "./dist/genai-cost.js"
-    },
-    "./session-status": {
-      "types": "./dist/session-status.d.ts",
-      "import": "./dist/session-status.js",
-      "require": "./dist/session-status.cjs",
-      "default": "./dist/session-status.js"
+    "./security/proto-safe-record": {
+      "types": "./dist/security/proto-safe-record.d.ts",
+      "import": "./dist/security/proto-safe-record.js",
+      "require": "./dist/security/proto-safe-record.cjs",
+      "default": "./dist/security/proto-safe-record.js"
     },
     "./stable-stringify": {
       "types": "./dist/stable-stringify.d.ts",
@@ -158,49 +117,53 @@
       "require": "./dist/stable-stringify.cjs",
       "default": "./dist/stable-stringify.js"
     },
+    "./stable-utc-window": {
+      "types": "./dist/stable-utc-window.d.ts",
+      "import": "./dist/stable-utc-window.js",
+      "require": "./dist/stable-utc-window.cjs",
+      "default": "./dist/stable-utc-window.js"
+    },
     "./stream-types": {
       "types": "./dist/stream-types.d.ts",
       "import": "./dist/stream-types.js",
       "require": "./dist/stream-types.cjs",
       "default": "./dist/stream-types.js"
     },
-    "./currency": {
-      "types": "./dist/currency.d.ts",
-      "import": "./dist/currency.js",
-      "require": "./dist/currency.cjs",
-      "default": "./dist/currency.js"
-    },
-    "./secret-value-pattern": {
-      "types": "./dist/secret-value-pattern.d.ts",
-      "import": "./dist/secret-value-pattern.js",
-      "require": "./dist/secret-value-pattern.cjs",
-      "default": "./dist/secret-value-pattern.js"
+    "./test-fixtures/stable-utc-window-parity": {
+      "types": "./dist/test-fixtures/stable-utc-window-parity.d.ts",
+      "import": "./dist/test-fixtures/stable-utc-window-parity.js",
+      "require": "./dist/test-fixtures/stable-utc-window-parity.cjs",
+      "default": "./dist/test-fixtures/stable-utc-window-parity.js"
     }
   },
-  "files": [
-    "dist"
-  ],
-  "dependencies": {
-    "@pydantic/genai-prices": "0.0.66"
-  },
-  "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
-  },
   "scripts": {
-    "build": "tsup && node scripts/assert-build-output.mjs",
-    "clean": "git clean -xdf .cache .turbo dist node_modules",
-    "typecheck": "tsc --noEmit --emitDeclarationOnly false",
-    "test": "vitest run"
+    "clean": "git clean -xdf .cache .turbo dist *.tsbuildinfo node_modules",
+    "typecheck": "tsc --noEmit --emitDeclarationOnly false --incremental --tsBuildInfoFile ./tsconfig.tsbuildinfo",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage --coverage.reporter=json --coverage.reporter=json-summary --coverage.reportOnFailure '--coverage.include=src/**/*.{ts,tsx}'",
+    "build": "tsup"
   },
   "peerDependencies": {
     "zod": "^4.0.0"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
+    "@repo/vitest-config": "workspace:*",
     "@types/node": "^25.9.1",
-    "tsup": "^8.5.1",
     "typescript": "npm:@typescript/typescript6@6.0.2",
-    "vitest": "^4.1.9",
-    "zod": "^4.3.6"
+    "vitest": "^5.0.2",
+    "zod": "catalog:",
+    "tsup": "^8.5.1"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/closedloop-ai/closedloop-ai.git",
+    "directory": "packages/loops-api"
   }
 }

@@ -9,11 +9,9 @@ import {
   DEFAULT_NAV_ID,
   hrefForNavId,
   type NavId,
-  settingsTabHref,
 } from "../navigation/route-table";
 import { LabsPageOutcome } from "../navigation/use-nav-gates";
 import { PageShell } from "./layout/page-shell";
-import { LABS_SETTINGS_TAB } from "./settings/settings-tabs";
 
 /**
  * ISS-5037 — what a Labs page renders while the container gate is closed or
@@ -27,16 +25,19 @@ import { LABS_SETTINGS_TAB } from "./settings/settings-tabs";
  * beside `route-fallbacks.tsx`, the closest sibling and the one this file's
  * hold state is deliberately NOT.
  *
- * `Unmount` (a kept-alive background mount) falls through to `null` rather than
- * a second hidden `SessionsView` duplicating its queries.
+ * `Unmount` (a kept-alive background mount) and `Blank` (ISS-9731: the active
+ * page of a surface whose withdrawal panel is not rolled out yet) both fall
+ * through to `null` rather than a second hidden `SessionsView` duplicating its
+ * queries. They render the same thing and mean different things, which is why
+ * they are separate members rather than one.
  */
 export function labsGatedPage(
   outcome: LabsPageOutcome,
   pageId: NavId,
-  labsNavOn: boolean
+  action?: ReactNode
 ): ReactNode {
   if (outcome === LabsPageOutcome.Redirect) {
-    return <LabsPageUnavailable labsNavOn={labsNavOn} pageId={pageId} />;
+    return <LabsPageUnavailable action={action} pageId={pageId} />;
   }
   if (outcome === LabsPageOutcome.Hold) {
     return <LabsPageHold pageId={pageId} />;
@@ -61,25 +62,39 @@ export function labsGatedPage(
  * Never the destination's own empty state — "no packs yet" would claim a
  * settled zero for a surface that is simply switched off.
  *
- * ISS-5310: the two gates nest, and the instruction differs by which one is
- * closed, so `labsNavOn` selects the copy. Telling a user to enable Labs when
- * Labs is ALREADY on — the page's own per-item toggle is what is off — sends
- * them to a checkbox that is already ticked and leaves them stuck. Both routes
- * out are one control away; naming the wrong one is the UI lying about state.
+ * ISS-8753: the copy no longer branches on WHICH gate is closed. It used to,
+ * because each had a different control to name — the Settings → Labs tab for a
+ * per-item gate, the "Enable Labs" menu checkbox for the container. Both of
+ * those controls are gone, and every desktop gate now resolves from the
+ * signed-in user's PostHog assignment, so there is no in-app switch left to send
+ * anyone to. Naming one anyway would be the UI lying about the way back, which
+ * is the exact failure the two-branch version existed to prevent.
+ *
+ * ISS-9731 (Marisol, 2026-09-13) — `action` is an OPTIONAL EXTRA the CALLER
+ * supplies, and that distinction is the whole reason it is safe. A reader who
+ * typed `#/help` wanted documentation, and "Go to Dashboard" is the one thing
+ * they did not ask for; the docs site is genuinely reachable, so pointing at it
+ * is not the ISS-8753 failure of naming a control that no longer exists. This
+ * component still does not know WHICH gate is closed and still branches on
+ * nothing: Help's route passes the link because Help owns that knowledge, and
+ * every other destination passes nothing and renders exactly as before.
  */
 export function LabsPageUnavailable({
+  action,
   pageId,
-  labsNavOn,
-}: Readonly<{ pageId: NavId; labsNavOn: boolean }>) {
+}: Readonly<{ action?: ReactNode; pageId: NavId }>) {
   const title = pageTitleForNav(pageId);
-  const recovery = labsPageRecovery(title, labsNavOn);
+  const recovery = labsPageRecovery(title);
   return (
     <PageShell title={title}>
       <EmptyState
         action={
-          <Button asChild variant="outline">
-            <Link href={recovery.href}>{recovery.actionLabel}</Link>
-          </Button>
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <Button asChild variant="outline">
+              <Link href={recovery.href}>{recovery.actionLabel}</Link>
+            </Button>
+            {action}
+          </div>
         }
         description={recovery.description}
         icon={FlaskConicalIcon}
@@ -119,43 +134,26 @@ export function LabsPageHold({ pageId }: Readonly<{ pageId: NavId }>) {
  * ISS-5310 (visual-QA review) — the sentence AND the button, resolved together.
  *
  * They were drifting: the description named the control that brings the page
- * back while the only button on screen went to Sessions, so the per-item variant
- * said "Settings → Labs" and then offered no way there. An empty state whose
+ * back while the only button on screen went somewhere else. An empty state whose
  * entire job is "here is the way back" has to actually go there, and the two
  * halves cannot be allowed to name different destinations — hence one helper
  * returning both.
  *
- * Container gate closed: the way back is the native "Enable Labs" application
- * menu checkbox, which is not linkable, so the action stays the default
- * destination and the copy carries the instruction.
- *
- * Per-item gate closed: the way back IS in the app, so the action goes to
- * Settings — landing ON the Labs tab (ISS-5310, stage cid 3726701529). The copy
- * used to name a tab the only button on screen did not go to, which on a screen
- * whose entire job is the way back is the UI lying about where it leads. The
- * earlier note here claimed a preselect had to race `SettingsPanel`'s mount;
- * that is true only of a dispatched EVENT. `settingsTabHref` carries the tab as
- * a query param the panel reads once mounted, so there is no race to lose.
+ * ISS-8753 — IT NO LONGER PROMISES A CONTROL, because there is no longer one to
+ * promise. A desktop gate opens only if the signed-in user's PostHog assignment
+ * carries it, so the honest sentence names the state and stops; the action is
+ * the one thing that IS reachable, the default destination. Inventing a
+ * plausible instruction here ("ask an admin", "check Settings") would be the
+ * empty state guessing on the user's behalf.
  */
-function labsPageRecovery(
-  title: string,
-  labsNavOn: boolean
-): { href: string; actionLabel: string; description: string } {
-  if (labsNavOn) {
-    return {
-      actionLabel: "Open settings",
-      // One sentence naming the state, one naming the way out. The previous
-      // copy said "turned off" in the heading and "switched off" again here
-      // before reaching anything useful, and pointed with an arrow glyph
-      // nothing else in the desktop copy uses (stage cid 3726701553).
-      description: `${title} is a Labs feature. Turn it on in Settings, under Labs.`,
-      href: settingsTabHref(LABS_SETTINGS_TAB),
-    };
-  }
+function labsPageRecovery(title: string): {
+  href: string;
+  actionLabel: string;
+  description: string;
+} {
   return {
     actionLabel: `Go to ${pageTitleForNav(DEFAULT_NAV_ID)}`,
-    description:
-      "This page is part of Labs, which is turned off. Turn on Enable Labs in the application menu to bring it back.",
+    description: `${title} is not enabled for your account.`,
     href: hrefForNavId(DEFAULT_NAV_ID),
   };
 }

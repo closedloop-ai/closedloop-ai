@@ -63,7 +63,7 @@
    with the strip. The 3px radius is DELIBERATE and not fallout from
    `--radius-full` having been undefined (whitlockk, #4943): the handed-off Branch
    prototype styles both of its status dots `rounded-[0.1875rem]`
-   (`apps/prototypes/app/p/branches/components/detail-panels.tsx`), and the
+   (`packages/app/branches/components/prototype-preview/components/detail-panels.tsx`), and the
    conformance commit that built this screen carried that exact value over for
    fidelity. Branch's dot is an approved 3px rounded square, Session's is a
    circle; changing it belongs with a revision of the prototype, not with the
@@ -369,6 +369,16 @@
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
   gap: 12px;
+}
+
+/*
+ * A strip the hide gate has taken cards out of keeps the tracks the full row
+ * would have laid, so the survivors stay the width they were designed at
+ * instead of stretching across the freed space. `auto-fill` is the whole
+ * difference: it holds the empty tracks that `auto-fit` collapses.
+ */
+.bq-statcards[data-partial] {
+  grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
 }
 
 /*

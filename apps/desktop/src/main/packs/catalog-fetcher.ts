@@ -10,7 +10,7 @@
  * ISS-5274 SPLIT. The run is two halves that execute in DIFFERENT processes:
  *
  *   - {@link collectCatalogFetchPlan} — network only, no DB. Runs in the MAIN
- *     process, where ~20 `gh`/HTTPS calls can take their time without occupying
+ *     process, where ~20 HTTPS calls can take their time without occupying
  *     the db-host's op queue. This is the expensive half: it was measured at
  *     13.4s of `store:catalog.fetch.run` on a real machine, two orders of
  *     magnitude over the 100ms db-op budget.
@@ -31,12 +31,13 @@
  */
 
 import { stableStringify } from "@closedloop-ai/loops-api/stable-stringify";
-import { resolveBinaryFromLoginShellSync } from "../../server/shell-path.js";
 import type { DesktopPrisma } from "../database/prisma-client.js";
 import { gatewayLog } from "../logging/gateway-logger.js";
+import { BUNDLED_LOCAL_CONTENTS_TYPE } from "./catalog-contents.js";
 import {
   fetchPluginManifest,
   fetchRepoStats,
+  GitHubJsonFetchStatus,
   parseGithubUrl,
 } from "./catalog-github-client.js";
 import { applyFetchResult } from "./catalog-store.js";
@@ -56,10 +57,11 @@ const DEFAULT_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24h
 export type FetchSummary = {
   started_at: string;
   ended_at?: string;
-  used_gh_cli: boolean;
   succeeded: number;
   failed: number;
   skipped: number;
+  /** Rows deliberately not fetched because they ship with Desktop. */
+  bundled: number;
 };
 
 type ContentsJson = {
@@ -92,30 +94,14 @@ export type CatalogFetchPlanEntry = {
 
 export type CatalogFetchPlan = {
   startedAt: string;
-  usedGhCli: boolean;
   entries: CatalogFetchPlanEntry[];
   /** Rows whose `github_url` did not parse — nothing to fetch. */
   skipped: number;
   /** Rows whose network fetch produced nothing usable. */
   failed: number;
+  /** Rows that ship with Desktop and have no upstream to measure. */
+  bundled: number;
 };
-
-/**
- * Whether the local `gh` CLI is usable, resolved SYNCHRONOUSLY through a login
- * shell.
- *
- * ISS-5274 — DO NOT call this from the main process. The sync resolver
- * (`resolveBinaryFromLoginShellSync`) spawns a login shell and measured 2,667ms
- * of `resolveExecutablesOnPathSync` in the perf baseline; on the main thread
- * that is a hard UI freeze, strictly worse than today where it only blocks the
- * db-host. It stays exported for {@link runCatalogFetch}, the in-db-host
- * fallback. Main-process callers inject the ASYNC resolver instead — see
- * `catalog-fetch-coordinator.ts`.
- */
-export function ghCliAvailable(): boolean {
-  const result = resolveBinaryFromLoginShellSync("gh");
-  return result.source !== "fallback" && result.source !== "override_invalid";
-}
 
 function parseJsonField(value: unknown): ContentsJson | null {
   if (!value) {
@@ -183,10 +169,6 @@ const REAL_TRANSPORT: CatalogFetchTransport = {
  * Fetch stats for every catalog row. NETWORK ONLY — takes the rows and returns
  * a plan, touching no database, so it can run in the main process while the
  * db-host serves renderer reads.
- *
- * `ghAvailable` is a PARAMETER, never resolved here: the main process must
- * supply it from the async resolver (see {@link ghCliAvailable}).
- *
  * `shouldStop` is checked BETWEEN rows so app teardown does not keep launching
  * requests. This matters because of where the work now runs: while the fetch
  * lived in the db-host, closing that child process killed any in-flight
@@ -199,7 +181,6 @@ const REAL_TRANSPORT: CatalogFetchTransport = {
 export async function collectCatalogFetchPlan(
   rows: readonly CatalogFetchRow[],
   options: {
-    ghAvailable: boolean;
     transport?: CatalogFetchTransport;
     shouldStop?: () => boolean;
   }
@@ -208,18 +189,34 @@ export async function collectCatalogFetchPlan(
   const shouldStop = options.shouldStop ?? (() => false);
   const plan: CatalogFetchPlan = {
     startedAt: new Date().toISOString(),
-    usedGhCli: options.ghAvailable,
     entries: [],
     skipped: 0,
     failed: 0,
+    bundled: 0,
   };
   for (const row of rows) {
     if (shouldStop()) {
       return plan;
     }
+    // Ahead of the URL parse on purpose: a bundled pack's `github_url` is a
+    // human-facing link, not a fetch target, so neither its shape nor its
+    // reachability is this loop's business.
+    if (parseJsonField(row.contents)?.type === BUNDLED_LOCAL_CONTENTS_TYPE) {
+      plan.bundled += 1;
+      continue;
+    }
     const parsed = parseGithubUrl(row.githubUrl);
     if (!parsed) {
       plan.skipped += 1;
+      // The pack id, never the value. `github_url` is external catalog data
+      // and this line lands in the persistent gateway log AND the in-app
+      // Diagnostics buffer; a URL that failed to parse can still carry
+      // userinfo credentials or a query string. The pack id is what an
+      // operator acts on, and the offending row is one catalog lookup away.
+      gatewayLog.warn(
+        "catalog-fetcher",
+        `skipping ${row.packId}: github_url is not a parseable GitHub repository URL`
+      );
       continue;
     }
     const contents = parseJsonField(row.contents);
@@ -257,10 +254,10 @@ export async function applyCatalogFetchPlan(
 ): Promise<FetchSummary> {
   const summary: FetchSummary = {
     started_at: plan.startedAt,
-    used_gh_cli: plan.usedGhCli,
     succeeded: 0,
     failed: plan.failed,
     skipped: plan.skipped,
+    bundled: plan.bundled,
   };
   const current = await readCatalogFetchRows(prisma);
   const fingerprints = new Map(
@@ -317,7 +314,6 @@ export async function runCatalogFetch(
   prisma: DesktopPrisma
 ): Promise<FetchSummary> {
   const startedAt = new Date().toISOString();
-  const ghAvailable = ghCliAvailable();
   let rows: CatalogFetchRow[];
   try {
     rows = await readCatalogFetchRows(prisma);
@@ -326,13 +322,13 @@ export async function runCatalogFetch(
     gatewayLog.warn("catalog-fetcher", `cannot read pack_catalog: ${msg}`);
     return {
       started_at: startedAt,
-      used_gh_cli: ghAvailable,
       succeeded: 0,
       failed: 0,
       skipped: 0,
+      bundled: 0,
     };
   }
-  const plan = await collectCatalogFetchPlan(rows, { ghAvailable });
+  const plan = await collectCatalogFetchPlan(rows, {});
   return await applyCatalogFetchPlan(prisma, plan);
 }
 
@@ -382,11 +378,14 @@ async function collectMarketplacePluginEntry(
   const manifest = await transport.fetchPluginManifest(
     mkRepo ? mkRepo.owner : parsed.owner,
     mkRepo ? mkRepo.repo : parsed.repo,
-    contents.plugin_path ?? "",
-    plan.usedGhCli
+    contents.plugin_path ?? ""
   );
   if (!manifest) {
     plan.failed += 1;
+    gatewayLog.warn(
+      "catalog-fetcher",
+      `plugin manifest lookup failed for ${row.packId} (${mkRepo ? `${mkRepo.owner}/${mkRepo.repo}` : `${parsed.owner}/${parsed.repo}`}); row left unwritten`
+    );
     return null;
   }
   // Decide if github_url points to a distinct upstream.
@@ -394,14 +393,31 @@ async function collectMarketplacePluginEntry(
     mkRepo && parsed.owner === mkRepo.owner && parsed.repo === mkRepo.repo;
   const stats = sameAsMarketplace
     ? null
-    : await transport.fetchRepoStats(parsed.owner, parsed.repo, plan.usedGhCli);
+    : await transport.fetchRepoStats(parsed.owner, parsed.repo);
+  // A failed lookup is now a result object rather than a null, so truthiness no
+  // longer separates "fetched" from "failed" — only the Success status does.
+  const fetched =
+    stats?.status === GitHubJsonFetchStatus.Success ? stats.value : null;
+  // Two very different reasons produce `stars: null` on this branch — the
+  // deliberate one above (a sub-plugin has no star count of its own) and a
+  // lookup that failed. Only the deliberate same-repo case can be written: a
+  // failed distinct-upstream lookup would otherwise stamp a fresh success onto
+  // missing metadata and make the UI lie about what was fetched.
+  if (!(sameAsMarketplace || fetched)) {
+    plan.failed += 1;
+    gatewayLog.warn(
+      "catalog-fetcher",
+      `upstream repo lookup failed for ${row.packId} (${parsed.owner}/${parsed.repo}); row left unwritten`
+    );
+    return null;
+  }
   return {
     packId: row.packId,
     sourceFingerprint: catalogSourceFingerprint(row),
-    stars: stats?.repo.stargazers_count ?? null,
-    forks: stats?.repo.forks_count ?? null,
+    stars: fetched?.repo.stargazers_count ?? null,
+    forks: fetched?.repo.forks_count ?? null,
     description: manifest.description || null,
-    lastRelease: manifest.version || stats?.release || null,
+    lastRelease: manifest.version || fetched?.release || null,
   };
 }
 
@@ -412,21 +428,29 @@ async function collectRepoEntry(
   plan: CatalogFetchPlan,
   transport: CatalogFetchTransport
 ): Promise<CatalogFetchPlanEntry | null> {
-  const stats = await transport.fetchRepoStats(
-    parsed.owner,
-    parsed.repo,
-    plan.usedGhCli
-  );
-  if (!stats) {
+  const stats = await transport.fetchRepoStats(parsed.owner, parsed.repo);
+  if (stats.status !== GitHubJsonFetchStatus.Success) {
     plan.failed += 1;
+    // Name which kind of failure this is: a 404 will still be a 404 next run,
+    // so it wants a human, while an unavailable transport usually resolves on
+    // its own. A monitor over this site should alert on the transient class and
+    // leave the permanent one to the ticket that owns the row.
+    const permanence =
+      stats.status === GitHubJsonFetchStatus.NotFound
+        ? "permanently (absent, renamed, or private to an unauthenticated request)"
+        : "transiently (rate limit, network, or timeout)";
+    gatewayLog.warn(
+      "catalog-fetcher",
+      `repo stats lookup failed ${permanence} for ${row.packId} (${parsed.owner}/${parsed.repo}); row left unwritten`
+    );
     return null;
   }
   return {
     packId: row.packId,
     sourceFingerprint: catalogSourceFingerprint(row),
-    stars: stats.repo.stargazers_count ?? null,
-    forks: stats.repo.forks_count ?? null,
-    description: stats.repo.description || null,
-    lastRelease: stats.release,
+    stars: stats.value.repo.stargazers_count ?? null,
+    forks: stats.value.repo.forks_count ?? null,
+    description: stats.value.repo.description || null,
+    lastRelease: stats.value.release,
   };
 }

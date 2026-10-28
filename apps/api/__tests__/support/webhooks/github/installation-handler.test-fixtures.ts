@@ -12,10 +12,12 @@
  */
 
 import type {
+  Installation,
   InstallationCreatedEvent,
   InstallationDeletedEvent,
   InstallationSuspendEvent,
   InstallationUnsuspendEvent,
+  User,
 } from "@octokit/webhooks-types";
 import { VcsProviderKind } from "@repo/api/src/types/vcs-neutral";
 import type { GitHubInstallation } from "@repo/database";
@@ -39,7 +41,7 @@ function createAccount(
   login: string,
   id: number,
   accountType: "Organization" | "User"
-) {
+): User {
   return {
     login,
     id,
@@ -62,14 +64,14 @@ function createAccount(
   };
 }
 
-function createDefaultSender() {
+function createDefaultSender(): User {
   return createAccount(DEFAULT_SENDER_LOGIN, DEFAULT_SENDER_ID, "User");
 }
 
 function createInstallationPayload(
   installationId: number,
   accountLogin: string
-) {
+): Installation {
   return {
     id: installationId,
     account: createAccount(accountLogin, ACCOUNT_ID, "Organization"),
@@ -109,7 +111,7 @@ export function createInstallationCreatedEvent(
     repositories,
     sender: createDefaultSender(),
     requester: undefined,
-  } as InstallationCreatedEvent;
+  };
 }
 
 /**
@@ -124,7 +126,7 @@ export function createInstallationDeletedEvent(
     installation: createInstallationPayload(installationId, accountLogin),
     sender: createDefaultSender(),
     repositories: [],
-  } as InstallationDeletedEvent;
+  };
 }
 
 /**
@@ -143,7 +145,7 @@ export function createInstallationSuspendEvent(
       suspended_at: EVENT_TIMESTAMP,
     },
     sender: createAccount(suspendedBy, SUSPENDER_ID, "User"),
-  } as InstallationSuspendEvent;
+  };
 }
 
 /**
@@ -155,9 +157,13 @@ export function createInstallationUnsuspendEvent(
 ): InstallationUnsuspendEvent {
   return {
     action: "unsuspend",
-    installation: createInstallationPayload(installationId, accountLogin),
+    installation: {
+      ...createInstallationPayload(installationId, accountLogin),
+      suspended_by: null,
+      suspended_at: null,
+    },
     sender: createDefaultSender(),
-  } as InstallationUnsuspendEvent;
+  };
 }
 
 /**

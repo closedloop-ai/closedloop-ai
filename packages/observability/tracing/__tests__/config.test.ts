@@ -15,6 +15,7 @@ import {
 // ---------------------------------------------------------------------------
 
 const ENDPOINT = "https://otlp.example.test/v1/traces";
+const LOOPBACK_ENDPOINT = "http://localhost:4318/v1/traces";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -77,6 +78,16 @@ describe("resolveTracingConfig — disabled precedence", () => {
     });
   });
 
+  it("reports MissingApiKey, not MissingEndpoint, with no key and no endpoint", () => {
+    clearTracingEnv();
+    vi.stubEnv("VERCEL", "1");
+
+    expect(resolveTracingConfig()).toEqual({
+      enabled: false,
+      reason: TracingDisabledReason.MissingApiKey,
+    });
+  });
+
   it("stays off when no endpoint is configured instead of guessing one", () => {
     clearTracingEnv();
     vi.stubEnv("VERCEL", "1");
@@ -106,6 +117,33 @@ describe("resolveTracingConfig — enabled", () => {
     expect(config.endpoint).toBe(ENDPOINT);
     expect(config.service).toBe("cl-api");
     expect(config.env).toBe("prod");
+  });
+
+  it("needs no key when a loopback collector sidecar authenticates the export", () => {
+    clearTracingEnv();
+    vi.stubEnv("DD_TRACING_ENABLED", "1");
+    vi.stubEnv("DD_OTLP_TRACES_ENDPOINT", LOOPBACK_ENDPOINT);
+
+    const config = resolveTracingConfig();
+
+    expect(config).toMatchObject({
+      enabled: true,
+      endpoint: LOOPBACK_ENDPOINT,
+      apiKey: undefined,
+    });
+  });
+
+  it("sends no key to a loopback collector even when DD_API_KEY is set", () => {
+    clearTracingEnv();
+    vi.stubEnv("DD_TRACING_ENABLED", "1");
+    vi.stubEnv("DD_API_KEY", "dd-test-key");
+    vi.stubEnv("DD_OTLP_TRACES_ENDPOINT", LOOPBACK_ENDPOINT);
+
+    expect(resolveTracingConfig()).toMatchObject({
+      enabled: true,
+      endpoint: LOOPBACK_ENDPOINT,
+      apiKey: undefined,
+    });
   });
 
   it("opts a non-Vercel runtime in explicitly", () => {

@@ -3,24 +3,32 @@
   "ignoreCommand": "node scripts/skip-ci.js",
   "crons": [
     {
+      "path": "/cron/cleanup-session-mesh",
+      "schedule": "19 * * * *"
+    },
+    {
+      "path": "/cron/cleanup-artifact-link-tree-pages",
+      "schedule": "31 * * * *"
+    },
+    {
       "path": "/cron/keep-alive",
       "schedule": "0 1 * * *"
-    },
-    {
-      "path": "/cron/timeout-loops",
-      "schedule": "*/5 * * * *"
-    },
-    {
-      "path": "/cron/sample-heartbeat-lag",
-      "schedule": "*/5 * * * *"
     },
     {
       "path": "/cron/sample-session-ingestion-health",
       "schedule": "*/15 * * * *"
     },
     {
-      "path": "/cron/sample-merge-queue-stall",
+      "path": "/cron/sample-command-queue-depth",
       "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/cron/drain-idle-command-queues",
+      "schedule": "2-59/5 * * * *"
+    },
+    {
+      "path": "/cron/sweep-unacked-commands",
+      "schedule": "4-59/5 * * * *"
     },
     {
       "path": "/cron/cleanup-preview-schemas",
@@ -35,28 +43,32 @@
       "schedule": "53 4 * * *"
     },
     {
-      "path": "/cron/reconcile-stale-sessions",
-      "schedule": "17 * * * *"
+      "path": "/cron/sweep-orphaned-chunk-markers",
+      "schedule": "13 5 * * *"
     },
     {
-      "path": "/cron/backfill-orphan-transcripts",
-      "schedule": "11 5 * * *"
+      "path": "/cron/reconcile-stale-sessions",
+      "schedule": "17 * * * *"
     },
     {
       "path": "/cron/reconcile-attachments",
       "schedule": "23 5 * * *"
     },
     {
-      "path": "/cron/reconcile-attachment-rows",
-      "schedule": "47 5 * * *"
-    },
-    {
       "path": "/cron/drain-check-run-retries",
       "schedule": "*/10 * * * *"
     },
     {
-      "path": "/cron/cleanup-loop-state",
-      "schedule": "47 3 * * *"
+      "path": "/cron/drain-branch-materialization-retries",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/cron/refresh-branch-analytics-rollups",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/cron/cleanup-feature-flag-decisions",
+      "schedule": "29 5 * * *"
     },
     {
       "path": "/cron/drain-audit-outbox",
@@ -67,8 +79,37 @@
       "schedule": "*/15 * * * *"
     },
     {
+      "path": "/cron/reconcile-pr-comments",
+      "schedule": "*/15 * * * *"
+    },
+    {
       "path": "/cron/bootstrap-repo-sync-states",
       "schedule": "37 * * * *"
+    },
+    {
+      "path": "/cron/audit-data-invariants",
+      "schedule": "23 3 * * *"
+    },
+    {
+      "path": "/cron/backfill-pensero-delivery",
+      "schedule": "7 6 * * *"
+    },
+    {
+      "path": "/cron/sweep-doc-sync-state",
+      "schedule": "29 6 * * *"
+    },
+    {
+      "path": "/cron/cleanup-repository-default-observation-receipts",
+      "schedule": "1 1 * * *"
     }
-  ]
+  ],
+  "git": {
+    "deploymentEnabled": {
+      "*": false,
+      "green": true,
+      "production": true,
+      "vibe/**": true,
+      "functional-prototype/**": true
+    }
+  }
 }

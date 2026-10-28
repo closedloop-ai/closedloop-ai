@@ -7,8 +7,9 @@ import {
 } from "./session-frustration-card";
 
 const meta = {
-  title: "App Core/Settings/Session Frustration Card",
+  title: "Composites v1.0/Settings/Session Frustration Card",
   component: SessionFrustrationToggleCard,
+  tags: ["deprecated", "autodocs"],
   args: {
     checked: false,
     isSaving: false,

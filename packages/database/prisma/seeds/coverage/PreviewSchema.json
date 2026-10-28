@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Bookkeeping for preview-deploy database schemas; infrastructure, not tenant data."
+}

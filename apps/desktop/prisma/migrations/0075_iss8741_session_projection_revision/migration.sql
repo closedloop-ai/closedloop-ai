@@ -1,0 +1,67 @@
+-- ISS-8741: the durable half of the versioned-record substrate — two markers that
+-- let a schema or parser change build and validate a replacement derived
+-- projection BEFORE the last known-good one can be retired.
+--
+-- WHY `data_revision` COULD NOT CARRY THIS. That column answers "which
+-- derivation semantics produced the rows that are here", and the rebuild selects
+-- on it. It is stamped by the writer regardless of whether the projection those
+-- rows form is usable by the views that read it, so it cannot say "this
+-- projection was validated". It is also a single value, so it cannot hold the
+-- standing projection's revision and an in-flight replacement's revision at the
+-- same time — and telling those two apart is the whole point. Overloading it
+-- with a third sentinel would also collide with the two it already carries
+-- (-1 import-pending, 0 maintenance-stale).
+--
+-- `projection_known_good_revision` — the formatted source revision of the last
+-- projection that passed its target views' OWN validators and committed. The
+-- format is a sorted `name=version` list (see
+-- src/main/database/derived-projection-revision.ts) rather than an integer,
+-- because four counters decide what a session's projection looks like and they
+-- move independently: the derivation revision, the two version-gated parser
+-- passes that re-derive parts of it outside that revision, and the record schema
+-- it is shaped to. Equality of the whole descriptor is the staleness test, and a
+-- fifth component can be added later with no migration — an older descriptor
+-- simply stops matching, which is the correct "re-derive this" answer.
+--
+-- `projection_candidate_revision` — claimed in its own transaction BEFORE a
+-- replacement is built, cleared when the replacement commits or is abandoned. A
+-- process that dies anywhere in that window leaves this set and the known-good
+-- stamp untouched, which is a readable statement that the standing projection is
+-- still the good one. The replacement itself is one transaction, so an
+-- interruption cannot also have written half a projection.
+--
+-- PURELY ADDITIVE, AND NOT BACKFILLED. Two new nullable columns; no existing row
+-- is rewritten and no existing column changes type. Every pre-existing session
+-- reads NULL on both, which is the truthful value, not a gap: none of those
+-- projections was ever put to a validator, and stamping one now would assert a
+-- verification that never happened. A NULL known-good revision is the legacy
+-- flow — the row behaves exactly as it did before this migration until a gated
+-- replacement earns it a stamp.
+--
+-- LOCAL ONLY. Neither column is part of the desktop -> cloud sync payload, so no
+-- installed cloud or Desktop build sees a new field.
+
+-- AlterTable
+ALTER TABLE "sessions" ADD COLUMN "projection_known_good_revision" TEXT;
+ALTER TABLE "sessions" ADD COLUMN "projection_candidate_revision" TEXT;
+
+-- CreateIndex
+--
+-- NO READER TODAY, deliberately. Recovery from an interrupted replacement does
+-- not depend on this index or on the marker: the row keeps its stale
+-- `data_revision`, so `listStaleRevisionSessions` re-selects it on the next boot
+-- exactly as it did before this migration. The marker records WHICH revision was
+-- attempted and did not land, which is what distinguishes a doomed candidate
+-- from one never tried — and ISS-8742's resumable reparse worker is the reader
+-- that needs that distinction. Shipping the index with the column, rather than
+-- with its first reader, keeps that worker from having to migrate the table
+-- again on an install that already has the data.
+--
+-- Partial on the marker itself, so it holds nothing on an install with no
+-- replacement in flight and a scan of it costs O(interrupted) rather than a full
+-- scan of `sessions` (whose `metadata` overflow pages make a full scan
+-- expensive) — the same shape, and the same reason, as
+-- `idx_sessions_data_revision_pending`. Keyed on `id` alone because the indexed
+-- column is constant across every row the index can hold, so it covers both the
+-- select and the sort.
+CREATE INDEX IF NOT EXISTS "idx_sessions_projection_candidate" ON "sessions"("id") WHERE projection_candidate_revision IS NOT NULL;

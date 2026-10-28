@@ -1,4 +1,4 @@
-import { Badge } from "@repo/design-system/components/ui/badge";
+import { BADGE_VARIANTS, Badge } from "@repo/design-system/components/ui/badge";
 import { ToneLabel } from "@repo/design-system/components/ui/tone-label";
 import type { Meta, StoryObj } from "@storybook/react";
 
@@ -10,24 +10,13 @@ import type { Meta, StoryObj } from "@storybook/react";
  * string. The color comes from the same `variant` vocabulary the badge uses.
  */
 const meta = {
-  title: "Design System/Data Display/Tone Label",
+  title: "Composites v1.0/Feedback & Status/Tone Label",
   component: ToneLabel,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   argTypes: {
     children: { control: "text" },
     variant: {
-      options: [
-        "default",
-        "secondary",
-        "destructive",
-        "error",
-        "success",
-        "warning",
-        "info",
-        "accent",
-        "muted",
-        "outline",
-      ],
+      options: BADGE_VARIANTS,
       control: { type: "radio" },
     },
   },
@@ -54,7 +43,13 @@ export const Default: Story = {};
  * so the SSOT color relationship is visible: the label is the badge's text
  * color with the fill and border dropped.
  */
+// Every variant compared against its matching Badge, not one concept per
+// story — kept out of the AI manifest for that reason.
 export const LabelVsBadge: Story = {
+  tags: ["!manifest"],
+  parameters: {
+    controls: { disable: true },
+  },
   render: () => (
     <div className="flex flex-col gap-3">
       {(
@@ -66,6 +61,8 @@ export const LabelVsBadge: Story = {
           "muted",
           "error",
           "outline",
+          "ai",
+          "neutral",
         ] as const
       ).map((variant) => (
         <div className="flex items-center gap-4" key={variant}>

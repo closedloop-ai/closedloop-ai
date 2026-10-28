@@ -11,9 +11,7 @@ import {
   type AgentComponentColumnId,
 } from "../../hooks/use-agent-components-view-state";
 
-// ---------------------------------------------------------------------------
 // Group-by options — match the AgentComponentGroupBy enum values exactly.
-// ---------------------------------------------------------------------------
 
 const GROUP_BY_OPTIONS = [
   { value: AgentComponentGroupBy.None, label: "None" },
@@ -27,9 +25,7 @@ const GROUP_BY_OPTIONS = [
   { value: AgentComponentGroupBy.Harness, label: "Harness" },
 ] as const;
 
-// ---------------------------------------------------------------------------
 // Props
-// ---------------------------------------------------------------------------
 
 export type AgentsViewMenuProps = Readonly<{
   /** Current group-by dimension. */
@@ -49,9 +45,7 @@ export type AgentsViewMenuProps = Readonly<{
   align?: "start" | "end";
 }>;
 
-// ---------------------------------------------------------------------------
 // Component
-// ---------------------------------------------------------------------------
 
 /**
  * T-3.3 — Agents workspace View menu adapter.

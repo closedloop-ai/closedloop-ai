@@ -29,7 +29,7 @@ By default — a plain-text `q` on its own — the tool returns the legacy docum
 - `mode` is supplied;
 - `types` is supplied;
 - `cursor` is supplied, so a continuation call reaches the unified corpus rather than dead-ending on the legacy path;
-- `q` itself carries an inline query-language filter — an `@handle` owner mention, or one of the five filter keys `type:`, `status:`, `priority:`, `project:`, and `updated:` (for example `type:loop deploy`). `key:value` is the equality form; the ordered keys also take a comparison operator suffixed on the key — `status` accepts `!=`, and `priority` and `updated` accept `!=`, `>`, `<`, `>=`, and `<=` — so `status!=DONE`, `priority>=MEDIUM`, and `updated>7d` select the unified path the same way, as does the `updated:2026-07-01..2026-07-15` range form. `type` and `project` are equality-only. A `word:value` token whose key is none of the five is ordinary free text and leaves the legacy response in place.
+- `q` itself carries an inline query-language filter — an `@handle` owner mention, or one of the five filter keys `type:`, `status:`, `priority:`, `project:`, and `updated:`. `key:value` is the equality form; the ordered keys also take a comparison operator suffixed on the key — `status` accepts `!=`, and `priority` and `updated` accept `!=`, `>`, `<`, `>=`, and `<=` — so `status!=DONE`, `priority>=MEDIUM`, and `updated>7d` select the unified path the same way, as does the `updated:2026-07-01..2026-07-15` range form. `type` and `project` are equality-only. A `word:value` token whose key is none of the five is ordinary free text and leaves the legacy response in place.
 
 `limit` is the one input that does **not** switch the response shape: it is a page-size modifier on the unified search. The legacy documents + projects search ignores it and returns at most 25 rows per collection, with no way to page past them. See [Unified search](#unified-search).
 
@@ -61,7 +61,7 @@ The default (legacy) response is a JSON payload with the echoed query, per-colle
         "avatarUrl": "https://..."
       },
       "updatedAt": "2026-01-15T12:00:00.000Z",
-      "webUrl": "https://app.closedloop.ai/acme/features/FEA-1035"
+      "webUrl": "https://app.closedloop.ai/acme/documents/FEA-1035"
     }
   ],
   "projects": [
@@ -97,7 +97,9 @@ Each entry in `documents` describes a matching PRD, implementation plan, templat
 | `updatedAt` | Last-updated timestamp |
 | `webUrl` | Full webapp URL for the document, or `null` |
 
-The `webUrl` field is a ready-to-open link to the document in the Closedloop web app (for example `https://app.closedloop.ai/acme/features/FEA-1035`). It is derived from the document's `slug` and `type`; when either is missing the field is `null`.
+The `webUrl` field is a ready-to-open link to the document in the Closedloop web app (for example `https://app.closedloop.ai/acme/documents/FEA-1035`). It is derived from the document's `slug`, `type`, and the session's org slug; when the `slug` or the `type` is missing the field is `null`.
+
+Every `webUrl` on this page is shown in its org-scoped form, which is the usual one. The org slug is omitted when the server cannot confirm it for the current session, leaving an org-less path such as `/documents/ISS-1035`. The browser resolves that URL against whichever org the reader is signed into — it is a redirect, not a tenant-bound link — so do not describe it as pointing at a specific organization, never read an org segment out of a `webUrl` as a tenant identifier, and never add a slug back to fix one.
 
 ### Project results
 
@@ -165,6 +167,8 @@ The response carries the free-text query that was actually run and the mode, a `
 | `rank` | Relevance score; higher is more relevant |
 | `updatedAt` | The source entity's last-updated timestamp |
 | `webUrl` | Ready-to-open webapp link to the entity, or `null` |
+
+This `webUrl` carries the same conditional org slug as the legacy one above, and the same warning against reading a tenant out of it.
 
 A non-null `nextCursor` means the scan may hold more hits. Page from MCP by calling `search` again with the original `q` — the string you sent, inline filters and all — plus the same `mode`, `types`, and `limit`, and `cursor` set to that value. Retain that string yourself: paging with the response's `query` field instead drops the filters it had already stripped, so page two silently runs a different, broader search. Because `cursor` selects the unified path on its own, the continuation keeps paging the unified corpus instead of falling back to the legacy response. Follow the cursors until one comes back `null` — that is the only end-of-results signal, and an intermediate page can legitimately return zero hits when per-hit re-authorization drops everything the scan found. `resultCount` counts the hits on the page in hand, not the whole match set.
 

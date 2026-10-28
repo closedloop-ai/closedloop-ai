@@ -1,7 +1,7 @@
 import {
+  CommentSurface,
+  CommentTargetType,
   ThreadStatus,
-  TraceCommentSurface,
-  TraceCommentTargetType,
 } from "@repo/api/src/types/comment";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -11,7 +11,6 @@ vi.mock("@repo/database", async () => {
   );
   return createDatabaseMockModule({
     ArtifactType: { SESSION: "SESSION", BRANCH: "BRANCH" },
-    Prisma: { JsonNull: null },
   });
 });
 
@@ -23,15 +22,13 @@ vi.mock("@/lib/mention-notifications", () => ({
   dispatchMentionNotifications: vi.fn(),
 }));
 
-import { getMockWithDb, mockWithDbTx } from "../../__tests__/utils/db-helpers";
-import {
-  TRACE_COMMENT_TARGET_THREAD_LIMIT,
-  traceCommentsService,
-} from "./service";
+import { TRACE_COMMENT_TARGET_THREAD_LIMIT } from "@/app/comments/service/trace-comment-thread-limit";
+import { mockWithDbAll, mockWithDbTx } from "../../__tests__/utils/db-helpers";
+import { traceCommentsService } from "./service";
 
-const mockWithDb = getMockWithDb();
 const branchFindFirst = vi.fn();
 const commentThreadFindMany = vi.fn();
+const eligibilityQueryRaw = vi.fn();
 const anchor = {
   traceId: "trace:branch-1:0",
   turnId: "turn:branch-1:0",
@@ -49,23 +46,68 @@ describe("traceCommentsService Branch surfaces", () => {
     vi.clearAllMocks();
     branchFindFirst.mockResolvedValue({ artifactId: "branch-artifact-1" });
     commentThreadFindMany.mockResolvedValue([
-      traceCommentRowForSurface(TraceCommentSurface.BranchDetail),
-      traceCommentRowForSurface(TraceCommentSurface.BranchTimeline),
+      traceCommentRowForSurface(CommentSurface.BranchDetail),
+      traceCommentRowForSurface(CommentSurface.BranchTimeline),
     ]);
-    mockWithDb.mockImplementation((callback) =>
-      callback({
-        branchDetail: { findFirst: branchFindFirst },
-        commentThread: {
-          findMany: commentThreadFindMany,
-        },
-        user: { findMany: vi.fn().mockResolvedValue([]) },
-      })
-    );
+    eligibilityQueryRaw.mockResolvedValue([{ id: "branch-artifact-1" }]);
+    mockWithDbAll({
+      $queryRaw: eligibilityQueryRaw,
+      branchDetail: { findFirst: branchFindFirst },
+      commentThread: {
+        findMany: commentThreadFindMany,
+      },
+      user: { findMany: vi.fn().mockResolvedValue([]) },
+    });
+  });
+
+  it("returns null when Product eligibility is revoked after comment projection", async () => {
+    eligibilityQueryRaw
+      .mockResolvedValueOnce([{ id: "branch-artifact-1" }])
+      .mockResolvedValueOnce([]);
+
+    const comments = await traceCommentsService.list({
+      organizationId: "org-1",
+      userId: "user-1",
+      target: {
+        type: CommentTargetType.Branch,
+        id: "branch-artifact-1",
+      },
+    });
+
+    expect(comments).toBeNull();
+    expect(commentThreadFindMany).toHaveBeenCalledOnce();
+    expect(eligibilityQueryRaw).toHaveBeenCalledTimes(2);
+  });
+
+  it("applies a final Product gate to hydrated aggregate Branch rows", async () => {
+    const queryRaw = vi
+      .fn()
+      .mockResolvedValueOnce([{ id: "thread-branch_detail", count: 1n }])
+      .mockResolvedValueOnce([]);
+    mockWithDbTx({
+      $queryRaw: queryRaw,
+      commentThread: {
+        findMany: vi
+          .fn()
+          .mockResolvedValue([
+            traceCommentRowForSurface(CommentSurface.BranchDetail),
+          ]),
+      },
+      user: { findMany: vi.fn().mockResolvedValue([]) },
+    });
+
+    const response = await traceCommentsService.listAll({
+      organizationId: "org-1",
+      userId: "user-1",
+      filters: { targetType: CommentTargetType.Branch },
+    });
+
+    expect(response).toEqual({ items: [], total: 1, nextCursor: null });
   });
 
   it("separates detail and timeline collections with detail as default", async () => {
     const target = {
-      type: TraceCommentTargetType.Branch,
+      type: CommentTargetType.Branch,
       id: "branch-artifact-1",
     } as const;
     const detail = await traceCommentsService.list({
@@ -77,14 +119,14 @@ describe("traceCommentsService Branch surfaces", () => {
       organizationId: "org-1",
       userId: "user-1",
       target,
-      surface: TraceCommentSurface.BranchTimeline,
+      surface: CommentSurface.BranchTimeline,
     });
 
     expect(detail?.map(({ surface }) => surface)).toEqual([
-      TraceCommentSurface.BranchDetail,
+      CommentSurface.BranchDetail,
     ]);
     expect(timeline?.map(({ surface }) => surface)).toEqual([
-      TraceCommentSurface.BranchTimeline,
+      CommentSurface.BranchTimeline,
     ]);
     expect(commentThreadFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -93,7 +135,7 @@ describe("traceCommentsService Branch surfaces", () => {
         where: expect.objectContaining({
           metadata: {
             path: ["surface"],
-            equals: TraceCommentSurface.BranchTimeline,
+            equals: CommentSurface.BranchTimeline,
           },
         }),
       })
@@ -102,7 +144,7 @@ describe("traceCommentsService Branch surfaces", () => {
 
   it("rejects reply, update, and delete when persisted metadata is on another surface", async () => {
     const wrongSurfaceThread = traceCommentRowForSurface(
-      TraceCommentSurface.BranchDetail
+      CommentSurface.BranchDetail
     );
     const commentCreate = vi.fn();
     const commentUpdate = vi.fn();
@@ -119,10 +161,10 @@ describe("traceCommentsService Branch surfaces", () => {
       organizationId: "org-1",
       userId: "user-1",
       target: {
-        type: TraceCommentTargetType.Branch,
+        type: CommentTargetType.Branch,
         id: "branch-artifact-1",
       },
-      surface: TraceCommentSurface.BranchTimeline,
+      surface: CommentSurface.BranchTimeline,
       commentId: "comment-branch_detail",
     } as const;
 
@@ -146,7 +188,7 @@ describe("traceCommentsService Branch surfaces", () => {
   });
 });
 
-function traceCommentRowForSurface(surface: TraceCommentSurface) {
+function traceCommentRowForSurface(surface: CommentSurface) {
   return {
     id: `thread-${surface}`,
     artifactId: "branch-artifact-1",
@@ -156,10 +198,11 @@ function traceCommentRowForSurface(surface: TraceCommentSurface) {
     metadata: {
       kind: "trace_comment",
       schemaVersion: 1,
-      targetType: TraceCommentTargetType.Branch,
+      targetType: CommentTargetType.Branch,
       surface,
-      anchor,
     },
+    anchor: { v: 1, kind: "trace", ...anchor },
+    syncStates: [],
     createdAt: new Date("2026-06-17T10:00:00.000Z"),
     updatedAt: new Date("2026-06-17T10:00:00.000Z"),
     comments: [

@@ -74,7 +74,7 @@ import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { gotoHash, launchDesktopApp } from "./helpers/desktop-app";
 import {
-  seedMergedUnenrichedSinglePrBranch,
+  seedClosedAtOnlySinglePrBranch,
   waitForBranchesSchema,
 } from "./helpers/seed-branches-db";
 
@@ -85,7 +85,7 @@ import {
 // identity exists (ISS-4431 tier three).
 const SEED = {
   branchName: "iss-4899-session-detail-properties",
-  mergedAt: "2026-05-21T12:00:00.000Z",
+  closedAt: "2026-05-21T12:00:00.000Z",
   prNumber: 4899,
   repoFullName: "acme/web",
   sessionId: "iss-4899-session-detail-properties-session",
@@ -154,7 +154,7 @@ test.describe("Session detail Properties pane (ISS-4899)", () => {
       // are derived from a `kind='pull_request'` ARTIFACT link, never from the
       // `pull_requests` table (which only supplies merged/closed lifecycle
       // facts) — without it the row renders "None" and there is no pill at all.
-      await seedMergedUnenrichedSinglePrBranch(userDataDir, SEED, {
+      await seedClosedAtOnlySinglePrBranch(userDataDir, SEED, {
         // ISS-5617: the document link whose pill the assertions below drive
         // through the real Electron chain (SQLite → detail read → IPC → preload
         // → renderer). Without it those assertions are vacuous.
@@ -203,8 +203,7 @@ test.describe("Session detail Properties pane (ISS-4899)", () => {
         await expect(prPill).toHaveAttribute("href", PR_URL);
         // Electron routes a click on this anchor to `shell.openExternal` and
         // returns `{action:"deny"}`, so there is no in-page navigation to assert;
-        // the href/target/rel triple IS the contract (same reasoning as
-        // branches-pr-link.spec.ts).
+        // the href/target/rel triple IS the contract.
         await expect(prPill).toHaveAttribute("target", "_blank");
         await expect(prPill).toHaveAttribute("rel", "noreferrer");
 

@@ -26,12 +26,12 @@
  * can put on the wire, which the types do not constrain at an IPC boundary.
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import {
-  AgentMonitorIpcChannel,
   type AgentMonitorIpcDeps,
   registerAgentMonitorIpcHandlers,
 } from "../src/main/ipc/agent-monitor-ipc.js";
+import { AgentMonitorIpcChannel } from "../src/shared/agent-monitor-ipc-channel.js";
 import {
   type AgentMonitorLocalSessionSourcePayload,
   LOCAL_SESSION_SOURCE_STATUSES,

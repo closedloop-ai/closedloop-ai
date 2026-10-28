@@ -4,6 +4,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CreateProjectModal } from "../create-project-modal";
@@ -48,6 +49,13 @@ const ENGINEERING_REGEX = /Engineering/;
 const CREATE_PROJECT_REGEX = /create project/i;
 const PROJECT_NAME_LABEL_REGEX = /project name/i;
 const DESCRIPTION_LABEL_REGEX = /description/i;
+const ASSIGNEE_PLACEHOLDER = "Select assignee (optional)";
+
+class MockResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
 
 const TYPED_NAME = "My New Project";
 const TYPED_DESCRIPTION = "A description that must survive a failure";
@@ -60,10 +68,12 @@ describe("CreateProjectModal", () => {
     vi.clearAllMocks();
     // Default to returning empty members
     mockMembers.mockReturnValue([]);
+    vi.stubGlobal("ResizeObserver", MockResizeObserver);
   });
 
   afterEach(() => {
     cleanup();
+    vi.unstubAllGlobals();
   });
 
   describe("Team Member Fetching", () => {
@@ -126,14 +136,16 @@ describe("CreateProjectModal", () => {
       });
       triggerButton.click();
 
-      // Wait for hook to be called
       await waitFor(() => {
         expect(mockMembers).toHaveBeenCalledWith(mockTeamId);
       });
 
-      // The transformed data should be used internally
-      // We verify the hook was called with correct params
-      expect(mockMembers).toHaveBeenCalledWith(mockTeamId);
+      fireEvent.click(screen.getByText(ASSIGNEE_PLACEHOLDER));
+
+      const list = await screen.findByRole("listbox");
+      expect(
+        await within(list).findByText(mockTeamMembersData[0].name)
+      ).toBeInTheDocument();
     });
 
     it("should handle empty members gracefully", async () => {
@@ -161,9 +173,11 @@ describe("CreateProjectModal", () => {
     it("should reset team members when modal is closed", async () => {
       mockMembers.mockReturnValue([]);
 
-      render(
+      const { rerender } = render(
         <CreateProjectModal teamId={mockTeamId} teamName={mockTeamName} />
       );
+
+      expect(mockMembers).not.toHaveBeenCalled();
 
       // Open the modal
       const triggerButton = screen.getByRole("button", {
@@ -179,7 +193,16 @@ describe("CreateProjectModal", () => {
       const cancelButton = screen.getByRole("button", { name: CANCEL_REGEX });
       cancelButton.click();
 
-      // Team members hook will be disabled when closed (enabled: false)
+      await waitFor(() => {
+        expect(screen.queryByRole("dialog")).toBeNull();
+      });
+
+      mockMembers.mockClear();
+      rerender(
+        <CreateProjectModal teamId={mockTeamId} teamName={mockTeamName} />
+      );
+
+      expect(mockMembers).not.toHaveBeenCalled();
     });
   });
 
@@ -211,8 +234,12 @@ describe("CreateProjectModal", () => {
         expect(mockMembers).toHaveBeenCalled();
       });
 
-      // The initials "BW" should be provided by the hook
-      expect(mockMembers).toHaveBeenCalledWith(mockTeamId);
+      fireEvent.click(screen.getByText(ASSIGNEE_PLACEHOLDER));
+
+      const list = await screen.findByRole("listbox");
+      expect(
+        within(list).getByText(mockTeamMembersData[0].initials.charAt(0))
+      ).toBeInTheDocument();
     });
 
     it("should handle fallback initials from hook", async () => {
@@ -242,8 +269,12 @@ describe("CreateProjectModal", () => {
         expect(mockMembers).toHaveBeenCalled();
       });
 
-      // Should handle "?" fallback initials from the hook
-      expect(mockMembers).toHaveBeenCalledWith(mockTeamId);
+      fireEvent.click(screen.getByText(ASSIGNEE_PLACEHOLDER));
+
+      const list = await screen.findByRole("listbox");
+      expect(
+        within(list).getByText(mockTeamMembersData[0].initials.charAt(0))
+      ).toBeInTheDocument();
     });
   });
 

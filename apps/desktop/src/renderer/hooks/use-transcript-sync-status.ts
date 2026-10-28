@@ -1,6 +1,19 @@
 import { useEffect, useState } from "react";
 import { exponentialBackoffMs } from "../../shared/exponential-backoff";
-import type { TranscriptSyncStatusRead } from "../components/import-splash/sync-footnote-state";
+import type { TranscriptSyncStatusSnapshot } from "../../shared/transcript-sync-status-contract";
+
+/**
+ * The renderer's view of the status read. A discriminated union rather than a
+ * nullable snapshot, so "not read yet" and "read failed" can never collapse
+ * into each other or into a real all-zero `statusCounts`.
+ *
+ * ISS-10492: owned here, beside its only producer. It used to live in the
+ * import splash's `sync-footnote-state.ts`, which was retired with that surface.
+ */
+export type TranscriptSyncStatusRead =
+  | { state: "loading" }
+  | { state: "unavailable" }
+  | { state: "ready"; snapshot: TranscriptSyncStatusSnapshot };
 
 /** Normal poll cadence, and the base delay of the failure ladder. */
 export const TRANSCRIPT_SYNC_POLL_MS = 5000;
@@ -9,16 +22,14 @@ export const TRANSCRIPT_SYNC_POLL_MS = 5000;
 export const TRANSCRIPT_SYNC_BACKOFF_MAX_MS = 60_000;
 
 /**
- * ISS-4716: poll the transcript archive lane's status for the import-splash
- * footnote.
+ * ISS-4716: poll the transcript archive lane's status for a session's
+ * transcript availability.
  *
- * `active` is not optional bookkeeping — it is what keeps this cheap.
- * `FirstLaunchImportBanner` never unmounts (it only collapses to `max-h-0` /
- * `inert`), so an ungated poller would run a `findMany` against the db-host
- * worker every 5s for the entire app session, on every launch, including
- * through the first-boot DATA_REVISION rebuild. The caller passes
- * `honestCopy && visible`, so the flag-off path costs exactly zero IPC and the
- * poll lives only as long as the footer is observable. (The underlying read
+ * `active` is not optional bookkeeping — it is what keeps this cheap. An
+ * ungated poller would run a `findMany` against the db-host worker every 5s for
+ * the entire app session, on every launch, including through the first-boot
+ * DATA_REVISION rebuild. The caller gates on whether the read is observable, so
+ * an inactive caller costs exactly zero IPC. (The underlying read
  * runs on the reader pool for the same rebuild-contention reason — see
  * `listRecent` in `main/database/transcript-sync-store.ts`.)
  *
@@ -30,8 +41,7 @@ export const TRANSCRIPT_SYNC_BACKOFF_MAX_MS = 60_000;
  *   db-host hiccups are expected rather than exceptional. It reports
  *   `unavailable` and keeps retrying on the shared backoff ladder, resetting to
  *   the base cadence on the next success. Stopping here instead would pin
- *   "Upload status unavailable" for the rest of the session, because the banner
- *   never unmounts to reset it.
+ *   "Upload status unavailable" for as long as the caller stays mounted.
  */
 export function useTranscriptSyncStatus(
   active: boolean

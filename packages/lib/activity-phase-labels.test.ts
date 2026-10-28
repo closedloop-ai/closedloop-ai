@@ -30,10 +30,10 @@ import {
  *
  * This test lives in `@repo/lib` because it is the lowest layer that can see
  * BOTH the canonical map (`@repo/api`) and the phase-key constants that map is
- * keyed by. The per-surface resolver assertions live in each feature's own
- * colocated test (`packages/app/branches/lib/__tests__/activity-taxonomy-display.test.ts`,
- * `packages/app/agents/lib/__tests__/session-activity-phases.test.ts`), so no
- * test reaches across the `packages/app` feature/shared boundary.
+ * keyed by. The per-surface resolver assertions live in the feature's own
+ * colocated test
+ * (`packages/app/branches/lib/__tests__/activity-taxonomy-display.test.ts`), so
+ * no test reaches across the `packages/app` feature/shared boundary.
  */
 
 function row(

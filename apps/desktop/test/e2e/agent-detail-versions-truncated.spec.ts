@@ -107,7 +107,11 @@ test.describe("Agent detail partial-revision-history marker (ISS-5029)", () => {
         // Positive control: the Definition panel mounted through the renderer's
         // real local IPC source and rendered the seeded body.
         await expect(
-          page.getByRole("heading", { name: DEFINITION_HEADING })
+          page.getByRole("heading", {
+            exact: true,
+            level: 2,
+            name: DEFINITION_HEADING,
+          })
         ).toBeVisible({ timeout: MOUNT_TIMEOUT_MS });
         await expect(page.getByText(SEEDED_COMPONENT.content)).toBeVisible();
 
@@ -128,8 +132,7 @@ test.describe("Agent detail partial-revision-history marker (ISS-5029)", () => {
  * the caption this spec drives no longer has a gate.
  *
  * CLAUDE_HOME / CODEX_HOME are empty temp dirs so the boot collectors ingest
- * nothing and the only component is the seeded one (mirrors
- * `agents-loc-per-dollar-display.spec.ts`).
+ * nothing and the only component is the seeded one.
  */
 async function withSeededDesktopProfile(
   { prefix }: { prefix: string },

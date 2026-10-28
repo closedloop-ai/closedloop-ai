@@ -1,10 +1,13 @@
 /**
- * Backfill script: encrypt plaintext integration tokens using AWS KMS.
+ * Backfill script: encrypt plaintext Slack integration tokens using AWS KMS.
  *
- * Reads all GoogleIntegration, LinearIntegration, and SlackIntegration rows
- * where accessTokenEncrypted is NULL and writes the encrypted values to the
- * encrypted fields. Processes rows in batches to avoid memory issues.
- * (SlackIntegration has no refresh token, so only accessTokenEncrypted is set.)
+ * Reads all SlackIntegration rows where accessTokenEncrypted is NULL and writes
+ * the encrypted value to that field, in batches to avoid memory issues. Slack's
+ * `access_token` is still NOT NULL and has no refresh token, so only
+ * accessTokenEncrypted is set.
+ *
+ * ISS-11096 removed the Google and Linear halves and dropped their plaintext
+ * columns; production held no plaintext in either table when they went.
  *
  * Usage:
  *   cd apps/api
@@ -13,28 +16,38 @@
  * Dry-run mode (logs what would be done without writing):
  *   DRY_RUN=1 KMS_KEY_ARN=<arn> DATABASE_URL=<url> npx tsx scripts/backfill-integration-tokens.ts
  */
+import { pathToFileURL } from "node:url";
 import { withDb } from "@repo/database";
-import { encryptTokenPair } from "@/lib/integration-encryption";
+import { encryptIntegrationToken } from "@/lib/integration-encryption";
 
 const BATCH_SIZE = 50;
 
-type BackfillRow = {
+export type BackfillRow = {
   id: string;
   accessToken: string;
-  refreshToken: string | null;
 };
 
-type BackfillConfig<T extends BackfillRow> = {
+export type BackfillConfig<T extends BackfillRow> = {
   label: string;
   count: () => Promise<number>;
-  findBatch: () => Promise<T[]>;
-  update: (
-    id: string,
-    data: {
-      accessTokenEncrypted: string;
-      refreshTokenEncrypted?: string;
-    }
-  ) => Promise<void>;
+  /**
+   * The next page of rows needing backfill, ordered by `id`, starting strictly
+   * after `afterId`. The cursor is what makes the walk terminate: a row this
+   * run does NOT write — it lost its compare-and-set, its encrypt threw, or
+   * this is a dry run — stays inside the filter, so a cursorless re-read of
+   * "the first unprocessed batch" would hand it straight back forever.
+   */
+  findBatch: (afterId: string | null) => Promise<T[]>;
+  /**
+   * Compare-and-set on the exact plaintext this batch read, resolving to the
+   * number of rows written. An id-only update would fence nothing: a live
+   * connect or refresh landing between `findBatch` and here has already stored
+   * its own ciphertext for a NEWER token, and writing this batch's ciphertext
+   * over it would put the superseded credential back. Reads prefer ciphertext
+   * over plaintext, so every later read would then decrypt a dead token.
+   * A resolved 0 means the row lost that race.
+   */
+  update: (row: T, data: { accessTokenEncrypted: string }) => Promise<number>;
 };
 
 async function encryptRow<T extends BackfillRow>(
@@ -42,24 +55,18 @@ async function encryptRow<T extends BackfillRow>(
   row: T,
   dryRun: boolean
 ): Promise<boolean> {
-  const { encryptedAccessToken, encryptedRefreshToken } =
-    await encryptTokenPair(row.accessToken, row.refreshToken);
+  const accessTokenEncrypted = await encryptIntegrationToken(row.accessToken);
 
   if (dryRun) {
     return true;
   }
 
-  await config.update(row.id, {
-    accessTokenEncrypted: encryptedAccessToken,
-    ...(encryptedRefreshToken === null
-      ? {}
-      : { refreshTokenEncrypted: encryptedRefreshToken }),
-  });
+  const written = await config.update(row, { accessTokenEncrypted });
 
-  return true;
+  return written > 0;
 }
 
-async function backfillIntegration<T extends BackfillRow>(
+export async function backfillIntegration<T extends BackfillRow>(
   config: BackfillConfig<T>,
   dryRun: boolean
 ): Promise<void> {
@@ -75,16 +82,24 @@ async function backfillIntegration<T extends BackfillRow>(
 
   let processed = 0;
   let failures = 0;
+  let raced = 0;
 
-  // Updated rows drop out of the `accessTokenEncrypted: null` filter,
-  // so always take the first batch of unprocessed rows.
-  let rows = await config.findBatch();
+  // Walk the id order once. Every pass starts strictly after the last row seen,
+  // so the cursor advances whether or not the row was written and the loop
+  // always terminates — including a dry run, which writes nothing and would
+  // otherwise re-read the same first batch until killed. A row skipped this run
+  // stays in the filter and the next run picks it up.
+  let afterId: string | null = null;
+  let rows = await config.findBatch(afterId);
 
   while (rows.length > 0) {
     for (const row of rows) {
       try {
-        await encryptRow(config, row, dryRun);
-        processed++;
+        if (await encryptRow(config, row, dryRun)) {
+          processed++;
+        } else {
+          raced++;
+        }
       } catch (error) {
         console.error(
           `${config.label}: failed to encrypt row ${row.id}:`,
@@ -94,17 +109,24 @@ async function backfillIntegration<T extends BackfillRow>(
       }
     }
 
-    if (processed % 10 === 0 || rows.length < BATCH_SIZE) {
-      console.log(
-        `${config.label}: encrypted ${processed}/${total} rows${suffix}`
-      );
-    }
+    console.log(
+      `${config.label}: encrypted ${processed}/${total} rows${suffix}`
+    );
 
-    rows = await config.findBatch();
+    afterId = rows.at(-1)?.id ?? null;
+    rows = afterId === null ? [] : await config.findBatch(afterId);
+  }
+
+  if (raced > 0) {
+    // Not a failure: the row was rewritten by a live connect or refresh, which
+    // stores ciphertext on its own normal path.
+    console.log(
+      `${config.label}: ${raced} rows changed under the backfill and were left alone.`
+    );
   }
 
   console.log(
-    `${config.label}: backfill complete. Processed ${processed}/${total}, ${failures} failures.`
+    `${config.label}: backfill complete. Processed ${processed}/${total}, ${raced} raced, ${failures} failures.`
   );
 
   if (failures > 0) {
@@ -114,71 +136,9 @@ async function backfillIntegration<T extends BackfillRow>(
   }
 }
 
-async function backfillGoogleIntegrations(dryRun: boolean): Promise<void> {
-  await backfillIntegration(
-    {
-      label: "GoogleIntegration",
-      count: () =>
-        withDb((db) =>
-          db.googleIntegration.count({
-            where: { accessTokenEncrypted: null },
-          })
-        ),
-      findBatch: () =>
-        withDb((db) =>
-          db.googleIntegration.findMany({
-            where: { accessTokenEncrypted: null },
-            select: {
-              id: true,
-              accessToken: true,
-              refreshToken: true,
-            },
-            take: BATCH_SIZE,
-            orderBy: { id: "asc" },
-          })
-        ),
-      update: (id, data) =>
-        withDb((db) =>
-          db.googleIntegration.update({ where: { id }, data })
-        ).then(() => undefined),
-    },
-    dryRun
-  );
-}
-
-async function backfillLinearIntegrations(dryRun: boolean): Promise<void> {
-  await backfillIntegration(
-    {
-      label: "LinearIntegration",
-      count: () =>
-        withDb((db) =>
-          db.linearIntegration.count({
-            where: { accessTokenEncrypted: null },
-          })
-        ),
-      findBatch: () =>
-        withDb((db) =>
-          db.linearIntegration.findMany({
-            where: { accessTokenEncrypted: null },
-            select: {
-              id: true,
-              accessToken: true,
-              refreshToken: true,
-            },
-            take: BATCH_SIZE,
-            orderBy: { id: "asc" },
-          })
-        ),
-      update: (id, data) =>
-        withDb((db) =>
-          db.linearIntegration.update({ where: { id }, data })
-        ).then(() => undefined),
-    },
-    dryRun
-  );
-}
-
-async function backfillSlackIntegrations(dryRun: boolean): Promise<void> {
+export async function backfillSlackIntegrations(
+  dryRun: boolean
+): Promise<void> {
   await backfillIntegration(
     {
       label: "SlackIntegration",
@@ -188,30 +148,29 @@ async function backfillSlackIntegrations(dryRun: boolean): Promise<void> {
             where: { accessTokenEncrypted: null },
           })
         ),
-      // SlackIntegration has no refresh token, so refreshToken is always null;
-      // encryptTokenPair skips the refresh half when it is null.
-      findBatch: () =>
+      findBatch: (afterId) =>
         withDb((db) =>
-          db.slackIntegration
-            .findMany({
-              where: { accessTokenEncrypted: null },
-              select: {
-                id: true,
-                accessToken: true,
-              },
-              take: BATCH_SIZE,
-              orderBy: { id: "asc" },
-            })
-            .then((rows) => rows.map((row) => ({ ...row, refreshToken: null })))
-        ),
-      update: (id, data) =>
-        withDb((db) =>
-          db.slackIntegration.update({
-            where: { id },
-            // Slack rows have no refresh token; only accessTokenEncrypted is set.
-            data: { accessTokenEncrypted: data.accessTokenEncrypted },
+          db.slackIntegration.findMany({
+            where: { accessTokenEncrypted: null, ...afterRow(afterId) },
+            select: {
+              id: true,
+              accessToken: true,
+            },
+            take: BATCH_SIZE,
+            orderBy: { id: "asc" },
           })
-        ).then(() => undefined),
+        ),
+      update: (row, data) =>
+        withDb((db) =>
+          db.slackIntegration.updateMany({
+            where: {
+              id: row.id,
+              accessToken: row.accessToken,
+              accessTokenEncrypted: null,
+            },
+            data,
+          })
+        ).then((result) => result.count),
     },
     dryRun
   );
@@ -235,8 +194,6 @@ async function main(): Promise<void> {
   }
 
   try {
-    await backfillGoogleIntegrations(dryRun);
-    await backfillLinearIntegrations(dryRun);
     await backfillSlackIntegrations(dryRun);
     console.log("Backfill complete.");
   } catch (error) {
@@ -245,4 +202,20 @@ async function main(): Promise<void> {
   }
 }
 
-main();
+// Only run when invoked as a script. Without this the module cannot be
+// imported by a test: `main()` would execute on import and `process.exit(1)` on
+// the absent KMS_KEY_ARN.
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  main();
+}
+
+/**
+ * The cursor clause for a batch, empty on the first pass. Pairs with the
+ * `orderBy: { id: "asc" }` every `findBatch` already carries.
+ */
+function afterRow(afterId: string | null) {
+  return afterId === null ? {} : { id: { gt: afterId } };
+}

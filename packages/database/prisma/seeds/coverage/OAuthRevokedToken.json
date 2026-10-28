@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "MCP OAuth revocation list, read only by the MCP server token checks."
+}

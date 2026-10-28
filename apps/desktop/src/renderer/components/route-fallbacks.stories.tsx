@@ -23,7 +23,8 @@ import {
  * "Loading..." on an otherwise blank body that a cold detail open used to show.
  */
 const meta = {
-  title: "Desktop/Shell/Route Fallbacks",
+  title: "Composites v1.0/Desktop Shell/Route Fallbacks",
+  tags: ["deprecated"],
   component: DetailRouteFallback,
   parameters: {
     layout: "fullscreen",

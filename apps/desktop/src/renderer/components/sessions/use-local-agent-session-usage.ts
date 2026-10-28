@@ -1,6 +1,6 @@
 import type { AgentSessionUsageSummary } from "@repo/api/src/types/agent-session";
 import type { AgentSessionQueryFilters } from "@repo/app/agents/data-source/agent-sessions-data-source";
-import { agentSessionKeys } from "@repo/app/agents/hooks/use-agent-sessions";
+import { agentSessionKeys } from "@repo/app/agents/hooks/agent-session-keys";
 import { type UseQueryResult, useQuery } from "@tanstack/react-query";
 
 /**
@@ -31,7 +31,7 @@ import { type UseQueryResult, useQuery } from "@tanstack/react-query";
  */
 export function useLocalAgentSessionUsage(
   filters: AgentSessionQueryFilters,
-  options: { enabled: boolean }
+  options: { enabled: boolean; refetchInterval?: number | false }
 ): UseQueryResult<AgentSessionUsageSummary> {
   return useQuery({
     queryKey: agentSessionKeys.usage("local", filters),
@@ -43,5 +43,14 @@ export function useLocalAgentSessionUsage(
       return usage(filters);
     },
     enabled: options.enabled,
+    // ISS-10584: a caller watching a RUNNING boot import needs this read to be
+    // re-taken, because the store gains session rows throughout it. Omitted, the
+    // query keeps react-query's default of no polling, which is what every
+    // existing caller expects.
+    refetchInterval: options.refetchInterval ?? false,
+    // Without this a backgrounded or unfocused window stops polling and the
+    // caller's count freezes mid-import — the same freeze this option exists to
+    // end, arriving by a different route.
+    refetchIntervalInBackground: options.refetchInterval !== undefined,
   });
 }

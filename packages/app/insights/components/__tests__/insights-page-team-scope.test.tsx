@@ -4,6 +4,8 @@ import {
   InsightsScope,
   InsightsSection,
 } from "@repo/api/src/types/insights";
+import { GitHubConnectAction } from "@repo/app/github/lib/github-connect-action";
+import { GITHUB_CONNECT_COPY } from "@repo/app/github/lib/github-connect-copy";
 import {
   type InsightsDataSource,
   InsightsDataSourceProvider,
@@ -55,7 +57,7 @@ vi.mock("../../hooks/use-dashboard-pins", async (importOriginal) => ({
 }));
 
 const TEAM_ID = "019f0fcb-8336-7c4d-9f64-528fb9520c32";
-const CONNECT_GITHUB_BUTTON_NAME = /connect github/i;
+const CONNECT_GITHUB_BUTTON_NAME = /connect (?:to )?github/i;
 
 describe("InsightsPage team scope", () => {
   beforeEach(() => {
@@ -101,13 +103,19 @@ describe("InsightsPage team scope", () => {
       getTileAvailability: vi.fn().mockReturnValue({
         state: BranchKpiState.Gated,
       }),
-      onConnectGitHub,
+      githubConnect: {
+        action: GitHubConnectAction.Connect,
+        onConnect: onConnectGitHub,
+      },
     });
 
     renderInsightsPage(source);
 
     expect(
-      await screen.findByText("Delivery GitHub metrics need a connection")
+      await screen.findByText(
+        GITHUB_CONNECT_COPY[GitHubConnectAction.Connect]
+          .deliveryBannerExplanation
+      )
     ).toBeInTheDocument();
 
     fireEvent.click(

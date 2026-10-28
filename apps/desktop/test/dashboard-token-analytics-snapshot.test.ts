@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import { test } from "vitest";
 import { createSqliteDashboardQueries } from "../src/main/database/dashboard-queries.js";
 import type { DesktopPrisma } from "../src/main/database/prisma-client.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";

@@ -226,16 +226,37 @@ describe("rendersHarness", () => {
 });
 
 /** Every `*.stories.*` file under `root`, recursively. */
-function collectStoryFiles(root: string): string[] {
+function collectStoryFiles(
+  root: string,
+  readdir: ReadDir = (dir) => readdirSync(dir, { withFileTypes: true })
+): string[] {
   const found: string[] = [];
-  for (const entry of readdirSync(root, {
-    withFileTypes: true,
-    recursive: true,
-  })) {
-    if (entry.isFile() && STORY_FILE.test(entry.name)) {
-      found.push(path.join(entry.parentPath, entry.name));
+  const walk = (dir: string, isRoot: boolean): void => {
+    let entries: WalkEntry[];
+    try {
+      entries = readdir(dir);
+    } catch (err: unknown) {
+      if (isRoot) {
+        throw err;
+      }
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTDIR") {
+        return;
+      }
+      throw err;
     }
-  }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (entry.name === "node_modules" || entry.name.startsWith(".")) {
+          continue;
+        }
+        walk(path.join(dir, entry.name), false);
+      } else if (entry.isFile() && STORY_FILE.test(entry.name)) {
+        found.push(path.join(dir, entry.name));
+      }
+    }
+  };
+  walk(root, true);
   return found;
 }
 
@@ -346,3 +367,103 @@ function isHarnessTag(
     tagName.name.text === HARNESS_COMPONENT
   );
 }
+
+function fakeEntry(name: string, kind: "file" | "dir"): WalkEntry {
+  return {
+    name,
+    isFile: () => kind === "file",
+    isDirectory: () => kind === "dir",
+  };
+}
+
+function errno(code: string): NodeJS.ErrnoException {
+  const err = new Error(code) as NodeJS.ErrnoException;
+  err.code = code;
+  return err;
+}
+
+describe("collectStoryFiles manual walk", () => {
+  const root = "walk-fixture";
+  const subA = path.join(root, "sub-a");
+  const subB = path.join(root, "sub-b");
+
+  // ENOENT is the raced coverage/.tmp dir; ENOTDIR is the same directory
+  // replaced by a file between the readdir and the descent.
+  it.each(["ENOENT", "ENOTDIR"])(
+    "skips a child that fails with %s and finishes the walk",
+    (code) => {
+      const fakeReaddir: ReadDir = (dir) => {
+        if (dir === root) {
+          return [
+            fakeEntry("sub-a", "dir"),
+            fakeEntry("sub-b", "dir"),
+            fakeEntry("top.stories.tsx", "file"),
+          ];
+        }
+        if (dir === subA) {
+          throw errno(code);
+        }
+        if (dir === subB) {
+          return [fakeEntry("deep.stories.ts", "file")];
+        }
+        return [];
+      };
+
+      expect(collectStoryFiles(root, fakeReaddir)).toEqual([
+        path.join(subB, "deep.stories.ts"),
+        path.join(root, "top.stories.tsx"),
+      ]);
+    }
+  );
+
+  it("propagates a child error that is not the vanishing-directory race", () => {
+    const fakeReaddir: ReadDir = (dir) => {
+      if (dir === root) {
+        return [fakeEntry("sub-a", "dir")];
+      }
+      throw errno("EACCES");
+    };
+
+    expect(() => collectStoryFiles(root, fakeReaddir)).toThrow("EACCES");
+  });
+
+  it("propagates errors when the root itself throws", () => {
+    const fakeReaddir: ReadDir = () => {
+      throw errno("ENOENT");
+    };
+
+    expect(() =>
+      collectStoryFiles(path.join(root, "missing"), fakeReaddir)
+    ).toThrow("ENOENT");
+  });
+
+  it("never visits node_modules or dot-directory children", () => {
+    const visited: string[] = [];
+    const fakeReaddir: ReadDir = (dir) => {
+      visited.push(dir);
+      if (dir === root) {
+        return [
+          fakeEntry("node_modules", "dir"),
+          fakeEntry(".hidden", "dir"),
+          fakeEntry("src", "dir"),
+          fakeEntry("a.stories.tsx", "file"),
+        ];
+      }
+      if (dir === path.join(root, "src")) {
+        return [fakeEntry("b.stories.ts", "file")];
+      }
+      return [];
+    };
+
+    collectStoryFiles(root, fakeReaddir);
+    expect(visited).toEqual([root, path.join(root, "src")]);
+  });
+});
+
+type WalkEntry = {
+  name: string;
+  isFile(): boolean;
+  isDirectory(): boolean;
+};
+
+type ReadDir = (dir: string) => WalkEntry[];

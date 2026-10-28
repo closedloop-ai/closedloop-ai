@@ -29,7 +29,7 @@ The desktop app persists its configuration across five stores, managed through *
 
 ### CLI Tools
 
-- Per-tool cards for `claude`, `gh`, `codex`, `python3`, `git`.
+- Per-tool cards for `claude`, `codex`, `python3`, `git`.
 - Each card shows a detection badge ("Checking" / "OK" / "Not found") and accepts an absolute path override.
 - Resolution order: override → `which` on process PATH → `bash -lc 'which <tool>'` (login shell fallback).
 
@@ -41,7 +41,7 @@ The runtime honors these environment variables.
 
 - `CLOSEDLOOP_API_KEY` – takes precedence over the encrypted store.
 - `SYMPHONY_API_KEY` – legacy fallback.
-- `CLAUDE_BIN` – absolute path to `claude`; consumed by `run-loop.sh` and `debate-loop.sh`.
+- `CLAUDE_BIN` – absolute path to `claude`; consumed by `debate-loop.sh`.
 
 ### Origin overrides
 
@@ -60,13 +60,6 @@ The runtime honors these environment variables.
 
 - `SYMPHONY_GATEWAY_FALLBACK_ORIGIN`
 - `SYMPHONY_WORKTREE_PARENT_DIR`
-- `CLOSEDLOOP_SYMPHONY_TEST_RAW_CLAUDE_PIPELINE=1`
-
-### Tailer tuning
-
-- `CLOSEDLOOP_TAILER_POLL_MS`
-- `CLOSEDLOOP_TAILER_THROTTLE_MS`
-- `CLOSEDLOOP_WATCHER_POLL_MS` (default `3000`)
 
 ### Passed to child processes
 
@@ -80,11 +73,9 @@ The runtime honors these environment variables.
 | `~/.closedloop-ai/electron-port` | Active gateway port |
 | `~/.closedloop-ai/config/repos.json` | User-configured repositories |
 | `~/.symphony/sessions.json` | Symphony session store |
-| `~/.symphony/<ticket>/` | Per-ticket loop artifacts (`claude-output.jsonl`, `state.json`, `pid`, `plan.json`, etc.) |
 | `~/Library/Application Support/Closedloop/desktop-settings.json` | General settings |
 | `…/desktop-secrets.json` | API keys (encrypted) |
 | `…/desktop-approvals.json` | Pending and resolved approvals |
-| `…/desktop-job-store.json` | Active and terminal jobs |
 | `…/desktop-activity-log.json` | Gateway request log and security events |
 
 On Linux the Application Support path is `~/.config/Closedloop/`.

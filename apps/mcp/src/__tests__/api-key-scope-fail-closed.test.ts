@@ -371,34 +371,37 @@ describe("ISS-4905 API key scopes fail closed", () => {
       "all_unrecognized",
       2,
     ],
-  ])("refuses a key whose scopes column is %s on the local-verify fallback", async (_label, scopes, expectedReason, expectedRawCount) => {
-    verifyApiKeyMock.mockImplementation(() => {
-      throw new Error("upstream verification unavailable");
-    });
-    apiKeyStore.push({
-      id: "key_unresolvable_scopes",
-      keyHash: createHash("sha256")
-        .update(NULL_COLUMN_KEY, "utf8")
-        .digest("hex"),
-      userId: "user_1",
-      organizationId: "org_1",
-      scopes,
-      revokedAt: null,
-      expiresAt: null,
-      lastUsedAt: null,
-    });
+  ])(
+    "refuses a key whose scopes column is %s on the local-verify fallback",
+    async (_label, scopes, expectedReason, expectedRawCount) => {
+      verifyApiKeyMock.mockImplementation(() => {
+        throw new Error("upstream verification unavailable");
+      });
+      apiKeyStore.push({
+        id: "key_unresolvable_scopes",
+        keyHash: createHash("sha256")
+          .update(NULL_COLUMN_KEY, "utf8")
+          .digest("hex"),
+        userId: "user_1",
+        organizationId: "org_1",
+        scopes,
+        revokedAt: null,
+        expiresAt: null,
+        lastUsedAt: null,
+      });
 
-    const res = await postMcpInitialize(NULL_COLUMN_KEY);
+      const res = await postMcpInitialize(NULL_COLUMN_KEY);
 
-    expect(res.statusCode).toBe(401);
-    expect(logError).toHaveBeenCalledWith(
-      API_KEY_SCOPES_UNRESOLVABLE_EVENT,
-      expect.objectContaining({
-        surface: "mcp_local_key_verification",
-        reason: expectedReason,
-        rawScopeCount: expectedRawCount,
-        apiKeyId: "key_unresolvable_scopes",
-      })
-    );
-  });
+      expect(res.statusCode).toBe(401);
+      expect(logError).toHaveBeenCalledWith(
+        API_KEY_SCOPES_UNRESOLVABLE_EVENT,
+        expect.objectContaining({
+          surface: "mcp_local_key_verification",
+          reason: expectedReason,
+          rawScopeCount: expectedRawCount,
+          apiKeyId: "key_unresolvable_scopes",
+        })
+      );
+    }
+  );
 });

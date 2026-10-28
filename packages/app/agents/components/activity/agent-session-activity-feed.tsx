@@ -104,11 +104,11 @@ function ActivityRow({
     <span className="font-medium">{activity.label}</span>
   );
 
+  // A navigable row gets a whole-box hover treatment so the padded card reads
+  // as the target of its title link, instead of a bordered box where only the
+  // name string is clickable. The `Link` in the title stays the real anchor
+  // (accessible name + keyboard focus); this is a visual affordance only.
   return (
-    // A navigable row gets a whole-box hover treatment so the padded card reads
-    // as the target of its title link, instead of a bordered box where only the
-    // name string is clickable. The `Link` in the title stays the real anchor
-    // (accessible name + keyboard focus); this is a visual affordance only.
     <div
       className={
         isNavigable

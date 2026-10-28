@@ -71,10 +71,15 @@ const PENDING_STATUS_STATES = ["PENDING", "EXPECTED"] as const;
  * PROTECTION would judge it.
  *
  * A separate axis from `ContextAttempt.failed`, not a re-spelling of it. That
- * one is the EJECTION classification shared with the merge-queue metrics
- * emitter, which deliberately excludes `CANCELLED` (an ejection's aftermath, not
- * its cause) and `ACTION_REQUIRED`. Both of those still block a merge, so the
- * two questions have genuinely different answers and both are asked here.
+ * one is the terminal-failure classification in
+ * `merge-queue-failure-classification.ts`, read off the conclusion alone, which
+ * deliberately excludes `CANCELLED` (an ejection's aftermath, not its cause)
+ * and `ACTION_REQUIRED`. It is not the merge-queue metrics emitter's whole
+ * ejection rule: that emitter also counts a `CANCELLED` required context whose
+ * check-run annotation proves a timeout kill or a job no runner acquired
+ * (ISS-10837), which a conclusion cannot show. `CANCELLED` and
+ * `ACTION_REQUIRED` still block a merge, so the two questions have genuinely
+ * different answers and both are asked here.
  */
 export const RequiredAttemptState = {
   /** Branch protection would let this one through. */
@@ -94,7 +99,7 @@ export type RequiredAttemptState =
 export type ContextAttempt = {
   name: string;
   /**
-   * Terminal failure under the EJECTION classification
+   * Terminal failure under the conclusion-only classification
    * (`merge-queue-failure-classification.ts`). See `RequiredAttemptState` for
    * why readiness does not reuse it.
    */
@@ -365,6 +370,17 @@ export function liveAttempts(
   nodes: readonly (RollupContextNode | null)[],
   required: readonly RequiredContext[]
 ): ContextAttempt[] {
+  return [...collapseByRule(nodes, required).values()];
+}
+
+/**
+ * The collapse itself, keyed. `liveAttempts` throws the keys away because its
+ * callers iterate; `ambiguousPosterKeys` needs to look an incumbent up by rule.
+ */
+function collapseByRule(
+  nodes: readonly (RollupContextNode | null)[],
+  required: readonly RequiredContext[]
+): Map<string, ContextAttempt> {
   const byRule = new Map<string, ContextAttempt>();
   for (const [position, node] of nodes.entries()) {
     if (node === null) {
@@ -389,33 +405,88 @@ export function liveAttempts(
       byRule.set(attempt.requiredKey, attempt);
     }
   }
-  return [...byRule.values()];
+  return byRule;
 }
 
 /**
- * The required rules in ONE group whose verdict turns on a poster GitHub did not
- * return. Collected per group, so a confirmed failure on any other rule in the
- * same group is still judged normally.
+ * The required rules in ONE group whose verdict actually turns on a poster
+ * GitHub did not return. Collected per group, so a confirmed failure on any
+ * other rule in the same group is still judged normally.
+ *
+ * Narrowed to the rules the unreadable poster could FLIP (ISS-6399). Collecting
+ * every rule an ambiguous status could match deferred the group whatever that
+ * status said and whenever it was posted — so a creatorless SUCCESS older than a
+ * confirmed red suppressed the red (an older attempt can never retire a newer
+ * one under `beats`), and a lone creatorless SUCCESS on an otherwise green group
+ * published `Unknown` even though both readable-poster worlds answer zero. A
+ * deferral that fires on a question with one answer is not caution; it omits the
+ * gauge on every tick for as long as the null `creator` persists, which is for
+ * as long as the posting integration stays unresolvable.
  */
 export function ambiguousPosterKeys(
   nodes: readonly (RollupContextNode | null)[],
   required: readonly RequiredContext[]
 ): ReadonlySet<string> {
+  const byRule = collapseByRule(nodes, required);
   return new Set(
-    ambiguousStatusCandidates(nodes, required).map(
-      (candidate) => candidate.requiredKey
-    )
+    ambiguousStatusCandidates(nodes, required)
+      .filter((candidate) =>
+        changesTheVerdict(candidate, byRule.get(candidate.requiredKey))
+      )
+      .map((candidate) => candidate.requiredKey)
   );
 }
 
-/** One status whose poster GitHub did not name, and WHEN it was posted. */
-export type AmbiguousStatusCandidate = {
-  requiredKey: string;
-  observedAtMs: number;
-};
+/**
+ * Whether reading this status's poster as a Bot rather than a human would change
+ * its rule's verdict on the `failed` axis.
+ *
+ * Both worlds are answerable from the collapse that already ran: as a human the
+ * status matches no rule and the incumbent stands; as a Bot it enters the
+ * collapse and wins only if it `beats` that incumbent. So the answer differs on
+ * exactly two shapes — it would win and disagrees with the incumbent, or it
+ * would be the rule's only attempt and is itself failing. Anything else is
+ * inert, and deferring on it discards a verdict we hold.
+ *
+ * `failed` and NOT `state`, which is a genuinely different question: a CANCELLED
+ * attempt is not a terminal failure but does not satisfy branch protection
+ * either. A consumer asking whether the rule is SATISFIED must apply its own
+ * axis to `ambiguousStatusCandidates` rather than reuse this narrowing, or it
+ * publishes "ready" over a context that is still blocking.
+ *
+ * Asked per candidate against the READABLE incumbent, so several ambiguous
+ * statuses on one rule are each judged as if the others were human. That errs
+ * toward unresolved, never toward a confident answer.
+ */
+function changesTheVerdict(
+  candidate: AmbiguousStatusCandidate,
+  incumbent: ContextAttempt | undefined
+): boolean {
+  if (incumbent === undefined) {
+    return candidate.failed;
+  }
+  return beats(candidate, incumbent) && candidate.failed !== incumbent.failed;
+}
 
 /**
- * The same ambiguous statuses `ambiguousPosterKeys` collects, but dated.
+ * One status whose poster GitHub did not name, as the attempt it WOULD have
+ * contributed had that poster read as a Bot.
+ *
+ * A `ContextAttempt` rather than a bespoke shape so it can be ordered against
+ * the incumbent by `beats`, the same comparator the collapse uses — an ordering
+ * rule hand-rolled from `observedAtMs` alone silently disagrees with the
+ * collapse on every timestamp tie.
+ *
+ * HYPOTHETICAL, despite the shape. Its `requiredKey` is the rule it WOULD
+ * satisfy if GitHub had named its poster, and it satisfies none today — never
+ * feed one back into `liveAttempts` or a rule map, which would admit an
+ * unmatched status as though the poster had been read.
+ */
+export type AmbiguousStatusCandidate = ContextAttempt & { requiredKey: string };
+
+/**
+ * The same ambiguous statuses `ambiguousPosterKeys` collects, before the
+ * verdict-flip narrowing and carrying their own timestamp and state.
  *
  * The timestamp is the whole point: an unreadable poster is only a problem while
  * that status could still be the LIVE attempt for its rule. The rollup carries
@@ -423,24 +494,23 @@ export type AmbiguousStatusCandidate = {
  * response forever — and a caller that treats the bare presence of one as
  * unreadable never recovers, even after a newer readable result has retired it.
  * A caller that can order it against the attempt that survived can tell the two
- * apart; one that only needs "is this rule implicated at all" still uses the
- * key set above.
+ * apart, and each applies its own tie and materiality rule to that ordering.
  */
 export function ambiguousStatusCandidates(
   nodes: readonly (RollupContextNode | null)[],
   required: readonly RequiredContext[]
 ): AmbiguousStatusCandidate[] {
   const candidates: AmbiguousStatusCandidate[] = [];
-  for (const node of nodes) {
+  for (const [position, node] of nodes.entries()) {
     if (node === null || node.__typename !== "StatusContext") {
       continue;
     }
     const requiredKey = ambiguousStatusPosterKey(node, required);
     if (requiredKey !== null) {
-      candidates.push({
-        requiredKey,
-        observedAtMs: observedAtMs(node.createdAt),
-      });
+      // `requiredKey` is the ONLY field of a StatusContext attempt the poster
+      // decides, so overriding it turns the dropped node into exactly the
+      // attempt a readable Bot would have produced.
+      candidates.push({ ...toAttempt(node, position, required), requiredKey });
     }
   }
   return candidates;

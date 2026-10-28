@@ -4,8 +4,8 @@
  * cooperative per-source / per-session pauses, and the gate that decides when the
  * pass may return early to service queued live-watcher events.
  *
- * Extracted from collector-manager.ts (grandfathered shrink-only under the root
- * AGENTS.md line-count contract) so this one cohesive concern — "how hard may the
+ * Extracted from collector-manager.ts (under the root AGENTS.md line-count
+ * contract) so this one cohesive concern — "how hard may the
  * backfill run, and when must it step aside" — lives in a module that can own its
  * own contract and its own tests.
  *

@@ -4,11 +4,11 @@ import { withAuth } from "@/lib/auth/with-auth";
 import {
   deleteResponse,
   errorResponse,
-  forbiddenResponse,
   notFoundResponse,
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
+import { requireTeamRole } from "../../../require-team-role";
 import { teamsService } from "../../../service";
 import { updateTeamRepositoryValidator } from "../../../validators";
 
@@ -23,18 +23,9 @@ export const PUT = withAuth<
   try {
     const { teamId, teamRepositoryId } = await params;
 
-    const team = await teamsService.findById(teamId, user.organizationId);
-    if (!team) {
-      return notFoundResponse("Team");
-    }
-
-    const hasPermission = await teamsService.hasRole(
-      teamId,
-      user.id,
-      TeamRole.Admin
-    );
-    if (!hasPermission) {
-      return forbiddenResponse();
+    const authError = await requireTeamRole(teamId, user, TeamRole.Admin);
+    if (authError) {
+      return authError;
     }
 
     const { body, errorResponse: parseError } = await parseBody(
@@ -72,18 +63,9 @@ export const DELETE = withAuth<
   try {
     const { teamId, teamRepositoryId } = await params;
 
-    const team = await teamsService.findById(teamId, user.organizationId);
-    if (!team) {
-      return notFoundResponse("Team");
-    }
-
-    const hasPermission = await teamsService.hasRole(
-      teamId,
-      user.id,
-      TeamRole.Admin
-    );
-    if (!hasPermission) {
-      return forbiddenResponse();
+    const authError = await requireTeamRole(teamId, user, TeamRole.Admin);
+    if (authError) {
+      return authError;
     }
 
     const result = await teamsService.removeRepository(

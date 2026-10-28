@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Version history of the legacy agents table; no product code reads or writes it."
+}

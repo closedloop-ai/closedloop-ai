@@ -1,21 +1,34 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import Ajv2020 from "ajv/dist/2020.js";
 import { z } from "zod";
 import { TelemetryAttribute } from "../src/attributes";
 import { TelemetryTextMaxLength } from "../src/schema-primitives";
+import { SpanErrorSource } from "../src/span";
 import {
-  appPayload,
   genAiPayload,
   ipcPayload,
+  ipcPayloadWithoutSessionCount,
   permissionPayload,
   spanEnvelopePayload,
   spanPayload,
   syncPayload,
 } from "../src/test-fixtures";
+import { appSchemaCheck } from "./json-schema-parity-cases-app";
+import {
+  assertEnumParity,
+  identifierText,
+  maxUnicodeText,
+  overflowUnicodeText,
+  type SchemaCheck,
+  upperTokenText,
+} from "./json-schema-parity-fixtures";
 import {
   assertLocalAbsolutePathPositiveControls,
   assertNoLocalAbsolutePath,
 } from "./privacy-scan";
+import { schemaManifest } from "./schema-manifest";
 
 const GeneratedJsonSchemaShape = z
   .object({
@@ -28,154 +41,8 @@ const GeneratedJsonSchemaShape = z
   })
   .loose();
 
-type SchemaCheck = {
-  path: string;
-  id: string;
-  validPayloads: Array<{
-    name: string;
-    payload: Record<string, unknown>;
-  }>;
-  invalidPayloads: Array<{
-    name: string;
-    payload: Record<string, unknown>;
-  }>;
-};
-
-const NON_BMP_CHARACTER = String.fromCodePoint(0x1_f9_ea);
-
-const maxUnicodeText = (maxLength: number) =>
-  NON_BMP_CHARACTER.repeat(maxLength);
-
-const overflowUnicodeText = (maxLength: number) =>
-  NON_BMP_CHARACTER.repeat(maxLength + 1);
-
 const schemaChecks: SchemaCheck[] = [
-  {
-    path: "dist/schemas/app.schema.json",
-    id: "https://closedloop.ai/schemas/telemetry-contract/app/v0.3.schema.json",
-    validPayloads: [
-      {
-        name: "empty app payload",
-        payload: {},
-      },
-      {
-        name: "all app fields",
-        payload: {
-          [TelemetryAttribute.AppInstallationId]: maxUnicodeText(
-            TelemetryTextMaxLength.AppInstallationId
-          ),
-          [TelemetryAttribute.AppOrganizationId]: maxUnicodeText(
-            TelemetryTextMaxLength.AppOrganizationId
-          ),
-          [TelemetryAttribute.DeploymentEnvironmentName]: maxUnicodeText(
-            TelemetryTextMaxLength.DeploymentEnvironmentName
-          ),
-          [TelemetryAttribute.ExceptionType]: maxUnicodeText(
-            TelemetryTextMaxLength.ExceptionType
-          ),
-          [TelemetryAttribute.ExceptionMessage]: maxUnicodeText(
-            TelemetryTextMaxLength.ExceptionMessage
-          ),
-          [TelemetryAttribute.ExceptionStacktrace]: maxUnicodeText(
-            TelemetryTextMaxLength.ExceptionStacktrace
-          ),
-          [TelemetryAttribute.AppExceptionOrigin]: "main",
-          [TelemetryAttribute.AppOperatingMode]: "single_player",
-          [TelemetryAttribute.AppLifecycleEvent]: "heartbeat",
-        },
-      },
-    ],
-    invalidPayloads: [
-      {
-        name: "unknown app attribute",
-        payload: appPayload({ "app.unknown": "value" }),
-      },
-      {
-        name: "wrong app exception origin",
-        payload: appPayload({
-          [TelemetryAttribute.AppExceptionOrigin]: "worker",
-        }),
-      },
-      {
-        name: "wrong operating mode",
-        payload: appPayload({
-          [TelemetryAttribute.AppOperatingMode]: "co_op",
-        }),
-      },
-      {
-        name: "wrong lifecycle event",
-        payload: appPayload({
-          [TelemetryAttribute.AppLifecycleEvent]: "restart",
-        }),
-      },
-      {
-        name: "wrong type installation id",
-        payload: appPayload({
-          [TelemetryAttribute.AppInstallationId]: 123,
-        }),
-      },
-      {
-        name: "control character exception message",
-        payload: appPayload({
-          [TelemetryAttribute.ExceptionMessage]: "boom\nfailed",
-        }),
-      },
-      {
-        name: "installation id above Unicode maximum",
-        payload: appPayload({
-          [TelemetryAttribute.AppInstallationId]: overflowUnicodeText(
-            TelemetryTextMaxLength.AppInstallationId
-          ),
-        }),
-      },
-      {
-        name: "organization id above Unicode maximum",
-        payload: appPayload({
-          [TelemetryAttribute.AppOrganizationId]: overflowUnicodeText(
-            TelemetryTextMaxLength.AppOrganizationId
-          ),
-        }),
-      },
-      {
-        name: "control character organization id",
-        payload: appPayload({
-          [TelemetryAttribute.AppOrganizationId]: "org\nid",
-        }),
-      },
-      {
-        name: "deployment environment above Unicode maximum",
-        payload: appPayload({
-          [TelemetryAttribute.DeploymentEnvironmentName]: overflowUnicodeText(
-            TelemetryTextMaxLength.DeploymentEnvironmentName
-          ),
-        }),
-      },
-      {
-        name: "exception type above Unicode maximum",
-        payload: appPayload({
-          [TelemetryAttribute.ExceptionType]: overflowUnicodeText(
-            TelemetryTextMaxLength.ExceptionType
-          ),
-        }),
-      },
-      {
-        name: "exception message above Unicode maximum",
-        payload: appPayload({
-          [TelemetryAttribute.ExceptionMessage]: overflowUnicodeText(
-            TelemetryTextMaxLength.ExceptionMessage
-          ),
-        }),
-      },
-      {
-        name: "exception stacktrace above Unicode maximum",
-        payload: appPayload({
-          [TelemetryAttribute.ExceptionStacktrace]: overflowUnicodeText(
-            TelemetryTextMaxLength.ExceptionStacktrace
-          ),
-        }),
-      },
-    ],
-  },
+  appSchemaCheck,
   {
     path: "dist/schemas/resource.schema.json",
     id: "https://closedloop.ai/schemas/telemetry-contract/resource/v0.4.schema.json",
@@ -297,10 +164,38 @@ const schemaChecks: SchemaCheck[] = [
           ),
           [TelemetryAttribute.CodeLineNumber]: 42,
           [TelemetryAttribute.CodeColumnNumber]: 0,
-          [TelemetryAttribute.ErrorType]: maxUnicodeText(
+          [TelemetryAttribute.ErrorType]: identifierText(
             TelemetryTextMaxLength.ErrorType
           ),
+          [TelemetryAttribute.AppErrorSource]: SpanErrorSource.RouteHandler,
+          [TelemetryAttribute.AppOrganizationId]: maxUnicodeText(
+            TelemetryTextMaxLength.AppOrganizationId
+          ),
+          [TelemetryAttribute.ArtifactType]: upperTokenText(
+            TelemetryTextMaxLength.ArtifactType
+          ),
+          [TelemetryAttribute.ArtifactStatus]: upperTokenText(
+            TelemetryTextMaxLength.ArtifactStatus
+          ),
+          [TelemetryAttribute.SyncBatchId]:
+            "d4b6b0a2-6a3e-4f9c-8b1d-2c3e4f5a6b7c",
         },
+      },
+      {
+        name: "dotted error type carrying a stable machine code",
+        payload: spanPayload({
+          [TelemetryAttribute.ErrorType]: "PrismaClientKnownRequestError.P2002",
+        }),
+      },
+      {
+        // Same pairing the Sync schema pins: the exported `pattern` carries no
+        // `i` flag, so case-insensitivity has to live in the character classes
+        // or the two representations of `sync.batch_id` accept different sets.
+        name: "uppercase span sync batch id",
+        payload: spanPayload({
+          [TelemetryAttribute.SyncBatchId]:
+            "D4B6B0A2-6A3E-4F9C-8B1D-2C3E4F5A6B7C",
+        }),
       },
     ],
     invalidPayloads: [
@@ -395,16 +290,73 @@ const schemaChecks: SchemaCheck[] = [
         }),
       },
       {
-        name: "error type above Unicode maximum",
+        name: "error type above maximum",
         payload: spanPayload({
-          [TelemetryAttribute.ErrorType]: overflowUnicodeText(
-            TelemetryTextMaxLength.ErrorType
+          [TelemetryAttribute.ErrorType]: identifierText(
+            TelemetryTextMaxLength.ErrorType + 1
           ),
+        }),
+      },
+      // ISS-7217: the span rides a keyless lane, so an error MESSAGE must be
+      // unrepresentable, not merely discouraged. Each of these is a shape a
+      // real message takes — prose, a path, a query string, an address — and
+      // the pattern has to reject every one of them.
+      {
+        name: "error type carrying prose",
+        payload: spanPayload({
+          [TelemetryAttribute.ErrorType]: "Invalid document id supplied",
+        }),
+      },
+      {
+        name: "error type carrying a filesystem path",
+        payload: spanPayload({
+          [TelemetryAttribute.ErrorType]: "ENOENT:/srv/app/secrets.json",
+        }),
+      },
+      {
+        name: "error type carrying a query string",
+        payload: spanPayload({
+          [TelemetryAttribute.ErrorType]: "BadRequest?token=abc",
+        }),
+      },
+      {
+        name: "error type carrying an address",
+        payload: spanPayload({
+          [TelemetryAttribute.ErrorType]: "Rejected@example.com",
+        }),
+      },
+      {
+        name: "artifact type outside the uppercase token shape",
+        payload: spanPayload({
+          [TelemetryAttribute.ArtifactType]: "My Draft PRD",
+        }),
+      },
+      {
+        name: "artifact status outside the uppercase token shape",
+        payload: spanPayload({
+          [TelemetryAttribute.ArtifactStatus]: "in-review",
+        }),
+      },
+      {
+        name: "error source outside the closed enum",
+        payload: spanPayload({
+          [TelemetryAttribute.AppErrorSource]: "database",
         }),
       },
       {
         name: "fractional duration",
         payload: spanPayload({ [TelemetryAttribute.DurationMs]: 1.5 }),
+      },
+      {
+        name: "non-uuid span sync batch id",
+        payload: spanPayload({ [TelemetryAttribute.SyncBatchId]: "batch-1" }),
+      },
+      {
+        name: "nil-uuid span sync batch id",
+        payload: spanPayload({
+          [TelemetryAttribute.SyncBatchId]:
+            "00000000-0000-0000-0000-000000000000",
+        }),
       },
     ],
   },
@@ -426,10 +378,17 @@ const schemaChecks: SchemaCheck[] = [
           [TelemetryAttribute.GenAiUsageCacheCreationInputTokens]: 3,
           [TelemetryAttribute.GenAiUsageCacheReadInputTokens]: 4,
           [TelemetryAttribute.GenAiCostUsage]: 0.0234,
+          [TelemetryAttribute.GenAiOperationName]: "chat",
         },
       },
     ],
     invalidPayloads: [
+      {
+        name: "operation name outside the closed set",
+        payload: genAiPayload({
+          [TelemetryAttribute.GenAiOperationName]: "embeddings",
+        }),
+      },
       {
         name: "negative cost",
         payload: genAiPayload({ [TelemetryAttribute.GenAiCostUsage]: -0.01 }),
@@ -516,13 +475,83 @@ const schemaChecks: SchemaCheck[] = [
           [TelemetryAttribute.SyncPayloadBytes]: 512,
           [TelemetryAttribute.SyncLatencyMs]: 12.5,
           [TelemetryAttribute.SyncReason]: "ack_timeout",
+          [TelemetryAttribute.SyncBatchId]:
+            "d4b6b0a2-6a3e-4f9c-8b1d-2c3e4f5a6b7c",
+          [TelemetryAttribute.SyncSessionCount]: 3,
+          [TelemetryAttribute.SyncAttempt]: 2,
+          [TelemetryAttribute.SyncPayloadShaping]: "chunked_head",
+          [TelemetryAttribute.SyncTilingStrippedCount]: 2,
+          [TelemetryAttribute.AppOrganizationId]:
+            "0190f6a1-5b2c-7d3e-8f40-6a7b8c9d0e1f",
+          [TelemetryAttribute.AppOperatingMode]: "multiplayer",
         },
+      },
+      {
+        // The Zod validator and this schema must accept the same set; an `i`
+        // flag on the Zod side would not survive into the exported `pattern`.
+        name: "uppercase sync batch id",
+        payload: syncPayload({
+          [TelemetryAttribute.SyncBatchId]:
+            "D4B6B0A2-6A3E-4F9C-8B1D-2C3E4F5A6B7C",
+        }),
+      },
+      {
+        name: "tiling-stripped payload shaping",
+        payload: syncPayload({
+          [TelemetryAttribute.SyncPayloadShaping]: "tiling_stripped",
+        }),
       },
     ],
     invalidPayloads: [
       {
         name: "unknown sync attribute",
         payload: syncPayload({ "sync.session_id": "session-123" }),
+      },
+      {
+        name: "empty sync organization id",
+        payload: syncPayload({ [TelemetryAttribute.AppOrganizationId]: "" }),
+      },
+      {
+        name: "unknown sync operating mode",
+        payload: syncPayload({
+          [TelemetryAttribute.AppOperatingMode]: "enterprise",
+        }),
+      },
+      {
+        name: "over-length sync organization id",
+        payload: syncPayload({
+          [TelemetryAttribute.AppOrganizationId]: "o".repeat(65),
+        }),
+      },
+      {
+        name: "control-character sync organization id",
+        payload: syncPayload({
+          [TelemetryAttribute.AppOrganizationId]: "org\u0001id",
+        }),
+      },
+      {
+        name: "non-uuid sync batch id",
+        payload: syncPayload({ [TelemetryAttribute.SyncBatchId]: "batch-1" }),
+      },
+      {
+        name: "zero sync attempt",
+        payload: syncPayload({ [TelemetryAttribute.SyncAttempt]: 0 }),
+      },
+      {
+        name: "negative sync tiling stripped count",
+        payload: syncPayload({
+          [TelemetryAttribute.SyncTilingStrippedCount]: -1,
+        }),
+      },
+      {
+        name: "negative sync session count",
+        payload: syncPayload({ [TelemetryAttribute.SyncSessionCount]: -1 }),
+      },
+      {
+        name: "wrong sync payload shaping",
+        payload: syncPayload({
+          [TelemetryAttribute.SyncPayloadShaping]: "truncated",
+        }),
       },
       {
         name: "wrong sync reason",
@@ -618,6 +647,22 @@ const schemaChecks: SchemaCheck[] = [
         name: "ipc without optional error type",
         payload: ipcPayload(),
       },
+      {
+        name: "ipc page_data operation",
+        payload: ipcPayload({
+          [TelemetryAttribute.IpcOperation]: "page_data",
+        }),
+      },
+      {
+        // ISS-8773: the failed call whose follow-up COUNT failed with it. The
+        // published JSON Schema has to accept the omission for the same reason
+        // the Zod validator does — an off-contract consumer validating against
+        // the schema alone must not reject the event `error.type` lives on.
+        name: "ipc with an unmeasured session count on a failed call",
+        payload: ipcPayloadWithoutSessionCount({
+          [TelemetryAttribute.ErrorType]: "DbHostExitError",
+        }),
+      },
     ],
     invalidPayloads: [
       {
@@ -664,43 +709,85 @@ const schemaChecks: SchemaCheck[] = [
   },
 ];
 
-if (!existsSync("dist")) {
-  throw new Error("dist/ must exist before generated schemas are checked");
-}
+export { schemaChecks };
 
-assertLocalAbsolutePathPositiveControls();
+const isDirectRun =
+  process.argv[1] &&
+  import.meta.url ===
+    pathToFileURL(realpathSync(resolve(process.argv[1]))).href;
 
-const ajv = new Ajv2020({ allErrors: true, strict: true });
-
-for (const check of schemaChecks) {
-  if (!existsSync(check.path)) {
-    throw new Error(`Missing generated schema: ${check.path}`);
+if (isDirectRun) {
+  if (!existsSync("dist")) {
+    throw new Error("dist/ must exist before generated schemas are checked");
   }
 
-  const source = readFileSync(check.path, "utf-8");
-  assertPrivateSourceFree(check.path, source);
+  const manifestPaths: ReadonlySet<string> = new Set(
+    schemaManifest.map((s) => s.path)
+  );
+  const checkPaths: ReadonlySet<string> = new Set(
+    schemaChecks.map((c) => c.path)
+  );
 
-  const parsed = GeneratedJsonSchemaShape.parse(JSON.parse(source));
-  if (parsed.$id !== check.id) {
-    throw new Error(`${check.path} has unexpected $id`);
-  }
-
-  const validate = ajv.compile(parsed);
-  for (const validPayload of check.validPayloads) {
-    if (!validate(validPayload.payload)) {
+  for (const mp of manifestPaths) {
+    if (!checkPaths.has(mp)) {
       throw new Error(
-        `${check.path} rejected valid payload: ${validPayload.name}: ${ajv.errorsText(
-          validate.errors
-        )}`
+        `schema-manifest lists ${mp} but schemaChecks has no entry for it`
+      );
+    }
+  }
+  for (const cp of checkPaths) {
+    if (!manifestPaths.has(cp)) {
+      throw new Error(`schemaChecks lists ${cp} but schema-manifest does not`);
+    }
+  }
+
+  const distFiles = readdirSync("dist/schemas")
+    .filter((f) => f.endsWith(".schema.json"))
+    .map((f) => `dist/schemas/${f}`);
+  for (const df of distFiles) {
+    if (!checkPaths.has(df)) {
+      throw new Error(
+        `dist/schemas/ contains ${df} but schemaChecks has no entry for it`
       );
     }
   }
 
-  for (const invalidPayload of check.invalidPayloads) {
-    if (validate(invalidPayload.payload)) {
-      throw new Error(
-        `${check.path} accepted invalid payload: ${invalidPayload.name}`
-      );
+  assertLocalAbsolutePathPositiveControls();
+
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+
+  for (const check of schemaChecks) {
+    if (!existsSync(check.path)) {
+      throw new Error(`Missing generated schema: ${check.path}`);
+    }
+
+    const source = readFileSync(check.path, "utf-8");
+    assertPrivateSourceFree(check.path, source);
+
+    const parsed = GeneratedJsonSchemaShape.parse(JSON.parse(source));
+    if (parsed.$id !== check.id) {
+      throw new Error(`${check.path} has unexpected $id`);
+    }
+
+    assertEnumParity(check.path, parsed.properties, check.enumParity);
+
+    const validate = ajv.compile(parsed);
+    for (const validPayload of check.validPayloads) {
+      if (!validate(validPayload.payload)) {
+        throw new Error(
+          `${check.path} rejected valid payload: ${validPayload.name}: ${ajv.errorsText(
+            validate.errors
+          )}`
+        );
+      }
+    }
+
+    for (const invalidPayload of check.invalidPayloads) {
+      if (validate(invalidPayload.payload)) {
+        throw new Error(
+          `${check.path} accepted invalid payload: ${invalidPayload.name}`
+        );
+      }
     }
   }
 }

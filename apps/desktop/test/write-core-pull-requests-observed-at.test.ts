@@ -6,21 +6,21 @@
  * `startedAt`/`endedAt` and writes it to three lexically-compared TEXT columns —
  * the `referenced` artifact link's `observed_at`, `artifacts.observed_at`, and
  * `pull_requests.observed_at`. `maxIso` picks the right operand (it compares by
- * INSTANT) but `validIso` returns it VERBATIM, and Claude's `isoTs` passes a
+ * INSTANT) but `validIso` returns it VERBATIM, and Claude's `toIso` passes a
  * transcript string through unparsed, so an offset-form value used to land in the
  * very columns the resolver and the boot heal exist to keep single-format.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { isCanonicalUtcTimestamp } from "../src/main/database/session-timestamp-form.js";
 import { persistNormalizedPullRequests } from "../src/main/database/write-core-pull-requests.js";
 import { makeSession } from "./normalized-session-test-utils.js";
 import { openTestPrisma } from "./prisma-test-utils.js";
 
-const REPO = "closedloop-ai/example-repo";
+const REPO = "closedloop-ai/closedloop-ai";
 const PR_URL = `https://github.com/${REPO}/pull/5427`;
 const NOW = "2026-08-07T00:00:00.000Z";
-/** Offset form, as Claude's pass-through `isoTs` can leave `startedAt`. */
+/** Offset form, as Claude's pass-through `toIso` can leave `startedAt`. */
 const OFFSET_STARTED_AT = "2026-08-06T10:00:00-05:00";
 /** The SAME instant as OFFSET_STARTED_AT, re-expressed in UTC. */
 const OFFSET_STARTED_AT_AS_UTC = "2026-08-06T15:00:00.000Z";

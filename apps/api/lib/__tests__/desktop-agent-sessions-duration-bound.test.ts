@@ -34,7 +34,7 @@ const validPayload = {
       updatedAt: "2026-05-20T17:05:00.000Z",
       metadata: { source: "desktop" },
       attribution: {
-        repositoryFullName: "closedloop-ai/example-repo",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
         worktreePath: null,
         sourceArtifactId: "artifact-1",
         sourceLoopId: null,

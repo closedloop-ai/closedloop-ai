@@ -16,6 +16,8 @@ import {
 } from "@repo/design-system/components/ui/select";
 import type { Control, FieldValues, Path } from "react-hook-form";
 import { Controller, useFormContext, useWatch } from "react-hook-form";
+import { useFeatureFlagEnabledOptional } from "../../shared/feature-flags/use-feature-flag-enabled";
+import { CUSTOM_FIELD_DURATION_FORMAT_FEATURE_FLAG_KEY } from "../../shared/lib/feature-flags";
 
 const PRECISION_OPTIONS = [0, 1, 2, 3, 4, 5, 6] as const;
 
@@ -28,6 +30,9 @@ export function NumberFormatConfig<T extends FieldValues = FieldValues>({
 }: Readonly<NumberFormatConfigProps<T>>) {
   const formContext = useFormContext<T>();
   const control = controlProp ?? formContext?.control;
+  const durationFormatEnabled = useFeatureFlagEnabledOptional(
+    CUSTOM_FIELD_DURATION_FORMAT_FEATURE_FLAG_KEY
+  );
 
   const numberFormat = useWatch({
     control,
@@ -72,6 +77,15 @@ export function NumberFormatConfig<T extends FieldValues = FieldValues>({
                 />
                 <Label htmlFor="format-custom">Custom</Label>
               </div>
+              {durationFormatEnabled && (
+                <div className="flex items-center gap-2">
+                  <RadioGroupItem
+                    id="format-duration"
+                    value={NumberFormat.Duration}
+                  />
+                  <Label htmlFor="format-duration">Duration</Label>
+                </div>
+              )}
             </RadioGroup>
           </fieldset>
         )}
@@ -145,36 +159,45 @@ export function NumberFormatConfig<T extends FieldValues = FieldValues>({
         </div>
       )}
 
-      <Controller
-        control={control}
-        name={"precision" as Path<T>}
-        render={({ field }) => (
-          <div className="space-y-2">
-            <Label htmlFor="decimal-precision" id="decimal-precision-label">
-              Decimal precision
-            </Label>
-            <Select
-              onValueChange={(val) => field.onChange(Number(val))}
-              value={String(field.value ?? 0)}
-            >
-              <SelectTrigger
-                aria-labelledby="decimal-precision-label"
-                className="w-full"
-                id="decimal-precision"
+      {numberFormat === NumberFormat.Duration && (
+        <p className="text-muted-foreground text-sm">
+          Type a span like &quot;1h 12m&quot;, &quot;3d 4h&quot;, or
+          &quot;90s&quot; — a bare number is read as seconds.
+        </p>
+      )}
+
+      {numberFormat !== NumberFormat.Duration && (
+        <Controller
+          control={control}
+          name={"precision" as Path<T>}
+          render={({ field }) => (
+            <div className="space-y-2">
+              <Label htmlFor="decimal-precision" id="decimal-precision-label">
+                Decimal precision
+              </Label>
+              <Select
+                onValueChange={(val) => field.onChange(Number(val))}
+                value={String(field.value ?? 0)}
               >
-                <SelectValue placeholder="Select precision" />
-              </SelectTrigger>
-              <SelectContent>
-                {PRECISION_OPTIONS.map((p) => (
-                  <SelectItem key={p} value={String(p)}>
-                    {p}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        )}
-      />
+                <SelectTrigger
+                  aria-labelledby="decimal-precision-label"
+                  className="w-full"
+                  id="decimal-precision"
+                >
+                  <SelectValue placeholder="Select precision" />
+                </SelectTrigger>
+                <SelectContent>
+                  {PRECISION_OPTIONS.map((p) => (
+                    <SelectItem key={p} value={String(p)}>
+                      {p}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+        />
+      )}
     </div>
   );
 }

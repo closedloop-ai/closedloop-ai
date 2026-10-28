@@ -24,18 +24,12 @@
 
 import type { AgentSessionUsageSummary } from "@repo/api/src/types/agent-session";
 import { AgentSessionViewerScope } from "@repo/api/src/types/agent-session";
+import { TOTAL_ESTIMATED_COST_ALIAS_LABEL } from "@repo/api/src/types/total-estimated-cost-copy";
 import type { SessionSummaryDeltas } from "@repo/app/agents/lib/session-summary-deltas";
-import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
-import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
-import { SESSIONS_COST_BILLING_HONESTY_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { MetricPolarity } from "@repo/design-system/components/ui/primitives/metric-polarity";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import {
-  SESSIONS_COST_HONEST_METRIC_CARD_LABEL,
-  SESSIONS_COST_METRIC_CARD_LABEL,
-  SESSIONS_COST_NO_COST_RECORDED_DETAIL,
-} from "../cost-metric-card";
+import { SESSIONS_COST_NO_COST_RECORDED_DETAIL } from "../cost-metric-card";
 import { createAgentSessionUsageSummaryFixture } from "../session-list-fixtures";
 import {
   SESSIONS_METRIC_CARD_LABEL,
@@ -84,7 +78,10 @@ const NO_VALUE_GLYPH = "—";
 const ALWAYS_AVAILABLE_TILE_LABELS = [
   SESSIONS_METRIC_CARD_LABEL,
   TOTAL_TOKENS_METRIC_CARD_LABEL,
-  SESSIONS_COST_METRIC_CARD_LABEL,
+  // The Cost tile's one label, which the resolver returns for every mode — so
+  // the case below, which renders a FAILED read with no payload at all, names
+  // the tile without pinning which basis it reports on.
+  TOTAL_ESTIMATED_COST_ALIAS_LABEL,
 ] as const;
 
 /**
@@ -95,7 +92,11 @@ const ALWAYS_AVAILABLE_TILE_LABELS = [
 const UNPRICED_COHORT_DELTAS: SessionSummaryDeltas = {
   label: "vs. prior 30 days",
   sessions: { delta: 12, deltaPolarity: MetricPolarity.HigherIsBetter },
-  apiCost: { delta: -40, deltaPolarity: MetricPolarity.LowerIsBetter },
+  // ISS-10734: this was `apiCost`, which `costDeltaKey` has resolved to on no
+  // mode since ISS-10636 — so the Cost tile had no chip to drop and the three
+  // suppression cases below passed whether or not the suppression worked. The
+  // movement now sits on the key the card actually reads.
+  totalCost: { delta: -40, deltaPolarity: MetricPolarity.LowerIsBetter },
 };
 
 /**
@@ -129,7 +130,7 @@ describe("SessionsSummaryCards — uncomputable cost (ISS-5401)", () => {
     // The tile is still the Sessions Cost tile (ISS-4401's per-surface label) —
     // it dropped its VALUE, not its identity.
     expect(
-      screen.getByText(SESSIONS_COST_METRIC_CARD_LABEL)
+      screen.getByText(TOTAL_ESTIMATED_COST_ALIAS_LABEL)
     ).toBeInTheDocument();
     // The defect: 1.26B tokens rendered beside a confident zero.
     expect(screen.queryByText(FABRICATED_ZERO)).toBeNull();
@@ -215,11 +216,12 @@ describe("SessionsSummaryCards — uncomputable cost (ISS-5401)", () => {
     expect(screen.queryByText(IF_BILLED_TO_API_PATTERN)).toBeNull();
   });
 
-  it("keeps the honest $0 headline for a fully subscription-covered cohort", () => {
-    // The near-miss this must not swallow: `apiEstimatedCost` is legitimately
-    // zero because every session was subscription-covered. The spend is real, it
-    // just is not out-of-pocket — and the existing caption already explains it.
-    // Dashing here would delete a true zero and a true caption.
+  it("headlines the real spend of a fully subscription-covered cohort, not a zero", () => {
+    // The near-miss this must not swallow: the cohort's spend is real, it just
+    // is not out-of-pocket. Under ISS-10597's ruling that spend IS the headline,
+    // so `$0` is now the WRONG answer here rather than the honest one — it was
+    // `apiEstimatedCost`, which no longer backs any headline, and it is asserted
+    // absent so a regression to that basis reddens this case.
     render(
       <SessionsSummaryCards
         isLoading={false}
@@ -230,8 +232,8 @@ describe("SessionsSummaryCards — uncomputable cost (ISS-5401)", () => {
       />
     );
 
-    expect(screen.getByText(FABRICATED_ZERO)).toBeInTheDocument();
-    expect(screen.getByText(IF_BILLED_TO_API_PATTERN)).toBeInTheDocument();
+    expect(screen.getByText("$70")).toBeInTheDocument();
+    expect(screen.queryByText(FABRICATED_ZERO)).toBeNull();
     expect(
       screen.queryByText(SESSIONS_COST_NO_COST_RECORDED_DETAIL)
     ).toBeNull();
@@ -240,8 +242,11 @@ describe("SessionsSummaryCards — uncomputable cost (ISS-5401)", () => {
   it("counts cached tokens as usage that should have been priced", () => {
     // The four token counters are checked, not just input+output: a cohort whose
     // work was served from cache still consumed usage a pricing engine owes a
-    // figure for. The Total Tokens tile beside it sums only input+output, so this
-    // is the case where the two tiles legitimately disagree about "empty".
+    // figure for. ISS-7175 moved the Total Tokens tile onto the same four, so the
+    // two tiles now agree that this cohort is non-empty — the tile renders 4.00M
+    // beside the Cost dash. That agreement is the point: the dash says "not
+    // priced", not "no usage", and the tile beside it is what makes the
+    // distinction legible.
     render(
       <SessionsSummaryCards
         isLoading={false}
@@ -259,11 +264,13 @@ describe("SessionsSummaryCards — uncomputable cost (ISS-5401)", () => {
     ).toBeInTheDocument();
   });
 
-  it("degrades to the shipped presentation when a version-skewed producer sends money in one figure only", () => {
+  it("refuses the unpriced reason when a version-skewed producer sends money in one figure only", () => {
     // Cross-repo compatibility: an older producer can populate a figure whose
     // siblings this build expects. One non-zero figure anywhere proves pricing
-    // worked for part of the cohort, so the tile must not dash on the zeros
-    // around it.
+    // worked for part of the cohort, so the tile must not claim nothing priced.
+    // It still dashes, because the figure it headlines is the one the producer
+    // omitted — an honest absence, and NOT the fabricated `$0` this suite exists
+    // to stop.
     render(
       <SessionsSummaryCards
         isLoading={false}
@@ -274,10 +281,16 @@ describe("SessionsSummaryCards — uncomputable cost (ISS-5401)", () => {
       />
     );
 
+    // A positive anchor first, so the two absences cannot pass vacuously on a
+    // card that failed to render at all: the tile is present and dashing.
+    expect(
+      screen.getByText(TOTAL_ESTIMATED_COST_ALIAS_LABEL)
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
     expect(
       screen.queryByText(SESSIONS_COST_NO_COST_RECORDED_DETAIL)
     ).toBeNull();
-    expect(screen.getByText(FABRICATED_ZERO)).toBeInTheDocument();
+    expect(screen.queryByText(FABRICATED_ZERO)).toBeNull();
   });
 
   it("will not call a cohort unpriced while its grand total is unreadable", () => {
@@ -286,8 +299,8 @@ describe("SessionsSummaryCards — uncomputable cost (ISS-5401)", () => {
     // on the wire (typed `number`, but nothing parses either producer's
     // payload), the cohort's REQUIRED total is unknown — so "No cost recorded"
     // would be the same fabrication as `$0`, pointed the other way. An
-    // uninterpretable payload degrades to the shipped presentation, which is
-    // this module's standing rule for a producer it cannot read.
+    // uninterpretable payload keeps its dash rather than taking a reason this
+    // module invented, which is its standing rule for a producer it cannot read.
     render(
       <SessionsSummaryCards
         isLoading={false}
@@ -364,7 +377,9 @@ describe("SessionsSummaryCards — uncomputable cost (ISS-5401)", () => {
     expect(
       screen.queryByText(SESSIONS_COST_NO_COST_RECORDED_DETAIL)
     ).toBeNull();
-    expect(screen.getByText(IF_BILLED_TO_API_PATTERN)).toBeInTheDocument();
+    // The sibling's money reaches the headline, because the headline IS the
+    // inclusive total — a `null` in `apiEstimatedCost` can no longer dash it.
+    expect(screen.getByText("$70")).toBeInTheDocument();
   });
 
   it("composes the reason onto the local-history provenance instead of replacing it", () => {
@@ -427,13 +442,18 @@ describe("SessionsSummaryCards — uncomputable cost (ISS-5401)", () => {
     //
     // The near-miss sibling case above renders this same payload WITHOUT
     // `deltas`, which is why it could not see the chip. This one supplies them.
+    //
+    // ISS-10636 moved WHICH field has to be the unreadable one: the headline is
+    // `totalEstimatedCost` now, so the contradiction is a `null` there beside a
+    // sibling that still carries real money. Pointed at `apiEstimatedCost` this
+    // payload no longer dashes at all and the case would assert nothing.
     render(
       <SessionsSummaryCards
         deltas={UNPRICED_COHORT_DELTAS}
         isLoading={false}
         usage={unpricedCohortFixture({
-          apiEstimatedCost: null as unknown as number,
-          totalEstimatedCost: 70,
+          apiEstimatedCost: 70,
+          totalEstimatedCost: null as unknown as number,
           subscriptionEstimatedCost: 70,
         })}
       />
@@ -510,32 +530,27 @@ describe("SessionsSummaryCards — one failed read, one dash treatment (ISS-5401
   });
 });
 
-describe("SessionsSummaryCards — uncomputable cost in honest mode (ISS-5401)", () => {
+describe("SessionsSummaryCards — uncomputable cost, fully split (ISS-5401)", () => {
   it("dashes with the pricing reason rather than the billing-split disclosure", () => {
-    // The ISS-4773 honest presentation narrows the headline to
-    // `meteredEstimatedCost` and captions the shares it excluded. When NOTHING
-    // priced, every one of those shares is zero, so the disclosure has nothing
-    // to say and the only fact left is why the headline is a dash. The card
-    // keeps its honest LABEL — the basis it reports on has not changed, only
-    // its ability to report a figure.
+    // A cohort that priced NOTHING still partitions — into three zeroes — so
+    // every arithmetic check in `canReportCostBreakdown` passes on it. ISS-8791
+    // added the unpriceable refusal that keeps it out of breakdown, because
+    // breakdown would state `$0 · $0 · $0` as a measured partition AND suppress
+    // the caption explaining the dash. What must survive is the REASON: the
+    // shares are all zero, so a disclosure has nothing to say, and the only
+    // fact left is why the headline is a dash.
     render(
-      <FeatureFlagAdapterProvider
-        adapter={createStaticFeatureFlagAdapter({
-          enabledFlags: [SESSIONS_COST_BILLING_HONESTY_FEATURE_FLAG_KEY],
+      <SessionsSummaryCards
+        isLoading={false}
+        usage={unpricedCohortFixture({
+          meteredEstimatedCost: 0,
+          unknownEstimatedCost: 0,
         })}
-      >
-        <SessionsSummaryCards
-          isLoading={false}
-          usage={unpricedCohortFixture({
-            meteredEstimatedCost: 0,
-            unknownEstimatedCost: 0,
-          })}
-        />
-      </FeatureFlagAdapterProvider>
+      />
     );
 
     expect(
-      screen.getByText(SESSIONS_COST_HONEST_METRIC_CARD_LABEL)
+      screen.getByText(TOTAL_ESTIMATED_COST_ALIAS_LABEL)
     ).toBeInTheDocument();
     expect(screen.queryByText(FABRICATED_ZERO)).toBeNull();
     expect(

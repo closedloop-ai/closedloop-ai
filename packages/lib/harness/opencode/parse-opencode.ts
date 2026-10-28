@@ -92,6 +92,9 @@ function finalize(
     permissionMode: header.permissionMode,
     entrypoint: header.entrypoint || Harness.OpenCode,
     fileModifiedAt: header.fileModifiedAt,
+    ...(header.fileCreatedAt === undefined
+      ? {}
+      : { fileCreatedAt: header.fileCreatedAt }),
     tokensByModel: header.tokensByModel,
     messageTimestamps: header.messageTimestamps,
     diffStats: header.diffStats,
@@ -130,6 +133,9 @@ function applyRecord(
         timestamp: record.timestamp,
         ...(record.input === undefined ? {} : { input: record.input }),
         ...(record.output === undefined ? {} : { output: record.output }),
+        ...(record.outputFootprintTokens === undefined
+          ? {}
+          : { outputFootprintTokens: record.outputFootprintTokens }),
         ...(record.isError ? { isError: true } : {}),
         ...(record.diffDelta ? { diffDelta: record.diffDelta } : {}),
       });

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import {
   collectSessionPrEvidence,
   resolveSessionPrAdmissionIdentity,
@@ -7,6 +6,7 @@ import {
   toSessionPrEvidenceRecords,
 } from "@repo/api/src/types/session-artifact-link";
 import { SessionPrLifecycleStatus } from "@repo/lib/session-trace/derivation";
+import { test } from "vitest";
 import type { SyncedAgentSession } from "../src/main/agent-sync/agent-session-sync-contract.js";
 import {
   localSessionHasPr,

@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { recoverMigrateDeployFailure } from "../scripts/migrate-deploy-recovery";
-import type { MigrationPipelineDeps } from "../scripts/migration-pipeline";
+import { normalizePreviewSchemaName } from "../schema-utils";
+import { defaultApplyToSchema } from "../scripts/migrate-all-previews";
+import {
+  PreviewResetMode,
+  recoverMigrateDeployFailure,
+} from "../scripts/migrate-deploy-recovery";
+import { MigrateGateOutcome } from "../scripts/migrate-telemetry";
 import {
   applyMigrationsToSchema,
   runMigrateWithRetry,
@@ -8,6 +13,7 @@ import {
 } from "../scripts/migration-pipeline";
 import { prestampSkippableMigrationsViaSql } from "../scripts/preview-prestamp";
 import { upsertSchemaRegistry } from "../scripts/preview-schema";
+import { makePipelineDeps as makeDeps } from "./support/migration-pipeline.test-fixtures";
 
 // `runMigrateWithRetry` shells `prisma migrate deploy` and, on failure, calls the
 // recovery. Both are stubbed so the failure→recovery forwarding path is unit-
@@ -45,7 +51,10 @@ vi.mock("node:child_process", async () => {
     }),
   };
 });
-vi.mock("../scripts/migrate-deploy-recovery", () => ({
+vi.mock("../scripts/migrate-deploy-recovery", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../scripts/migrate-deploy-recovery")
+  >()),
   recoverMigrateDeployFailure: vi.fn(() => Promise.resolve(false)),
 }));
 // ISS-6814: the REAL pre-stamp, wrapped so the closure the pipeline binds for
@@ -65,46 +74,13 @@ const PREVIEW_SCHEMA = "preview_my_branch_abc12345";
 const TRANSIENT_BUILD_RE = /transient build failure/;
 const OWNERSHIP_DRIFT_RE = /schema_ownership_drift/;
 const MERGE_QUEUE_REF = "gh-readonly-queue/main/pr-4444-abc1234";
-
+const CLONE_FAILED_RE = /The data clone from public into .* failed/;
 /**
- * Full mock dependency set for runMigrationPipeline. The serialize gate mock
- * actually invokes its callback so prestamp + migrate run inside it (as they do
- * in production), and withRetry runs its callback once. All collaborators are
- * injected so no real DB/prisma/fs is touched.
+ * An explicitly named, non-preview schema (`PGSCHEMA`): a new one still takes the
+ * gated migrate below. A new branch preview is built around a clone instead
+ * (ISS-11785, `preview-clone-first.test.ts`).
  */
-function makeDeps(opts: {
-  isNew?: boolean;
-  atHead?: boolean;
-  reset?: boolean;
-  cloneOk?: boolean;
-}) {
-  return {
-    ensureSchemaExists: vi.fn(() => Promise.resolve(opts.isNew ?? false)),
-    upsertSchemaRegistry: vi.fn(() => Promise.resolve()),
-    probePreviewSchemaAtHead: vi.fn(() =>
-      Promise.resolve(opts.atHead ?? false)
-    ),
-    // Invokes its callback (prestamp + migrate run inside) as production does.
-    withMigrationSerializeLock: vi.fn(
-      (
-        _opts: {
-          databaseUrl: string;
-          onContended?: "run" | "skip";
-          budgetMs?: number;
-        },
-        fn: () => Promise<boolean>
-      ) => fn()
-    ),
-    prestampSkippableMigrationsViaSql: vi.fn(() => Promise.resolve()),
-    plainBuildPreviewConcurrentIndexes: vi.fn(() => Promise.resolve()),
-    sweepInvalidIndexes: vi.fn(() => Promise.resolve([])),
-    runMigrate: vi.fn(() => Promise.resolve(opts.reset ?? false)),
-    cloneDataFromPublic: vi.fn(() => Promise.resolve(opts.cloneOk ?? true)),
-    runPreviewSeed: vi.fn(),
-    withRetry: vi.fn((fn: () => Promise<void>) => fn()),
-    assertMigrateRoleOwnsSchema: vi.fn(() => Promise.resolve()),
-  } satisfies MigrationPipelineDeps;
-}
+const EXPLICIT_SCHEMA = "explicit_schema";
 
 async function run(
   schema: string | null,
@@ -113,14 +89,22 @@ async function run(
   await runMigrationPipeline("postgres://x", schema, "some-branch", deps);
 }
 
+/** The serialize gate's calls, without a branch preview's build lock (ISS-11785). */
+function serializeGateCalls(deps: ReturnType<typeof makeDeps>) {
+  return deps.withMigrationSerializeLock.mock.calls.filter(
+    ([gate]) => gate.lockKey === undefined
+  );
+}
+
 describe("runMigrationPipeline at-head branch (FEA-3071)", () => {
   it("skips the gate, prestamp, migrate, and clone when the preview is at head", async () => {
     const deps = makeDeps({ isNew: false, atHead: true });
     await run(PREVIEW_SCHEMA, deps);
 
     expect(deps.probePreviewSchemaAtHead).toHaveBeenCalledTimes(1);
-    // The whole lock-taking path is skipped: 0 advisory-lock acquisitions.
-    expect(deps.withMigrationSerializeLock).not.toHaveBeenCalled();
+    // The whole gated path is skipped: no serialize-gate acquisition. The
+    // preview's build lock (ISS-11785) is per schema, not the shared gate.
+    expect(serializeGateCalls(deps)).toEqual([]);
     expect(deps.prestampSkippableMigrationsViaSql).not.toHaveBeenCalled();
     expect(deps.runMigrate).not.toHaveBeenCalled();
     // No reset happened, so the existing preview keeps its data — no clone.
@@ -137,7 +121,7 @@ describe("runMigrationPipeline at-head branch (FEA-3071)", () => {
     const deps = makeDeps({ isNew: false, atHead: false, reset: false });
     await run(PREVIEW_SCHEMA, deps);
 
-    expect(deps.withMigrationSerializeLock).toHaveBeenCalledTimes(1);
+    expect(serializeGateCalls(deps)).toHaveLength(1);
     expect(deps.prestampSkippableMigrationsViaSql).toHaveBeenCalledTimes(1);
     expect(deps.runMigrate).toHaveBeenCalledTimes(1);
     // Not new and no reset → no clone.
@@ -146,15 +130,27 @@ describe("runMigrationPipeline at-head branch (FEA-3071)", () => {
   });
 
   it("clones after a reset (didReset) on the gated path", async () => {
-    const deps = makeDeps({ isNew: false, atHead: false, reset: true });
+    const deps = makeDeps({
+      isNew: false,
+      atHead: false,
+      reset: true,
+      replayed: true,
+    });
     await run(PREVIEW_SCHEMA, deps);
 
-    expect(deps.runMigrate).toHaveBeenCalledTimes(1);
+    // ISS-11785: the reset only empties the schema; the migrate of what public
+    // has not applied, over the clone, is the second.
+    expect(deps.runMigrate).toHaveBeenCalledTimes(2);
     expect(deps.cloneDataFromPublic).toHaveBeenCalledTimes(1);
   });
 
   it("plain-builds preview indexes AFTER migrate and AFTER the clone (ISS-4437)", async () => {
-    const deps = makeDeps({ isNew: false, atHead: false, reset: true });
+    const deps = makeDeps({
+      isNew: false,
+      atHead: false,
+      reset: true,
+      replayed: true,
+    });
     await run(PREVIEW_SCHEMA, deps);
 
     expect(deps.plainBuildPreviewConcurrentIndexes).toHaveBeenCalledTimes(1);
@@ -171,7 +167,7 @@ describe("runMigrationPipeline at-head branch (FEA-3071)", () => {
 
   it("persists the clone BEFORE the plain-build so a fail-then-retry keeps data (ISS-4437)", async () => {
     // Run 1: fresh schema; migrate + clone run, then the plain-build throws.
-    const first = makeDeps({ isNew: true, atHead: true });
+    const first = makeDeps({ isNew: true, atHead: true, replayed: true });
     first.plainBuildPreviewConcurrentIndexes.mockRejectedValueOnce(
       new Error("transient build failure")
     );
@@ -195,7 +191,7 @@ describe("runMigrationPipeline at-head branch (FEA-3071)", () => {
 
   it("never probes a brand-new schema; migrates and clones it", async () => {
     const deps = makeDeps({ isNew: true, atHead: true });
-    await run(PREVIEW_SCHEMA, deps);
+    await run(EXPLICIT_SCHEMA, deps);
 
     // `!isNew` short-circuits the probe for a fresh schema.
     expect(deps.probePreviewSchemaAtHead).not.toHaveBeenCalled();
@@ -311,7 +307,14 @@ describe("runMigrationPipeline threads prismaCli.migrationsDir into every migrat
  */
 describe("runMigrationPipeline tells the pre-stamp whether the schema is fresh (ISS-6814)", () => {
   it("a brand-new schema pre-stamps as fresh", async () => {
-    const deps = makeDeps({ isNew: true, atHead: false, reset: false });
+    // ISS-11785: `atHead` is the post-clone probe; nothing above public's level
+    // remains, so the replay's pre-stamp is the run's only one.
+    const deps = makeDeps({
+      isNew: true,
+      atHead: true,
+      reset: false,
+      replayed: true,
+    });
     await run(PREVIEW_SCHEMA, deps);
 
     expect(deps.prestampSkippableMigrationsViaSql).toHaveBeenCalledTimes(1);
@@ -374,7 +377,6 @@ describe("applyMigrationsToSchema (FEA-3071 Slice 2 shared core)", () => {
 
     expect(result).toEqual({
       didReset: false,
-      cloneFailed: false,
       invalidIndexes: [],
     });
     expect(deps.probePreviewSchemaAtHead).toHaveBeenCalledTimes(1);
@@ -398,7 +400,6 @@ describe("applyMigrationsToSchema (FEA-3071 Slice 2 shared core)", () => {
     );
     expect(result).toEqual({
       didReset: false,
-      cloneFailed: false,
       invalidIndexes: [],
     });
     expect(deps.withMigrationSerializeLock).toHaveBeenCalledTimes(1);
@@ -406,7 +407,12 @@ describe("applyMigrationsToSchema (FEA-3071 Slice 2 shared core)", () => {
   });
 
   it("reset → clones and returns didReset:true", async () => {
-    const deps = makeDeps({ isNew: false, atHead: false, reset: true });
+    const deps = makeDeps({
+      isNew: false,
+      atHead: false,
+      reset: true,
+      replayed: true,
+    });
     const result = await applyMigrationsToSchema(
       "postgres://x",
       PREVIEW_SCHEMA,
@@ -416,31 +422,32 @@ describe("applyMigrationsToSchema (FEA-3071 Slice 2 shared core)", () => {
     );
     expect(result).toEqual({
       didReset: true,
-      cloneFailed: false,
       invalidIndexes: [],
     });
     expect(deps.cloneDataFromPublic).toHaveBeenCalledTimes(1);
   });
 
-  it("reports cloneFailed when a post-reset clone fails", async () => {
+  it("fails the run when a post-reset clone fails (ISS-11785)", async () => {
     const deps = makeDeps({
       isNew: false,
       atHead: false,
       reset: true,
       cloneOk: false,
+      replayed: true,
     });
-    const result = await applyMigrationsToSchema(
+    await expect(
+      applyMigrationsToSchema(
+        "postgres://x",
+        PREVIEW_SCHEMA,
+        "branch",
+        { isNew: false },
+        deps
+      )
+    ).rejects.toThrow(CLONE_FAILED_RE);
+    expect(deps.dropSchema).toHaveBeenCalledWith(
       "postgres://x",
-      PREVIEW_SCHEMA,
-      "branch",
-      { isNew: false },
-      deps
+      PREVIEW_SCHEMA
     );
-    expect(result).toEqual({
-      didReset: true,
-      cloneFailed: true,
-      invalidIndexes: [],
-    });
   });
 
   it("threads serializeMode and serializeBudgetMs into the gate opts", async () => {
@@ -462,7 +469,7 @@ describe("applyMigrationsToSchema (FEA-3071 Slice 2 shared core)", () => {
     const deps = makeDeps({ isNew: true, atHead: true });
     const result = await applyMigrationsToSchema(
       "postgres://x",
-      PREVIEW_SCHEMA,
+      EXPLICIT_SCHEMA,
       "branch",
       { isNew: true },
       deps
@@ -470,7 +477,6 @@ describe("applyMigrationsToSchema (FEA-3071 Slice 2 shared core)", () => {
     expect(deps.probePreviewSchemaAtHead).not.toHaveBeenCalled();
     expect(result).toEqual({
       didReset: false,
-      cloneFailed: false,
       invalidIndexes: [],
     });
     expect(deps.cloneDataFromPublic).toHaveBeenCalledTimes(1);
@@ -494,12 +500,11 @@ describe("merge-queue ref clone skip (ISS-5285)", () => {
     // Skipped is not a failed clone: the schema is intentionally empty.
     expect(result).toEqual({
       didReset: false,
-      cloneFailed: false,
       invalidIndexes: [],
     });
   });
 
-  it("skips the post-reset clone on a gh-readonly-queue ref without reporting cloneFailed", async () => {
+  it("skips the post-reset clone on a gh-readonly-queue ref", async () => {
     const deps = makeDeps({ isNew: false, atHead: false, reset: true });
     const result = await applyMigrationsToSchema(
       "postgres://x",
@@ -512,13 +517,12 @@ describe("merge-queue ref clone skip (ISS-5285)", () => {
     expect(deps.cloneDataFromPublic).not.toHaveBeenCalled();
     expect(result).toEqual({
       didReset: true,
-      cloneFailed: false,
       invalidIndexes: [],
     });
   });
 
   it("still clones a new schema on a non-queue ref", async () => {
-    const deps = makeDeps({ isNew: true });
+    const deps = makeDeps({ isNew: true, replayed: true });
     const result = await applyMigrationsToSchema(
       "postgres://x",
       PREVIEW_SCHEMA,
@@ -530,7 +534,6 @@ describe("merge-queue ref clone skip (ISS-5285)", () => {
     expect(deps.cloneDataFromPublic).toHaveBeenCalledTimes(1);
     expect(result).toEqual({
       didReset: false,
-      cloneFailed: false,
       invalidIndexes: [],
     });
   });
@@ -627,5 +630,262 @@ describe("ownership preflight wiring (ISS-5952)", () => {
     await run(PREVIEW_SCHEMA, deps);
 
     expect(deps.assertMigrateRoleOwnsSchema).not.toHaveBeenCalled();
+  });
+});
+
+describe("direct SQL replay on a fresh preview schema (ISS-8039)", () => {
+  it("replaces the migrate-deploy spawn when the replay claims a new schema", async () => {
+    // ISS-11785: `atHead` is the post-clone probe here: nothing above public's
+    // level remains, so no CLI runs for the rest either.
+    const deps = makeDeps({ isNew: true, replayed: true, atHead: true });
+    await run(PREVIEW_SCHEMA, deps);
+
+    expect(deps.replayPendingMigrationsViaSql).toHaveBeenCalledTimes(1);
+    // The whole point: no `prisma migrate deploy` child for the 344-migration
+    // history that had grown migrate_ms to 258s of a 290s route budget.
+    expect(deps.runMigrate).not.toHaveBeenCalled();
+    // It runs INSIDE the serialize gate it replaces, so the DDL stays
+    // serialized against concurrent deploys exactly as the migrate was.
+    expect(serializeGateCalls(deps)).toHaveLength(1);
+    // A created schema is empty, so the clone still runs — off `isNew`, not off
+    // the replay's return, which reports "nothing was reset".
+    expect(deps.cloneDataFromPublic).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to migrate deploy when the replay declines", async () => {
+    const deps = makeDeps({ isNew: true, replayed: false });
+    await run(EXPLICIT_SCHEMA, deps);
+
+    expect(deps.replayPendingMigrationsViaSql).toHaveBeenCalledTimes(1);
+    // Fail-open: declining can only cost the old path, never skip the migrate.
+    expect(deps.runMigrate).toHaveBeenCalledTimes(1);
+    expect(deps.cloneDataFromPublic).toHaveBeenCalledTimes(1);
+  });
+
+  it("never offers an EXISTING schema to the replay", async () => {
+    const deps = makeDeps({ isNew: false, atHead: false, replayed: true });
+    await run(PREVIEW_SCHEMA, deps);
+
+    // An existing preview holds data and a real history. Even with the replay
+    // reporting success it must not be consulted, or `migrate deploy` would be
+    // skipped for a schema whose pending set the replay never computed.
+    expect(deps.replayPendingMigrationsViaSql).not.toHaveBeenCalled();
+    expect(deps.runMigrate).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs AFTER the pre-stamp, whose rows it treats as already applied", async () => {
+    const deps = makeDeps({ isNew: true, replayed: true });
+    await run(PREVIEW_SCHEMA, deps);
+
+    const prestampOrder =
+      deps.prestampSkippableMigrationsViaSql.mock.invocationCallOrder[0];
+    const replayOrder =
+      deps.replayPendingMigrationsViaSql.mock.invocationCallOrder[0];
+    expect(prestampOrder).toBeDefined();
+    expect(replayOrder).toBeGreaterThan(prestampOrder as number);
+  });
+});
+
+describe("ISS-8039 replay: the serialize gate is a precondition, not decoration", () => {
+  it("declines the replay when the gate FAILED OPEN, leaving the CLI to run", async () => {
+    const deps = makeDeps({
+      isNew: true,
+      replayed: true,
+      gateOutcome: MigrateGateOutcome.FailOpen,
+    });
+    await run(EXPLICIT_SCHEMA, deps);
+
+    // The gate fails open by default, so the callback runs UNGUARDED. `migrate
+    // deploy` survives that because Prisma takes its own per-database migration
+    // lock underneath; the raw-SQL replay holds no lock at all, so two first
+    // deployments of one preview would otherwise replay the same DDL and history
+    // rows into the same schema concurrently.
+    expect(deps.replayPendingMigrationsViaSql).not.toHaveBeenCalled();
+    expect(deps.runMigrate).toHaveBeenCalledTimes(1);
+  });
+
+  it("takes the replay when the gate was ACQUIRED", async () => {
+    const deps = makeDeps({
+      isNew: true,
+      replayed: true,
+      atHead: true,
+      gateOutcome: MigrateGateOutcome.Acquired,
+    });
+    await run(PREVIEW_SCHEMA, deps);
+
+    expect(deps.replayPendingMigrationsViaSql).toHaveBeenCalledTimes(1);
+    expect(deps.runMigrate).not.toHaveBeenCalled();
+  });
+
+  it("hands the replay the run's migration-file readers (ISS-6810)", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import(
+      "node:fs"
+    );
+    const { tmpdir } = await import("node:os");
+    const path = await import("node:path");
+    const migrationsDir = mkdtempSync(
+      path.join(tmpdir(), "iss8039-migrations-")
+    );
+    const migration = "20990101000000_iss8039_probe";
+    mkdirSync(path.join(migrationsDir, migration));
+    writeFileSync(
+      path.join(migrationsDir, migration, "migration.sql"),
+      "SELECT 1;"
+    );
+
+    try {
+      const deps = makeDeps({ isNew: true, replayed: true });
+      await runMigrationPipeline("postgres://x", PREVIEW_SCHEMA, "b", {
+        ...deps,
+        prismaCli: { migrationsDir },
+      });
+
+      // `/preview-schemas/ensure` runs from `apps/api`, so the replay MUST take
+      // the run's readers rather than a cwd default — otherwise it lists no
+      // migrations there and silently declines on staging only.
+      const readers = deps.replayPendingMigrationsViaSql.mock.calls[0]?.at(
+        -1
+      ) as
+        | {
+            readMigrationSql?: (name: string) => string;
+            listMigrationDirs?: () => string[];
+          }
+        | undefined;
+      expect(readers?.readMigrationSql?.(migration)).toBe("SELECT 1;");
+      expect(readers?.listMigrationDirs?.()).toEqual([migration]);
+    } finally {
+      rmSync(migrationsDir, { force: true, recursive: true });
+    }
+  });
+});
+
+describe("ISS-8039 telemetry: migrate_ms stays interpretable", () => {
+  async function emittedExecutor(opts: {
+    isNew: boolean;
+    replayed: boolean;
+    schema?: string;
+  }): Promise<string | null | undefined> {
+    const events: { migrate_executor?: string | null }[] = [];
+    await applyMigrationsToSchema(
+      "postgres://x",
+      opts.schema ?? PREVIEW_SCHEMA,
+      "b",
+      {
+        isNew: opts.isNew,
+        telemetry: {
+          emit: (event: { migrate_executor?: string | null }) => {
+            events.push(event);
+          },
+        },
+      },
+      // ISS-11785: for a new schema `atHead` is the post-clone probe; nothing
+      // above public's level remains, so the replay is the run's only migrate.
+      makeDeps({
+        isNew: opts.isNew,
+        replayed: opts.replayed,
+        atHead: opts.isNew,
+      })
+    );
+    return events[0]?.migrate_executor;
+  }
+
+  it("tells the SQL replay apart from a Prisma deploy", async () => {
+    // The ticket's whole diagnosis was that `migrate_ms` measured Prisma CLI
+    // time (258s of a 290s budget). After ISS-8039 a 1.5s replay and a 1.5s
+    // `migrate deploy` are indistinguishable without this discriminator.
+    expect(await emittedExecutor({ isNew: true, replayed: true })).toBe(
+      "sql_replay"
+    );
+    expect(
+      await emittedExecutor({
+        isNew: true,
+        replayed: false,
+        schema: EXPLICIT_SCHEMA,
+      })
+    ).toBe("prisma_cli");
+    expect(await emittedExecutor({ isNew: false, replayed: false })).toBe(
+      "prisma_cli"
+    );
+  });
+});
+
+/*
+ * ISS-11785: the reset mode is chosen in `applyMigrationsToSchema` but acted on in
+ * recovery, two adapters away. Driven through the REAL adapters (the pipeline
+ * default and the migrator walk's) with only the spawn and recovery stubbed, so
+ * an adapter that drops the argument puts the old re-migrating reset back.
+ */
+describe("the preview reset mode reaches recovery through both adapters (ISS-11785)", () => {
+  function depsWithoutRunMigrate() {
+    const { runMigrate: _runMigrate, ...deps } = makeDeps({
+      isNew: false,
+      atHead: false,
+    });
+    return deps;
+  }
+
+  function recoveryResetMode(): PreviewResetMode | undefined {
+    return vi.mocked(recoverMigrateDeployFailure).mock.calls[0]?.[1]
+      .previewReset;
+  }
+
+  it("the pipeline's default adapter: ResetOnly for a branch preview", async () => {
+    vi.mocked(recoverMigrateDeployFailure).mockClear();
+    await applyMigrationsToSchema(
+      "postgres://x",
+      PREVIEW_SCHEMA,
+      "feat/my-branch",
+      { isNew: false },
+      depsWithoutRunMigrate()
+    );
+    expect(recoveryResetMode()).toBe(PreviewResetMode.ResetOnly);
+  });
+
+  it("the pipeline's default adapter: Remigrate for a merge-queue preview", async () => {
+    vi.mocked(recoverMigrateDeployFailure).mockClear();
+    await applyMigrationsToSchema(
+      "postgres://x",
+      PREVIEW_SCHEMA,
+      MERGE_QUEUE_REF,
+      { isNew: false },
+      depsWithoutRunMigrate()
+    );
+    expect(recoveryResetMode()).toBe(PreviewResetMode.Remigrate);
+  });
+
+  it("the migrator walk's adapter: ResetOnly for a branch preview", async () => {
+    vi.mocked(recoverMigrateDeployFailure).mockClear();
+    await defaultApplyToSchema(
+      "postgres://x",
+      PREVIEW_SCHEMA,
+      60_000,
+      () => Promise.resolve("postgres://x"),
+      "feat/my-branch",
+      depsWithoutRunMigrate()
+    );
+    expect(recoveryResetMode()).toBe(PreviewResetMode.ResetOnly);
+  });
+
+  it("the direct retry adapter defaults to Never for a retained branch", async () => {
+    vi.mocked(recoverMigrateDeployFailure).mockClear();
+    await runMigrateWithRetry(
+      "postgres://x",
+      normalizePreviewSchemaName("vibe/direct"),
+      "vibe/direct"
+    );
+    expect(recoveryResetMode()).toBe(PreviewResetMode.Never);
+  });
+
+  it("the walk's real retry adapter preserves Never without branch provenance", async () => {
+    vi.mocked(recoverMigrateDeployFailure).mockClear();
+    await defaultApplyToSchema(
+      "postgres://x",
+      normalizePreviewSchemaName("vibe/missing"),
+      60_000,
+      () => Promise.resolve("postgres://x"),
+      undefined,
+      depsWithoutRunMigrate()
+    );
+    expect(recoveryResetMode()).toBe(PreviewResetMode.Never);
   });
 });

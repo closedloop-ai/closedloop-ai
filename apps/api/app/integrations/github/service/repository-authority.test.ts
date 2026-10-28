@@ -30,6 +30,7 @@ vi.mock("@/lib/github/installation-client", () => ({
 
 const mockAcquireInstallationClient = vi.mocked(acquireInstallationClient);
 const mockLogError = vi.mocked(log.error);
+const mockLogInfo = vi.mocked(log.info);
 
 describe("repository default authority", () => {
   beforeEach(() => {
@@ -150,7 +151,7 @@ describe("repository default authority", () => {
     expect(listReposAccessibleToInstallation).toHaveBeenCalledTimes(20);
   });
 
-  it("emits monitored stale-rejection and equal-time conflict events", async () => {
+  it("emits stale rejection as info and the equal-time conflict as a monitored error", async () => {
     const authority = buildRepositoryAuthority(
       "attempt-1",
       "2026-08-10T10:00:00.000Z"
@@ -194,9 +195,13 @@ describe("repository default authority", () => {
       [repository]
     );
 
-    expect(mockLogError).toHaveBeenCalledWith(
+    expect(mockLogInfo).toHaveBeenCalledWith(
       "github_repository_default_authority_stale_rejected",
       expect.objectContaining({ githubRepoId: "repo-1" })
+    );
+    expect(mockLogError).not.toHaveBeenCalledWith(
+      "github_repository_default_authority_stale_rejected",
+      expect.anything()
     );
     expect(mockLogError).toHaveBeenCalledWith(
       "github_repository_default_authority_conflict",

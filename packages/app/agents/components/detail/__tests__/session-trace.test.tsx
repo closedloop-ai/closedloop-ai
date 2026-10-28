@@ -6,7 +6,8 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SessionTrace, type SessionTraceItem } from "../session-trace";
+import { SessionTrace } from "../session-trace";
+import type { SessionTraceItem } from "../session-trace-groups";
 import type { TraceTextAnchor } from "../trace-comments";
 import {
   COMMENT_BUTTON_NAME_RE,
@@ -275,25 +276,28 @@ describe("SessionTrace", () => {
     ["unavailable" as const, "isn't loaded in this view"],
     ["redacted" as const, "was redacted"],
     ["malformed" as const, "couldn't be read"],
-  ])("renders the truthful empty panel for a %s tool call", async (detailState, expected) => {
-    const user = userEvent.setup();
-    const { container } = render(
-      <SessionTrace
-        items={[
-          toolsItem(1, [
-            { label: "mcp__x__y", detail: "", err: false, detailState },
-          ]),
-        ]}
-      />
-    );
+  ])(
+    "renders the truthful empty panel for a %s tool call",
+    async (detailState, expected) => {
+      const user = userEvent.setup();
+      const { container } = render(
+        <SessionTrace
+          items={[
+            toolsItem(1, [
+              { label: "mcp__x__y", detail: "", err: false, detailState },
+            ]),
+          ]}
+        />
+      );
 
-    await user.click(container.querySelector("button.st-tools-head")!);
-    await user.click(container.querySelector("button.st-toolrow")!);
+      await user.click(container.querySelector("button.st-tools-head")!);
+      await user.click(container.querySelector("button.st-toolrow")!);
 
-    expect(container.querySelector(".st-toolrow-empty")?.textContent).toContain(
-      expected
-    );
-  });
+      expect(
+        container.querySelector(".st-toolrow-empty")?.textContent
+      ).toContain(expected);
+    }
+  );
 
   it("renders the actual command/output for an available tool call (no empty panel)", async () => {
     const user = userEvent.setup();

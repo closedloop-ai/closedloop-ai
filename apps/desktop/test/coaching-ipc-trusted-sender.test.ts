@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
-import {
-  CoachingIpcChannel,
-  registerCoachingIpcHandlers,
-} from "../src/main/ipc/coaching-ipc.js";
+import { describe, test } from "vitest";
+import { registerCoachingIpcHandlers } from "../src/main/ipc/coaching-ipc.js";
+import { CoachingIpcChannel } from "../src/shared/coaching-ipc-channel.js";
 
 type IpcHandler = (event: { sender?: unknown }, ...args: unknown[]) => unknown;
 
@@ -20,7 +18,7 @@ type DeclineCall = {
 type RegisterOverrides = {
   isTrustedSender?: (sender: unknown) => boolean;
   isAgentCoachingTipsEnabled?: () => boolean;
-  getTraceCommentComputeTargetId?: () => string | null;
+  getCloudReadComputeTargetId?: () => string | null;
   declineDistributionById?: (
     computeTargetId: string,
     distributionId: string
@@ -28,6 +26,10 @@ type RegisterOverrides = {
   recordDeclinedDistributionId?: (distributionId: string) => void;
   assertDistributionAssigned?: (
     computeTargetId: string,
+    distributionId: string
+  ) => Promise<void>;
+  acknowledgeOptInHandled?: (
+    computeTargetId: string | null,
     distributionId: string
   ) => Promise<void>;
 };
@@ -49,8 +51,8 @@ function registerHandlers(
       isCoachingPacksEnabled: () => true,
       getActiveCoachingPackSeeded: () => null,
       coachingPacksDir: () => "/tmp/coaching-packs",
-      getTraceCommentComputeTargetId:
-        overrides.getTraceCommentComputeTargetId ?? (() => null),
+      getCloudReadComputeTargetId:
+        overrides.getCloudReadComputeTargetId ?? (() => null),
       installCoachingDistributionById: () => Promise.resolve(undefined),
       declineDistributionById:
         overrides.declineDistributionById ?? (() => Promise.resolve(undefined)),
@@ -62,6 +64,8 @@ function registerHandlers(
       assertDistributionAssigned:
         overrides.assertDistributionAssigned ??
         (() => Promise.resolve(undefined)),
+      acknowledgeOptInHandled:
+        overrides.acknowledgeOptInHandled ?? (() => Promise.resolve(undefined)),
     }
   );
   return handlers;
@@ -117,7 +121,7 @@ describe("DistributionDecline IPC handler (FEA-4050)", () => {
     const handler = getHandler(
       registerHandlers({
         isTrustedSender: () => false,
-        getTraceCommentComputeTargetId: () => "ct-001",
+        getCloudReadComputeTargetId: () => "ct-001",
         declineDistributionById: (computeTargetId, distributionId) => {
           declineCalls.push({ computeTargetId, distributionId });
           return Promise.resolve();
@@ -139,7 +143,7 @@ describe("DistributionDecline IPC handler (FEA-4050)", () => {
 
   test("rejects an empty distribution id", async () => {
     const handler = getHandler(
-      registerHandlers({ getTraceCommentComputeTargetId: () => "ct-001" }),
+      registerHandlers({ getCloudReadComputeTargetId: () => "ct-001" }),
       CoachingIpcChannel.DistributionDecline
     );
 
@@ -154,7 +158,7 @@ describe("DistributionDecline IPC handler (FEA-4050)", () => {
     const idOnlyCalls: string[] = [];
     const handler = getHandler(
       registerHandlers({
-        getTraceCommentComputeTargetId: () => "ct-001",
+        getCloudReadComputeTargetId: () => "ct-001",
         declineDistributionById: (computeTargetId, distributionId) => {
           declineCalls.push({ computeTargetId, distributionId });
           return Promise.resolve();
@@ -186,7 +190,7 @@ describe("DistributionDecline IPC handler (FEA-4050)", () => {
     const idOnlyCalls: string[] = [];
     const handler = getHandler(
       registerHandlers({
-        getTraceCommentComputeTargetId: () => null,
+        getCloudReadComputeTargetId: () => null,
         declineDistributionById: (computeTargetId, distributionId) => {
           declineCalls.push({ computeTargetId, distributionId });
           return Promise.resolve();
@@ -219,7 +223,7 @@ describe("DistributionEnsureAssigned IPC handler (ISS-5123)", () => {
     const handler = getHandler(
       registerHandlers({
         isTrustedSender: () => false,
-        getTraceCommentComputeTargetId: () => "ct-001",
+        getCloudReadComputeTargetId: () => "ct-001",
         assertDistributionAssigned: (computeTargetId, distributionId) => {
           calls.push({ computeTargetId, distributionId });
           return Promise.resolve();
@@ -237,7 +241,7 @@ describe("DistributionEnsureAssigned IPC handler (ISS-5123)", () => {
 
   test("rejects an empty distribution id", async () => {
     const handler = getHandler(
-      registerHandlers({ getTraceCommentComputeTargetId: () => "ct-001" }),
+      registerHandlers({ getCloudReadComputeTargetId: () => "ct-001" }),
       CoachingIpcChannel.DistributionEnsureAssigned
     );
 
@@ -249,7 +253,7 @@ describe("DistributionEnsureAssigned IPC handler (ISS-5123)", () => {
 
   test("fails closed when not connected — an unconfirmable offer must not install", async () => {
     const handler = getHandler(
-      registerHandlers({ getTraceCommentComputeTargetId: () => null }),
+      registerHandlers({ getCloudReadComputeTargetId: () => null }),
       CoachingIpcChannel.DistributionEnsureAssigned
     );
 
@@ -263,7 +267,7 @@ describe("DistributionEnsureAssigned IPC handler (ISS-5123)", () => {
     const calls: DeclineCall[] = [];
     const handler = getHandler(
       registerHandlers({
-        getTraceCommentComputeTargetId: () => "ct-001",
+        getCloudReadComputeTargetId: () => "ct-001",
         assertDistributionAssigned: (computeTargetId, distributionId) => {
           calls.push({ computeTargetId, distributionId });
           return Promise.resolve();
@@ -276,6 +280,76 @@ describe("DistributionEnsureAssigned IPC handler (ISS-5123)", () => {
 
     assert.deepEqual(calls, [
       { computeTargetId: "ct-001", distributionId: "dist-001" },
+    ]);
+  });
+});
+
+describe("DistributionHandled IPC handler", () => {
+  test("rejects untrusted senders before clearing the snapshot", async () => {
+    const calls: Array<{
+      computeTargetId: string | null;
+      distributionId: string;
+    }> = [];
+    const handler = getHandler(
+      registerHandlers({
+        isTrustedSender: () => false,
+        acknowledgeOptInHandled: (computeTargetId, distributionId) => {
+          calls.push({ computeTargetId, distributionId });
+          return Promise.resolve();
+        },
+      }),
+      CoachingIpcChannel.DistributionHandled
+    );
+
+    await assert.rejects(
+      async () => await handler({ sender: "evil" }, "dist-001"),
+      UNTRUSTED_SENDER_ERROR
+    );
+    assert.deepEqual(calls, []);
+  });
+
+  test("rejects an empty distribution id before clearing the snapshot", async () => {
+    const calls: Array<{
+      computeTargetId: string | null;
+      distributionId: string;
+    }> = [];
+    const handler = getHandler(
+      registerHandlers({
+        acknowledgeOptInHandled: (computeTargetId, distributionId) => {
+          calls.push({ computeTargetId, distributionId });
+          return Promise.resolve();
+        },
+      }),
+      CoachingIpcChannel.DistributionHandled
+    );
+
+    await assert.rejects(
+      async () => await handler({ sender: TRUSTED_SENDER }, ""),
+      REQUIRES_DISTRIBUTION_ID_ERROR
+    );
+    assert.deepEqual(calls, []);
+  });
+
+  test("acknowledges the distribution even after the cloud target disconnects", async () => {
+    const calls: Array<{
+      computeTargetId: string | null;
+      distributionId: string;
+    }> = [];
+    const handler = getHandler(
+      registerHandlers({
+        getCloudReadComputeTargetId: () => null,
+        acknowledgeOptInHandled: (computeTargetId, distributionId) => {
+          calls.push({ computeTargetId, distributionId });
+          return Promise.resolve();
+        },
+      }),
+      CoachingIpcChannel.DistributionHandled
+    );
+
+    await handler({ sender: TRUSTED_SENDER }, "dist-001");
+
+    assert.deepEqual(calls, [
+      { computeTargetId: null, distributionId: "dist-001" },
     ]);
   });
 });

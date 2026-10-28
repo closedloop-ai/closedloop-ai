@@ -7,13 +7,13 @@
  * run inside every fixture: `pre-commit` on each fixture commit, `post-checkout`
  * and `pre-push` on the worktree and push operations the production code drives.
  * Measured against unmodified `main` with a rejecting global `pre-commit`:
- * 3 of 22 tests failed in `git-action-diff-ops.test.ts` and 8 of 9 in
- * `symphony-loop-multi-repo-worktree.test.ts`. CI never saw it, because CI
+ * 3 of 22 tests failed in `git-action-diff-ops.test.ts` (and most of a
+ * multi-repo worktree suite since removed). CI never saw it, because CI
  * containers carry no such global config — which is precisely what made it
  * expensive, since the suite reported it as a defect in the code under test.
  *
  * This is the sibling of ISS-5403 (PR #4736), which fixed the same root cause in
- * `packages/crewd`.
+ * the since-removed `packages/crewd`.
  *
  * Every shared fixture entry point gets a test here, and every one of them sets
  * a HOSTILE global config the way a developer's machine would, then asserts the
@@ -39,9 +39,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { after, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+import { afterAll, describe, it } from "vitest";
 import {
+  DESKTOP_TEST_STRICT_ENV,
   HERMETIC_GIT_ENV,
   hermeticGitEnv,
 } from "../scripts/hermetic-git-env.mjs";
@@ -77,7 +78,7 @@ function makeTempDir(prefix: string): string {
   return dir;
 }
 
-after(() => {
+afterAll(() => {
   for (const dir of tempDirs) {
     rmSync(dir, { force: true, recursive: true });
   }
@@ -271,6 +272,25 @@ describe("fixture git repos ignore the operator's global git config", () => {
   });
 });
 
+type RecordedChildEnv = Record<string, string>;
+
+/**
+ * Every key the runners must hand the child, DERIVED from the two objects that
+ * declare them rather than transcribed.
+ *
+ * A hand-kept list here would be a side inventory of `HERMETIC_GIT_ENV`: add a
+ * fourth key to that object and the runners spread it, but a transcribed stub
+ * never prints it, a transcribed expectation never names it, and this suite
+ * stays green while asserting nothing about the key just added. Every consumer
+ * below — the stub's `printf`, the hostile seeding, the reader's group size and
+ * the expectation — reads this one array, so a key added to either source
+ * object is covered by the next run with no edit here.
+ */
+const RECORDED_ENV_KEYS = [
+  ...Object.keys(HERMETIC_GIT_ENV),
+  ...Object.keys(DESKTOP_TEST_STRICT_ENV),
+];
+
 /**
  * Run a runner script with a stub `pnpm` first on PATH, and return the git
  * config env that stub was actually handed.
@@ -283,12 +303,22 @@ describe("fixture git repos ignore the operator's global git config", () => {
  *
  * The seeded hostile values prove the runner SETS these rather than merely
  * forwarding what the operator's shell exported — without the fix the stub
- * reads them back verbatim.
+ * reads them back verbatim. That seeding is load-bearing for EVERY key recorded
+ * here, because the env base below is `{...process.env}` and the lane running
+ * this suite already carries the real values: unseeded, the stub would read the
+ * right answer back with the runner's spread deleted. It is therefore derived
+ * from `RECORDED_ENV_KEYS` too, and the `hostile-` prefix guarantees by
+ * construction that no seed can collide with the value the runner must set.
+ *
+ * ISS-10194 added `GIT_ALLOW_PROTOCOL`, which rides inside `hermeticGitEnv()`,
+ * and `CLOSEDLOOP_DESKTOP_STRICT_BINARY_OVERRIDES`, which is a SECOND, separate
+ * hand-off the runner spreads alongside it — so deleting that spread is a
+ * mutation no other assertion in the tree can see.
  */
 function recordChildGitConfigEnv(
   script: string,
   extraEnv: NodeJS.ProcessEnv = {}
-): { configGlobal: string; configSystem: string }[] {
+): RecordedChildEnv[] {
   const sandbox = makeTempDir("iss5836-runner-env-");
   const binDir = join(sandbox, "bin");
   mkdirSync(binDir);
@@ -296,13 +326,14 @@ function recordChildGitConfigEnv(
   // `stdio: "inherit"` on run-node-tests.mjs's spawn, so the stub must not print.
   //
   // APPEND, and return one record PER SPAWN (ISS-4933). run-node-tests.mjs now
-  // spawns twice — Vitest for the shim-compatible files, then `tsx --test` for
+  // spawns twice — Vitest for the census's Vitest set, then `tsx --test` for
   // the remainder — and a truncating stub would leave this reading only the
   // second, so hermeticity on the lane carrying 776 of the 900 files would be
   // unasserted while the case still passed.
+  const printfArgs = RECORDED_ENV_KEYS.map((key) => `"$${key}"`).join(" ");
   writeFileSync(
     join(binDir, "pnpm"),
-    `#!/bin/sh\nprintf '%s\\n' "$GIT_CONFIG_GLOBAL" "$GIT_CONFIG_SYSTEM" >> ${JSON.stringify(envFile)}\nexit 0\n`,
+    `#!/bin/sh\nprintf '%s\\n' ${printfArgs} >> ${JSON.stringify(envFile)}\nexit 0\n`,
     { mode: 0o755 }
   );
 
@@ -311,8 +342,9 @@ function recordChildGitConfigEnv(
   // summary from inside a test.
   Reflect.deleteProperty(env, "GITHUB_STEP_SUMMARY");
   Reflect.deleteProperty(env, "NODE_TEST_SHARD");
-  env.GIT_CONFIG_GLOBAL = "/home/dev/.gitconfig";
-  env.GIT_CONFIG_SYSTEM = "/etc/gitconfig";
+  for (const key of RECORDED_ENV_KEYS) {
+    env[key] = `hostile-${key}`;
+  }
 
   const result = spawnSync(process.execPath, [script], {
     cwd: desktopDir,
@@ -329,15 +361,38 @@ function recordChildGitConfigEnv(
     );
   }
 
-  const lines = readFileSync(envFile, "utf8").split("\n").filter(Boolean);
-  const spawns: { configGlobal: string; configSystem: string }[] = [];
-  for (let index = 0; index + 1 < lines.length; index += 2) {
-    spawns.push({ configGlobal: lines[index], configSystem: lines[index + 1] });
+  // Split on the trailing newline only, NOT `filter(Boolean)`: an EMPTY value
+  // for any recorded key is a line the stub legitimately wrote, and dropping it
+  // would shift every later group by one and produce field-to-field comparisons
+  // against the wrong spawn instead of a clean failure (tamsinb). Nothing
+  // emits an empty value today, but that is a property of the seeding above,
+  // not of this reader.
+  const lines = readFileSync(envFile, "utf8").split("\n");
+  if (lines.at(-1) === "") {
+    lines.pop();
+  }
+  if (lines.length % RECORDED_ENV_KEYS.length !== 0) {
+    throw new Error(
+      `${script} wrote ${lines.length} lines, not a whole number of ${RECORDED_ENV_KEYS.length}-key spawns`
+    );
+  }
+  const spawns: RecordedChildEnv[] = [];
+  for (let index = 0; index < lines.length; index += RECORDED_ENV_KEYS.length) {
+    spawns.push(
+      Object.fromEntries(
+        RECORDED_ENV_KEYS.map((key, offset) => [key, lines[index + offset]])
+      )
+    );
   }
   if (spawns.length === 0) {
     throw new Error(`${script} spawned nothing through the stub`);
   }
   return spawns;
+}
+
+/** The env both runners must have handed the suite, read from the modules. */
+function expectedHermeticChildEnv(): RecordedChildEnv {
+  return { ...HERMETIC_GIT_ENV, ...DESKTOP_TEST_STRICT_ENV };
 }
 
 describe("both documented runners hand the test process a hermetic git env", () => {
@@ -348,20 +403,19 @@ describe("both documented runners hand the test process a hermetic git env", () 
   // worktree dirs and `pre-push` on production pushes. So each runner's env is
   // load-bearing, and neither inherits it from the other — they spawn the suite
   // independently.
-  it("run-node-tests.mjs sets both git config variables on EVERY lane it spawns", () => {
+  it("run-node-tests.mjs hands EVERY lane it spawns the whole hermetic env", () => {
     const spawns = recordChildGitConfigEnv(RUNNER_SCRIPT);
     // Both of them (ISS-4933). The production code under test shells out to git
     // identically on either runner, so one hermetic lane and one inherited one
     // is not a partial fix — it is a suite whose result still depends on the
     // operator's `~/.gitconfig`.
     assert.equal(spawns.length, 2, "the runner must spawn both lanes");
-    for (const { configGlobal, configSystem } of spawns) {
-      assert.equal(configGlobal, HERMETIC_GIT_ENV.GIT_CONFIG_GLOBAL);
-      assert.equal(configSystem, HERMETIC_GIT_ENV.GIT_CONFIG_SYSTEM);
+    for (const recorded of spawns) {
+      assert.deepEqual(recorded, expectedHermeticChildEnv());
     }
   });
 
-  it("stress-node-tests.mjs sets both git config variables on the spawned suite", () => {
+  it("stress-node-tests.mjs hands the spawned suite the whole hermetic env", () => {
     // `STRESS_FILE` routinely points at a git-heavy suite, and the stress runner
     // spawns `tsx --test` itself instead of going through run-node-tests.mjs, so
     // fixing only that one left this documented runner executing the operator's
@@ -372,11 +426,9 @@ describe("both documented runners hand the test process a hermetic git env", () 
     // suite at all — it is what stops the recursion that kept this script in
     // TOOLING_REACH_LEDGER, so that entry is gone and must not come back while
     // this test exists.
-    const [{ configGlobal, configSystem }] = recordChildGitConfigEnv(
-      STRESS_SCRIPT,
-      { STRESS_ITERS: "1" }
-    );
-    assert.equal(configGlobal, HERMETIC_GIT_ENV.GIT_CONFIG_GLOBAL);
-    assert.equal(configSystem, HERMETIC_GIT_ENV.GIT_CONFIG_SYSTEM);
+    const [recorded] = recordChildGitConfigEnv(STRESS_SCRIPT, {
+      STRESS_ITERS: "1",
+    });
+    assert.deepEqual(recorded, expectedHermeticChildEnv());
   });
 });

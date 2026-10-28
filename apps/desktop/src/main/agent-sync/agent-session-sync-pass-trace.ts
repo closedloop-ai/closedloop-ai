@@ -65,11 +65,19 @@ export type SyncPassTraceSample = {
 };
 
 /**
- * Any stage gap at or above this is worth an INFO line even for an idle pass —
- * it is exactly the starvation signature ISS-5993 is hunting. Below it, idle
- * passes log at debug so a healthy 5s cadence does not write ~17k lines/day.
+ * ISS-6214: the threshold is on TOTAL ELAPSED PASS TIME — `fired→completed`,
+ * the whole trigger-to-finally span — not on any single stage gap. An earlier
+ * docstring said "any stage gap", which described a different and stricter
+ * predicate: three 4s stages trip the total rule at 12s while no single gap is
+ * near 10s. Total elapsed is the metric ISS-5993 actually wants, because
+ * starvation shows up as accumulated delay across the pump, and it is the one
+ * {@link isSlowSyncPass} has always implemented.
+ *
+ * A pass at or above this is worth an INFO line even when idle — it is exactly
+ * the starvation signature ISS-5993 is hunting. Below it, idle passes log at
+ * debug so a healthy 5s cadence does not write ~17k lines/day.
  */
-export const SYNC_PASS_TRACE_SLOW_GAP_MS = 10_000;
+export const SYNC_PASS_TRACE_SLOW_TOTAL_MS = 10_000;
 
 /** Render the one-line trace. Values are deltas so the line reads as a path. */
 export function formatSyncPassTrace(sample: SyncPassTraceSample): string {
@@ -92,7 +100,13 @@ export function formatSyncPassTrace(sample: SyncPassTraceSample): string {
   );
 }
 
-/** Whether the sample crosses the slow-gap threshold anywhere. */
+/**
+ * Whether the pass's TOTAL elapsed time — `fired→completed` — reaches
+ * {@link SYNC_PASS_TRACE_SLOW_TOTAL_MS}. Deliberately not a per-stage test: see
+ * that constant for why the total is the metric.
+ */
 export function isSlowSyncPass(sample: SyncPassTraceSample): boolean {
-  return sample.completedAtMs - sample.firedAtMs >= SYNC_PASS_TRACE_SLOW_GAP_MS;
+  return (
+    sample.completedAtMs - sample.firedAtMs >= SYNC_PASS_TRACE_SLOW_TOTAL_MS
+  );
 }

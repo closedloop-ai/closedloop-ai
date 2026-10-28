@@ -1,21 +1,25 @@
+import { ReadSource } from "@repo/api/src/types/read-source";
+import { SESSIONS_HISTORY_LIST_TEST_ID } from "@repo/app/agents/components/sessions/sessions-list-surface-v2";
 import {
   SessionSortDir,
   SessionSortKey,
 } from "@repo/app/agents/lib/session-sort-group";
+import { SESSIONS_OWNER_COLUMN_ID } from "@repo/app/agents/lib/sessions-table-columns";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DesktopAuthStatus } from "../../../../shared/contracts";
 import { LOCAL_SESSION_SOURCE_STATUSES } from "../../../../shared/local-session-source-status";
-import { drainedCutover } from "../../../shared-agent-sessions/__tests__/fixtures/cloud-read-cutover-fixtures";
 import { DesktopAppCoreMode } from "../../../shared-agent-sessions/desktop-app-core-mode";
 import { SessionsView } from "../SessionsView";
+import { SessionsViewTestProviders } from "./fixtures/sessions-view-render-fixture";
 
 /**
  * PLN-1138 Phase 2 regression guard (raised in review): in cloud mode the
  * Sessions view reads the HTTP source over the D-G bridge, so the read gate must
  * NOT depend on local-monitor readiness. This mounts SessionsView in cloud mode
  * with the local monitor *unavailable* and asserts the sessions query is still
- * enabled and the list still renders (`displayState` collapses to "ready") —
+ * enabled and the v2 list region still renders (`displayState` collapses to
+ * "ready") —
  * i.e. an authenticated+online user sees cloud rows even when the local monitor
  * is down. `sessions-view-responsive.test.tsx` covers the default Local path.
  */
@@ -35,20 +39,48 @@ const navigation = vi.hoisted(() => ({
   replace: vi.fn(),
 }));
 
+// The props the host handed the shared v2 surface on its last render.
+const surface = vi.hoisted(() => ({
+  props: undefined as { exportItem?: unknown } | undefined,
+}));
+
 let desktopApiDescriptor: PropertyDescriptor | undefined;
 
-vi.mock("@repo/app/agents/components/sessions/agent-sessions-list", () => ({
-  AgentSessionsListContent: () => <div data-testid="sessions-table-body" />,
-}));
-
-vi.mock("@repo/app/agents/components/sessions/sessions-toolbar", () => ({
-  SessionsToolbar: () => <div data-testid="sessions-toolbar" />,
-}));
+// ISS-8909: the v1 Sessions stack is retired, so the REAL shared
+// `SessionsListSurfaceV2` is what mounts here — and it must stay real, because
+// the summary-card assertions below read cards this surface renders from its
+// own `summaryCards` prop. This wrapper renders that real component and only
+// records the props it was handed, so the export-row contract (does the host
+// OFFER a row?) stays assertable without opening the View menu that would
+// actually render it: the real `SessionsCsvExportMenuItem` owns a
+// `useApiClient()` call that throws without an auth provider this suite does
+// not mount — the very hazard `useSessionsExportItem` returning an ELEMENT
+// exists to contain.
+vi.mock(
+  "@repo/app/agents/components/sessions/sessions-list-surface-v2",
+  async (importOriginal) => {
+    const original =
+      await importOriginal<
+        typeof import("@repo/app/agents/components/sessions/sessions-list-surface-v2")
+      >();
+    return {
+      ...original,
+      SessionsListSurfaceV2: (
+        props: Parameters<typeof original.SessionsListSurfaceV2>[0]
+      ) => {
+        surface.props = props;
+        return <original.SessionsListSurfaceV2 {...props} />;
+      },
+    };
+  }
+);
 
 vi.mock("@repo/app/agents/hooks/use-agent-sessions", () => ({
   useAgentSessionAnalytics: hooks.useAgentSessionAnalytics,
   useAgentSessionsPageData: hooks.useAgentSessionsPageData,
   useAgentSessionUsage: hooks.useAgentSessionUsage,
+  // ISS-7249: Retry cancels the exact list read before refetching it.
+  useCancelAgentSessionsPageData: () => () => undefined,
 }));
 
 // FEA-3574 review (whitlockk): in Cloud mode SessionsView reads the LOCAL usage
@@ -66,6 +98,9 @@ vi.mock("../use-local-agent-session-usage", () => ({
 // tests drive the import-in-progress signal directly.
 vi.mock("../../../hooks/use-ingest-progress", () => ({
   useIngestProgress: hooks.useIngestProgress,
+}));
+
+vi.mock("../../../hooks/use-file-access-blocks", () => ({
   // FEA-3639: SessionsView renders the file-access banner, which reads this
   // hook. No block here → empty, so the banner renders nothing.
   useFileAccessBlocks: () => [],
@@ -88,6 +123,22 @@ vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
   // whole subtree throws on the missing export. Both resolve OFF here, which
   // is the flag default and the behavior these tests assert.
   useFeatureFlagEnabledOptional: () => false,
+  // FEA-4201: the readiness-carrying read. `isReady` is settled-ness, not
+  // enabled-ness, and the real desktop port settles ASYNCHRONOUSLY — the
+  // signed-in account's PostHog assignment arrives over the IPC bridge. This
+  // mock pins it settled so the suites exercise the resolved state; `enabled`
+  // mirrors this suite's own set.
+  useFeatureFlagGate: () => ({
+    enabled: false,
+    isReady: true,
+  }),
+  // ISS-9692: `useTablePageSizeOptions` reads the ladder gate through the
+  // provider-optional port, so this exhaustive module mock owes it an entry
+  // too. Same answer as the required gate above.
+  useFeatureFlagGateOptional: () => ({
+    enabled: false,
+    isReady: true,
+  }),
 }));
 
 vi.mock("@repo/app/shared/hooks/use-shared-date-range", () => ({
@@ -116,7 +167,7 @@ vi.mock("../../../shared-agent-sessions/desktop-app-core-provider", () => ({
   useDesktopAppCoreMode: () => DesktopAppCoreMode.Cloud,
   // ISS-5477: SessionsView derives the read-source badge detail from the
   // same provider, so this factory has to answer for it too.
-  useDesktopCloudReadCutover: () => drainedCutover(),
+  useDesktopLocalReadReason: () => undefined,
 }));
 
 // FEA-3574: SessionsView now reads the durable-session auth state to drive the
@@ -146,14 +197,21 @@ describe("SessionsView cloud mode", () => {
       "desktopApi"
     );
     vi.clearAllMocks();
+    surface.props = undefined;
     hooks.useSharedDateRange.mockReturnValue({
       dateRange: "7d",
       setDateRange: vi.fn(),
     });
     hooks.useSearchParamsValue.mockReturnValue(new URLSearchParams());
     hooks.useSessionsViewState.mockReturnValue({
+      isViewReady: true,
       sortKey: null,
       sortDir: "desc",
+      // ISS-8335: the sort rules AFTER the primary. The v2 surface adapter
+      // iterates them, so the real hook's empty-array default is part of the
+      // shape this fixture owes it.
+      secondarySorts: [],
+      setSecondarySorts: vi.fn(),
       visibleColumns: new Set<string>(["name"]),
       setSort: vi.fn(),
       toggleColumn: vi.fn(),
@@ -167,7 +225,7 @@ describe("SessionsView cloud mode", () => {
         list: {
           items: [{ id: "session-1" }],
           total: 50,
-          readSource: undefined,
+          readSource: ReadSource.Cloud,
         },
         usage: {
           totalSessions: 50,
@@ -243,12 +301,14 @@ describe("SessionsView cloud mode", () => {
   });
 
   it("enables the cloud sessions query and renders rows even when the local monitor is unavailable", async () => {
-    render(<SessionsView />);
+    render(<SessionsView />, {
+      wrapper: SessionsViewTestProviders,
+    });
 
     // The list renders (displayState collapsed to "ready"), not the local
     // "unavailable" empty state.
     await waitFor(() =>
-      expect(screen.queryByTestId("sessions-table-body")).toBeTruthy()
+      expect(screen.queryByTestId(SESSIONS_HISTORY_LIST_TEST_ID)).toBeTruthy()
     );
 
     // The read gate (`canReadSessions = isCloudMode || canReadLocalSessions`) is
@@ -272,7 +332,9 @@ describe("SessionsView cloud mode", () => {
     vi.setSystemTime(new Date("2026-08-07T12:00:00.000Z"));
 
     try {
-      render(<SessionsView />);
+      render(<SessionsView />, {
+        wrapper: SessionsViewTestProviders,
+      });
       const firstStartDate =
         hooks.useAgentSessionsPageData.mock.lastCall?.[0]?.startDate;
       expect(
@@ -284,14 +346,18 @@ describe("SessionsView cloud mode", () => {
       cleanup();
       vi.setSystemTime(new Date("2026-08-07T23:59:59.999Z"));
 
-      render(<SessionsView />);
+      render(<SessionsView />, {
+        wrapper: SessionsViewTestProviders,
+      });
       expect(hooks.useAgentSessionsPageData.mock.lastCall?.[0]?.startDate).toBe(
         firstStartDate
       );
       cleanup();
       vi.setSystemTime(new Date("2026-08-08T00:00:00.000Z"));
 
-      render(<SessionsView />);
+      render(<SessionsView />, {
+        wrapper: SessionsViewTestProviders,
+      });
       expect(
         hooks.useAgentSessionsPageData.mock.lastCall?.[0]?.startDate
       ).not.toBe(firstStartDate);
@@ -310,7 +376,9 @@ describe("SessionsView cloud mode", () => {
     vi.setSystemTime(new Date("2026-08-07T12:00:00.000Z"));
 
     try {
-      render(<SessionsView />);
+      render(<SessionsView />, {
+        wrapper: SessionsViewTestProviders,
+      });
 
       const filters = hooks.useAgentSessionsPageData.mock.lastCall?.[0];
       // Ends WITH today, not before it: activity from a minute ago is inside.
@@ -337,7 +405,9 @@ describe("SessionsView cloud mode", () => {
     // total 50 → 2 pages; `page=2` is the (valid, unclamped) second page.
     hooks.useSearchParamsValue.mockReturnValue(new URLSearchParams("page=2"));
 
-    render(<SessionsView />);
+    render(<SessionsView />, {
+      wrapper: SessionsViewTestProviders,
+    });
 
     // Drain the local-monitor status effect so its 500ms poll is torn down
     // before this test ends (it reads window.desktopApi, cleared in afterEach).
@@ -361,7 +431,9 @@ describe("SessionsView cloud mode", () => {
       new URLSearchParams("owner=user-1&status=active&status=inactive&page=2")
     );
 
-    render(<SessionsView />);
+    render(<SessionsView />, {
+      wrapper: SessionsViewTestProviders,
+    });
 
     // Drain the local-monitor status effect (see note above) before teardown.
     await waitFor(() =>
@@ -399,10 +471,12 @@ describe("SessionsView cloud mode", () => {
       isError: false,
     });
 
-    const { container } = render(<SessionsView />);
+    const { container } = render(<SessionsView />, {
+      wrapper: SessionsViewTestProviders,
+    });
 
     await waitFor(() =>
-      expect(screen.queryByTestId("sessions-table-body")).toBeTruthy()
+      expect(screen.queryByTestId(SESSIONS_HISTORY_LIST_TEST_ID)).toBeTruthy()
     );
     // The cloud population (totalSessions 50) renders directly; no import skeleton
     // and no "Importing your history" caption on a healthy cloud read.
@@ -431,6 +505,12 @@ describe("SessionsView cloud mode", () => {
       isPlaceholderData: false,
       isLoading: false,
       isError: true,
+      // ISS-7528: a real observer sets BOTH flags on a first-read rejection.
+      // These tests only assert the summary-card/local-fallback path (which
+      // reads `metricReadErrored`, not `isLoadingError`), so nothing here
+      // depends on it — but a fixture describing a state query-core cannot
+      // produce is a trap for whoever adds an empty-state assertion next.
+      isLoadingError: true,
     });
     // Import mid-flight, local fallback read not resolved yet.
     hooks.useIngestProgress.mockReturnValue({
@@ -445,10 +525,12 @@ describe("SessionsView cloud mode", () => {
       isError: false,
     });
 
-    const { container } = render(<SessionsView />);
+    const { container } = render(<SessionsView />, {
+      wrapper: SessionsViewTestProviders,
+    });
 
     await waitFor(() =>
-      expect(screen.queryByTestId("sessions-table-body")).toBeTruthy()
+      expect(screen.queryByTestId(SESSIONS_HISTORY_LIST_TEST_ID)).toBeTruthy()
     );
     // Card frames stay — labels + the import reason caption visible — with only the
     // value slots skeletoned, never a fabricated `0`.
@@ -479,6 +561,12 @@ describe("SessionsView cloud mode", () => {
       isPlaceholderData: false,
       isLoading: false,
       isError: true,
+      // ISS-7528: a real observer sets BOTH flags on a first-read rejection.
+      // These tests only assert the summary-card/local-fallback path (which
+      // reads `metricReadErrored`, not `isLoadingError`), so nothing here
+      // depends on it — but a fixture describing a state query-core cannot
+      // produce is a trap for whoever adds an empty-state assertion next.
+      isLoadingError: true,
     });
     hooks.useIngestProgress.mockReturnValue({
       byHarness: [],
@@ -500,10 +588,12 @@ describe("SessionsView cloud mode", () => {
       isError: false,
     });
 
-    const { container } = render(<SessionsView />);
+    const { container } = render(<SessionsView />, {
+      wrapper: SessionsViewTestProviders,
+    });
 
     await waitFor(() =>
-      expect(screen.queryByTestId("sessions-table-body")).toBeTruthy()
+      expect(screen.queryByTestId(SESSIONS_HISTORY_LIST_TEST_ID)).toBeTruthy()
     );
     // Card frames stay — labels + reason caption visible — with only the value
     // slots skeletoned, even though the local read already RESOLVED (to zero).
@@ -528,7 +618,7 @@ describe("SessionsView cloud mode", () => {
     hooks.useIngestProgress.mockReturnValue(null);
     hooks.useAgentSessionsPageData.mockReturnValue({
       data: {
-        list: { items: [], total: 0, readSource: undefined },
+        list: { items: [], total: 0, readSource: ReadSource.Cloud },
         usage: {
           totalSessions: 0,
           totalInputTokens: 0,
@@ -554,7 +644,9 @@ describe("SessionsView cloud mode", () => {
       isError: false,
     });
 
-    const { container } = render(<SessionsView />);
+    const { container } = render(<SessionsView />, {
+      wrapper: SessionsViewTestProviders,
+    });
 
     await waitFor(() => expect(screen.queryByText("Sessions")).toBeTruthy());
     // The confirmed-empty cloud population shows `0`, no skeleton, and the local
@@ -582,6 +674,12 @@ describe("SessionsView cloud mode", () => {
       isPlaceholderData: false,
       isLoading: false,
       isError: true,
+      // ISS-7528: a real observer sets BOTH flags on a first-read rejection.
+      // These tests only assert the summary-card/local-fallback path (which
+      // reads `metricReadErrored`, not `isLoadingError`), so nothing here
+      // depends on it — but a fixture describing a state query-core cannot
+      // produce is a trap for whoever adds an empty-state assertion next.
+      isLoadingError: true,
     });
     hooks.useIngestProgress.mockReturnValue(null);
     hooks.useLocalAgentSessionUsage.mockReturnValue({
@@ -595,10 +693,12 @@ describe("SessionsView cloud mode", () => {
       isError: false,
     });
 
-    render(<SessionsView />);
+    render(<SessionsView />, {
+      wrapper: SessionsViewTestProviders,
+    });
 
     await waitFor(() =>
-      expect(screen.queryByTestId("sessions-table-body")).toBeTruthy()
+      expect(screen.queryByTestId(SESSIONS_HISTORY_LIST_TEST_ID)).toBeTruthy()
     );
     // The local fallback read was ENABLED despite the cloud list never settling.
     await waitFor(() =>
@@ -624,14 +724,19 @@ describe("SessionsView cloud mode", () => {
   // must not re-sort the returned rows locally.
   it("forwards an active column sort into the server query", async () => {
     hooks.useSessionsViewState.mockReturnValue({
+      isViewReady: true,
       sortKey: SessionSortKey.Started,
       sortDir: SessionSortDir.Asc,
+      secondarySorts: [],
+      setSecondarySorts: vi.fn(),
       visibleColumns: new Set<string>(["name"]),
       setSort: vi.fn(),
       toggleColumn: vi.fn(),
     });
 
-    render(<SessionsView />);
+    render(<SessionsView />, {
+      wrapper: SessionsViewTestProviders,
+    });
 
     // Drain the local-monitor status effect (see note above) before teardown.
     await waitFor(() =>
@@ -645,4 +750,105 @@ describe("SessionsView cloud mode", () => {
       expect.anything()
     );
   });
+  // FEA-4217 (whitlockk review) — the export row is a CLOUD decision, so this is the
+  // suite that can decide it. Signed in and in Cloud mode the row is offered;
+  // before the saved view restores it is not, because `startDate`/`endDate` are
+  // still the module defaults and the file would describe a range the table was
+  // never showing.
+  it("hands the toolbar an export row once the saved view has restored", async () => {
+    render(<SessionsView />, {
+      wrapper: SessionsViewTestProviders,
+    });
+
+    await waitFor(() =>
+      expect(window.desktopApi.getAgentMonitorUrl).toHaveBeenCalled()
+    );
+    expect(surface.props?.exportItem).toBeTruthy();
+  });
+
+  it("withholds the export row while the saved view is still restoring", async () => {
+    hooks.useSessionsViewState.mockReturnValue({
+      isViewReady: false,
+      sortKey: null,
+      sortDir: "desc",
+      secondarySorts: [],
+      setSecondarySorts: vi.fn(),
+      visibleColumns: new Set<string>(["name"]),
+      setSort: vi.fn(),
+      toggleColumn: vi.fn(),
+    });
+
+    render(<SessionsView />, {
+      wrapper: SessionsViewTestProviders,
+    });
+
+    await waitFor(() =>
+      expect(window.desktopApi.getAgentMonitorUrl).toHaveBeenCalled()
+    );
+    expect(surface.props?.exportItem).toBeFalsy();
+  });
+
+  // ISS-12251 (PLN-2176 T-4.2): the cloud read serves the assignee, and the
+  // Owner cell reads it, not the recording user; a producer that omits it
+  // renders the user as before (AC-012).
+  it("draws the assignee as Owner, and the user only when assignee is omitted", async () => {
+    hooks.useSessionsViewState.mockReturnValue({
+      isViewReady: true,
+      sortKey: null,
+      sortDir: "desc",
+      secondarySorts: [],
+      setSecondarySorts: vi.fn(),
+      visibleColumns: new Set<string>(["name", SESSIONS_OWNER_COLUMN_ID]),
+      setSort: vi.fn(),
+      toggleColumn: vi.fn(),
+    });
+    hooks.useAgentSessionsPageData.mockReturnValue({
+      data: {
+        list: {
+          items: [
+            {
+              assignee: ownerPerson("assignee", "Ada", "Lovelace"),
+              id: "session-assigned",
+              name: "Assigned session",
+              user: ownerPerson("uploader", "Sam", "Uploader"),
+            },
+            {
+              id: "session-omitted",
+              name: "Older producer session",
+              user: ownerPerson("recorder", "Rae", "Recorder"),
+            },
+          ],
+          total: 2,
+          readSource: ReadSource.Cloud,
+        },
+        usage: { totalSessions: 2, byRepository: [] },
+      },
+      isFetching: false,
+      isPlaceholderData: false,
+      isLoading: false,
+      isError: false,
+    });
+
+    render(<SessionsView />, {
+      wrapper: SessionsViewTestProviders,
+    });
+
+    expect(
+      (await screen.findAllByText("Ada Lovelace", { exact: true })).length
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText("Rae Recorder", { exact: true }).length
+    ).toBeGreaterThan(0);
+    expect(screen.queryByText("Sam Uploader", { exact: true })).toBeNull();
+  });
 });
+
+function ownerPerson(id: string, firstName: string, lastName: string) {
+  return {
+    avatarUrl: null,
+    email: `${id}@example.test`,
+    firstName,
+    id: `user-${id}`,
+    lastName,
+  };
+}

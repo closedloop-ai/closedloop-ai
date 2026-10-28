@@ -16,6 +16,28 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 /**
+ * Every module `prisma generate` must leave behind, relative to the generated
+ * client directory. POSIX-separated, as they appear in imports.
+ *
+ * Lives here rather than in the entrypoint because two callers need it and a
+ * second copy would drift: `generate-prisma-client.mjs` uses it to decide
+ * whether the previous client can be reused, and `assert-test-prereqs-lib.mjs`
+ * uses it as the `db:generate` half of the `test:node` entry gate. Before
+ * ISS-8326's review, that gate named `client.ts` alone — so a generation
+ * interrupted after `client.ts` but before `internal/class.ts` satisfied the
+ * gate and then failed at collection anyway, which is the exact failure the
+ * gate exists to replace.
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const GENERATED_CLIENT_OUTPUTS = [
+  "client.ts",
+  "browser.ts",
+  "internal/class.ts",
+  "internal/prismaNamespace.ts",
+];
+
+/**
  * Hash the generator's inputs into a single fingerprint.
  *
  * Both the repo-relative PATH and the BYTES of every input are folded in, so

@@ -5,18 +5,20 @@
  * (`apps/desktop/test/session-duration-sort-displayed-status.test.ts`,
  * `apps/api/app/agent-sessions/service/duration-sort-displayed-status.test.ts`).
  * Neither of them clicks anything. This spec is the desktop half of the
- * launched-app coverage: a session silent past the display staleness cutoff
- * renders a BLANK Duration cell, and clicking the Duration header must leave that
- * row BELOW every row that renders a measured span — in both directions
- * (FEA-4330 nulls-last).
+ * launched-app coverage: a session whose Duration cell renders BLANK must sit
+ * BELOW every row that renders a measured span after a Duration-header click —
+ * in both directions (FEA-4330 nulls-last).
  *
- * That row is the whole ticket. Before ISS-6270 the comparator classified the RAW
- * `active` status, so it took the running branch and keyed a row whose cell
- * renders NOTHING on `now - start` — a span that grows against the clock. As
- * reported, that span was the largest in the table and led the descending page;
- * this fixture reproduces the same disagreement with a mid-range span so that
- * both directions, not just descending, are falsifiable (see
- * {@link BLANK_SILENT_MS}).
+ * ISS-10364 (operator ruling, 2026-09-23) changed WHICH row is blank, not what
+ * is being proved. The subject used to be a long-silent `active` row, blanked by
+ * the display staleness fold; that fold is retired and such a row now times. The
+ * blank here is a TERMINAL row with no end instant recorded — one instant is not
+ * a span — which is the oracle's `d-terminal-no-end`, added for ISS-5131 so the
+ * blanks population was never only the stale one.
+ *
+ * The nulls-last claim is the whole ticket, and it stays falsifiable in both
+ * directions: the blank row's default-order position is mid-table, so neither
+ * pass can hold by coincidence (see {@link BLANK_SILENT_MS}).
  *
  * Expected strings are pinned as literals rather than imported: an
  * extension-less `@repo/*` subpath or a main-process module imported from a
@@ -25,6 +27,7 @@
  */
 
 import { expect, type Locator, type Page, test } from "@playwright/test";
+import { sortColumnByOptionsMenu } from "./helpers/grid-column-sort";
 import type { SessionListSeed } from "./helpers/seed-branches-db";
 import {
   cleanupSeededSessionsDirs,
@@ -35,34 +38,25 @@ import {
 const HOUR_MS = 3_600_000;
 
 /**
- * How long the `active` row has been silent — past the 24h
- * `STALE_SESSION_DISPLAY_THRESHOLD_HOURS`, so it displays Stale.
+ * How long ago the blank row started and last reported.
  *
- * It also lands strictly BETWEEN {@link SHORT_SPAN_MS} and {@link LONG_SPAN_MS},
- * and that is the load-bearing part of the arrangement. The pre-ISS-6270
- * comparator keyed this row on `now - started_at` — here 30h — so the blank row
- * lands in the MIDDLE of the page in BOTH directions. Had the fixture instead
- * made that span the largest, only the DESCENDING pass could fail: ascending
- * would put the largest key last, which is where nulls-last wants the blank row
- * anyway, and the assertion would have held with the bug still in place.
+ * The load-bearing part is that it lands strictly BETWEEN {@link SHORT_SPAN_MS}
+ * and {@link LONG_SPAN_MS}: a comparator that keys this row on elapsed time
+ * rather than recognizing it as blank — the ISS-6270 defect — puts it in the
+ * MIDDLE of the page in BOTH directions, so both passes are falsifiable. Had
+ * the fixture made that elapsed time the largest, only the DESCENDING pass
+ * could fail: ascending would put the largest key last, which is where
+ * nulls-last wants the blank row anyway, and the assertion would have held with
+ * the bug still in place.
  */
 const BLANK_SILENT_MS = 30 * HOUR_MS;
 const SHORT_SPAN_MS = 10 * HOUR_MS;
 const LONG_SPAN_MS = 50 * HOUR_MS;
 
-/** `aria-sort` values an ACTIVE sortable header may carry. */
-const SORTED_ARIA_SORT_PATTERN = /^(ascending|descending)$/;
-
 /** The `aria-sort` value of a header that is ACTIVELY sorting. */
 type SortedDirection = "ascending" | "descending";
 
-/** The direction a second click on the already-active header must land on. */
-const OPPOSITE_DIRECTION: Record<SortedDirection, SortedDirection> = {
-  ascending: "descending",
-  descending: "ascending",
-};
-
-const BLANK_ROW = "duration stale blank row";
+const BLANK_ROW = "duration unended blank row";
 const LONG_ROW = "duration long measured row";
 const SHORT_ROW = "duration short measured row";
 
@@ -71,42 +65,38 @@ const SHORT_ROW = "duration short measured row";
  * Playwright's `getByRole` name matching is SUBSTRING by default.
  */
 const SEEDED_ROW_NAME_PATTERN =
-  /^duration (stale blank|long measured|short measured) row$/;
+  /^duration (unended blank|long measured|short measured) row$/;
 
 /**
- * Instants are relative to the run clock, never literals. The display staleness
- * fold compares `lastActivityAt` against the live `new Date()` in the renderer,
- * and the boot retention sweep deletes terminal sessions whose activity predates
- * the 90-day window — a pinned date is a time bomb on both counts.
+ * Instants are relative to the run clock, never literals: the boot retention
+ * sweep deletes terminal sessions whose activity predates the 90-day window, so
+ * a pinned date is a time bomb that would empty this fixture.
  */
 function seededSessions(): SessionListSeed[] {
   const now = Date.now();
   const iso = (msAgo: number) => new Date(now - msAgo).toISOString();
   return [
     {
-      // The subject: `active`, never ended, and silent for 30h — past the 24h
-      // display staleness cutoff, so it DISPLAYS as Stale and its Duration cell
-      // renders the empty glyph.
+      // The subject: TERMINAL with no end instant recorded, so there is one
+      // instant and not a span and the Duration cell renders the empty glyph.
       //
-      // `at` is the SAME instant as `lastActivityAt` on purpose. The projected
-      // activity anchor is the event-derived `max(started_at, max(event
-      // created_at))` unless the read prefers the stored column, and the seeder
-      // writes its substantive tool event at `at` — so pinning both to 30h ago
-      // puts EVERY path that could win past the cutoff. A fixture where only one
-      // of them is stale would fold to Stale or not depending on which branch
-      // the read took.
+      // ISS-10364 (operator ruling, 2026-09-23) is why it is this shape and no
+      // longer a long-silent `active` row. The staleness fold that used to
+      // blank that row is retired, so it now times like any other live run —
+      // see the sibling unit case "keeps the long-silent row timing WITH the
+      // measured rows". The parity oracle's `d-terminal-no-end` was added
+      // (ISS-5131) precisely so the blanks population was never only the stale
+      // one, and it is the source this spec moved onto.
       //
-      // `updatedAt` is deliberately RECENT. The boot stale sweep reaps an
-      // `active` row whose `updated_at` predates DEFAULT_STALE_SESSION_MINUTES
-      // into `inactive` with `ended_at = last_activity_at` — which would hand
-      // the row a MEASURED duration and make this spec pass or fail for a
-      // reason that has nothing to do with the comparator.
+      // `updatedAt` is deliberately RECENT so the boot retention sweep, which
+      // deletes terminal sessions whose activity predates the 90-day window,
+      // cannot take the row out from under the assertions.
       at: iso(BLANK_SILENT_MS),
       endedAt: null,
       lastActivityAt: iso(BLANK_SILENT_MS),
       name: BLANK_ROW,
       sessionId: "iss-6270-duration-blank",
-      status: "active",
+      status: "inactive",
       updatedAt: iso(60_000),
     },
     {
@@ -146,10 +136,10 @@ const DEFAULT_ROW_ORDER = [BLANK_ROW, LONG_ROW, SHORT_ROW];
 /**
  * Row order under a Duration sort, per announced direction.
  *
- * The blank row is LAST in BOTH — that is the nulls-last contract (FEA-4330),
- * and it is the assertion the pre-ISS-6270 comparator fails in BOTH directions:
- * keying the raw `active` status measured `now - start` for it (30h), which
- * places it between the 10h and 50h measured rows either way round.
+ * The blank row is LAST in BOTH — that is the nulls-last contract (FEA-4330).
+ * A comparator that measured elapsed time for it (30h) instead of recognizing
+ * the blank would place it between the 10h and 50h measured rows either way
+ * round, which is the ISS-6270 defect this ordering falsifies.
  */
 const DURATION_ROW_ORDER: Record<SortedDirection, string[]> = {
   ascending: [SHORT_ROW, LONG_ROW, BLANK_ROW],
@@ -157,7 +147,7 @@ const DURATION_ROW_ORDER: Record<SortedDirection, string[]> = {
 };
 
 test.describe("Desktop Sessions Duration sort keeps blank rows last (ISS-6270)", () => {
-  test("a stale row's Duration cell is blank and sorts below every measured span", async () => {
+  test("a terminal row with no recorded end has a blank Duration cell and sorts below every measured span", async () => {
     // Three Electron launches inside `withSeededSessionsList`; the config's
     // 60s file timeout is not enough for them.
     test.setTimeout(180_000);
@@ -192,37 +182,23 @@ test.describe("Desktop Sessions Duration sort keeps blank rows last (ISS-6270)",
           timeout: 30_000,
         });
 
-        // Exact name, not `.first()`: a reorderable header renders its drag grip
-        // as a button BEFORE the sort button, named "Reorder Duration column,
-        // use arrow keys", so a positional pick operates the wrong control.
-        const durationSortButton = durationHeader.getByRole("button", {
-          exact: true,
-          name: "Duration",
-        });
-        await durationSortButton.click();
-
-        await expect(durationHeader).toHaveAttribute(
-          "aria-sort",
-          SORTED_ARIA_SORT_PATTERN
-        );
-        // Direction is READ, not assumed — this spec makes no claim about which
-        // way a first click opens, only about the order each direction owes.
-        const firstDirection = readSortedDirection(
-          await durationHeader.getAttribute("aria-sort")
-        );
+        // ISS-8909: the sort CONTROL moved, not the contract. v1 wrapped the
+        // column label in a button that toggled through the directions; the
+        // shared v2 header sorts from the column's options menu, which names
+        // each direction — so each ordering is requested explicitly rather than
+        // read back from whichever way a first click opened. Both directions
+        // are still driven, and each still owes its own full row order.
+        await sortColumnByOptionsMenu(page, page, "Duration", "descending");
+        await expect(durationHeader).toHaveAttribute("aria-sort", "descending");
         // The reorder lands through a fresh main-process IPC read, so it gets
         // the same window as the other cross-process assertions here.
-        await expect(rowNames).toHaveText(DURATION_ROW_ORDER[firstDirection], {
+        await expect(rowNames).toHaveText(DURATION_ROW_ORDER.descending, {
           timeout: 30_000,
         });
 
-        const secondDirection = OPPOSITE_DIRECTION[firstDirection];
-        await durationSortButton.click();
-        await expect(durationHeader).toHaveAttribute(
-          "aria-sort",
-          secondDirection
-        );
-        await expect(rowNames).toHaveText(DURATION_ROW_ORDER[secondDirection], {
+        await sortColumnByOptionsMenu(page, page, "Duration", "ascending");
+        await expect(durationHeader).toHaveAttribute("aria-sort", "ascending");
+        await expect(rowNames).toHaveText(DURATION_ROW_ORDER.ascending, {
           timeout: 30_000,
         });
 
@@ -272,18 +248,4 @@ function durationCell(page: Page, rowName: string): Locator {
  */
 function emptyDurationCell(page: Page, rowName: string): Locator {
   return durationCell(page, rowName).locator('[data-slot="grid-empty-value"]');
-}
-
-/**
- * Narrows a header's raw `aria-sort` to the direction it announces, failing
- * loudly on `none`/absent rather than coercing — a cast would let an unsorted
- * header pick an arbitrary expected row order.
- */
-function readSortedDirection(ariaSort: string | null): SortedDirection {
-  if (ariaSort === "ascending" || ariaSort === "descending") {
-    return ariaSort;
-  }
-  throw new Error(
-    `expected the Duration header to announce a sort direction, got aria-sort="${ariaSort}"`
-  );
 }

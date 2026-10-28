@@ -15,6 +15,7 @@ import {
   ToggleGroup,
   ToggleGroupItem,
 } from "@repo/design-system/components/ui/toggle-group";
+import { Link } from "@repo/navigation/link";
 import { ArrowLeftIcon, BlocksIcon, SearchIcon } from "lucide-react";
 import { type ReactNode, useMemo, useState } from "react";
 import {
@@ -31,6 +32,7 @@ import type { InstallPending } from "./install-controls";
 import type { MemberTargetsInstall } from "./member-targets-block";
 import { PackCard } from "./pack-card";
 import { PackDetail } from "./pack-detail";
+import { PackDetailUnavailable } from "./pack-detail-unavailable";
 import { TeamRail } from "./team-rail";
 
 const SortMode = {
@@ -89,8 +91,10 @@ const FilterBar = ({
   category: string;
   onCategoryChange: (value: string) => void;
   categories: readonly string[];
-  sort: SortMode;
-  onSortChange: (value: SortMode) => void;
+  /** The applied sort, or null when the grid is in the producer's own order. */
+  sort: SortMode | null;
+  /** `null` when the reader releases the applied mode — see the group below. */
+  onSortChange: (value: SortMode | null) => void;
   sortModes: readonly SortMode[];
 }) => (
   <div className="flex flex-wrap items-center gap-3">
@@ -122,23 +126,29 @@ const FilterBar = ({
         </SelectContent>
       </Select>
     ) : null}
-    <ToggleGroup
-      aria-label="Sort packs"
-      onValueChange={(value) => {
-        if (value) {
-          onSortChange(value as SortMode);
+    {sortModes.length > 0 ? (
+      <ToggleGroup
+        aria-label="Sort packs"
+        // An empty value is the group's own deselect. It used to be swallowed,
+        // which was harmless while a mode was always applied — but now that
+        // producer order is a state the grid can be IN, dropping the deselect
+        // would make it one the reader can never get back to without a reload.
+        onValueChange={(value) =>
+          onSortChange(value ? (value as SortMode) : null)
         }
-      }}
-      type="single"
-      value={sort}
-      variant="outline"
-    >
-      {sortModes.map((mode) => (
-        <ToggleGroupItem key={mode} value={mode}>
-          {SORT_LABEL[mode]}
-        </ToggleGroupItem>
-      ))}
-    </ToggleGroup>
+        type="single"
+        // Empty when no offered mode is applied: the grid is in producer order,
+        // and marking a mode active would claim an ordering that is not there.
+        value={sort ?? ""}
+        variant="outline"
+      >
+        {sortModes.map((mode) => (
+          <ToggleGroupItem key={mode} value={mode}>
+            {SORT_LABEL[mode]}
+          </ToggleGroupItem>
+        ))}
+      </ToggleGroup>
+    ) : null}
   </div>
 );
 
@@ -150,6 +160,29 @@ export type PacksWorkspaceProps = {
   detailPack?: PackView | null;
   /** Notified whenever the selected pack changes (so the host can fetch detail). */
   onSelectPack?: (packId: string | null) => void;
+  /**
+   * ISS-6925: the selected pack, when the HOST owns selection because the route
+   * does. Supplying it (including as `null`) makes the workspace controlled;
+   * omitting it entirely keeps the component-state selection that ships today.
+   *
+   * Controlled mode is what makes a detail addressable, and it is also what
+   * makes the two states below reachable — a routed id can name a pack that is
+   * still loading or is not in the catalog at all, neither of which component
+   * state could ever produce.
+   */
+  selectedPackId?: string | null;
+  /**
+   * Discovery-grid href for the back affordance, so it renders as a real link
+   * (middle-click, Cmd-click, "open in new tab") rather than a state reset.
+   * Only meaningful alongside `selectedPackId`.
+   */
+  backHref?: string;
+  /** The host's per-pack detail read is in flight (controlled mode only). */
+  detailPending?: boolean;
+  /** The host's per-pack detail read FAILED (controlled mode only). */
+  detailFailed?: boolean;
+  /** Retries the failed detail read, when the host can. */
+  onDetailRetry?: () => void;
   /** Org-wide recent activity for the team rail (multiplayer surfaces). */
   activity?: PackActivityEvent[];
   emptyState?: ReactNode;
@@ -173,6 +206,8 @@ export type PacksWorkspaceProps = {
   withdrawDistributionPending?: boolean;
   /** Extra admin actions (e.g. Archive) for the selected pack's detail header. */
   detailHeaderActions?: ReactNode;
+  /** The selected pack's bundled contents could not be refreshed. */
+  detailContentsUnavailable?: boolean;
   /** Replaces the selected pack's read-only Contents (e.g. admin components manager). */
   detailContentsSlot?: ReactNode;
   /** Member per-machine read is in flight for the detail block (FEA-4077). */
@@ -193,6 +228,11 @@ export const PacksWorkspace = ({
   context,
   detailPack,
   onSelectPack,
+  selectedPackId,
+  backHref,
+  detailPending = false,
+  detailFailed = false,
+  onDetailRetry,
   activity = [],
   emptyState,
   toolbarSlot,
@@ -206,6 +246,7 @@ export const PacksWorkspace = ({
   onWithdrawDistribution,
   withdrawDistributionPending,
   detailHeaderActions,
+  detailContentsUnavailable,
   detailContentsSlot,
   memberTargetsLoading,
   memberTargetsError,
@@ -213,18 +254,47 @@ export const PacksWorkspace = ({
   memberTargetsInstall,
 }: PacksWorkspaceProps) => {
   const showTeam = context.capabilities.showTeamUsage;
-  const sortModes = useMemo<SortMode[]>(
-    () =>
-      showTeam
-        ? [SortMode.Popular, SortMode.Trending, SortMode.Stars]
-        : [SortMode.Stars, SortMode.Name],
-    [showTeam]
-  );
+  // ISS-6767: a sort mode is offered only when its comparator can actually
+  // order this catalog. `Popular`/`Trending` read `pack.teamUsage`, which no
+  // producer of the grid's rows populates, so offering them unconditionally
+  // gave every team surface toggles that reordered nothing — with `Popular`
+  // presented as the applied sort while the grid sat in producer order.
+  // Probed over the full catalog (not the current filter) so the control set
+  // stays stable as the user types, and re-derived from `packs`, so the modes
+  // return on their own once a list-level producer exists.
+  const { sortModes, defaultSort } = useMemo(() => {
+    const candidates = showTeam
+      ? [SortMode.Popular, SortMode.Trending, SortMode.Stars]
+      : [SortMode.Stars, SortMode.Name];
+    const offered = candidates.filter((mode) => canOrder(mode, packs));
+    return {
+      sortModes: offered,
+      // The leading candidate is the surface's intended default. When it cannot
+      // order the catalog the grid stays in producer order rather than silently
+      // promoting the next mode: nobody asked for that ranking, and adopting it
+      // would re-order every grid as a side effect of dropping a dead control.
+      defaultSort: offered[0] === candidates[0] ? candidates[0] : null,
+    };
+  }, [showTeam, packs]);
 
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<string>(ALL_CATEGORIES);
-  const [sort, setSort] = useState<SortMode>(sortModes[0]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Derived, not stored: the offered set depends on the corpus, so a preference
+  // the corpus can no longer be ordered by falls back to the surface default
+  // instead of pinning the grid to a comparator that ranks nothing.
+  const [sortPreference, setSortPreference] = useState<SortMode | null>(null);
+  const sort =
+    sortPreference && sortModes.includes(sortPreference)
+      ? sortPreference
+      : defaultSort;
+  // ISS-6925: `selectedPackId` present (even as null) means the route owns
+  // selection and this state is unused; absent means the component owns it, the
+  // behavior that ships today.
+  const routed = selectedPackId !== undefined;
+  const [internalSelectedId, setInternalSelectedId] = useState<string | null>(
+    null
+  );
+  const selectedId = routed ? selectedPackId : internalSelectedId;
 
   const categories = useMemo(() => {
     const set = new Set<string>();
@@ -253,7 +323,7 @@ export const PacksWorkspace = ({
         matchesQuery(pack, query, disambiguators.get(pack.id)) &&
         (category === ALL_CATEGORIES || pack.category === category)
     );
-    return [...filtered].sort(SORT_COMPARATORS[sort]);
+    return sort ? [...filtered].sort(SORT_COMPARATORS[sort]) : filtered;
   }, [packs, query, category, sort, disambiguators]);
 
   const recommended = useMemo(() => {
@@ -267,13 +337,19 @@ export const PacksWorkspace = ({
   }, [packs, showTeam]);
 
   const select = (packId: string | null) => {
-    setSelectedId(packId);
+    if (!routed) {
+      setInternalSelectedId(packId);
+    }
     onSelectPack?.(packId);
   };
 
   const selectLocalInstall = onInstall
     ? (packId: string) => onInstall(packId)
     : undefined;
+
+  const backSlot = (
+    <BackToGrid backHref={backHref} onBack={() => select(null)} />
+  );
 
   if (selectedId) {
     const listItem = packs.find((pack) => pack.id === selectedId);
@@ -282,17 +358,10 @@ export const PacksWorkspace = ({
     if (resolved) {
       return (
         <div className="mx-auto w-full max-w-4xl px-6 pt-4">
-          <Button
-            className="gap-1.5"
-            onClick={() => select(null)}
-            size="sm"
-            variant="ghost"
-          >
-            <ArrowLeftIcon className="size-4" />
-            All plugins
-          </Button>
+          {backSlot}
           <PackDetail
             contentsSlot={detailContentsSlot}
+            contentsUnavailable={detailContentsUnavailable}
             context={context}
             disambiguator={disambiguators.get(resolved.id)}
             headerActions={detailHeaderActions}
@@ -313,6 +382,23 @@ export const PacksWorkspace = ({
         </div>
       );
     }
+    // Falling through to the discovery grid is right only while selection is
+    // component state, where an unresolvable id cannot be reached. At a detail
+    // URL it would answer a stale link with the catalog and a still-loading
+    // direct load with "here is everything" — so a routed selection commits to
+    // one of the two honest states instead.
+    if (routed) {
+      return (
+        <div className="mx-auto w-full max-w-4xl px-6 pt-4">
+          <PackDetailUnavailable
+            backSlot={backSlot}
+            failed={detailFailed}
+            onRetry={onDetailRetry}
+            pending={detailPending}
+          />
+        </div>
+      );
+    }
   }
 
   return (
@@ -329,7 +415,7 @@ export const PacksWorkspace = ({
             category={category}
             onCategoryChange={setCategory}
             onQueryChange={setQuery}
-            onSortChange={setSort}
+            onSortChange={setSortPreference}
             query={query}
             sort={sort}
             sortModes={sortModes}
@@ -386,3 +472,50 @@ export const PacksWorkspace = ({
     </div>
   );
 };
+
+/**
+ * True when `mode`'s comparator can actually order `packs` — it separates at
+ * least one pair. Probing the comparator itself (rather than a parallel key
+ * accessor) is what makes the answer agree with the ordering the grid applies:
+ * these comparators are consistent, so ranking every pack equal to the first
+ * means ranking every pair equal, and the control would reorder nothing.
+ */
+function canOrder(mode: SortMode, packs: readonly PackView[]): boolean {
+  const head = packs[0];
+  if (!head) {
+    return false;
+  }
+  const compare = SORT_COMPARATORS[mode];
+  return packs.some((pack) => compare(head, pack) !== 0);
+}
+
+/**
+ * The detail view's way back to the grid. A real anchor once the detail is
+ * addressable (ISS-6925), so middle-click, Cmd-click and "open in new tab"
+ * work; a button while selection is component state, where there is no href to
+ * put on a link and the control is a state reset rather than a destination.
+ */
+function BackToGrid({
+  backHref,
+  onBack,
+}: {
+  backHref?: string;
+  onBack: () => void;
+}) {
+  if (backHref) {
+    return (
+      <Button asChild className="gap-1.5" size="sm" variant="ghost">
+        <Link href={backHref}>
+          <ArrowLeftIcon className="size-4" />
+          All plugins
+        </Link>
+      </Button>
+    );
+  }
+  return (
+    <Button className="gap-1.5" onClick={onBack} size="sm" variant="ghost">
+      <ArrowLeftIcon className="size-4" />
+      All plugins
+    </Button>
+  );
+}

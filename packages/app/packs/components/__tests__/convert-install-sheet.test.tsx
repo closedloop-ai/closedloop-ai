@@ -24,7 +24,7 @@ import {
   ConversionSupport,
   resolveConversionCapability,
 } from "@repo/api/src/types/harness-conversion";
-import { HarnessName } from "@repo/crewd/model";
+import { HarnessName } from "@repo/api/src/types/harness-name";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
@@ -44,6 +44,7 @@ const DONE_FROM_CURRENT_COPY = /converted from Codex and is ready to use/;
 const ARROW_CURRENT_HARNESS = /Codex/;
 const ARROW_TARGET_HARNESS = /OpenCode/;
 const ARROW_ORIGIN_HARNESS = /Claude/;
+const DONE_BUTTON_NAME = "Done";
 
 const HARNESS_LABEL: Record<HarnessName, string> = {
   [HarnessName.Claude]: "Claude",
@@ -281,7 +282,9 @@ describe("ConvertInstallSheet", () => {
     expect(screen.getByText("model")).toBeInTheDocument();
     expect(screen.getByText("allowedTools")).toBeInTheDocument();
     // Done offers a single accessible Done control.
-    expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: DONE_BUTTON_NAME })
+    ).toBeInTheDocument();
   });
 
   it("renders the error state as retryable when the engine reports an error", async () => {
@@ -335,7 +338,7 @@ describe("ConvertInstallSheet", () => {
     // No premature success: neither the Done body nor its control appears.
     expect(screen.queryByText("Installed on Claude")).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Done" })
+      screen.queryByRole("button", { name: DONE_BUTTON_NAME })
     ).not.toBeInTheDocument();
     // The dismiss surface stays sealed while the run streams.
     expect(

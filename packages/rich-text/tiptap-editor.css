@@ -40,9 +40,70 @@
   display: inline-block;
   max-width: min(100%, 680px);
   max-height: 520px;
-  border: 1px solid hsl(var(--border));
+  border: 1px solid var(--border);
   border-radius: 0.375rem;
-  background: hsl(var(--muted));
+  background: var(--muted);
+}
+.inline-image[data-sized] {
+  max-width: 100%;
+  max-height: none;
+  height: auto;
+}
+/* Contain wrapped images so a float never escapes the editor surface. */
+.ProseMirror {
+  display: flow-root;
+}
+.inline-image-wrapper[data-layout="wrap-left"] {
+  float: left;
+  margin: 0.25rem 1rem 0.5rem 0;
+}
+.inline-image-wrapper[data-layout="wrap-right"] {
+  float: right;
+  margin: 0.25rem 0 0.5rem 1rem;
+}
+.inline-image-wrapper[data-layout="center"] {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+}
+.inline-image-frame {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  line-height: 0;
+}
+/* @tiptap/react 3.31.3 toggles `ProseMirror-selectednode` on the node view's
+   OUTER element (`ReactNodeView.updateSelectedState` → `renderer.element`),
+   which carries `react-renderer node-inlineImage` — not on the NodeViewWrapper
+   span that holds `.inline-image-wrapper`. Keying this off the wrapper matched
+   nothing, so a selected image never drew a ring. */
+.node-inlineImage.ProseMirror-selectednode .inline-image {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.inline-image-toolbar {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  line-height: normal;
+}
+.inline-image-resize-handle {
+  position: absolute;
+  bottom: -0.375rem;
+  width: 0.75rem;
+  height: 0.75rem;
+  border: 2px solid var(--background);
+  border-radius: 9999px;
+  background: var(--ring);
+  touch-action: none;
+}
+.inline-image-resize-handle[data-side="end"] {
+  right: -0.375rem;
+  cursor: nwse-resize;
+}
+.inline-image-resize-handle[data-side="start"] {
+  left: -0.375rem;
+  cursor: nesw-resize;
 }
 
 .inline-image-placeholder {
@@ -50,17 +111,17 @@
   align-items: center;
   min-height: 2rem;
   max-width: 100%;
-  border: 1px dashed hsl(var(--border));
+  border: 1px dashed var(--border);
   border-radius: 0.375rem;
-  background: hsl(var(--muted) / 0.55);
+  background: color-mix(in oklab, var(--muted) 55%, transparent);
   padding: 0.25rem 0.5rem;
-  color: hsl(var(--muted-foreground));
+  color: var(--muted-foreground);
   font-size: 0.875rem;
 }
 
 .inline-image-placeholder[data-failed] {
-  border-color: hsl(var(--destructive) / 0.55);
-  color: hsl(var(--destructive));
+  border-color: color-mix(in oklab, var(--destructive) 55%, transparent);
+  color: var(--destructive);
 }
 
 .inline-image-upload-placeholder {
@@ -68,11 +129,11 @@
   align-items: center;
   min-height: 2rem;
   max-width: 100%;
-  border: 1px dashed hsl(var(--border));
+  border: 1px dashed var(--border);
   border-radius: 0.375rem;
-  background: hsl(var(--muted) / 0.55);
+  background: color-mix(in oklab, var(--muted) 55%, transparent);
   padding: 0.25rem 0.5rem;
-  color: hsl(var(--muted-foreground));
+  color: var(--muted-foreground);
   font-size: 0.875rem;
   vertical-align: middle;
 }

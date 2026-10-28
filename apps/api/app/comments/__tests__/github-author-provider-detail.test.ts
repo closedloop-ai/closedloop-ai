@@ -25,15 +25,12 @@ describe("GitHub author provider detail", () => {
     ).toBe(GitHubActorType.Unknown);
   });
 
-  it.each([
-    undefined,
-    null,
-    [],
-    "legacy",
-    7,
-  ])("omits actor type for missing or malformed metadata %j", (value) => {
-    expect(parseGitHubAuthorProviderDetailActorType(value)).toBeUndefined();
-  });
+  it.each([undefined, null, [], "legacy", 7])(
+    "omits actor type for missing or malformed metadata %j",
+    (value) => {
+      expect(parseGitHubAuthorProviderDetailActorType(value)).toBeUndefined();
+    }
+  );
 
   it("merges supplied evidence without erasing sibling JSON keys", () => {
     expect(

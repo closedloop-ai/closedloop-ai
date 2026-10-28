@@ -9,6 +9,7 @@ vi.mock("@repo/observability/log", () => ({
 }));
 
 import type { Octokit } from "@octokit/rest";
+import { GitHubActorType } from "@repo/api/src/types/github-actor";
 import {
   GitHubProviderResultStatus,
   GitHubUserTokenProviderResultStatus,
@@ -40,13 +41,14 @@ function makePrData(
     draft: boolean;
     merged_at: string | null;
     closed_at: string | null;
+    updated_at: string;
     merge_commit_sha: string | null;
     additions: number | null;
     deletions: number | null;
     changed_files: number | null;
     head: { ref: string; sha: string };
     base: { ref: string; sha: string };
-    user: { login: string } | null;
+    user: { login: string; id?: number; type?: string } | null;
   }> = {}
 ) {
   return {
@@ -114,6 +116,23 @@ describe("getSinglePullRequest", () => {
         pull_number: PULL_NUMBER,
       })
     );
+  });
+
+  // ISS-12344: a Branch refresh re-files a PR only when its read is no older
+  // than the stored row, which it can tell only from GitHub's updated_at.
+  it("carries GitHub's updated_at on the mapped read", async () => {
+    mockPullsGet.mockResolvedValueOnce({
+      data: makePrData({ updated_at: "2026-10-09T21:00:00Z" }),
+    });
+
+    const result = await getSinglePullRequest(
+      octokit,
+      OWNER,
+      REPO,
+      PULL_NUMBER
+    );
+
+    expect(result?.updatedAt).toBe("2026-10-09T21:00:00Z");
   });
 
   it("omits PR LOC fields when the REST response does not include them", async () => {
@@ -215,7 +234,9 @@ describe("getSinglePullRequestWithProviderResult", () => {
 
   it("returns a Success result with mapped PR data", async () => {
     mockPullsGet.mockResolvedValueOnce({
-      data: makePrData({ user: { login: "octocat" } }),
+      data: makePrData({
+        user: { login: "octocat", id: 123, type: GitHubActorType.User },
+      }),
     });
 
     const result = await getSinglePullRequestWithProviderResult(
@@ -230,6 +251,8 @@ describe("getSinglePullRequestWithProviderResult", () => {
       value: expect.objectContaining({
         githubId: "11111",
         authorLogin: "octocat",
+        authorProviderUserId: "123",
+        authorActorType: GitHubActorType.User,
         state: "OPEN",
         additions: 33,
         deletions: 7,
@@ -243,6 +266,45 @@ describe("getSinglePullRequestWithProviderResult", () => {
         pull_number: PULL_NUMBER,
       })
     );
+  });
+
+  it("marks an unknown provider actor type as untrusted", async () => {
+    mockPullsGet.mockResolvedValueOnce({
+      data: makePrData({
+        user: { login: "mystery", id: 456, type: "FutureKind" },
+      }),
+    });
+
+    const result = await getSinglePullRequestWithProviderResult(
+      octokit,
+      OWNER,
+      REPO,
+      PULL_NUMBER
+    );
+
+    expect(result.status).toBe(GitHubProviderResultStatus.Success);
+    if (result.status !== GitHubProviderResultStatus.Success) {
+      throw new Error("expected provider success");
+    }
+    expect(result.value.authorProviderUserId).toBe("456");
+    expect(result.value.authorActorType).toBe(GitHubActorType.Unknown);
+  });
+
+  it("reports isDraft false when GitHub omits the draft field", async () => {
+    const { draft: _omitted, ...withoutDraft } = makePrData();
+    mockPullsGet.mockResolvedValueOnce({ data: withoutDraft });
+
+    const result = await getSinglePullRequestWithProviderResult(
+      octokit,
+      OWNER,
+      REPO,
+      PULL_NUMBER
+    );
+
+    expect(result).toEqual({
+      status: GitHubProviderResultStatus.Success,
+      value: expect.objectContaining({ isDraft: false }),
+    });
   });
 
   it("classifies 401 responses as unauthorized credentials", async () => {

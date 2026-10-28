@@ -296,6 +296,64 @@ describe("branchService helpers", () => {
     });
   });
 
+  // ISS-8175 AC-2: the desktop-read base sits BELOW HarnessInput (operator
+  // decision) and ABOVE McpInput — it is gh's own answer rather than an agent's
+  // assertion, but it can be stale by the time it syncs. Both directions are
+  // pinned because a rank that satisfies only one of them is a different rank.
+  it("ranks a desktop-read PR base under harness input and over MCP input", () => {
+    expect(
+      resolveBaseProvenance(
+        {
+          baseBranch: "release",
+          baseBranchSource: BranchBaseBranchSource.DesktopPullRequestBase,
+        },
+        {
+          baseBranch: "main",
+          baseBranchSource: BranchBaseBranchSource.HarnessInput,
+        }
+      )
+    ).toEqual({
+      baseBranch: "main",
+      baseBranchSource: BranchBaseBranchSource.HarnessInput,
+    });
+
+    expect(
+      resolveBaseProvenance(
+        {
+          baseBranch: "release",
+          baseBranchSource: BranchBaseBranchSource.DesktopPullRequestBase,
+        },
+        {
+          baseBranch: "main",
+          baseBranchSource: BranchBaseBranchSource.McpInput,
+        }
+      )
+    ).toEqual({
+      baseBranch: "release",
+      baseBranchSource: BranchBaseBranchSource.DesktopPullRequestBase,
+    });
+
+    // The decider keeps the stored value only on a STRICT `>`, so a tie hands
+    // the write to the incoming source. Without the desktop source in the
+    // EXISTING position, rank 30 would pass both assertions above while letting
+    // an agent-asserted base overwrite gh's own answer.
+    expect(
+      resolveBaseProvenance(
+        {
+          baseBranch: "main",
+          baseBranchSource: BranchBaseBranchSource.McpInput,
+        },
+        {
+          baseBranch: "release",
+          baseBranchSource: BranchBaseBranchSource.DesktopPullRequestBase,
+        }
+      )
+    ).toEqual({
+      baseBranch: "release",
+      baseBranchSource: BranchBaseBranchSource.DesktopPullRequestBase,
+    });
+  });
+
   it("does not schedule cache refresh for rejected head transitions", () => {
     const schedule = scheduleFileChangeCacheRefresh({
       isDelete: false,

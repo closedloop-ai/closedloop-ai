@@ -1,6 +1,7 @@
-// ISS-5841: activity phases now ship behind a flag, default off. These cases
-// exist to cover the phases surfaces, so they opt the flag ON rather than
-// asserting a region the product deliberately hides.
+// ISS-7867 retired the activity-phases surfaces, so what survives here is the
+// AXIS contract: the rendered axis label must cover the tiling's trailing idle
+// span. The tiling still feeds the axis window through
+// `session-timeline-geometry.ts` `getPhaseTilingSpan`, which no flag gates.
 
 import type {
   SyncedActivitySegmentRow,
@@ -13,7 +14,6 @@ import {
 import { AppCoreStoryProviders } from "@repo/app/shared/storybook/decorators";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { SESSION_ACTIVITY_PHASES_FEATURE_FLAG_KEY } from "../../../../shared/lib/feature-flags";
 import { createAgentSessionDetailFixture } from "../agent-session-detail-fixtures";
 import { AgentSessionDetailView } from "../agent-session-detail-view";
 
@@ -109,9 +109,9 @@ function segmentRow(
  * working before it stopped.
  *
  * 90% non-idle on purpose: `activity-segments-projection.ts` folds a
- * majority-idle strip closed by default, and a folded strip renders no
- * `.sd3-segs-scale`, which would make the caption comparison vacuous rather
- * than red.
+ * majority-idle strip closed by default, and the axis window this pins is
+ * derived from that same tiling (`session-timeline-geometry.ts`
+ * `getPhaseTilingSpan`).
  */
 const PHASE_TILING: SyncedActivitySegmentRow[] = [
   segmentRow("implement", STARTED_AT, IMPLEMENT_END_AT, 0.82, ["declared"]),
@@ -141,9 +141,7 @@ const idleTailSession = createAgentSessionDetailFixture({
 
 function renderDetail(): void {
   render(
-    <AppCoreStoryProviders
-      enabledFlags={[SESSION_ACTIVITY_PHASES_FEATURE_FLAG_KEY]}
-    >
+    <AppCoreStoryProviders>
       <AgentSessionDetailView
         backHref="/sessions"
         isLoading={false}
@@ -160,10 +158,6 @@ function readAxisTotalLabel(): string | null {
   );
 }
 
-function readPhasesSpanCaption(): string | null {
-  return document.querySelector(".sd3-segs-scale")?.textContent ?? null;
-}
-
 function axisTotal(value: string): string {
   return `${SESSION_TIMELINE_AXIS_SPAN_PREFIX} ${value}`;
 }
@@ -178,18 +172,5 @@ describe("Session Timeline axis over a trailing idle segment (ISS-5137)", () => 
     // that ran until 12:20.
     expect(readAxisTotalLabel()).toBe(axisTotal(FULL_SPAN));
     expect(readAxisTotalLabel()).not.toBe(axisTotal(NON_IDLE_SPAN));
-  });
-
-  it("reconciles: the axis total equals the phases-span caption beneath it", () => {
-    renderDetail();
-
-    // Read from the caption rather than restated as a literal: the contract is
-    // that the two adjacent captions state ONE number, so the comparison has to
-    // be against the other caption, not against a copy of it.
-    const caption = readPhasesSpanCaption() ?? "";
-    expect(caption).toBe(`phases span ${FULL_SPAN}`);
-    expect(readAxisTotalLabel()).toBe(
-      axisTotal(caption.replace("phases span ", ""))
-    );
   });
 });

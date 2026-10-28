@@ -29,10 +29,21 @@ import { isModifiedClick } from "../../../shared/lib/modified-click";
  *   open `href` and leaves the current tab's scope alone.
  *
  * `onClearFilters` must reset the host's filter state to defaults (facet, date,
- * search, page). The reload is driven by the query-key change that reset produces
- * — NOT a `refetch()` on the pre-clear key, which would re-run the failing narrowed
- * scope the user is escaping. `href` is the clean Sessions list root so a middle/
- * modified click still opens a working list in a new tab.
+ * search, page) AND guarantee a read actually runs. Normally the reset itself is
+ * the reload: the query-key change re-issues it, and the host must NOT `refetch()`
+ * the pre-clear key, which would re-run the failing narrowed scope the user is
+ * escaping.
+ *
+ * ISS-7249 / ISS-7414 — the one exception, which every host owes: from an
+ * ALREADY-DEFAULT scope (no filters, first page) the reset changes nothing, React
+ * bails out of the re-render, and no key moves, so a host that only resets leaves
+ * this control inert on exactly the general read failure it exists for. There the
+ * host must refetch the unchanged key explicitly; with nothing to clear, the
+ * reload IS the whole action. Both surfaces do this — desktop in
+ * `useSessionsListRecovery`, web in the `/sessions` page's own handler.
+ *
+ * `href` is the clean Sessions list root so a middle/modified click still opens a
+ * working list in a new tab.
  */
 export function SessionsRecoveryAction({
   href,

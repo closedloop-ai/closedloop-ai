@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { test } from "vitest";
 
-import { TRACER_PRELOAD_TOKENS } from "../../../scripts/tracer-preload-tokens.mjs";
-import { withoutTracerPreload } from "../scripts/node-test-lane-settings.mjs";
+import {
+  TRACER_PRELOAD_TOKENS,
+  withoutTracerPreload,
+} from "../../../scripts/tracer-preload-tokens.mjs";
+import { launcherEnv } from "./e2e/helpers/bridge-launcher-env";
 
 const ORIGINAL_NODE_OPTIONS = process.env.NODE_OPTIONS;
 
@@ -50,6 +56,20 @@ test("the legacy lane retains non-tracer Node options and normalizes separator w
     );
   } finally {
     restoreNodeOptions();
+  }
+});
+
+// ISS-10943 (marisolashgrove, PR #8146): PR-level lanes never set NODE_OPTIONS,
+// so only this case notices the bridge launcher inheriting the preload again.
+test("the bridge sidecar launcher drops an ambient dd-trace preload", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-launcher-env-"));
+  try {
+    process.env.NODE_OPTIONS = TRACER_PRELOAD_TOKENS.join(" ");
+
+    assert.equal(launcherEnv(root).NODE_OPTIONS, undefined);
+  } finally {
+    restoreNodeOptions();
+    fs.rmSync(root, { force: true, recursive: true });
   }
 });
 

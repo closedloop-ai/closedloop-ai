@@ -2,12 +2,15 @@
  * @file default-collectors.ts
  * @description The five real harness collectors and their durable state paths,
  * extracted out of `collector-manager.ts` (ISS-4649 / whitlockk review). That file
- * is over the 1,000-line ceiling and shrink-only per the grandfather list in
- * `biome.jsonc`, so the roster — which grows every time a collector gains a
- * constructor seam — lives here instead of adding to it.
+ * has no entry in the `noExcessiveLinesPerFile` grandfather list in
+ * `biome.jsonc`, so the 1,000-line ceiling is enforced on it, and the
+ * roster — which grows every time a collector gains a constructor seam — lives
+ * here instead of adding to it.
  *
  * Registering a NEW harness collector means editing this file; see
  * `apps/desktop/docs/harness-telemetry-matrix.md`, which points at this roster.
+ * The Welcome consent line must name it too (ISS-11346):
+ * `welcome-consent-sources.test.tsx` fails until `HarnessValues` carries it.
  */
 import { createClaudeCollector } from "../claude/claude-collector.js";
 import { createCodexCollector } from "../codex/codex-collector.js";
@@ -16,10 +19,8 @@ import { createCursorCollector } from "../cursor/cursor-collector.js";
 import { createOpencodeCollector } from "../opencode/opencode-collector.js";
 import type { OpencodeWithheldSubagentReport } from "../opencode/opencode-withheld-subagents.js";
 import type { HarnessCollector } from "../types.js";
-import {
-  ingestCodexLinkageCachePath,
-  ingestOpencodeFingerprintPath,
-} from "./ingest-paths.js";
+import { ingestOpencodeFingerprintPath } from "./ingest-paths.js";
+import type { IngestStoreProvider } from "./ingest-store-port.js";
 
 /**
  * The five real harness collectors, wired with their durable state paths.
@@ -32,7 +33,7 @@ import {
  *
  * ISS-5266: takes the manager's own options object rather than a widening
  * argument list, so threading a new sink through to a collector adds nothing to
- * the grandfathered `collector-manager.ts` call site.
+ * the `collector-manager.ts` call site.
  */
 export function defaultCollectors(
   options: DefaultCollectorsOptions,
@@ -40,6 +41,7 @@ export function defaultCollectors(
 ): HarnessCollector[] {
   const {
     stateDir,
+    ingestStores,
     onOpencodeSubagentsWithheld: recordWithheld,
     hasRecordedOpencodeWithheldScan: hasRecordedWithheldScan,
   } = options;
@@ -48,9 +50,9 @@ export function defaultCollectors(
     // harness started emitting something this parser does not decode, and it is
     // silent unless a logger reaches it.
     createClaudeCollector({ log }),
-    createCodexCollector({
-      linkageCachePath: ingestCodexLinkageCachePath(stateDir),
-    }),
+    createCodexCollector(
+      ingestStores ? { linkageStore: ingestStores.codexLinkage() } : {}
+    ),
     createCursorCollector(),
     createCopilotCollector(),
     createOpencodeCollector({
@@ -75,8 +77,14 @@ export function defaultCollectors(
  * edge back to the engine module it was extracted from.
  */
 export type DefaultCollectorsOptions = {
-  /** Durable dir for persisted per-collector state (caches, fingerprints). */
+  /** Durable dir for persisted per-collector state that is still a FILE. */
   stateDir: string;
+  /**
+   * ISS-9838: durable ports for the SQLite-backed ingest stores. Only the Codex
+   * linkage cache is opened here; the per-collector catchup/quarantine ports are
+   * opened by `CollectorManager`, which knows each collector's `cacheName`.
+   */
+  ingestStores?: IngestStoreProvider;
   /**
    * ISS-5266: durable sink for the OpenCode WITHHELD-subagent record. Optional
    * so every existing caller (and every test that builds the real roster) is

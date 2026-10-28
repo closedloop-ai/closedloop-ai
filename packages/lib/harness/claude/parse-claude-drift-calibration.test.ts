@@ -22,8 +22,8 @@
  * expectation together, and the test could never fail.
  */
 import { describe, expect, it } from "vitest";
+import { scanTranscriptLines } from "./parse-claude";
 import { createSessionAccumulator } from "./parse-claude-accumulator";
-import { scanTranscriptLines } from "./parse-claude-core";
 import { reportUnknownRecords } from "./parse-claude-drift";
 
 const TS = "2026-07-09T12:00:01.000Z";
@@ -173,8 +173,11 @@ describe("the drift detector speaks up for every record type it decodes", () => 
         ...payload,
         unexpectedNewField: 1,
       });
+      // ISS-6576: names are quoted so a delimiter inside one cannot read as
+      // the report's own list structure. Was `record type ${type}:
+      // unexpectedNewField`.
       expect(messages).toEqual([
-        `Unknown attributes for record type ${type}: unexpectedNewField`,
+        `Unknown attributes for record type "${type}": "unexpectedNewField"`,
       ]);
     });
   }

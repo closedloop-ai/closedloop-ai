@@ -7,6 +7,11 @@ import {
   TableHeader,
   TableRow,
 } from "@repo/design-system/components/ui/table";
+import {
+  TableChoiceCell,
+  TableNumberCell,
+  TableTextCell,
+} from "@repo/design-system/components/ui/table-cell-primitives";
 import { mockInvoiceRows } from "@repo/design-system/storybook/mock-data";
 import type { Meta, StoryObj } from "@storybook/react";
 
@@ -14,9 +19,9 @@ import type { Meta, StoryObj } from "@storybook/react";
  * Powerful table and datagrids built using TanStack Table.
  */
 const meta = {
-  title: "Design System/Data Display/Table",
+  title: "Primitives v1.0/Data Display/Tables/Table",
   component: Table,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   argTypes: {},
   render: (args) => (
     <Table {...args}>
@@ -32,10 +37,18 @@ const meta = {
       <TableBody>
         {mockInvoiceRows.map((invoice) => (
           <TableRow key={invoice.invoice}>
-            <TableCell className="font-medium">{invoice.invoice}</TableCell>
-            <TableCell>{invoice.paymentStatus}</TableCell>
-            <TableCell>{invoice.paymentMethod}</TableCell>
-            <TableCell className="text-right">{invoice.totalAmount}</TableCell>
+            <TableCell>
+              <TableTextCell value={invoice.invoice} />
+            </TableCell>
+            <TableCell>
+              <TableChoiceCell label={invoice.paymentStatus} />
+            </TableCell>
+            <TableCell>
+              <TableTextCell value={invoice.paymentMethod} />
+            </TableCell>
+            <TableCell>
+              <TableNumberCell value={invoice.totalAmount} />
+            </TableCell>
           </TableRow>
         ))}
       </TableBody>

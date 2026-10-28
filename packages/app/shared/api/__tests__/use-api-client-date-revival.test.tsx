@@ -1,11 +1,12 @@
 import type { ComponentVersion } from "@repo/api/src/types/agent-component";
 import type { TokenTrendPoint } from "@repo/api/src/types/agent-component-analytics";
 import type { AgentComponentInvocationReadRow } from "@repo/api/src/types/agent-component-invocation";
-import type { SyncedAgentSessionEvent } from "@repo/api/src/types/agent-session";
-import type { BranchViewBranch } from "@repo/api/src/types/branch-view";
+import type {
+  AgentSessionListItem,
+  SyncedAgentSessionEvent,
+} from "@repo/api/src/types/agent-session";
 import type { TraceComment } from "@repo/api/src/types/comment";
 import type { Document } from "@repo/api/src/types/document";
-import type { Loop } from "@repo/api/src/types/loop";
 import { act, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -89,11 +90,16 @@ describe("useApiClient date revival (ISS-5771)", () => {
     expect(point.sessionStartedAt.slice(0, 10)).toBe("2026-08-10");
   });
 
-  it("leaves the Branch View sync timestamps as the strings the contract declares", async () => {
+  it("leaves the Branch sync timestamps as strings, since no served contract declares them Date", async () => {
     // Same shape of mistake: `artifact.ts`'s unserved `BranchDetail` types these
-    // as `Date`, while `BranchViewBranch` — the payload the Branch View route
-    // actually returns — declares every one of them `string | null`.
-    const branch = await getData<BranchViewBranch>({
+    // as `Date`, but no served response contract declares any of these keys, so
+    // nothing licenses reviving them and they stay the strings the server sent.
+    const branch = await getData<{
+      fileCacheUpdatedAt: string | null;
+      headShaObservedAt: string | null;
+      lastSyncCompletedAt: string | null;
+      lastSyncStartedAt: string | null;
+    }>({
       fileCacheUpdatedAt: ISO,
       headShaObservedAt: ISO,
       lastSyncCompletedAt: ISO,
@@ -108,10 +114,12 @@ describe("useApiClient date revival (ISS-5771)", () => {
 
   it("keeps reviving a response-`Date` field that merely resembles a rejected one", async () => {
     // A guard that revives nothing passes as vacuously as one that revives
-    // everything. `Loop.startedAt` IS declared `Date` on a served payload and
-    // must still arrive as one, in the same body as the `sessionStartedAt` that
-    // must not.
-    const payload = await getData<Loop & { sessionStartedAt: string }>({
+    // everything. `AgentSessionListItem.startedAt` IS declared `Date` on a
+    // served payload and must still arrive as one, in the same body as the
+    // `sessionStartedAt` that must not.
+    const payload = await getData<
+      AgentSessionListItem & { sessionStartedAt: string }
+    >({
       sessionStartedAt: ISO,
       startedAt: ISO,
     });

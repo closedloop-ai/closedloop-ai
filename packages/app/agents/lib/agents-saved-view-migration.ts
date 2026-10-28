@@ -46,6 +46,10 @@ import {
   AgentComponentSortDir,
   AgentComponentSortKey,
 } from "@repo/api/src/types/agent-component";
+import {
+  runViewStateMigration,
+  type ViewStateMigrationSpec,
+} from "../../shared/lib/view-state-migration";
 
 /**
  * Schema version stamped onto an Agents saved view once every migration below
@@ -125,19 +129,35 @@ export function migrateSavedSort(
   sort: AgentsSavedSort,
   fromVersion: number
 ): { sort: AgentsSavedSort; version: number } {
-  if (fromVersion >= AGENTS_SAVED_VIEW_VERSION) {
-    return { sort, version: fromVersion };
-  }
-  // v1 (ISS-5005): move the never-touched alphabetical default onto the
-  // usage-bearing one. Guarded on the version AND on the sort still being the
-  // legacy pair, so an explicit choice is never overwritten and a user who sorts
-  // back to Component ascending after the migration keeps that.
-  const shouldRewrite =
-    fromVersion < AGENTS_SAVED_VIEW_VERSION_USAGE_DEFAULT_SORT &&
+  const migrated = runViewStateMigration(
+    AGENTS_SORT_MIGRATION_SPEC,
+    sort,
+    fromVersion
+  );
+  return { sort: migrated.value, version: migrated.version };
+}
+
+/**
+ * v1 (ISS-5005): move the never-touched alphabetical default onto the
+ * usage-bearing one.
+ *
+ * Guarded on the sort still being the legacy pair — on TOP of the version guard
+ * the runner applies — so an explicit choice is never overwritten and a user who
+ * sorts back to Component ascending after the migration keeps that.
+ */
+function rewriteLegacyDefaultSort(sort: AgentsSavedSort): AgentsSavedSort {
+  const isLegacyDefault =
     sort.sortKey === LEGACY_AGENTS_DEFAULT_SORT.sortKey &&
     sort.sortDir === LEGACY_AGENTS_DEFAULT_SORT.sortDir;
-  return {
-    sort: shouldRewrite ? { ...USAGE_AGENTS_DEFAULT_SORT } : sort,
-    version: AGENTS_SAVED_VIEW_VERSION,
-  };
+  return isLegacyDefault ? { ...USAGE_AGENTS_DEFAULT_SORT } : sort;
 }
+
+const AGENTS_SORT_MIGRATION_SPEC: ViewStateMigrationSpec<AgentsSavedSort> = {
+  currentVersion: AGENTS_SAVED_VIEW_VERSION,
+  steps: [
+    {
+      apply: rewriteLegacyDefaultSort,
+      version: AGENTS_SAVED_VIEW_VERSION_USAGE_DEFAULT_SORT,
+    },
+  ],
+};

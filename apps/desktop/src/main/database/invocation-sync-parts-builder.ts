@@ -20,6 +20,7 @@ import {
 import { AgentComponentInvocationSyncLocalError } from "../agent-sync/agent-component-invocation-sync-constants.js";
 import {
   AgentComponentInvocationSyncPayloadContractError,
+  AgentComponentInvocationSyncPayloadDuplicateIdError,
   AgentComponentInvocationSyncPayloadLimitError,
   prepareAgentComponentInvocationSyncParts,
 } from "../agent-sync/agent-component-invocation-sync-payload.js";
@@ -83,6 +84,14 @@ function localInvocationSyncError(
   }
   if (error instanceof AgentComponentInvocationSyncPayloadLimitError) {
     return AgentComponentInvocationSyncLocalError.GenerationWireLimitExceeded;
+  }
+  if (error instanceof AgentComponentInvocationSyncPayloadDuplicateIdError) {
+    // ISS-6889 (codex P1 review): the collision is REPRODUCIBLE FROM THE ROW
+    // (invariant 4), so it is row-attributable and terminal — the cloud's own
+    // `hasUniqueInvocationIds` would reject the part for the same reason. Coming
+    // back here as a declared reason is what keeps the throw from escaping into
+    // the caller's import `$transaction`.
+    return AgentComponentInvocationSyncLocalError.DuplicateInvocationId;
   }
   return null;
 }

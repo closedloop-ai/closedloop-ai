@@ -5,8 +5,6 @@ import type {
   CreatePublicRepositoryInput,
   DeletePublicRepositoryResponse,
   DisconnectGitHubResponse,
-  GetBranchesResponse,
-  GetContributorsResponse,
   GetPullRequestsResponse,
   GetRepositoriesResponse,
   GitHubIntegrationStatus,
@@ -14,6 +12,7 @@ import type {
   PublicRepositoryResponse,
 } from "@repo/api/src/types/github";
 import {
+  type UseMutationOptions,
   type UseQueryOptions,
   useMutation,
   useQueries,
@@ -31,7 +30,7 @@ export const githubKeys = {
     [...githubKeys.all, "branches", repoId, ...(limit ? [limit] : [])] as const,
   pullRequests: (repoId: string, projectId?: string) =>
     [...githubKeys.all, "pull-requests", repoId, projectId] as const,
-  contributors: () => [...githubKeys.all, "contributors"] as const,
+  backfill: () => [...githubKeys.all, "backfill"] as const,
 };
 
 // Queries
@@ -66,29 +65,6 @@ export function useGitHubRepositories(
         "/integrations/github/repositories"
       ),
     ...options,
-  });
-}
-
-export function useGitHubBranches(
-  repositoryId: string,
-  options?: Omit<
-    UseQueryOptions<GetBranchesResponse>,
-    "queryKey" | "queryFn"
-  > & {
-    limit?: number;
-  }
-) {
-  const apiClient = useApiClient();
-  const searchParams = options?.limit ? `?limit=${options.limit}` : "";
-
-  return useQuery({
-    ...options,
-    queryKey: githubKeys.branches(repositoryId, options?.limit),
-    queryFn: () =>
-      apiClient.get<GetBranchesResponse>(
-        `/integrations/github/repositories/${repositoryId}/branches${searchParams}`
-      ),
-    enabled: !!repositoryId && options?.enabled !== false,
   });
 }
 
@@ -185,26 +161,13 @@ function computeRepoQueryStatus(results: PullRequestQueryResult[]) {
   };
 }
 
-export function useGitHubContributors(
-  options?: Omit<
-    UseQueryOptions<GetContributorsResponse>,
-    "queryKey" | "queryFn"
+// Mutations
+export function useDisconnectGitHub(
+  options?: Pick<
+    UseMutationOptions<DisconnectGitHubResponse, Error, void>,
+    "onError"
   >
 ) {
-  const apiClient = useApiClient();
-
-  return useQuery({
-    queryKey: githubKeys.contributors(),
-    queryFn: () =>
-      apiClient.get<GetContributorsResponse>(
-        "/integrations/github/contributors"
-      ),
-    ...options,
-  });
-}
-
-// Mutations
-export function useDisconnectGitHub() {
   const queryClient = useQueryClient();
   const apiClient = useApiClient();
 
@@ -214,6 +177,7 @@ export function useDisconnectGitHub() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: githubKeys.all });
     },
+    ...options,
   });
 }
 

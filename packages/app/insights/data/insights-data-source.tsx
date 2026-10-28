@@ -10,7 +10,9 @@ import type {
   InsightsTileAvailabilityMap,
   UtilizationInsightsResponse,
 } from "@repo/api/src/types/insights";
+import type { SessionMeshInsights } from "@repo/api/src/types/session-mesh";
 import { createContext, type ReactNode, useContext } from "react";
+import type { GitHubConnectTarget } from "../../github/lib/github-connect-target";
 import type { InsightsTileAvailability } from "../lib/tile-availability";
 
 /**
@@ -37,8 +39,12 @@ export type InsightsDataSource = {
   getTileAvailability?: (
     input: InsightsTileAvailabilityInput
   ) => InsightsTileAvailability;
-  githubConnectHref?: string;
-  onConnectGitHub?: () => void | Promise<void>;
+  /**
+   * What a connect CTA on this surface does, and how the shell performs it
+   * (ISS-5958). One value, so a shell that owns a connect action cannot also
+   * hand the shared components a navigation href — the FEA-3280 dead click.
+   */
+  githubConnect?: GitHubConnectTarget;
   getDelivery: (
     period: InsightsPeriod,
     scope: InsightsScope,
@@ -54,6 +60,12 @@ export type InsightsDataSource = {
     scope: InsightsScope,
     teamId?: string
   ) => Promise<AgentsInsightsResponse>;
+  /** Org-wide coordination facts. Absent means this adapter cannot prove them. */
+  getSessionMeshInsights?: (
+    scope: "me" | "org",
+    period: "7" | "30" | "90" | "all",
+    userId?: string
+  ) => Promise<SessionMeshInsights>;
 };
 
 export type InsightsTeamOption = {

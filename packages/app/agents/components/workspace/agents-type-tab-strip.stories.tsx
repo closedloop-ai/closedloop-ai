@@ -46,7 +46,8 @@ const PHONE_VIEWPORT_PX = 390;
 const DESKTOP_VIEWPORT_PX = 1100;
 
 const meta = {
-  title: "App Core/Agents/Agents Type Tab Strip",
+  title: "Composites v1.0/Agents/Workspace/Agents Type Tab Strip",
+  tags: ["deprecated"],
   component: AgentsTypeTabStrip,
   parameters: { layout: "fullscreen" },
   args: {

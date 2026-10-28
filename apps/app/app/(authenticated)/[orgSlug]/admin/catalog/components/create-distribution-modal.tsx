@@ -55,7 +55,28 @@ export function CreateDistributionModal({
     DistributionTargetingType.All
   );
   const [specificTargets, setSpecificTargets] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  /**
+   * ISS-7206: two independent facts, so two states.
+   *
+   * `validationError` is a claim about the form; `submitError` is a claim about
+   * what the server said to the last request that actually left the browser — a
+   * past event, which no local edit can falsify. Holding both in one slot meant
+   * the targeting-change clear added for ISS-7004 also discarded a server
+   * rejection ("Compute target … is not in this org."), the one message the
+   * admin cannot re-derive by looking at the form.
+   *
+   * They can be on screen together: a rejected create followed by a blocked
+   * one leaves both true, and the single slot only ever showed the newer.
+   *
+   * Scope of the `validationError` clear, deliberately narrow: the message
+   * names TWO facts, `specific` targeting and an empty target list, and only
+   * the targeting radio clears it. Editing the textarea does NOT, so a message
+   * the admin has since satisfied can still be on screen. That is ISS-7004's
+   * pinned behaviour, not an oversight here, and widening it is a decision the
+   * ticket did not carry — see the spec that pins it in the sibling test file.
+   */
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const createDistribution = useCreateDistribution();
 
@@ -64,11 +85,12 @@ export function CreateDistributionModal({
     setMode(DistributionMode.AutoInstall);
     setTargetingType(DistributionTargetingType.All);
     setSpecificTargets("");
-    setError(null);
+    setValidationError(null);
+    setSubmitError(null);
   }, []);
 
   const handleSubmit = useCallback(async () => {
-    setError(null);
+    setValidationError(null);
 
     let targetComputeTargetIds: string[] | undefined;
     if (targetingType === DistributionTargetingType.Specific) {
@@ -77,7 +99,9 @@ export function CreateDistributionModal({
         .map((s) => s.trim())
         .filter(Boolean);
       if (ids.length === 0) {
-        setError(
+        // `submitError` is deliberately left alone: no request went out, so
+        // nothing newer is known about the last one that did.
+        setValidationError(
           "Enter at least one compute target ID when using specific targeting."
         );
         return;
@@ -93,13 +117,14 @@ export function CreateDistributionModal({
       targetComputeTargetIds,
     };
 
+    setSubmitError(null);
     try {
       const distribution = await createDistribution.mutateAsync(request);
       onSuccess?.(distribution);
       onOpenChange(false);
       resetForm();
     } catch (err) {
-      setError(
+      setSubmitError(
         err instanceof Error ? err.message : "Failed to create distribution."
       );
     }
@@ -113,6 +138,21 @@ export function CreateDistributionModal({
     onOpenChange,
     resetForm,
   ]);
+
+  /**
+   * ISS-7004: the validation message otherwise survives until the next submit
+   * or a close, so switching back to `all` leaves "Enter at least one compute
+   * target ID when using specific targeting." on screen — an assertion about
+   * input the user is no longer being asked for.
+   *
+   * ISS-7206 keeps that clear scoped to `validationError`. `submitError` is not
+   * about the targeting radio and choosing a different target set does not
+   * make the server's rejection of the last request untrue.
+   */
+  const handleTargetingTypeChange = useCallback((next: string) => {
+    setTargetingType(next as DistributionTargetingType);
+    setValidationError(null);
+  }, []);
 
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
@@ -185,9 +225,7 @@ export function CreateDistributionModal({
             <Label className="font-medium text-sm">Targeting</Label>
             <RadioGroup
               className="flex flex-col gap-1"
-              onValueChange={(v) =>
-                setTargetingType(v as DistributionTargetingType)
-              }
+              onValueChange={handleTargetingTypeChange}
               value={targetingType}
             >
               <div className="flex items-center gap-2">
@@ -236,7 +274,21 @@ export function CreateDistributionModal({
             </div>
           )}
 
-          {error && <p className="text-destructive text-sm">{error}</p>}
+          {/*
+            Oldest first, so the pair reads in the order it happened and the
+            message describing the field the admin has to fix sits closest to
+            the Create button. Each paragraph announces itself.
+          */}
+          {submitError && (
+            <p className="text-destructive text-sm" role="alert">
+              {submitError}
+            </p>
+          )}
+          {validationError && (
+            <p className="text-destructive text-sm" role="alert">
+              {validationError}
+            </p>
+          )}
         </div>
 
         <DialogFooter>

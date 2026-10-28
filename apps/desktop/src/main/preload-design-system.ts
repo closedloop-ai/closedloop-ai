@@ -1,11 +1,13 @@
 import type {
   AgentComponentDetail,
+  AgentComponentFrequency,
   AgentComponentListResponse,
   AgentComponentQueryFilters,
   ComponentModelTrendResponse,
   SkillLoadedResponse,
   SubagentFrequencyResponse,
 } from "@repo/api/src/types/agent-component";
+import type { AgentComponentVersionUsageResponse } from "@repo/api/src/types/agent-component-version-usage";
 import type { PackAnalyticsResponse } from "@repo/api/src/types/analytics";
 import type {
   BranchAnalytics,
@@ -18,12 +20,18 @@ import type {
   ConvertInstallRequest,
 } from "@repo/api/src/types/convert-install";
 import type { OptInDistributionDto } from "@repo/api/src/types/distribution";
+import type {
+  AgentComponentPageDataRequest,
+  AgentComponentPageDataResult,
+} from "@repo/api/src/utils/agent-component-page-data";
 import { ipcRenderer } from "electron";
 import type { GitHubResyncNudgeRendererEvent } from "../renderer/types/desktop-api.js";
+import { AgentDashboardDbIpcChannel } from "../shared/agent-dashboard-db-ipc-channel.js";
 import type {
   AgentHierarchyNode,
   AgentRow,
   AnalyticsData,
+  CatalogContentItem,
   CatalogEntry,
   CatalogMutationResult,
   DashboardCoreFeatures,
@@ -62,15 +70,33 @@ import {
   type NotDbGuarded,
   rejectIfDbHostShuttingDown,
 } from "../shared/db-host-shutdown-contract.js";
-import type { DiagnosticsData } from "../shared/diagnostics-contract.js";
+import { DesktopRendererEventChannel } from "../shared/desktop-renderer-event-channel.js";
+import type {
+  DiagnosticsData,
+  DiagnosticsRequest,
+} from "../shared/diagnostics-contract.js";
 import { DistributionsIpcChannel } from "../shared/distributions-channel.js";
+import {
+  LOCAL_BRANCH_PRIORITY_WRITE_CHANNEL,
+  LOCAL_SESSION_PRIORITY_WRITE_CHANNEL,
+  type LocalPriorityWriteRequest,
+  type LocalPriorityWriteResult,
+} from "../shared/local-priority-write-contract.js";
 import { PACK_ANALYTICS_IPC_CHANNEL } from "../shared/pack-analytics-channel.js";
+import { rejectIfReadCancelled } from "../shared/read-cancellation-contract.js";
+import type { SharedAgentSessionReadOptions } from "../shared/read-initiator-contract.js";
+import { RendererLifecycleIpcChannel } from "../shared/renderer-lifecycle-ipc-channel.js";
 import { SHARED_AGENT_COMPONENTS_IPC_CHANNELS } from "../shared/shared-agent-components-contract.js";
 import {
   SHARED_AGENT_SESSIONS_IPC_CHANNELS,
   type SharedAgentSessionAnalytics,
   type SharedAgentSessionDetail,
+  type SharedAgentSessionEventsPage,
+  type SharedAgentSessionEventsPageRequest,
+  type SharedAgentSessionInvocationTreePage,
+  type SharedAgentSessionInvocationTreeRequest,
   type SharedAgentSessionListResponse,
+  type SharedAgentSessionsCancelReadResult,
   type SharedAgentSessionsListRequest,
   type SharedAgentSessionsPageDataResponse,
   type SharedAgentSessionsQuery,
@@ -87,15 +113,9 @@ import {
   type SharedBranchTraceResponse,
 } from "../shared/shared-branches-contract.js";
 import {
-  SHARED_TRACE_COMMENTS_IPC_CHANNELS,
-  type SharedTraceComment,
-  type SharedTraceCommentCollectionQuery,
-  type SharedTraceCommentDeleteResult,
-  type SharedTraceCommentDraft,
-  type SharedTraceCommentReplyDraft,
-  type SharedTraceCommentTarget,
-  type SharedTraceCommentUpdate,
-} from "../shared/shared-trace-comments-contract.js";
+  THREAD_VIEWED_CHANNEL,
+  type ThreadViewedResult,
+} from "../shared/thread-viewership-contract.js";
 import { CATALOG_CONVERT_INSTALL_CHANNEL } from "./dashboard/agent-dashboard-ipc-contract.js";
 import type { CoachingInstallOutcome } from "./packs/required-plugin-installer.js";
 import { exposeDesktopApi } from "./preload-common.js";
@@ -127,20 +147,20 @@ let rendererLiveDbIdleScheduled = false;
 let rendererLiveDbIdleNotified = false;
 let lastRendererInteractionReportedAt = 0;
 
-ipcRenderer.on("desktop:db:ready", () => {
+ipcRenderer.on(DesktopRendererEventChannel.DbReady, () => {
   liveDbReady = true;
   notifyDbChangeSubscribers({});
 });
 
 ipcRenderer.on(
-  "desktop:db:changed",
+  DesktopRendererEventChannel.DbChanged,
   (_event: unknown, payload: DbChangePayload = {}) => {
     notifyDbChangeSubscribers(payload);
   }
 );
 
 ipcRenderer.on(
-  "desktop:github-resync-nudge",
+  DesktopRendererEventChannel.GithubResyncNudge,
   (_event: unknown, payload: GitHubResyncNudgeRendererEvent) => {
     notifyGitHubResyncNudgeSubscribers(payload);
   }
@@ -148,15 +168,17 @@ ipcRenderer.on(
 
 const designSystemDashboardApi = {
   agentSessionsApi: {
+    componentScopeVersion: 1,
     list: (request?: SharedAgentSessionsListRequest) =>
       invokeLiveDb<SharedAgentSessionListResponse>(
         SHARED_AGENT_SESSIONS_IPC_CHANNELS.list,
         request
       ),
-    detail: (id: string) =>
+    detail: (id: string, options?: SharedAgentSessionReadOptions) =>
       invokeLiveDb<SharedAgentSessionDetail | null>(
         SHARED_AGENT_SESSIONS_IPC_CHANNELS.detail,
-        id
+        id,
+        ...(options === undefined ? [] : [options])
       ),
     usage: (request?: SharedAgentSessionsQuery) =>
       invokeLiveDb<SharedAgentSessionUsageSummary>(
@@ -172,6 +194,35 @@ const designSystemDashboardApi = {
     pageData: (request?: SharedAgentSessionsListRequest) =>
       invokeLiveDb<SharedAgentSessionsPageDataResponse>(
         SHARED_AGENT_SESSIONS_IPC_CHANNELS.pageData,
+        request
+      ),
+    // ISS-9857: a keyset page of raw events past the detail's bounded prefix.
+    eventsPage: (request: SharedAgentSessionEventsPageRequest) =>
+      invokeLiveDb<SharedAgentSessionEventsPage | null>(
+        SHARED_AGENT_SESSIONS_IPC_CHANNELS.events,
+        request
+      ),
+    // ISS-10737: the session's whole invocation tree for the Trace tab.
+    invocationTree: (request: SharedAgentSessionInvocationTreeRequest) =>
+      invokeLiveDb<SharedAgentSessionInvocationTreePage | null>(
+        SHARED_AGENT_SESSIONS_IPC_CHANNELS.invocationTree,
+        request
+      ),
+    // ISS-9802: the abort, as something that can cross the bridge. The token
+    // rides the SAME `cancellationToken` field the reads carry it in, so main
+    // reads it back with one helper on both channels. It takes its argument
+    // without destructuring or validating it, so it still names its channel when
+    // called with nothing — which the preload↔handler parity derivation does —
+    // and a token main cannot use is answered `requested: false`.
+    cancelRead: (token?: string) =>
+      invokeLiveDb<SharedAgentSessionsCancelReadResult>(
+        SHARED_AGENT_SESSIONS_IPC_CHANNELS.cancelRead,
+        { cancellationToken: token }
+      ),
+    // ISS-10332: the local-mode priority write.
+    updatePriority: (request: LocalPriorityWriteRequest) =>
+      invokeLiveDb<LocalPriorityWriteResult>(
+        LOCAL_SESSION_PRIORITY_WRITE_CHANNEL,
         request
       ),
   },
@@ -211,136 +262,134 @@ const designSystemDashboardApi = {
         SHARED_BRANCHES_IPC_CHANNELS.pageData,
         request
       ),
-  },
-  traceCommentsApi: {
-    supportsBranchTraceCommentSurfaces: true,
-    list: (
-      target: SharedTraceCommentTarget,
-      query?: SharedTraceCommentCollectionQuery
-    ) =>
-      invokeLiveDb<SharedTraceComment[]>(
-        SHARED_TRACE_COMMENTS_IPC_CHANNELS.list,
-        target,
-        query
-      ),
-    create: (
-      target: SharedTraceCommentTarget,
-      draft: SharedTraceCommentDraft,
-      query?: SharedTraceCommentCollectionQuery
-    ) =>
-      invokeLiveDb<SharedTraceComment>(
-        SHARED_TRACE_COMMENTS_IPC_CHANNELS.create,
-        target,
-        draft,
-        query
-      ),
-    reply: (
-      target: SharedTraceCommentTarget,
-      commentId: string,
-      draft: SharedTraceCommentReplyDraft,
-      query?: SharedTraceCommentCollectionQuery
-    ) =>
-      invokeLiveDb<SharedTraceComment>(
-        SHARED_TRACE_COMMENTS_IPC_CHANNELS.reply,
-        target,
-        commentId,
-        draft,
-        query
-      ),
-    update: (
-      target: SharedTraceCommentTarget,
-      commentId: string,
-      update: SharedTraceCommentUpdate,
-      query?: SharedTraceCommentCollectionQuery
-    ) =>
-      invokeLiveDb<SharedTraceComment>(
-        SHARED_TRACE_COMMENTS_IPC_CHANNELS.update,
-        target,
-        commentId,
-        update,
-        query
-      ),
-    delete: (
-      target: SharedTraceCommentTarget,
-      commentId: string,
-      query?: SharedTraceCommentCollectionQuery
-    ) =>
-      invokeLiveDb<SharedTraceCommentDeleteResult>(
-        SHARED_TRACE_COMMENTS_IPC_CHANNELS.delete,
-        target,
-        commentId,
-        query
+    // ISS-10332: the local-mode priority write.
+    updatePriority: (request: LocalPriorityWriteRequest) =>
+      invokeLiveDb<LocalPriorityWriteResult>(
+        LOCAL_BRANCH_PRIORITY_WRITE_CHANNEL,
+        request
       ),
   },
   db: {
-    getSessions: () => invokeLiveDb<SessionRow[]>("desktop:db:get-sessions"),
+    getSessions: () =>
+      invokeLiveDb<SessionRow[]>(AgentDashboardDbIpcChannel.GetSessions),
     getSession: (id: string) =>
-      invokeLiveDb<SessionRow | undefined>("desktop:db:get-session", id),
-    getSessionDetails: (id: string) =>
-      invokeLiveDb<SessionWithAgents | undefined>(
-        "desktop:db:get-session-details",
+      invokeLiveDb<SessionRow | undefined>(
+        AgentDashboardDbIpcChannel.GetSession,
         id
       ),
+    getSessionDetails: (id: string) =>
+      invokeLiveDb<SessionWithAgents | undefined>(
+        AgentDashboardDbIpcChannel.GetSessionDetails,
+        id
+      ),
+    // ISS-7830: record that the user navigated INTO this thread. Separate from
+    // `getSessionDetails` on purpose — a detail read can be a prefetch or a poll
+    // tick, and only an explicit statement from the view that mounted is evidence
+    // a person opened it.
+    markSessionViewed: (id: string) =>
+      invokeLiveDb<ThreadViewedResult>(THREAD_VIEWED_CHANNEL, id),
     getAgents: (sessionId: string) =>
-      invokeLiveDb<AgentRow[]>("desktop:db:get-agents", sessionId),
+      invokeLiveDb<AgentRow[]>(AgentDashboardDbIpcChannel.GetAgents, sessionId),
     getEvents: (sessionId: string, agentId?: string) =>
-      invokeLiveDb<EventRow[]>("desktop:db:get-events", sessionId, agentId),
+      invokeLiveDb<EventRow[]>(
+        AgentDashboardDbIpcChannel.GetEvents,
+        sessionId,
+        agentId
+      ),
     getDashboardSummary: () =>
-      invokeLiveDb<DashboardSummary>("desktop:db:get-dashboard-summary"),
+      invokeLiveDb<DashboardSummary>(
+        AgentDashboardDbIpcChannel.GetDashboardSummary
+      ),
     getInsights: (section: string, period: string, scope?: string) =>
-      invokeLiveDb("desktop:db:get-insights", section, period, scope),
+      invokeLiveDb(
+        AgentDashboardDbIpcChannel.GetInsights,
+        section,
+        period,
+        scope
+      ),
     getSessionsWithDetails: () =>
-      invokeLiveDb<SessionWithAgents[]>("desktop:db:get-sessions-with-details"),
+      invokeLiveDb<SessionWithAgents[]>(
+        AgentDashboardDbIpcChannel.GetSessionsWithDetails
+      ),
     getSessionsPage: (request?: SessionPageRequest) =>
-      invokeLiveDb<SessionPage>("desktop:db:get-sessions-page", request),
+      invokeLiveDb<SessionPage>(
+        AgentDashboardDbIpcChannel.GetSessionsPage,
+        request
+      ),
     getKanbanPages: (statuses: string[], limit: number) =>
-      invokeLiveDb<KanbanPages>("desktop:db:get-kanban-pages", statuses, limit),
+      invokeLiveDb<KanbanPages>(
+        AgentDashboardDbIpcChannel.GetKanbanPages,
+        statuses,
+        limit
+      ),
     getEventFeed: () =>
-      invokeLiveDb<EventWithSession[]>("desktop:db:get-event-feed"),
+      invokeLiveDb<EventWithSession[]>(AgentDashboardDbIpcChannel.GetEventFeed),
     getEventsWithSession: (sessionId: string) =>
       invokeLiveDb<EventWithSession[]>(
-        "desktop:db:get-events-with-session",
+        AgentDashboardDbIpcChannel.GetEventsWithSession,
         sessionId
       ),
     getEventCountByType: () =>
-      invokeLiveDb<EventCountByType[]>("desktop:db:get-event-count-by-type"),
+      invokeLiveDb<EventCountByType[]>(
+        AgentDashboardDbIpcChannel.GetEventCountByType
+      ),
     getTokenAnalytics: () =>
-      invokeLiveDb<TokenAnalytics>("desktop:db:get-token-analytics"),
+      invokeLiveDb<TokenAnalytics>(
+        AgentDashboardDbIpcChannel.GetTokenAnalytics
+      ),
     getAgentHierarchy: (sessionId: string) =>
       invokeLiveDb<AgentHierarchyNode[]>(
-        "desktop:db:get-agent-hierarchy",
+        AgentDashboardDbIpcChannel.GetAgentHierarchy,
         sessionId
       ),
     // FEA-3722: forward the selected lookback (days, or `null` = all-time) so
     // the Coding Wrap honors the top date-range selector.
     getAnalytics: (lookbackDays?: number | null) =>
-      invokeLiveDb<AnalyticsData>("desktop:db:get-analytics", lookbackDays),
+      invokeLiveDb<AnalyticsData>(
+        AgentDashboardDbIpcChannel.GetAnalytics,
+        lookbackDays
+      ),
     getWorkflowData: () =>
-      invokeLiveDb<WorkflowQueryData>("desktop:db:get-workflow-data"),
+      invokeLiveDb<WorkflowQueryData>(
+        AgentDashboardDbIpcChannel.GetWorkflowData
+      ),
     getCoreFeatures: () =>
-      invokeLiveDb<DashboardCoreFeatures>("desktop:db:get-core-features"),
+      invokeLiveDb<DashboardCoreFeatures>(
+        AgentDashboardDbIpcChannel.GetCoreFeatures
+      ),
     getPacks: () =>
-      invokeLiveDb<DashboardPackSummary[]>("desktop:db:get-packs"),
+      invokeLiveDb<DashboardPackSummary[]>(AgentDashboardDbIpcChannel.GetPacks),
     getSkills: () =>
-      invokeLiveDb<DashboardSkillSummary[]>("desktop:db:get-skills"),
+      invokeLiveDb<DashboardSkillSummary[]>(
+        AgentDashboardDbIpcChannel.GetSkills
+      ),
     getTools: () =>
-      invokeLiveDb<DashboardToolSummary[]>("desktop:db:get-tools"),
+      invokeLiveDb<DashboardToolSummary[]>(AgentDashboardDbIpcChannel.GetTools),
     getSubAgents: () =>
-      invokeLiveDb<DashboardSubAgentSummary[]>("desktop:db:get-subagents"),
+      invokeLiveDb<DashboardSubAgentSummary[]>(
+        AgentDashboardDbIpcChannel.GetSubagents
+      ),
     getPlans: (opts?: DashboardListWindow) =>
-      invokeLiveDb<DashboardPlanSummary[]>("desktop:db:get-plans", opts),
+      invokeLiveDb<DashboardPlanSummary[]>(
+        AgentDashboardDbIpcChannel.GetPlans,
+        opts
+      ),
     getPullRequests: (opts?: DashboardListWindow) =>
       invokeLiveDb<DashboardPullRequestSummary[]>(
-        "desktop:db:get-pull-requests",
+        AgentDashboardDbIpcChannel.GetPullRequests,
         opts
       ),
 
     // Diagnostics (FEA-1959)
-    getDiagnostics: () =>
-      invokeLiveDb<DiagnosticsData>("desktop:db:get-diagnostics"),
+    getDiagnostics: (request?: DiagnosticsRequest) =>
+      invokeLiveDb<DiagnosticsData>(
+        AgentDashboardDbIpcChannel.GetDiagnostics,
+        request
+      ),
 
     // Catalog (FEA-1314)
-    getCatalog: () => invokeLiveDb<CatalogEntry[]>("desktop:db:get-catalog"),
+    getCatalog: () =>
+      invokeLiveDb<CatalogEntry[]>(AgentDashboardDbIpcChannel.GetCatalog),
     // Cloud call (not the local db-host): org-wide pack analytics via main.
     getPackAnalytics: (packId: string) =>
       invokeUnguardedChannel(
@@ -348,19 +397,23 @@ const designSystemDashboardApi = {
         packId
       ) as Promise<PackAnalyticsResponse | null>,
     getCatalogEntry: (packId: string) =>
-      invokeLiveDb<CatalogEntry | null>("desktop:db:get-catalog-entry", packId),
-    getCatalogReadme: (packId: string) =>
-      invokeLiveDb<string | null>("desktop:db:get-catalog-readme", packId),
+      invokeLiveDb<CatalogEntry | null>(
+        AgentDashboardDbIpcChannel.GetCatalogEntry,
+        packId
+      ),
     getCatalogContents: (packId: string) =>
-      invokeLiveDb<unknown[] | null>("desktop:db:get-catalog-contents", packId),
+      invokeLiveDb<CatalogContentItem[] | null>(
+        AgentDashboardDbIpcChannel.GetCatalogContents,
+        packId
+      ),
     getCatalogHistory: (packId: string) =>
       invokeLiveDb<Array<{ fetchedAt: string; stars: number; forks: number }>>(
-        "desktop:db:get-catalog-history",
+        AgentDashboardDbIpcChannel.GetCatalogHistory,
         packId
       ),
     catalogInstall: (packId: string, harness: string, cwd?: string) =>
       invokeLiveDb<CatalogMutationResult>(
-        "desktop:db:catalog-install",
+        AgentDashboardDbIpcChannel.CatalogInstall,
         packId,
         harness,
         cwd
@@ -400,33 +453,50 @@ const designSystemDashboardApi = {
         DistributionsIpcChannel.EnsureAssigned,
         distributionId
       ) as Promise<void>,
+    acknowledgeDistributionHandled: (distributionId: string) =>
+      invokeUnguardedChannel(
+        DistributionsIpcChannel.Handled,
+        distributionId
+      ) as Promise<void>,
     catalogUninstall: (packId: string, harness: string, cwd?: string) =>
       invokeLiveDb<CatalogMutationResult>(
-        "desktop:db:catalog-uninstall",
+        AgentDashboardDbIpcChannel.CatalogUninstall,
         packId,
         harness,
         cwd
       ),
-    catalogRefresh: () => invokeLiveDb<void>("desktop:db:catalog-refresh"),
+    catalogRefresh: () =>
+      invokeLiveDb<void>(AgentDashboardDbIpcChannel.CatalogRefresh),
     getInstallRuns: (packId?: string) =>
-      invokeLiveDb<InstallRunRecord[]>("desktop:db:get-install-runs", packId),
+      invokeLiveDb<InstallRunRecord[]>(
+        AgentDashboardDbIpcChannel.GetInstallRuns,
+        packId
+      ),
 
     // Installed packs (FEA-1224)
     getInstalledPacks: () =>
-      invokeLiveDb<InstalledPack[]>("desktop:db:get-installed-packs"),
+      invokeLiveDb<InstalledPack[]>(
+        AgentDashboardDbIpcChannel.GetInstalledPacks
+      ),
     getPackDetail: (packId: string) =>
       invokeLiveDb<InstalledPackDetail | null>(
-        "desktop:db:get-pack-detail",
+        AgentDashboardDbIpcChannel.GetPackDetail,
         packId
       ),
     getPackSessions: (packId: string) =>
-      invokeLiveDb<unknown[]>("desktop:db:get-pack-sessions", packId),
+      invokeLiveDb<unknown[]>(
+        AgentDashboardDbIpcChannel.GetPackSessions,
+        packId
+      ),
     getAllSkills: () =>
-      invokeLiveDb<SkillWithInvocations[]>("desktop:db:get-all-skills"),
+      invokeLiveDb<SkillWithInvocations[]>(
+        AgentDashboardDbIpcChannel.GetAllSkills
+      ),
     getSkillInvocations: (name: string) =>
-      invokeLiveDb<SkillInvocation[]>("desktop:db:get-skill-invocations", name),
-    getRecentProjects: () =>
-      invokeLiveDb<string[]>("desktop:db:get-recent-projects"),
+      invokeLiveDb<SkillInvocation[]>(
+        AgentDashboardDbIpcChannel.GetSkillInvocations,
+        name
+      ),
 
     // Plans (FEA-1189)
     getPlansList: (opts?: {
@@ -434,29 +504,38 @@ const designSystemDashboardApi = {
       needsConfirmation?: boolean;
       limit?: number;
       offset?: number;
-    }) => invokeLiveDb<PlanRecord[]>("desktop:db:get-plans-list", opts),
+    }) =>
+      invokeLiveDb<PlanRecord[]>(AgentDashboardDbIpcChannel.GetPlansList, opts),
     getPlan: (id: string) =>
-      invokeLiveDb<PlanRecord | null>("desktop:db:get-plan", id),
+      invokeLiveDb<PlanRecord | null>(AgentDashboardDbIpcChannel.GetPlan, id),
     getPlanVersions: (planId: string) =>
-      invokeLiveDb<PlanVersionRecord[]>("desktop:db:get-plan-versions", planId),
+      invokeLiveDb<PlanVersionRecord[]>(
+        AgentDashboardDbIpcChannel.GetPlanVersions,
+        planId
+      ),
     confirmPlan: (id: string) =>
-      invokeLiveDb<void>("desktop:db:confirm-plan", id),
+      invokeLiveDb<void>(AgentDashboardDbIpcChannel.ConfirmPlan, id),
     rejectPlan: (id: string) =>
-      invokeLiveDb<void>("desktop:db:reject-plan", id),
+      invokeLiveDb<void>(AgentDashboardDbIpcChannel.RejectPlan, id),
     openPlan: (id: string, target?: string) =>
-      invokeLiveDb<void>("desktop:db:open-plan", id, target),
+      invokeLiveDb<void>(AgentDashboardDbIpcChannel.OpenPlan, id, target),
 
     // Pull Requests (FEA-1226)
-    getPrStats: () => invokeLiveDb<PrStats>("desktop:db:get-pr-stats"),
+    getPrStats: () =>
+      invokeLiveDb<PrStats>(AgentDashboardDbIpcChannel.GetPrStats),
     getPrSessions: (opts?: { limit?: number; offset?: number }) =>
-      invokeLiveDb<PrSessionGroup[]>("desktop:db:get-pr-sessions", opts),
+      invokeLiveDb<PrSessionGroup[]>(
+        AgentDashboardDbIpcChannel.GetPrSessions,
+        opts
+      ),
     getPrList: (opts?: {
       sessionId?: string;
       repo?: string;
       limit?: number;
       offset?: number;
-    }) => invokeLiveDb<PrRecord[]>("desktop:db:get-pr-list", opts),
-    openPr: (id: string) => invokeLiveDb<void>("desktop:db:open-pr", id),
+    }) => invokeLiveDb<PrRecord[]>(AgentDashboardDbIpcChannel.GetPrList, opts),
+    openPr: (id: string) =>
+      invokeLiveDb<void>(AgentDashboardDbIpcChannel.OpenPr, id),
 
     // Optimization analytics (FEA-2923 / AC-022)
     // ISS-4403: `fingerprint` (optional, trailing) content-scopes each read to a
@@ -469,7 +548,7 @@ const designSystemDashboardApi = {
       fingerprint?: string
     ) =>
       invokeLiveDb<ComponentModelTrendResponse>(
-        "desktop:db:get-component-model-trend",
+        AgentDashboardDbIpcChannel.GetComponentModelTrend,
         componentKind,
         componentKey,
         model,
@@ -482,14 +561,14 @@ const designSystemDashboardApi = {
       fingerprint?: string
     ) =>
       invokeLiveDb<SubagentFrequencyResponse>(
-        "desktop:db:get-subagent-frequency",
+        AgentDashboardDbIpcChannel.GetSubagentFrequency,
         subagentKey,
         days,
         fingerprint
       ),
     isSkillLoaded: (skillKey: string, fingerprint?: string) =>
       invokeLiveDb<SkillLoadedResponse>(
-        "desktop:db:is-skill-loaded",
+        AgentDashboardDbIpcChannel.IsSkillLoaded,
         skillKey,
         fingerprint
       ),
@@ -504,6 +583,37 @@ const designSystemDashboardApi = {
       invokeLiveDb<AgentComponentDetail | null>(
         SHARED_AGENT_COMPONENTS_IPC_CHANNELS.detail,
         slug
+      ),
+    getAgentComponentFrequency: (slug: string, windowDays: number) =>
+      invokeLiveDb<AgentComponentFrequency | null>(
+        SHARED_AGENT_COMPONENTS_IPC_CHANNELS.frequency,
+        slug,
+        windowDays
+      ),
+    // ISS-6822: the bounded page-data read. Additive beside `listAgentComponents`
+    // — a renderer that does not use it is unaffected, and the shared Agents list
+    // falls back to `list` when this method is absent.
+    getAgentComponentsPageData: (request: AgentComponentPageDataRequest) =>
+      invokeLiveDb<AgentComponentPageDataResult>(
+        SHARED_AGENT_COMPONENTS_IPC_CHANNELS.pageData,
+        request
+      ),
+    // ISS-10467/ISS-10468: the per-content-version usage drill-down. Additive
+    // beside the detail read; a renderer on an older preload simply finds no
+    // method and its data source omits the capability.
+    getAgentComponentVersionUsage: (
+      slug: string,
+      versionHashes: readonly string[]
+    ) =>
+      invokeLiveDb<AgentComponentVersionUsageResponse | null>(
+        SHARED_AGENT_COMPONENTS_IPC_CHANNELS.versionUsage,
+        slug,
+        // `?? []` rather than a bare spread: a preload bridge must NAME its
+        // channel before it can throw. Spreading an absent argument threw inside
+        // the bridge, which left this channel out of the derived preload set
+        // entirely and made it look like a handler no bridge reaches — an
+        // unroutable live IPC channel, as far as the parity guard could tell.
+        [...(versionHashes ?? [])]
       ),
   },
   /**
@@ -529,9 +639,12 @@ const designSystemDashboardApi = {
   onInstallOutput: (callback: (payload: InstallOutputChunk) => void) => {
     const handler = (_event: unknown, payload: InstallOutputChunk) =>
       callback(payload);
-    ipcRenderer.on("desktop:pack:install-output", handler);
+    ipcRenderer.on(DesktopRendererEventChannel.PackInstallOutput, handler);
     return () =>
-      ipcRenderer.removeListener("desktop:pack:install-output", handler);
+      ipcRenderer.removeListener(
+        DesktopRendererEventChannel.PackInstallOutput,
+        handler
+      );
   },
   /**
    * Subscribe to opt-in distributions pushed by the main-process
@@ -542,10 +655,13 @@ const designSystemDashboardApi = {
   ) => {
     const handler = (_event: unknown, distributions: OptInDistributionDto[]) =>
       callback(distributions);
-    ipcRenderer.on("desktop:distributions:opt-in-available", handler);
+    ipcRenderer.on(
+      DesktopRendererEventChannel.DistributionsOptInAvailable,
+      handler
+    );
     return () =>
       ipcRenderer.removeListener(
-        "desktop:distributions:opt-in-available",
+        DesktopRendererEventChannel.DistributionsOptInAvailable,
         handler
       );
   },
@@ -591,14 +707,20 @@ function invokeLiveDb<TResult>(
   // module — this helper IS the guarded path, and the `.then` below is what
   // `invokeUnguardedChannel`'s `NotDbGuarded` constraint exists to force.
   const rawChannel: string = channel;
-  return (ipcRenderer.invoke(rawChannel, ...args) as Promise<TResult>)
-    .then(rejectIfDbHostShuttingDown)
-    .finally(() => {
-      liveDbInFlightCount = Math.max(0, liveDbInFlightCount - 1);
-      if (liveDbReady && liveDbInFlightCount === 0) {
-        scheduleRendererLiveDbIdleNotification();
-      }
-    });
+  return (
+    (ipcRenderer.invoke(rawChannel, ...args) as Promise<TResult>)
+      .then(rejectIfDbHostShuttingDown)
+      // ISS-9802: the cancellation sentinel is the second payload-free answer a
+      // `withDb` channel can resolve, and it needs the same unwrap — a sentinel
+      // that slipped past would typecheck as `T` and reach the renderer as data.
+      .then(rejectIfReadCancelled)
+      .finally(() => {
+        liveDbInFlightCount = Math.max(0, liveDbInFlightCount - 1);
+        if (liveDbReady && liveDbInFlightCount === 0) {
+          scheduleRendererLiveDbIdleNotification();
+        }
+      })
+  );
 }
 
 /**
@@ -638,7 +760,7 @@ function scheduleRendererLiveDbIdleNotification(): void {
       return;
     }
     rendererLiveDbIdleNotified = true;
-    ipcRenderer.send("desktop:renderer-live-db-idle");
+    ipcRenderer.send(RendererLifecycleIpcChannel.RendererLiveDbIdle);
   };
 
   if (typeof scheduler.requestIdleCallback === "function") {
@@ -671,7 +793,7 @@ function installRendererInteractionReporter(): void {
       return;
     }
     lastRendererInteractionReportedAt = now;
-    ipcRenderer.send("desktop:renderer-user-input");
+    ipcRenderer.send(RendererLifecycleIpcChannel.RendererUserInput);
   };
 
   for (const eventName of RENDERER_INTERACTION_EVENTS) {

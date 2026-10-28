@@ -23,7 +23,8 @@ const meta: Meta<typeof AuthTransitionPanel> = {
       </div>
     ),
   ],
-  title: "App Core/Onboarding/Auth Transition Panel",
+  tags: ["deprecated", "autodocs"],
+  title: "Composites v1.0/Onboarding/Auth Transition Panel",
 };
 
 export default meta;

@@ -144,20 +144,23 @@ test("stat tiles render via the DS MetricCard, not a hand-rolled gradient card",
     '[data-slot="card-description"]'
   );
 
-  // Eight stat tiles from the headline grid.
-  expect(titleSlots.length).toBe(8);
-  expect(descriptionSlots.length).toBe(8);
+  // Three stat tiles from the headline grid.
+  expect(titleSlots.length).toBe(3);
+  expect(descriptionSlots.length).toBe(3);
 
   const labels = Array.from(descriptionSlots).map((node) =>
     node.textContent?.trim()
   );
   expect(labels).toContain("Artifacts created");
-  expect(labels).toContain("Estimated cost");
+  expect(labels).toContain("Comments");
 
   // The formatted values land in the MetricCard title slot.
   const values = Array.from(titleSlots).map((node) => node.textContent?.trim());
   expect(values).toContain("12");
-  expect(values).toContain("$3.50");
+  expect(values).toContain("34");
+  // The five loop fields still on the wire for old bundles are not rendered.
+  expect(values).not.toContain("$3.50");
+  expect(values).not.toContain("7");
 
   // The retired hand-rolled tile used an inline linear-gradient background;
   // no tile should carry it anymore.
@@ -167,26 +170,7 @@ test("stat tiles render via the DS MetricCard, not a hand-rolled gradient card",
   expect(gradientTiles.length).toBe(0);
 });
 
-test("preserves the one-decimal avg concurrency signal instead of rounding to a whole number", async () => {
-  // The API deliberately returns one decimal for avg loop concurrency; rounding
-  // 2.4 to 2 with the general number formatter erases the entire signal.
-  mockLoaded();
-  mockUseUserProfileHeadline.mockReturnValue({
-    data: { ...HEADLINE, avgConcurrency: 2.4 },
-    isLoading: false,
-    isError: false,
-  });
-
-  const { container } = await renderPage();
-
-  const values = Array.from(
-    container.querySelectorAll('[data-slot="card-title"]')
-  ).map((node) => node.textContent?.trim());
-  expect(values).toContain("2.4");
-  expect(values).not.toContain("2");
-});
-
-test("names the headline stats section as an h2 with its active window, and gives ambiguous-label tiles an info affordance", async () => {
+test("names the headline stats section as an h2 with its active window", async () => {
   mockLoaded();
 
   const { container } = await renderPage();
@@ -197,17 +181,6 @@ test("names the headline stats section as an h2 with its active window, and give
   const heading = container.querySelector("h2#headline-stats-heading");
   expect(heading?.textContent).toContain("Headline metrics");
   expect(heading?.textContent).toContain("Last 30 days");
-
-  // The jargon labels ("Loops Initiated", "Avg Loop Concurrency", "Estimated
-  // Cost") each get an accessible info-popover trigger.
-  const infoTriggers = container.querySelectorAll(
-    'button[aria-label^="About "]'
-  );
-  expect(infoTriggers.length).toBe(3);
-  const infoNames = Array.from(infoTriggers).map((node) =>
-    node.getAttribute("aria-label")
-  );
-  expect(infoNames).toContain("About Avg loop concurrency");
 });
 
 test("keeps the range toggle on the page even when the user is not found", async () => {
@@ -271,10 +244,10 @@ test("holds the place of every tile and Activity panel while loading", async () 
 
   const { container } = await renderPage();
 
-  // Eight tile skeletons + two Activity-panel skeletons, so neither region
+  // Three tile skeletons + two Activity-panel skeletons, so neither region
   // reflows/jumps when stats resolve.
   const skeletons = container.querySelectorAll('[data-slot="skeleton"]');
-  expect(skeletons.length).toBe(10);
+  expect(skeletons.length).toBe(5);
 
   // The Activity group keeps its heading and named landmark while loading.
   const activity = container.querySelector(

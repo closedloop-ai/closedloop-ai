@@ -1,22 +1,5 @@
 import { TelemetryAttribute } from "./src/attributes";
-import { TelemetryDurationMsMax } from "./src/schema-primitives";
 
-/**
- * Typed source of truth for the keyless-telemetry collector tail-sampling
- * policy (FEA-1992). Extracted here as a published module (FEA-1997) so two
- * consumers share one definition without drift:
- *  - the collector codegen + drift guard
- *    (`scripts/generate-collector-tail-sampling.ts` /
- *    `scripts/check-collector-tail-sampling.ts`), which render and verify the
- *    committed `collector/tail-sampling.yaml` fragment; and
- *  - the desktop IPC perf head-sampler
- *    (`apps/desktop/src/main/agent-dashboard-design-system-runtime.ts`), which
- *    reuses `slowLatencyThresholdMs` + `baselineSamplingPercentage` so its
- *    head-sampling matches the collector's tail policy by construction.
- *
- * Every knob the collector needs lives here, in one tested place; the example-infrastructure
- * fragment is a pure projection of it.
- */
 export type CollectorTailSamplingPolicy = {
   /** Window the collector buffers a trace's spans before deciding (seconds). */
   readonly decisionWaitSeconds: number;
@@ -25,14 +8,20 @@ export type CollectorTailSamplingPolicy = {
   /** Expected new traces/sec — collector pre-sizes buffers from this hint. */
   readonly expectedNewTracesPerSec: number;
   /**
-   * Child-span duration_ms at/above which a trace is treated as slow and kept
-   * at 100%. Activity-window root duration is intentionally excluded.
+   * Whole-trace duration (earliest buffered span start to latest buffered span
+   * end, in ms) at/above which the `latency` policy keeps a trace at 100%.
+   *
+   * Must stay strictly below the decision window — not because otelcol cannot
+   * represent a longer span (the policy reads span TIMESTAMPS, so one span
+   * carrying hours of duration in a single export would present them), but
+   * because of the shape this collector's only producer emits. A desktop
+   * activity root is exported when it CLOSES, so a root that outlives
+   * `decisionWaitSeconds` is voted on before it ever arrives and only its
+   * children — spanning at most the buffering window — are in the buffer.
+   * Above that window `keep-slow` could therefore only be tripped by a trace
+   * whose whole duration arrives in one export, which cl-desktop never emits.
    */
-  readonly slowLatencyThresholdMs: number;
-  /** Span attribute carrying the bounded child-operation duration in ms. */
-  readonly slowLatencyAttributeKey: string;
-  /** Inclusive upper bound accepted by the collector numeric_attribute policy. */
-  readonly slowLatencyMaxMs: number;
+  readonly slowTraceLatencyThresholdMs: number;
   /** Baseline keep rate (%) applied to everything not caught by a keep policy. */
   readonly baselineSamplingPercentage: number;
   /** Span attribute carrying the HTTP status code, matched for 5xx retention. */
@@ -60,12 +49,23 @@ export type CollectorTailSamplingPolicy = {
 export const ERROR_STATUS_CODE = "ERROR";
 
 export const CollectorTailSamplingPolicy: CollectorTailSamplingPolicy = {
+  // 310 = DESKTOP_ACTIVITY_ROOT_MAX_AGE_MS (300s, `apps/desktop/src/main/
+  // telemetry/app-otel-runtime.ts`) + 10s of export slack, so a desktop activity
+  // window that closes at its cap is voted on whole. The max-age check is lazy,
+  // so 14.9% of roots still outlive 310s (p99 = 3,254s, measured 7d to
+  // 2026-09-07); ISS-9254 accepted that residual deliberately — covering it
+  // would need a multi-thousand-second buffer and delay every decision by tens
+  // of minutes. Argue against the trade before raising this.
   decisionWaitSeconds: 310,
   numTraces: 62_000,
   expectedNewTracesPerSec: 200,
-  slowLatencyThresholdMs: 2000,
-  slowLatencyAttributeKey: TelemetryAttribute.DurationMs,
-  slowLatencyMaxMs: TelemetryDurationMsMax,
+  // 240s, measured (ISS-9254): 32.5% of cl-desktop traces reach it over 7d,
+  // against 99.9% at the 2000ms the collector shipped and ~0% for any value at
+  // or above the 310s window. It sits in the sparsest stretch of the
+  // distribution — 240s to 300s holds 22 of 1,083 traces — so retention barely
+  // moves if the fleet shifts, and it clears the 300s activity-window cap by
+  // 60s so a full window is still caught when its last spans arrive late.
+  slowTraceLatencyThresholdMs: 240_000,
   baselineSamplingPercentage: 10,
   // Canonical contract key (single source of truth); the numeric_attribute
   // policy must match the same key the SDK emits on error spans.
@@ -109,11 +109,16 @@ export function assertValidPolicy(policy: CollectorTailSamplingPolicy): void {
       `numTraces must be >= decisionWaitSeconds * expectedNewTracesPerSec (got ${policy.numTraces} < ${policy.decisionWaitSeconds * policy.expectedNewTracesPerSec}).`
     );
   }
-  requirePositiveInt("slowLatencyThresholdMs", policy.slowLatencyThresholdMs);
-  requirePositiveInt("slowLatencyMaxMs", policy.slowLatencyMaxMs);
-  if (policy.slowLatencyThresholdMs > policy.slowLatencyMaxMs) {
+  requirePositiveInt(
+    "slowTraceLatencyThresholdMs",
+    policy.slowTraceLatencyThresholdMs
+  );
+  // The failure this guard exists for is silent: on the desktop trace shape a
+  // threshold the buffer can never accumulate leaves `keep-slow` green,
+  // configured, and dead.
+  if (policy.slowTraceLatencyThresholdMs >= policy.decisionWaitSeconds * 1000) {
     problems.push(
-      `slowLatencyThresholdMs must be <= slowLatencyMaxMs (got ${policy.slowLatencyThresholdMs} > ${policy.slowLatencyMaxMs}).`
+      `slowTraceLatencyThresholdMs must be < decisionWaitSeconds * 1000: a desktop activity root that outlives the decision window is voted on before it arrives, so no trace presents a wider buffered timestamp span and keep-slow could never fire (got ${policy.slowTraceLatencyThresholdMs} >= ${policy.decisionWaitSeconds * 1000}).`
     );
   }
   requirePositiveInt(

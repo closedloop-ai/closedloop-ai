@@ -20,15 +20,16 @@ import assert from "node:assert/strict";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { after, describe, test } from "node:test";
+import { afterAll, describe, test } from "vitest";
 import {
   type BinaryPathPatch,
-  BinaryPathsIpcChannel,
   registerBinaryPathsIpcHandlers,
 } from "../src/main/ipc/binary-paths-ipc.js";
+import { BinaryPathsIpcChannel } from "../src/shared/binary-paths-ipc-channel.js";
 import {
   type BinaryResolveSource,
   CLI_BINARY_TOOLS,
+  LEGACY_CLI_BINARY_TOOLS,
 } from "../src/shared/cli-binary-tools.js";
 
 type IpcHandler = (event: unknown, payload?: unknown) => unknown;
@@ -60,6 +61,7 @@ const OVERRIDE_INVALID_SOURCE: BinaryResolveSource = "override_invalid";
  * shared list no longer ships.
  */
 const EXECUTABLE_TOOL = CLI_BINARY_TOOLS[0];
+const LEGACY_TOOL = LEGACY_CLI_BINARY_TOOLS[0];
 
 /**
  * A second canonical tool, used only to keep a stored override map from being
@@ -69,10 +71,11 @@ const UNPATCHED_TOOL = CLI_BINARY_TOOLS[1];
 
 const STORED_OVERRIDE_PATH = "/opt/symphony-test/bin/tool";
 const UNPATCHED_OVERRIDE_PATH = "/opt/symphony-test/bin/other-tool";
+const LEGACY_OVERRIDE_PATH = "/opt/symphony-test/bin/legacy-tool";
 
 const tempDirs: string[] = [];
 
-after(async () => {
+afterAll(async () => {
   for (const dir of tempDirs.splice(0)) {
     await rm(dir, { recursive: true, force: true, maxRetries: 3 });
   }
@@ -126,13 +129,16 @@ describe("binary paths IPC registrar", () => {
     );
   });
 
-  test("GetBinaryPaths serves the stored override map", () => {
-    const stored = { [EXECUTABLE_TOOL]: STORED_OVERRIDE_PATH };
+  test("GetBinaryPaths serves the current override map", () => {
+    const stored = {
+      [EXECUTABLE_TOOL]: STORED_OVERRIDE_PATH,
+      [LEGACY_TOOL]: LEGACY_OVERRIDE_PATH,
+    };
     const { handlers } = registerHandlers({ binaryPaths: stored });
 
     assert.deepEqual(
       handlers.get(BinaryPathsIpcChannel.GetBinaryPaths)?.(null),
-      stored
+      { [EXECUTABLE_TOOL]: STORED_OVERRIDE_PATH }
     );
   });
 
@@ -145,6 +151,7 @@ describe("binary paths IPC registrar", () => {
     // override instead of the store's resolved map.
     const stored = {
       [EXECUTABLE_TOOL]: STORED_OVERRIDE_PATH,
+      [LEGACY_TOOL]: LEGACY_OVERRIDE_PATH,
       [UNPATCHED_TOOL]: UNPATCHED_OVERRIDE_PATH,
     };
     const patch = { [EXECUTABLE_TOOL]: STORED_OVERRIDE_PATH };
@@ -158,7 +165,10 @@ describe("binary paths IPC registrar", () => {
     // The patch must reach the store unreshaped, and the handler must answer
     // with the store's post-write map rather than echoing the patch back.
     assert.deepEqual(applied, [patch]);
-    assert.deepEqual(result, stored);
+    assert.deepEqual(result, {
+      [EXECUTABLE_TOOL]: STORED_OVERRIDE_PATH,
+      [UNPATCHED_TOOL]: UNPATCHED_OVERRIDE_PATH,
+    });
     assert.notDeepEqual(result, patch);
   });
 

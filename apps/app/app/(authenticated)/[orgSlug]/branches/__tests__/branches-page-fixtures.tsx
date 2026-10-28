@@ -19,9 +19,14 @@ import {
   BranchMetricAvailability,
   BranchMetricComparisonLabel,
   BranchMetricPeriod,
-  type BranchMetricResult,
 } from "@repo/api/src/types/branch-metrics";
-import { screen } from "@testing-library/react";
+import { createWrapper } from "@repo/app/shared/test-utils";
+import {
+  type RenderOptions,
+  type RenderResult,
+  render,
+  screen,
+} from "@testing-library/react";
 import React, { type ReactNode } from "react";
 
 // One day ago, NOT a fixed ISO date: the page's default saved view windows
@@ -156,45 +161,41 @@ export function makeCanonicalMetrics(): BranchListMetricBundle {
   };
 }
 
-export function makeAnalyticsWithCanonicalSpend(
-  current: BranchMetricResult<number>
-): BranchAnalytics {
-  const analytics = makeAnalytics();
-  return {
-    ...analytics,
-    canonicalMetrics: {
-      ...makeCanonicalMetrics(),
-      aiSpendUsd: { current },
-    },
-  };
-}
-
 /** Build the combined list-and-analytics hook result used by page tests. */
 export function pageDataResult({
   list,
   analytics = makeAnalytics(),
   analyticsError = false,
+  error = null,
   isError = false,
   isFetching = false,
   isPending = false,
+  isPlaceholderData = false,
 }: {
   list?: BranchListResponse;
   analytics?: BranchAnalytics;
   analyticsError?: boolean;
+  /** The list half's rejection, as `useBranchesPageData` now surfaces it. */
+  error?: unknown;
   isError?: boolean;
   isFetching?: boolean;
   isPending?: boolean;
+  isPlaceholderData?: boolean;
 }): {
   data: BranchesPageData | undefined;
+  error: unknown;
   isError: boolean;
   isFetching: boolean;
   isPending: boolean;
+  isPlaceholderData: boolean;
 } {
   return {
     data: resolvePageData({ list, analytics, analyticsError }),
+    error,
     isError,
     isFetching,
     isPending,
+    isPlaceholderData,
   };
 }
 
@@ -226,4 +227,12 @@ function resolvePageData({
     return { list, analyticsError: true };
   }
   return { list, analytics };
+}
+
+/** The real tag mutation observer needs the same QueryClient context as the page's runtime. */
+export function renderBranchesPage(
+  ui: ReactNode,
+  options?: Omit<RenderOptions, "wrapper">
+): RenderResult {
+  return render(ui, { ...options, wrapper: createWrapper() });
 }

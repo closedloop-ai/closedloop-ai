@@ -4,14 +4,14 @@ import {
   SessionTimelineSummary,
   type SessionTimelineSummarySession,
 } from "@repo/app/agents/components/detail/session-timeline-summary";
+import type { TimelinePeakBucket } from "@repo/app/agents/components/detail/timeline-peak-bucket-fact";
 import type { ReactNode } from "react";
 
 /**
  * The Session Timeline's header: its landmark, its title, and the run-level
  * summary that trails the title.
  *
- * Extracted from `agent-session-detail-view.tsx` (ISS-5970), which is
- * grandfathered under the file-size ceiling and therefore shrink-only — adding
+ * Extracted from `agent-session-detail-view.tsx` (ISS-5970) — adding
  * the summary slot to the heading there would have grown it. These three pieces
  * are one cohesive unit anyway: they are the region, the thing that names it,
  * and the facts printed beside that name, and nothing else in the view reads
@@ -29,9 +29,31 @@ import type { ReactNode } from "react";
  */
 export function SessionTimelineRegion({
   children,
-}: Readonly<{ children: ReactNode }>) {
+  describedById,
+}: Readonly<{
+  children: ReactNode;
+  /**
+   * ISS-7427 AC5: the id of the caption that WITHDRAWS part of this region's
+   * claim, when one is rendered.
+   *
+   * The caption cannot live inside the region — FEA-4025 keeps it below the
+   * pinned box — so without this a screen-reader user enters "Session Timeline",
+   * hears every bar, leaves, and only then meets the sentence taking the strip's
+   * coverage back. `aria-describedby` resolves an IDREF anywhere in the
+   * document, so the association survives the placement.
+   *
+   * Omitted, not empty, when there is no caption: `aria-describedby=""` names a
+   * missing element rather than nothing.
+   */
+  describedById?: string;
+}>) {
   return (
-    <section aria-labelledby={SESSION_TIMELINE_HEADING_ID}>{children}</section>
+    <section
+      aria-describedby={describedById}
+      aria-labelledby={SESSION_TIMELINE_HEADING_ID}
+    >
+      {children}
+    </section>
   );
 }
 
@@ -45,8 +67,11 @@ export function SessionTimelineRegion({
  * size.
  */
 export function SessionTimelineHeading({
+  peakBucket,
   summarySession,
 }: Readonly<{
+  /** ISS-12665: the strip's peak column — see `SessionTimelineSummary`. */
+  peakBucket: TimelinePeakBucket | null;
   /** ISS-5970: the session the run-level summary reads. */
   summarySession: SessionTimelineSummarySession;
 }>) {
@@ -55,7 +80,10 @@ export function SessionTimelineHeading({
       <h2 className="sd3-act-title" id={SESSION_TIMELINE_HEADING_ID}>
         Session Timeline
       </h2>
-      <SessionTimelineSummary session={summarySession} />
+      <SessionTimelineSummary
+        peakBucket={peakBucket}
+        session={summarySession}
+      />
     </div>
   );
 }
@@ -68,3 +96,12 @@ export function SessionTimelineHeading({
  * screen-reader user gets an entry in the landmark list with nothing in it.
  */
 export const SESSION_TIMELINE_HEADING_ID = "session-timeline-heading";
+
+/**
+ * ISS-7427 AC5: the id the Timeline's caption line carries so
+ * {@link SessionTimelineRegion} can point `aria-describedby` at it. A shared
+ * constant for the same reason {@link SESSION_TIMELINE_HEADING_ID} is one — it
+ * is written in two files, and a typo in either silently produces a region
+ * described by nothing.
+ */
+export const SESSION_TIMELINE_LEGEND_ID = "session-timeline-legend";

@@ -1,0 +1,53 @@
+-- Index `session_detail.external_session_id` so historical invocation replay can
+-- resolve a session that was captured on a different machine.
+--
+-- WHAT ASKS FOR IT. `resolveInvocationParentSession`
+-- (apps/api/app/agent-sessions/service/component-invocations.ts) falls back from
+-- the sending target's own session to an org-wide lookup:
+--   SELECT ... FROM session_detail AS session
+--     JOIN artifacts AS artifact ON artifact.id = session.artifact_id
+--    WHERE session.external_session_id IN (...)
+--      AND artifact.organization_id = ... HAVING COUNT(*) = 1
+-- `external_session_id` is the only selective predicate there. The table's
+-- `@@unique([computeTargetId, externalSessionId])` leads with
+-- `compute_target_id`, which this lookup deliberately does not constrain — that
+-- is the whole point of a cross-machine replay — so a btree on that unique
+-- cannot drive it and the fallback sequentially scans `session_detail`.
+--
+-- WHY CONCURRENTLY, AND THEREFORE ALONE IN THIS FILE. `session_detail` is the hot
+-- session-ingest table: desktop sync and API writes land there continuously, so a
+-- plain `CREATE INDEX` holds a write-blocking lock for the entire build and
+-- stalls ingest at production size. That is the failure mode PRD-547 was opened
+-- for after FEA-3638, and every earlier index on this table went in this way
+-- (20260730180000, 20260811130000, 20260914120000). `CREATE INDEX CONCURRENTLY`
+-- takes only SHARE UPDATE EXCLUSIVE, so concurrent INSERT/UPDATE/DELETE proceed
+-- while it builds.
+--
+-- `CREATE INDEX CONCURRENTLY` cannot run inside a transaction block (SQLSTATE
+-- 25001), and `prisma migrate deploy` wraps the whole file when its statement
+-- splitter cannot split it confidently. Keep this file to the single bare
+-- statement below: no BEGIN/COMMIT, no `DO $$ ... $$` block, no
+-- `DROP INDEX CONCURRENTLY`.
+--
+-- NO `IF NOT EXISTS`, deliberately, matching the two most recent precedents on
+-- this table. A cancelled or crashed concurrent build leaves a same-named INVALID
+-- index behind, and `IF NOT EXISTS` would silently skip the rebuild and record the
+-- migration APPLIED over a permanently-unusable index. Without it the retry fails
+-- closed on SQLSTATE 42P07 and an operator drops the remnant
+-- (`DROP INDEX CONCURRENTLY`, in psql autocommit) before re-running. Required by
+-- the guard in `scripts/lint/destructive-migrations/index-ddl.ts`.
+--
+-- PREVIEW SCHEMAS: registered in PREVIEW_SKIPPABLE_CONCURRENT_INDEX_MIGRATIONS
+-- (packages/database/scripts/preview-heavy-migrations-core.mjs). A perf-only,
+-- non-unique index is pure cost on an ephemeral preview, and an unregistered
+-- CONCURRENTLY build re-arms the ISS-4437 P1002 advisory-lock amplifier. That
+-- registration is CI-enforced by
+-- packages/database/__tests__/preview-heavy-migrations.test.ts.
+--
+-- Purely additive: index-only, no data mutation, no result change — an index
+-- alters plan choice only. Name and columns match the schema.prisma declaration
+-- `@@index([externalSessionId], map: "session_detail_external_session_id_idx")`,
+-- so the Prisma drift check stays green.
+
+-- CreateIndex
+CREATE INDEX CONCURRENTLY "session_detail_external_session_id_idx" ON "session_detail"("external_session_id");

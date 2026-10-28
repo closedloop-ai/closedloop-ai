@@ -2,26 +2,19 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { CollectorManager } from "../src/main/collectors/engine/collector-manager.js";
 import type { HarnessCollector } from "../src/main/collectors/types.js";
+import { createMemoryIngestStoreProvider } from "./ingest-store-test-utils.js";
 import { makeSession } from "./normalized-session-test-utils.js";
+import { waitForCondition } from "./wait-for-condition.js";
 
 // The historical (lowDuty) import path yields through `cooperativeDelay`; a
 // no-op keeps the boot import synchronous-fast for these lifecycle assertions.
 async function noopCooperativeDelay(): Promise<void> {}
 
-async function waitUntil(
-  predicate: () => boolean,
-  timeoutMs = 2000
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
-    if (Date.now() > deadline) {
-      throw new Error("waitUntil timed out");
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1));
-  }
+function waitUntil(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
+  return waitForCondition(predicate, timeoutMs, 1, "waitUntil timed out");
 }
 
 // A stop()/restart can land while the folded-child cleanup loop in importSources
@@ -36,6 +29,10 @@ test("CollectorManager.stop(): a generation parked in the folded-child delete lo
   const dir = mkdtempSync(join(tmpdir(), "collector-manager-gen-guard-"));
   try {
     const stateDir = join(dir, "state");
+    // ISS-9838: the persisted catchup cache is a SQLite row behind this port, so
+    // one provider shared by the seed manager and the manager under test is what
+    // "the persisted catchup cache marks it unchanged" now requires.
+    const ingestStores = createMemoryIngestStoreProvider();
     const burstSource = join(dir, "codex-burst.jsonl");
     const newSource = join(dir, "codex-new.jsonl");
     writeFileSync(burstSource, "{}\n");
@@ -45,14 +42,14 @@ test("CollectorManager.stop(): a generation parked in the folded-child delete lo
     // cleanup); every later call (the restart generation) resolves immediately.
     let releaseFirstDelete: (() => void) | undefined;
     let deleteCalls = 0;
-    const deleteSessionRow = (_sessionId: string): Promise<void> => {
+    const deleteSessionRow = (_sessionId: string): Promise<boolean> => {
       deleteCalls += 1;
       if (deleteCalls === 1) {
-        return new Promise<void>((resolve) => {
-          releaseFirstDelete = resolve;
+        return new Promise<boolean>((resolve) => {
+          releaseFirstDelete = () => resolve(true);
         });
       }
-      return Promise.resolve();
+      return Promise.resolve(true);
     };
 
     let listSources = [burstSource];
@@ -78,8 +75,8 @@ test("CollectorManager.stop(): a generation parked in the folded-child delete lo
         importer: {
           importSession: async () => ({ skipped: false, reactivated: false }),
         },
-        detectBillingMode: () => "metered_api",
         stateDir,
+        ingestStores: ingestStores.provider,
         emit: () => {},
         getCollectionMode: () => "disabled",
         catchupPollMs: null,
@@ -100,7 +97,7 @@ test("CollectorManager.stop(): a generation parked in the folded-child delete lo
     const seed = makeManager();
     seed.start();
     await boot0;
-    seed.stop();
+    await seed.stop();
 
     // Now the manager under test. A brand-new source appears alongside the
     // already-imported burst source.
@@ -119,7 +116,7 @@ test("CollectorManager.stop(): a generation parked in the folded-child delete lo
     );
 
     // stop() supersedes gen 1 and clears the progress map.
-    manager.stop();
+    await manager.stop();
     assert.deepEqual(
       manager.getIngestProgress().byHarness,
       [],
@@ -176,7 +173,7 @@ test("CollectorManager.stop(): a generation parked in the folded-child delete lo
       "no false in-progress import state after the stale generation resumes"
     );
 
-    manager.stop();
+    await manager.stop();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

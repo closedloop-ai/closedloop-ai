@@ -1,27 +1,44 @@
 import type {
   AgentComponentInvocationSyncAck,
   AgentComponentInvocationSyncPart,
+  AgentComponentInvocationSyncRejectReason,
 } from "@repo/api/src/types/agent-component-invocation";
+import { AgentComponentInvocationSyncRejectReason as InvocationRejectReason } from "@repo/api/src/types/agent-component-invocation";
+import type { InvocationSyncParent } from "@repo/api/src/types/invocation-sync-diagnostics";
+import {
+  laneStallDelayMs,
+  laneStallWindow,
+} from "../../shared/lane-stall-clock.js";
 import type { AgentComponentInvocationSyncClientResult } from "../dashboard/desktop-agent-component-invocations-client.js";
 import {
   decideOutboxFailure,
   OutboxFailureOutcome,
 } from "../sync/durable-outbox.js";
+import type { SignedInUserIdentity } from "../util/user-identity.js";
 import {
+  AGENT_COMPONENT_INVOCATION_SYNC_OUTBOX_TABLE,
   AGENT_COMPONENT_INVOCATION_SYNC_SOURCE_KEY,
+  AgentComponentInvocationSyncLocalError,
   buildAgentComponentInvocationSyncSourceKey,
 } from "./agent-component-invocation-sync-constants.js";
+import {
+  ackMatchesPart,
+  readLaneStallOrigin,
+} from "./agent-component-invocation-sync-service-helpers.js";
 import type { AgentSessionSyncSource } from "./agent-session-sync-source.js";
 import {
+  INVOCATION_ACK_MISMATCH_REASON,
+  isInvocationDeadLetterRecoveryCause,
+  isInvocationEnvironmentalRejectionReason,
   RETRY_BASE_MS,
   RETRY_MAX_MS,
   rejectionBudgetForRow,
-  retryDelayMs,
+  SessionMissingRetryHorizon,
+  terminalCauseForRejection,
 } from "./invocation-sync-rejection-policy.js";
 
 const SYNC_INTERVAL_MS = 5000;
 const READY_PART_LIMIT = 10;
-const PROTOCOL_UNAVAILABLE_RETRY_MS = 5 * 60_000;
 const PREPARE_SESSION_LIMIT = 10;
 
 /**
@@ -57,22 +74,37 @@ const PREPARE_SESSION_LIMIT = 10;
 const MAX_CONSECUTIVE_PROMOTION_DEFERRALS = 12;
 
 export type AgentComponentInvocationSyncSource = {
+  loadInvocationSyncParents?(
+    sessionSourceKey: string,
+    sessionIds: string[]
+  ): Promise<InvocationSyncParent[]>;
+  /**
+   * ISS-7096: `identity` (the signed-in pair, null when unknown) lets the
+   * promotion step release and stop materializing delivery rows for sessions
+   * another identity owns — on a multi-environment device, the other
+   * environment's sessions. Optional and additive: an older caller degrades to
+   * the ungated behavior.
+   */
   prepareInvocationSyncTarget(
     sourceKey: string,
     templateSourceKey: string,
-    sessionLimit: number
+    sessionLimit: number,
+    identity?: SignedInUserIdentity | null
   ): Promise<void>;
   loadReadyInvocationSyncParts(
     sourceKey: string,
     now: string,
     limit: number
   ): Promise<AgentComponentInvocationSyncOutboxEntry[]>;
+  recoverInvocationSyncDeadLetters(
+    sourceKey: string,
+    now: string,
+    limit: number
+  ): Promise<AgentComponentInvocationSyncDeadLetterRecoveryResult>;
   recordInvocationSyncRetry(
     sourceKey: string,
     part: AgentComponentInvocationSyncPart,
-    attemptCount: number,
-    nextAttemptAt: string,
-    error: string
+    retry: AgentComponentInvocationSyncRetryWrite
   ): Promise<void>;
   clearAcknowledgedInvocationSyncPart(
     sourceKey: string,
@@ -84,14 +116,36 @@ export type AgentComponentInvocationSyncSource = {
   deadLetterInvocationSyncPart(
     sourceKey: string,
     part: AgentComponentInvocationSyncPart,
-    attemptCount: number,
-    error: string
+    deadLetter: AgentComponentInvocationSyncDeadLetterWrite
   ): Promise<boolean>;
+};
+
+export type AgentComponentInvocationSyncRetryWrite = {
+  attemptCount: number;
+  permanentAttemptCount: number;
+  nextAttemptAt: string;
+  error: string;
+  laneStalledSince: string | null;
+};
+
+export type AgentComponentInvocationSyncDeadLetterWrite = {
+  attemptCount: number;
+  permanentAttemptCount: number;
+  error: string;
+};
+
+export type AgentComponentInvocationSyncDeadLetterRecoveryResult = {
+  recoveredParts: number;
+  cappedParts: number;
+  quarantinedParts: number;
 };
 
 export type AgentComponentInvocationSyncOutboxEntry = {
   part: AgentComponentInvocationSyncPart;
   attemptCount: number;
+  permanentAttemptCount: number;
+  laneStalledSince: string | null;
+  deadLetterRecoveryCount: number;
   /**
    * ISS-5789: the row's persisted `created_at`. `session_missing` is budgeted by
    * how long the part has been retrying rather than by the shared `attempt_count`
@@ -105,10 +159,25 @@ export type AgentComponentInvocationSyncServiceOptions = {
   isReady: () => boolean;
   getSource: () => AgentComponentInvocationSyncSource | null;
   getComputeTargetId: () => string | null;
+  /** ISS-7096: the signed-in identity pair, for the promotion ownership gate. */
+  getSyncIdentity?: () => SignedInUserIdentity | null;
   sendPart: (
     part: AgentComponentInvocationSyncPart,
     computeTargetId: string
   ) => Promise<AgentComponentInvocationSyncClientResult>;
+  /**
+   * Report the parts this tick lost to a missing parent session. `canStillSend`
+   * is this lane's own pre-send gate (readiness + consent tier + compute target),
+   * handed down so the reporter re-reads exactly what the send path re-reads
+   * after its own awaits instead of a second copy of the predicate that can drift
+   * from it — see `main/sync/AGENTS.md` section 12a.
+   */
+  onSessionMissingParts?: (
+    entries: AgentComponentInvocationSyncOutboxEntry[],
+    computeTargetId: string,
+    source: AgentComponentInvocationSyncSource,
+    canStillSend: () => boolean
+  ) => Promise<void>;
   waitForBackgroundSlot?: () => Promise<void>;
   now?: () => Date;
   /**
@@ -118,6 +187,8 @@ export type AgentComponentInvocationSyncServiceOptions = {
    * component lane still draining" condition. Optional; defaults to a no-op.
    */
   log?: (message: string) => void;
+  /** Best-effort observer for a tick that rejected before its next retry. */
+  onSyncError?: (error: unknown) => void;
 };
 
 export class AgentComponentInvocationSyncService {
@@ -140,6 +211,10 @@ export class AgentComponentInvocationSyncService {
    * `status` column remains the authoritative record.
    */
   private deadLetteredParts = 0;
+  private lastRecoveryCapReport: {
+    sourceKey: string;
+    cappedParts: number;
+  } | null = null;
   /**
    * ISS-5973: consecutive ticks that skipped promotion because ready parts were
    * already materialized. Bounded by
@@ -187,6 +262,7 @@ export class AgentComponentInvocationSyncService {
     // than a correctness fix — but a count earned under one account's backlog must
     // not decide when the next account's heavy `$transaction` runs.
     this.promotionDeferrals = 0;
+    this.lastRecoveryCapReport = null;
   }
 
   refresh(): void {
@@ -199,8 +275,16 @@ export class AgentComponentInvocationSyncService {
     }
     this.clearTimer();
     this.syncTask = this.syncOnce()
-      .catch(() => {
-        // The exact outbox row remains pending; the next scheduled tick retries.
+      .catch((error: unknown) => {
+        // Durable work remains pending; the next scheduled tick retries.
+        const onSyncError = this.options.onSyncError;
+        if (onSyncError) {
+          try {
+            onSyncError(error);
+          } catch {
+            // Diagnostics are best-effort and must not break the retry schedule.
+          }
+        }
       })
       .finally(() => {
         this.syncTask = null;
@@ -222,17 +306,21 @@ export class AgentComponentInvocationSyncService {
     this.syncing = true;
     try {
       await this.options.waitForBackgroundSlot?.();
-      // ISS-4623 (whitlockk review): the readiness gate (which ANDs the fail-closed
-      // org-sync-policy gate) and the compute target were sampled once at entry,
-      // BEFORE the async prep below. A policy true→false transition or an account
-      // switch can land during `waitForBackgroundSlot` / prep, so re-verify the
-      // LIVE gate and that the target is unchanged before touching the outbox or
-      // sending — otherwise a just-closed gate would still POST data, and a
+      // ISS-4623 (whitlockk review): the readiness gate and the compute target were
+      // sampled once at entry, BEFORE the async prep below. A consent-tier change
+      // or an account switch can land during `waitForBackgroundSlot` / prep, so
+      // re-verify the LIVE gate and that the target is unchanged before touching
+      // the outbox or sending — otherwise a just-closed gate would still POST
+      // data, and a
       // switched account would send under the previous account's target.
       if (!this.canStillSend(computeTargetId)) {
         return;
       }
       const now = this.now();
+      await this.recoverDeadLetters(source, sourceKey, now.toISOString());
+      if (!this.canStillSend(computeTargetId)) {
+        return;
+      }
       // ISS-4710: check for already-materialized ready parts FIRST via the cheap
       // reader-path load, BEFORE the heavy `prepareInvocationSyncTarget`
       // `$transaction`. During a first-boot DATA_REVISION rebuild the shared
@@ -268,7 +356,8 @@ export class AgentComponentInvocationSyncService {
         await source.prepareInvocationSyncTarget(
           sourceKey,
           AGENT_COMPONENT_INVOCATION_SYNC_SOURCE_KEY,
-          PREPARE_SESSION_LIMIT
+          PREPARE_SESSION_LIMIT,
+          this.options.getSyncIdentity?.() ?? null
         );
         // Re-load only when this tick had nothing to drain. When promotion ran
         // under the starvation escape the already-loaded `entries` are still
@@ -292,14 +381,31 @@ export class AgentComponentInvocationSyncService {
           "component prepare skipped this tick: ready parts already materialized"
         );
       }
-      for (const entry of entries) {
-        // Re-check immediately before EVERY send: an earlier `sendPart` in this
-        // same drain awaits the network, during which the gate can close or the
-        // target can switch. Stop the run rather than send the next part.
-        if (!this.canStillSend(computeTargetId)) {
-          return;
+      const missingParents: AgentComponentInvocationSyncOutboxEntry[] = [];
+      try {
+        for (const entry of entries) {
+          // Re-check immediately before EVERY send: an earlier `sendPart` in this
+          // same drain awaits the network, during which the gate can close or the
+          // target can switch. Stop the run rather than send the next part.
+          if (!this.canStillSend(computeTargetId)) {
+            return;
+          }
+          if (await this.syncPart(source, sourceKey, computeTargetId, entry)) {
+            missingParents.push(entry);
+          }
         }
-        await this.syncPart(source, sourceKey, computeTargetId, entry);
+      } finally {
+        // Report on EVERY exit, including a throw out of a later part's retry
+        // write or ack cleanup. An earlier part in this same batch can already
+        // have dead-lettered for exhausting its age horizon, so there is no later
+        // tick that would pick it up — losing the batch's diagnostic to an
+        // unrelated part's failure loses it permanently. The gate and target
+        // checks inside still apply, so a readiness exit reports nothing.
+        await this.reportMissingParents(
+          missingParents,
+          computeTargetId,
+          source
+        );
       }
     } finally {
       this.syncing = false;
@@ -308,8 +414,8 @@ export class AgentComponentInvocationSyncService {
 
   /**
    * ISS-4623 (whitlockk review): is it still safe to send for `computeTargetId`?
-   * True only when the LIVE readiness gate (org-sync-policy + tier + transport)
-   * still says yes AND the live compute target is unchanged from the one this
+   * True only when the LIVE readiness gate (consent tier + transport) still says
+   * yes AND the live compute target is unchanged from the one this
    * drain was scoped to. Sampled fresh on every call so a gate-close or account
    * switch that lands mid-drain halts egress before the next send.
    */
@@ -320,124 +426,270 @@ export class AgentComponentInvocationSyncService {
     );
   }
 
+  private async recoverDeadLetters(
+    source: AgentComponentInvocationSyncSource,
+    sourceKey: string,
+    nowIso: string
+  ): Promise<void> {
+    const recovery = await source.recoverInvocationSyncDeadLetters(
+      sourceKey,
+      nowIso,
+      READY_PART_LIMIT
+    );
+    const previousCappedParts =
+      this.lastRecoveryCapReport?.sourceKey === sourceKey
+        ? this.lastRecoveryCapReport.cappedParts
+        : 0;
+    const cappedPartsChanged = recovery.cappedParts !== previousCappedParts;
+    this.lastRecoveryCapReport = {
+      sourceKey,
+      cappedParts: recovery.cappedParts,
+    };
+    if (
+      recovery.recoveredParts > 0 ||
+      recovery.quarantinedParts > 0 ||
+      cappedPartsChanged
+    ) {
+      this.options.log?.(
+        `invocation dead-letter recovery pass: sourceKey=${sourceKey} recovered=${recovery.recoveredParts} capped=${recovery.cappedParts} quarantined=${recovery.quarantinedParts}`
+      );
+    }
+  }
+
   private async syncPart(
     source: AgentComponentInvocationSyncSource,
     sourceKey: string,
     computeTargetId: string,
     entry: AgentComponentInvocationSyncOutboxEntry
-  ): Promise<void> {
+  ): Promise<boolean> {
     const { part } = entry;
-    const result = await this.options
+    const result: AgentComponentInvocationSyncClientResult = await this.options
       .sendPart(part, computeTargetId)
       .catch((error: unknown) => ({
         kind: "retry" as const,
         error: error instanceof Error ? error.message : String(error),
       }));
     if (result.kind === "unavailable") {
-      await this.recordRetry(
+      await this.recordEnvironmentalRetry(
         source,
         sourceKey,
         entry,
-        PROTOCOL_UNAVAILABLE_RETRY_MS,
-        "protocol_unavailable"
+        "protocol_unavailable",
+        result.retryAfterMs
       );
-      return;
+      return false;
     }
     if (result.kind === "retry") {
-      await this.recordRetry(
+      await this.recordEnvironmentalRetry(
         source,
         sourceKey,
         entry,
-        retryDelayMs(entry.attemptCount),
-        result.error
+        result.error,
+        result.retryAfterMs
       );
-      return;
+      return false;
     }
     if (!ackMatchesPart(result.ack, part)) {
-      await this.recordRetry(
+      await this.recordEnvironmentalRetry(
         source,
         sourceKey,
         entry,
-        retryDelayMs(entry.attemptCount),
-        "ack_mismatch"
+        INVOCATION_ACK_MISMATCH_REASON
       );
-      return;
+      return false;
     }
     if (!result.ack.accepted) {
-      // PLN-1562: the shared retry-vs-dead-letter fork. Only a PERMANENT
-      // rejection (one the server attributes to this part's own content) may
-      // exhaust the budget — a transient reason retries on the shared ladder with
-      // its budget intact, so a server-side blip cannot dead-letter healthy parts.
-      // ISS-5789 (codex P1 / @whitlockk review): the budget is resolved against the
-      // ROW, not the reason alone. `session_missing` stays transient — deferring
-      // on the shared ladder with the budget untouched — until the part outlives
-      // its horizon, so a lane-wide outage can no longer pre-spend a
-      // row-attributable budget through the shared `attempt_count` column
-      // (invariant 4).
-      const nowMs = this.now().getTime();
-      const budget = rejectionBudgetForRow({
-        reason: result.ack.reason,
-        createdAt: entry.createdAt,
-        nowMs,
-      });
-      const decision = decideOutboxFailure({
-        attemptCount: entry.attemptCount,
-        maxAttempts: budget.maxAttempts,
-        permanent: budget.permanent,
-        nowMs,
-        baseMs: RETRY_BASE_MS,
-        maxMs: RETRY_MAX_MS,
-      });
-      if (decision.outcome === OutboxFailureOutcome.DeadLetter) {
-        const deadLettered = await source.deadLetterInvocationSyncPart(
-          sourceKey,
-          part,
-          decision.attemptCount,
-          result.ack.reason
-        );
-        // ISS-5347: this lane has no dead-letter RECOVERY path (see
-        // `main/sync/AGENTS.md` invariant 3's known exception), so a part parked
-        // here never arrives until a newer generation for the session supersedes
-        // it. Until that gap is closed, the part must at least NAME itself —
-        // previously the write's own result was discarded and the abandonment was
-        // completely silent, which is why a stranded part 6-of-7 sat undetected.
-        // The count increments only inside the branch where the write actually
-        // took effect, so it never over-reports.
-        if (deadLettered) {
-          this.deadLetteredParts += 1;
-          this.options.log?.(
-            `invocation part dead-lettered and NOT recoverable by this lane: session=${part.externalSessionId} generation=${part.externalGenerationId} part=${part.partIndex + 1}/${part.partCount} reason=${result.ack.reason}; that session's invocation data stays incomplete in the cloud until a newer generation supersedes it (dead-lettered parts this run: ${this.deadLetteredParts})`
-          );
-        }
-        return;
-      }
-      await source.recordInvocationSyncRetry(
-        sourceKey,
-        part,
-        decision.attemptCount,
-        new Date(decision.nextAttemptAtMs).toISOString(),
-        result.ack.reason
-      );
-      return;
+      await this.handleRejectedAck(source, sourceKey, entry, result.ack.reason);
+      return result.ack.reason === InvocationRejectReason.SessionMissing;
     }
     await source.clearAcknowledgedInvocationSyncPart(sourceKey, result.ack);
+    return false;
   }
 
-  private async recordRetry(
+  private async handleRejectedAck(
     source: AgentComponentInvocationSyncSource,
     sourceKey: string,
     entry: AgentComponentInvocationSyncOutboxEntry,
-    delayMs: number,
-    error: string
+    reason: AgentComponentInvocationSyncRejectReason
   ): Promise<void> {
-    const attemptCount = entry.attemptCount + 1;
-    await source.recordInvocationSyncRetry(
-      sourceKey,
-      entry.part,
+    if (isInvocationEnvironmentalRejectionReason(reason)) {
+      await this.recordEnvironmentalRetry(source, sourceKey, entry, reason);
+      return;
+    }
+    // PLN-1562: the shared retry-vs-dead-letter fork. Only a PERMANENT
+    // rejection (one the server attributes to this part's own content) may
+    // exhaust the permanent budget; row-local transient races keep the ordinary
+    // attempt ladder but cannot pre-spend that permanent counter.
+    const nowMs = this.now().getTime();
+    const budget = rejectionBudgetForRow({
+      reason,
+      createdAt: entry.createdAt,
+      nowMs,
+    });
+    const attemptCount = budget.permanent
+      ? entry.permanentAttemptCount
+      : entry.attemptCount;
+    const decision = decideOutboxFailure({
       attemptCount,
-      new Date(this.now().getTime() + delayMs).toISOString(),
-      error
+      maxAttempts: budget.maxAttempts,
+      permanent: budget.permanent,
+      nowMs,
+      baseMs: RETRY_BASE_MS,
+      maxMs: RETRY_MAX_MS,
+    });
+    if (decision.outcome === OutboxFailureOutcome.DeadLetter) {
+      await this.quarantinePart({
+        source,
+        sourceKey,
+        part: entry.part,
+        attemptCount: entry.attemptCount,
+        permanentAttemptCount: budget.permanent
+          ? decision.attemptCount
+          : entry.permanentAttemptCount,
+        ackReason: reason,
+        terminalCause: terminalCauseForRejection({
+          ackReason: reason,
+          horizon: budget.sessionMissingHorizon,
+        }),
+        corruptDurabilityField:
+          budget.sessionMissingHorizon ===
+          SessionMissingRetryHorizon.InvalidTimestamp
+            ? "created_at"
+            : null,
+      });
+      return;
+    }
+    await source.recordInvocationSyncRetry(sourceKey, entry.part, {
+      attemptCount: budget.permanent
+        ? entry.attemptCount
+        : decision.attemptCount,
+      permanentAttemptCount: budget.permanent
+        ? decision.attemptCount
+        : entry.permanentAttemptCount,
+      nextAttemptAt: new Date(decision.nextAttemptAtMs).toISOString(),
+      error: reason,
+      laneStalledSince: null,
+    });
+  }
+
+  /**
+   * Park a part the lane has given up on, and NAME the abandonment.
+   *
+   * Extracted from `syncPart` (ISS-6209) so that method stays a flat sequence of
+   * guard clauses: the dead-letter branch had grown a nested reporting block and
+   * pushed `syncPart` past the repo's cognitive-complexity budget.
+   *
+   * `last_error` records the lane's own CAUSE, not the ack reason, when the row was
+   * quarantined for unreadable durable bookkeeping such as `created_at` or
+   * `lane_stalled_since` - an operator reading the row needs to know the local
+   * store is corrupt, which `session_missing` does not say.
+   */
+  private async quarantinePart(input: {
+    source: AgentComponentInvocationSyncSource;
+    sourceKey: string;
+    part: AgentComponentInvocationSyncPart;
+    attemptCount: number;
+    permanentAttemptCount: number;
+    ackReason: string;
+    terminalCause: string;
+    corruptDurabilityField: "created_at" | "lane_stalled_since" | null;
+  }): Promise<void> {
+    const { part, sourceKey } = input;
+    const deadLettered = await input.source.deadLetterInvocationSyncPart(
+      sourceKey,
+      part,
+      {
+        attemptCount: input.attemptCount,
+        permanentAttemptCount: input.permanentAttemptCount,
+        error: input.terminalCause,
+      }
     );
+    if (!deadLettered) {
+      return;
+    }
+    this.deadLetteredParts += 1;
+    // ISS-5855: `sourceKey` completes the row's PRIMARY KEY here
+    // (`sourceKey, externalSessionId, externalGenerationId, partIndex`). Without
+    // it the line named a part but not the row, so an operator holding this log
+    // could not select the abandoned row. The cloud's ack reason and the lane's
+    // own terminal cause are both printed because for `session_missing` they
+    // differ, and the second is the one the store-integrity probe selects on.
+    const recoveryState = isInvocationDeadLetterRecoveryCause(
+      input.terminalCause
+    )
+      ? "eligible for in-place recovery after the durable dead-letter backoff"
+      : "not eligible for in-place recovery";
+    this.options.log?.(
+      `invocation part dead-lettered: sourceKey=${sourceKey} session=${part.externalSessionId} generation=${part.externalGenerationId} part=${part.partIndex + 1}/${part.partCount} reason=${input.ackReason} cause=${input.terminalCause}; ${recoveryState} (dead-lettered parts this run: ${this.deadLetteredParts})`
+    );
+    // ISS-6209: the bad-data event, named separately from the abandonment above
+    // because they are different facts and only this one says the STORE is wrong.
+    // Carries the row/session context the monitored `store.integrity.*` event
+    // deliberately cannot: that event is content-free by construction (see
+    // `StoreIntegrityIssue`), so the alert fires from the integrity probe scanning
+    // this same table (`invocation-sync-outbox-integrity.ts`) while the actionable
+    // detail — WHICH row — stays in the main-process log. Main process only; the
+    // client-logging ban does not reach here.
+    if (input.corruptDurabilityField) {
+      this.options.log?.(
+        `invocation outbox row quarantined for an unreadable ${input.corruptDurabilityField}: session=${part.externalSessionId} generation=${part.externalGenerationId} part=${part.partIndex + 1}/${part.partCount} sourceKey=${sourceKey}; durable retry bookkeeping could not be evaluated honestly, so it was terminalized rather than overwritten. Reported to the monitored store-integrity event as ${AGENT_COMPONENT_INVOCATION_SYNC_OUTBOX_TABLE}.`
+      );
+    }
+  }
+
+  private async recordEnvironmentalRetry(
+    source: AgentComponentInvocationSyncSource,
+    sourceKey: string,
+    entry: AgentComponentInvocationSyncOutboxEntry,
+    error: string,
+    retryAfterMs?: number
+  ): Promise<void> {
+    const nowMs = this.now().getTime();
+    const stallOrigin = readLaneStallOrigin(entry.laneStalledSince);
+    if (stallOrigin.kind === "invalid") {
+      await this.quarantinePart({
+        source,
+        sourceKey,
+        part: entry.part,
+        attemptCount: entry.attemptCount,
+        permanentAttemptCount: entry.permanentAttemptCount,
+        ackReason: error,
+        terminalCause:
+          AgentComponentInvocationSyncLocalError.InvalidPersistedDurabilityState,
+        corruptDurabilityField: "lane_stalled_since",
+      });
+      return;
+    }
+    const window = laneStallWindow({
+      stalledSinceMs: stallOrigin.stalledSinceMs,
+      nowMs,
+    });
+    if (window.expired) {
+      await this.quarantinePart({
+        source,
+        sourceKey,
+        part: entry.part,
+        attemptCount: entry.attemptCount,
+        permanentAttemptCount: entry.permanentAttemptCount,
+        ackReason: error,
+        terminalCause:
+          AgentComponentInvocationSyncLocalError.EnvironmentalStallExhausted,
+        corruptDurabilityField: null,
+      });
+      return;
+    }
+    const delayMs = laneStallDelayMs({
+      stalledSinceMs: window.startedAtMs,
+      nowMs,
+      retryAfterMs,
+    });
+    await source.recordInvocationSyncRetry(sourceKey, entry.part, {
+      attemptCount: entry.attemptCount,
+      permanentAttemptCount: entry.permanentAttemptCount,
+      nextAttemptAt: new Date(nowMs + delayMs).toISOString(),
+      error,
+      laneStalledSince: new Date(window.startedAtMs).toISOString(),
+    });
   }
 
   private schedule(): void {
@@ -462,17 +714,26 @@ export class AgentComponentInvocationSyncService {
   private now(): Date {
     return this.options.now?.() ?? new Date();
   }
-}
-
-function ackMatchesPart(
-  ack: AgentComponentInvocationSyncAck,
-  part: AgentComponentInvocationSyncPart
-): boolean {
-  return (
-    ack.externalGenerationId === part.externalGenerationId &&
-    ack.partIndex === part.partIndex &&
-    ack.partHash === part.partHash
-  );
+  private async reportMissingParents(
+    missingParents: AgentComponentInvocationSyncOutboxEntry[],
+    computeTargetId: string,
+    source: AgentComponentInvocationSyncSource
+  ): Promise<void> {
+    if (missingParents.length > 0 && this.canStillSend(computeTargetId)) {
+      try {
+        await this.options.onSessionMissingParts?.(
+          missingParents,
+          computeTargetId,
+          source,
+          () => this.canStillSend(computeTargetId)
+        );
+      } catch {
+        this.options.log?.(
+          "missing-parent diagnostic reporting failed; sync retry state was already recorded"
+        );
+      }
+    }
+  }
 }
 
 /**
@@ -490,6 +751,7 @@ export function resolveAgentComponentInvocationSyncSource(
     !(
       source?.prepareInvocationSyncTarget &&
       source.loadReadyInvocationSyncParts &&
+      source.recoverInvocationSyncDeadLetters &&
       source.recordInvocationSyncRetry &&
       source.clearAcknowledgedInvocationSyncPart &&
       source.deadLetterInvocationSyncPart
@@ -498,38 +760,46 @@ export function resolveAgentComponentInvocationSyncSource(
     return null;
   }
   return {
-    prepareInvocationSyncTarget: (sourceKey, templateSourceKey, sessionLimit) =>
+    ...(source.loadInvocationSyncParents
+      ? {
+          loadInvocationSyncParents: (
+            sourceKey: string,
+            sessionIds: string[]
+          ) =>
+            source.loadInvocationSyncParents?.(sourceKey, sessionIds) ??
+            Promise.resolve([]),
+        }
+      : {}),
+    prepareInvocationSyncTarget: (
+      sourceKey,
+      templateSourceKey,
+      sessionLimit,
+      identity
+    ) =>
       source.prepareInvocationSyncTarget?.(
         sourceKey,
         templateSourceKey,
-        sessionLimit
+        sessionLimit,
+        identity
       ) ?? Promise.resolve(),
     loadReadyInvocationSyncParts: (sourceKey, now, limit) =>
       source.loadReadyInvocationSyncParts?.(sourceKey, now, limit) ??
       Promise.resolve([]),
-    recordInvocationSyncRetry: (
-      sourceKey,
-      part,
-      attemptCount,
-      nextAttemptAt,
-      error
-    ) =>
-      source.recordInvocationSyncRetry?.(
-        sourceKey,
-        part,
-        attemptCount,
-        nextAttemptAt,
-        error
-      ) ?? Promise.resolve(),
+    recoverInvocationSyncDeadLetters: (sourceKey, now, limit) =>
+      source.recoverInvocationSyncDeadLetters?.(sourceKey, now, limit) ??
+      Promise.resolve({
+        recoveredParts: 0,
+        cappedParts: 0,
+        quarantinedParts: 0,
+      }),
+    recordInvocationSyncRetry: (sourceKey, part, retry) =>
+      source.recordInvocationSyncRetry?.(sourceKey, part, retry) ??
+      Promise.resolve(),
     clearAcknowledgedInvocationSyncPart: (sourceKey, ack) =>
       source.clearAcknowledgedInvocationSyncPart?.(sourceKey, ack) ??
       Promise.resolve(false),
-    deadLetterInvocationSyncPart: (sourceKey, part, attemptCount, error) =>
-      source.deadLetterInvocationSyncPart?.(
-        sourceKey,
-        part,
-        attemptCount,
-        error
-      ) ?? Promise.resolve(false),
+    deadLetterInvocationSyncPart: (sourceKey, part, deadLetter) =>
+      source.deadLetterInvocationSyncPart?.(sourceKey, part, deadLetter) ??
+      Promise.resolve(false),
   };
 }

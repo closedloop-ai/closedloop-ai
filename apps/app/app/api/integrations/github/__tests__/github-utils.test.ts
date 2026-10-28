@@ -1,14 +1,32 @@
+import { GitHubConnectReturnSegment } from "@repo/api/src/types/github-clerk-link";
 import { describe, expect, it } from "vitest";
+import { getCanonicalBranchViewReturnPath } from "../github-return-path";
 import {
   createGitHubOAuthReturnToCookie,
-  getCanonicalBranchViewReturnPath,
+  getGitHubLinkRedirectUrl,
   verifyGitHubOAuthReturnToCookie,
 } from "../github-utils";
 
 describe("GitHub OAuth return helpers", () => {
+  // ISS-5958: the desktop opener and this validator gate the same two-process
+  // contract. They read one list now, and this asserts THIS side honors every
+  // entry on it -- the desktop suite asserts the same list from its side, so a
+  // segment added to the list cannot reach production honored by only one.
+  it.each(Object.values(GitHubConnectReturnSegment))(
+    "honors the shared %s return segment, org-qualified or not",
+    (segment) => {
+      expect(
+        getCanonicalBranchViewReturnPath(`/${segment}`, { orgSlug: "acme" })
+      ).toBe(`/acme/${segment}`);
+      expect(getCanonicalBranchViewReturnPath(`/acme/${segment}`)).toBe(
+        `/acme/${segment}`
+      );
+    }
+  );
+
   it("accepts only canonical GitHub-gated surface return paths", () => {
     expect(getCanonicalBranchViewReturnPath("/acme/build/branch-1")).toBe(
-      "/acme/build/branch-1"
+      "/acme/branches/branch-1"
     );
     expect(getCanonicalBranchViewReturnPath("/acme/branches")).toBe(
       "/acme/branches"
@@ -36,6 +54,15 @@ describe("GitHub OAuth return helpers", () => {
     expect(
       getCanonicalBranchViewReturnPath("/agents", { orgSlug: "acme" })
     ).toBe("/acme/agents");
+    // ISS-5958 M4: desktop Settings → Account asks to come back to /settings
+    // after connecting. Both allowlists — the desktop opener's and this one —
+    // have to accept it, or the request degrades to Branches here instead.
+    expect(getCanonicalBranchViewReturnPath("/acme/settings")).toBe(
+      "/acme/settings"
+    );
+    expect(
+      getCanonicalBranchViewReturnPath("/settings", { orgSlug: "acme" })
+    ).toBe("/acme/settings");
 
     for (const returnTo of [
       "https://evil.example.test/acme/build/branch-1",
@@ -49,6 +76,9 @@ describe("GitHub OAuth return helpers", () => {
       "/acme/insights/extra",
       "/acme/agents?github=connected",
       "/acme/agents/extra",
+      "/acme/settings?tab=integrations",
+      "/acme/settings/extra",
+      "/settings",
       "/acme/branch/branch-1",
       "/acme/build/%2e%2e",
       "/acme/build/foo%2fbar",
@@ -100,5 +130,20 @@ describe("GitHub OAuth return helpers", () => {
         state: "state-1",
       })
     ).toBeNull();
+  });
+});
+
+describe("getGitHubLinkRedirectUrl", () => {
+  it("carries the pending installation and the return target to the link page", () => {
+    expect(getGitHubLinkRedirectUrl("42", "/acme/branches")).toBe(
+      "http://localhost:3000/connect/github/link?returnTo=%2Facme%2Fbranches&resumeInstallationId=42"
+    );
+  });
+
+  it("drops a non-numeric installation id rather than echoing it", () => {
+    // The id arrives on a query string; only GitHub's own integer ids resume.
+    expect(getGitHubLinkRedirectUrl("../evil")).toBe(
+      "http://localhost:3000/connect/github/link"
+    );
   });
 });

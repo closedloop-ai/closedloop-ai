@@ -1,14 +1,7 @@
 import { dialog } from "electron";
+import { SandboxIpcChannel } from "../../shared/sandbox-ipc-channel.js";
 import { assertTrustedIpcSender } from "./ipc-trusted-sender.js";
 import { inspectSandboxPath } from "./sandbox-inspect.js";
-
-export const SandboxIpcChannel = {
-  PickSandboxDirectory: "desktop:pick-sandbox-directory",
-  InspectSandboxPath: "desktop:inspect-sandbox-path",
-} as const;
-
-export type SandboxIpcChannel =
-  (typeof SandboxIpcChannel)[keyof typeof SandboxIpcChannel];
 
 type IpcMainLike = {
   handle: (

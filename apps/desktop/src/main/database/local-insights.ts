@@ -1,6 +1,4 @@
 import type {
-  AgentPipelineEdge,
-  AgentPipelineNode,
   AgentsInsightsResponse,
   DeliveryInsightsResponse,
   InsightsPeriod,
@@ -12,32 +10,29 @@ import {
   KpiFormat,
   kpi,
 } from "@closedloop-ai/loops-api/insights";
-import {
-  AGENT_FAILED_STATUS_TERMS,
-  AGENT_SUCCESS_STATUS_TERMS,
-} from "@repo/api/src/agent-session-status";
 import { labelize } from "@repo/api/src/utils/string";
-import { addStorageTokenCounts } from "../cost/token-counts.js";
-import { PrState } from "../enrichment/types.js";
 import {
+  sessionDateWindowNotNullSql,
+  sessionDateWindowTsExpr,
+} from "../agent-sync/session-date-window.js";
+import {
+  type DayCount,
   localDay,
   localHour,
   numberOrZero as num,
-  tokenCountValue,
-  toolInvocationPredicate,
 } from "./db-helpers.js";
+import { computeAgents } from "./local-insights-agents.js";
 import { computeDelivery } from "./local-insights-delivery.js";
+import { windowPopulationField } from "./local-insights-population.js";
 import { eachDay, type Range, resolveRange } from "./local-insights-range.js";
-import { buildModelSeries, gapFilledSeries } from "./local-insights-series.js";
-import { computeLocalSpendByOutcome } from "./local-insights-spend.js";
+import { gapFilledSeries } from "./local-insights-series.js";
 import { buildUtilizationTileAvailability } from "./local-insights-tiles.js";
-import { currentWindowSpendScopeSql } from "./local-insights-window-sql.js";
+import { sessionsWindowSql } from "./local-insights-window-sql.js";
 import {
   excludeNonDeliveryOnlyArtifacts,
   resolveNonDeliveryOnlyArtifactIds,
 } from "./non-delivery-artifacts.js";
 import type { DesktopPrisma } from "./prisma-client.js";
-import { allocateRoundedUsdValues } from "./usd-allocation.js";
 
 /*
  * ISS-5938: every RAW aggregate in this module is dispatched through
@@ -61,6 +56,10 @@ import { allocateRoundedUsdValues } from "./usd-allocation.js";
  */
 
 // --- Human/Agent TURN attribution (activity heatmap + autonomy trend) ---------
+//
+// Both charts share this ruling. The activity heatmap is computed below in
+// `computeUtilization`; the autonomy trend is in `local-insights-agents.ts`,
+// which points back here rather than restating any of it.
 //
 // PM ruling 2026-07-10 (FEA-2641 Fix 4): the heatmap and autonomy trend chart
 // conversational TURNS attributed by their OWN role, not event density gated
@@ -93,8 +92,15 @@ import { allocateRoundedUsdValues } from "./usd-allocation.js";
 //     DATA_REVISION 13): "codex_exec" / "claude-codex-exec" (scripted; 1,092
 //     rollouts) vs "codex-tui" / "codex_cli_rs" / "codex_vscode"
 //     (interactive; 455) — no interactive value contains "exec".
-// Hence LIKE 'sdk%' OR LIKE '%exec%'. The check is positive-evidence only:
-// an absent entrypoint, "cli", tui/vscode values, or a legacy harness
+// ISS-7260: this module hand-writes NO such predicate, and the census above is
+// the evidence behind one, not a restatement of it. The rule is
+// `isHeadlessSession` (@repo/lib session-trace/headless) — an `sdk-` PREFIX or an
+// `exec` TOKEN or `permissionMode = bypassPermissions` — which the ingest-time
+// `session_turn_bucket` writer applies once and this module then only GROUPs BY.
+// Read the predicate there; the sentence this replaces said `LIKE 'sdk%'`, which
+// is a DIFFERENT rule (`sdkfoo` matches it and does not match `sdk-`) and had
+// drifted from the code it claimed to describe. The check is positive-evidence
+// only: an absent entrypoint, "cli", tui/vscode values, or a legacy harness
 // fallback (e.g. plain "codex") stays interactive, so genuine typed prompts
 // are never demoted by missing data.
 //
@@ -134,11 +140,21 @@ type LocalInsightsResponse =
  * day/hour bucket this module emits for display converts to the user's LOCAL
  * timezone via localDay()/localHour() in SQL and formatLocalDayKey()/eachDay()
  * in JS — the two sides must stay in lockstep (matching keys) or charts silently
- * drop data. Window BOUNDARIES stay rolling UTC instants (resolveRange); only
- * bucket labels are local. This restores the pre-SQLite-migration behavior
+ * drop data. Window BOUNDARIES are UTC, never local; only bucket labels are
+ * local. This restores the pre-SQLite-migration behavior
  * (Postgres bucketed AT TIME ZONE; FEA-1459's port made buckets UTC). The
  * desktop main process runs on the user's machine, so 'localtime' == the
  * user's OS timezone, DST handled per-date by the OS tz database.
+ *
+ * Which UTC instants (ISS-10583): `resolveRange` no longer returns a rolling
+ * 168h window ending at `now`. It returns a STABLE UTC DAY window — whole days,
+ * so the same selection resolves to the same bounds all day and matches what
+ * the Sessions surfaces and the cloud `resolvePeriodRange` resolve. That makes
+ * `endIso` run AHEAD of the clock, which is why the range also carries
+ * `elapsedEndIso`: the day-axis walk and the prior-window bound stop at the
+ * instant the window has actually reached, so no column is drawn for a day that
+ * has not happened. Totals deliberately keep the nominal `endIso` — see the
+ * note on `resolvePeriodRange` in `apps/api/app/insights/service/period.ts`.
  */
 export function computeLocalInsights(
   prisma: DesktopPrisma,
@@ -180,479 +196,33 @@ export function computeLocalInsights(
   return computeDelivery(prisma, range);
 }
 
-async function computeAgents(
-  prisma: DesktopPrisma,
-  range: Range
-): Promise<AgentsInsightsResponse> {
-  // token_usage has no Prisma relation to sessions (no DB FK — see schema), and
-  // this is a COUNT(DISTINCT)/SUM aggregate over the join, so it stays raw.
-  //
-  // FEA-3487: fold the pre-compaction `baseline_*` totals into every token SUM
-  // (input/output/cache_read/cache_write AND the derived input+output `tokens`),
-  // mirroring the session_analytics rollup (session-analytics-rollup.ts) and the FEA-3317
-  // sync-source fold. The sibling cost KPI is already priced on the EFFECTIVE
-  // total (currentWindowCostSql sums cost_usd_estimated, which prices
-  // current + baseline), so without this fold a Claude-Code context-compacted
-  // session reports full incurred cost against a post-compaction token subset —
-  // the two disagree in one dashboard and the AI-Impact card's Tokens-per-KLOC
-  // numerator undercounts (and diverges from cloud, which folds baseline into
-  // its synced tokens). `baseline_*` is NOT NULL DEFAULT 0, so the inner
-  // COALESCE is defensive and the fold reduces to current-only for
-  // never-compacted rows.
-  const totals = await prisma.read((reader) =>
-    reader.$queryRawUnsafe<
-      {
-        input_tokens: bigint;
-        output_tokens: bigint;
-        cache_read_tokens: bigint;
-        cache_write_tokens: bigint;
-        tokens: bigint;
-        models: bigint;
-      }[]
-    >(
-      `SELECT COALESCE(SUM(COALESCE(t.input_tokens, 0) + COALESCE(t.baseline_input, 0)), 0) AS input_tokens,
-              COALESCE(SUM(COALESCE(t.output_tokens, 0) + COALESCE(t.baseline_output, 0)), 0) AS output_tokens,
-              COALESCE(SUM(COALESCE(t.cache_read_tokens, 0) + COALESCE(t.baseline_cache_read, 0)), 0) AS cache_read_tokens,
-              COALESCE(SUM(COALESCE(t.cache_write_tokens, 0) + COALESCE(t.baseline_cache_write, 0)), 0) AS cache_write_tokens,
-              COALESCE(SUM(COALESCE(t.input_tokens, 0) + COALESCE(t.baseline_input, 0)
-                         + COALESCE(t.output_tokens, 0) + COALESCE(t.baseline_output, 0)), 0) AS tokens,
-              COUNT(DISTINCT t.model) AS models
-       FROM token_usage t
-       JOIN sessions s ON s.id = t.session_id
-       WHERE s.started_at IS NOT NULL
-         AND s.started_at BETWEEN $1 AND $2
-         AND t.model IS NOT NULL`,
-      range.startIso,
-      range.endIso
-    )
-  );
-  // `tools` / `toolUsage` aggregate over `events`, which has no Prisma relation
-  // to `sessions` (events can predate their session) — raw. `agentsByStatus` /
-  // `agentsByType` ARE typed: agents reach sessions via the real `session`
-  // relation, so the date filter is a relation-where and the COUNT is a groupBy.
-  const [tools, toolUsage, agentsByStatus, agentsByType] = await Promise.all([
-    prisma.read((reader) =>
-      reader.$queryRawUnsafe<{ n: bigint }[]>(
-        `SELECT COUNT(*) AS n
-       FROM events e
-       JOIN sessions s ON s.id = e.session_id
-       WHERE ${toolInvocationPredicate("e.tool_name")}
-         AND s.started_at IS NOT NULL
-         AND s.started_at BETWEEN $1 AND $2`,
-        range.startIso,
-        range.endIso
-      )
-    ),
-    prisma.read((reader) =>
-      reader.$queryRawUnsafe<{ tool_name: string; n: bigint }[]>(
-        `SELECT e.tool_name AS tool_name, COUNT(*) AS n
-         FROM events e
-         JOIN sessions s ON s.id = e.session_id
-         WHERE ${toolInvocationPredicate("e.tool_name")}
-           AND s.started_at IS NOT NULL
-           AND s.started_at BETWEEN $1 AND $2
-         GROUP BY e.tool_name
-         ORDER BY n DESC, e.tool_name ASC
-         LIMIT 20`,
-        range.startIso,
-        range.endIso
-      )
-    ),
-    prisma.client.agent.groupBy({
-      by: ["status"],
-      where: {
-        session: { startedAt: { gte: range.startIso, lte: range.endIso } },
-      },
-      _count: { _all: true },
-    }),
-    prisma.client.agent.groupBy({
-      by: ["type"],
-      where: {
-        session: { startedAt: { gte: range.startIso, lte: range.endIso } },
-      },
-      _count: { _all: true },
-    }),
-  ]);
-  // Aggregate agent-pipeline graph (FEA-3537): nodes by agent/subagent type,
-  // edges by parent→child hand-off (agents.parent_agent_id self-join, the same
-  // linkage getWorkflowData uses). Status is matched with the shared success/
-  // failure term set (LIKE) so it survives harness-specific variants; the terms
-  // are fixed constants (no injection risk). Blank type collapses to "unknown"
-  // for both node and edge endpoints so every edge source/target has a matching
-  // node (a "main" source with no "main" node would crash the d3 graph),
-  // matching the cloud rollup.
-  const statusLike = (col: string, terms: readonly string[]) =>
-    terms.map((term) => `lower(${col}) LIKE '%${term}%'`).join(" OR ");
-  const [agentPipelineNodeRows, agentPipelineEdgeRows] = await Promise.all([
-    prisma.read((reader) =>
-      reader.$queryRawUnsafe<
-        {
-          subagent_type: string;
-          total: bigint;
-          completed: bigint;
-          errors: bigint;
-          sessions: bigint;
-          avg_duration: number | null;
-        }[]
-      >(
-        `SELECT
-           COALESCE(NULLIF(TRIM(a.subagent_type), ''), NULLIF(TRIM(a.type), ''), 'unknown') AS subagent_type,
-           COUNT(*) AS total,
-           SUM(CASE WHEN (${statusLike("a.status", AGENT_SUCCESS_STATUS_TERMS)}) THEN 1 ELSE 0 END) AS completed,
-           SUM(CASE WHEN (${statusLike("a.status", AGENT_FAILED_STATUS_TERMS)}) THEN 1 ELSE 0 END) AS errors,
-           COUNT(DISTINCT a.session_id) AS sessions,
-           AVG(
-             CASE
-               WHEN a.started_at IS NOT NULL AND COALESCE(a.ended_at, a.updated_at) IS NOT NULL
-               THEN unixepoch(COALESCE(a.ended_at, a.updated_at), 'subsec') - unixepoch(a.started_at, 'subsec')
-               ELSE NULL
-             END
-           ) AS avg_duration
-         FROM agents a
-         JOIN sessions s ON s.id = a.session_id
-         WHERE s.started_at IS NOT NULL
-           AND s.started_at BETWEEN $1 AND $2
-         GROUP BY subagent_type
-         ORDER BY total DESC
-         LIMIT 50`,
-        range.startIso,
-        range.endIso
-      )
-    ),
-    prisma.read((reader) =>
-      reader.$queryRawUnsafe<
-        { source: string; target: string; weight: bigint }[]
-      >(
-        `SELECT
-           COALESCE(NULLIF(TRIM(p.subagent_type), ''), NULLIF(TRIM(p.type), ''), 'unknown') AS source,
-           COALESCE(NULLIF(TRIM(c.subagent_type), ''), NULLIF(TRIM(c.type), ''), 'unknown') AS target,
-           COUNT(*) AS weight
-         FROM agents c
-         JOIN agents p ON c.parent_agent_id = p.id
-         JOIN sessions s ON s.id = c.session_id
-         WHERE s.started_at IS NOT NULL
-           AND s.started_at BETWEEN $1 AND $2
-         GROUP BY source, target
-         ORDER BY weight DESC
-         LIMIT 50`,
-        range.startIso,
-        range.endIso
-      )
-    ),
-  ]);
-  const agentPipelineNodes: AgentPipelineNode[] = agentPipelineNodeRows.map(
-    (row) => {
-      const completed = num(row.completed);
-      const errors = num(row.errors);
-      const finished = completed + errors;
-      return {
-        subagentType: row.subagent_type,
-        total: num(row.total),
-        completed,
-        errors,
-        sessions: num(row.sessions),
-        // An unfinished type reads as 100% (no failures yet), matching cloud.
-        successRate: finished > 0 ? (completed / finished) * 100 : 100,
-        avgDuration: row.avg_duration == null ? null : row.avg_duration,
-        trend: [],
-      };
-    }
-  );
-  const agentPipelineEdges: AgentPipelineEdge[] = agentPipelineEdgeRows.map(
-    (row) => ({
-      source: row.source,
-      target: row.target,
-      weight: num(row.weight),
-    })
-  );
-  const toolsOverTime = await prisma.read((reader) =>
-    reader.$queryRawUnsafe<DayCount[]>(
-      `-- ISS-5493: shares toolInvocationPredicate with the tools KPI and
-       -- toolUsage above and with the analytics byTool breakdown, so all four
-       -- report the same corpus. See that helper for why NULL alone was wrong.
-       SELECT ${localDay("s.started_at")} AS day,
-              COUNT(*) AS n
-       FROM events e
-       JOIN sessions s ON s.id = e.session_id
-       WHERE ${toolInvocationPredicate("e.tool_name")}
-         AND s.started_at IS NOT NULL
-         AND s.started_at BETWEEN $1 AND $2
-       GROUP BY day`,
-      range.trendStartIso,
-      range.endIso
-    )
-  );
-  // FEA-2331: the model charts measure estimated SPEND (USD), not token volume.
-  // Token-share-by-model is misleading for cache-heavy harnesses — Claude Code's
-  // prompt-cache reuse pushes ~all real token volume into cache_read_tokens
-  // (excluded from input+output), so a low-cache tool can outrank it on tokens
-  // while costing far less. Cost is cache-neutral, so it reflects where the money
-  // actually goes. `cost_usd_estimated` is a REAL column → driver yields a float,
-  // so these stay plain numbers (NOT the safe-integer token helpers). NULL costs
-  // COALESCE to 0 (treated as $0) rather than dropping the row.
-  // One statement owns both grouped buckets and their direct-SUM target, so a
-  // concurrent ingest cannot land between two reads and be assigned as a
-  // residual to a stale model set.
-  const modelSpendRows = await prisma.read((reader) =>
-    reader.$queryRawUnsafe<{ model: string; total: number; value: number }[]>(
-      `WITH scopedModelSpend AS (
-         SELECT t.model AS model, t.cost_usd_estimated AS cost
-         ${currentWindowSpendScopeSql}
-           AND t.model IS NOT NULL
-       ), modelSpendTotal AS (
-         SELECT COALESCE(SUM(cost), 0) AS total
-         FROM scopedModelSpend
-       )
-       SELECT spend.model AS model,
-              COALESCE(SUM(spend.cost), 0) AS value,
-              totals.total AS total
-       FROM scopedModelSpend spend
-       CROSS JOIN modelSpendTotal totals
-       GROUP BY spend.model, totals.total
-       ORDER BY COALESCE(SUM(spend.cost), 0) DESC`,
-      range.startIso,
-      range.endIso
-    )
-  );
-  const overTime = await prisma.read((reader) =>
-    reader.$queryRawUnsafe<
-      {
-        day: string;
-        model: string;
-        value: number;
-        tokens: number | bigint;
-      }[]
-    >(
-      // FEA-3497: alongside per-(day, model) spend, sum total token volume (input +
-      // output + cache read/write) so the shared Model Usage chart can toggle
-      // between $ and #. Mirrors the cloud `fetchModelUsageRows` token semantics and
-      // day bucketing so web and desktop compute usage the same. Desktop additionally
-      // folds the `baseline_*` columns exactly as the KPI totals above do (191-196):
-      // for a compacted Claude/Codex session the effective per-model totals live in
-      // current + baseline, so summing only the current columns would under-report
-      // `#` usage and disagree with the Tokens/Cache KPIs and priced spend on any
-      // model/day with nonzero baselines. Cloud has no compaction baselines, so this
-      // fold is desktop-only. `cost_usd_estimated` is a REAL column (float); the token
-      // columns are integers, so their SUM stays whole and is read via `num` at build.
-      `SELECT ${localDay("s.started_at")} AS day,
-              t.model AS model,
-              COALESCE(SUM(t.cost_usd_estimated), 0) AS value,
-              COALESCE(
-                SUM(
-                  COALESCE(t.input_tokens, 0) + COALESCE(t.baseline_input, 0)
-                  + COALESCE(t.output_tokens, 0) + COALESCE(t.baseline_output, 0)
-                  + COALESCE(t.cache_read_tokens, 0) + COALESCE(t.baseline_cache_read, 0)
-                  + COALESCE(t.cache_write_tokens, 0) + COALESCE(t.baseline_cache_write, 0)
-                ),
-                0
-              ) AS tokens
-       FROM token_usage t
-       JOIN sessions s ON s.id = t.session_id
-       WHERE s.started_at BETWEEN $1 AND $2 AND t.model IS NOT NULL
-       GROUP BY day, t.model`,
-      range.trendStartIso,
-      range.endIso
-    )
-  );
-  // Daily autonomy index (0 manual → 100 agentic): the share of the day's
-  // parsed conversational turns that were the agent's (role:"assistant") vs
-  // the human's (role:"human"), from the SAME turn source as the activity
-  // heatmap (TURNS_BY_ROLE_SOURCE) so the trend line and the heatmap split
-  // always agree. Turn-based per the FEA-2641 Fix 4 PM ruling — a
-  // human-steered session's autonomous stretches score agentic on the days
-  // they ran instead of inheriting the session's Human flag. Harness-agnostic
-  // because every parser emits role-tagged messages (unlike the abandoned
-  // events-corpus turn ratio, which went flat for harnesses whose events
-  // carry no "assistant" type).
-  // FEA-3059: bounded-scan autonomy. Sum per-day agent/total turn counts across
-  // session-id batches, then compute the ratio once — identical to the old
-  // single-pass `100.0 * agentFilter / NULLIF(total,0)` but the json_each scan
-  // never exceeds TURNS_SCAN_CHUNK sessions.
-  // FEA-3132: read the pre-materialized `session_turn_bucket` (built at ingest by
-  // rebuildSessionTurnBuckets) instead of json_each-expanding `$.messages` every
-  // load. `turn_kind` already encodes the role+headless predicate; SUM(turn_count)
-  // reproduces the old COUNT(*). Window on the SESSION's started_at (matching the
-  // old windowSessionIds), bucket the raw UTC ts to local at read time.
-  const autonomyRows = await prisma.read((reader) =>
-    reader.$queryRawUnsafe<{ day: string; agent: bigint; total: bigint }[]>(
-      `SELECT ${localDay("b.ts")} AS day,
-              SUM(CASE WHEN b.turn_kind = 'agent' THEN b.turn_count ELSE 0 END) AS agent,
-              SUM(b.turn_count) AS total
-       FROM session_turn_bucket b
-       JOIN sessions s ON s.id = b.session_id
-       WHERE s.started_at IS NOT NULL AND s.started_at BETWEEN $1 AND $2
-       GROUP BY day
-       HAVING day IS NOT NULL`,
-      range.trendStartIso,
-      range.endIso
-    )
-  );
-  const autonomy = autonomyRows.map((r) => {
-    const total = num(r.total);
-    return {
-      day: r.day,
-      median: total > 0 ? (100.0 * num(r.agent)) / total : 0,
-    };
-  });
-
-  const row = totals[0];
-  const inputTokens = tokenCountValue(
-    row?.input_tokens,
-    "insights.agents.input_tokens"
-  );
-  const outputTokens = tokenCountValue(
-    row?.output_tokens,
-    "insights.agents.output_tokens"
-  );
-  const cacheReadTokens = tokenCountValue(
-    row?.cache_read_tokens,
-    "insights.agents.cache_read_tokens"
-  );
-  const cacheWriteTokens = tokenCountValue(
-    row?.cache_write_tokens,
-    "insights.agents.cache_write_tokens"
-  );
-  const cacheTokens = addStorageTokenCounts(
-    cacheReadTokens,
-    cacheWriteTokens,
-    "insights.agents.cache_tokens"
-  );
-  // ISS-4463: same spend basis as the model breakdown, split by the originating
-  // session's lifecycle outcome. Owned by its own module so this file (over the
-  // size ceiling, shrink-only) does not grow.
-  const spendByOutcome = await computeLocalSpendByOutcome(
-    prisma,
-    currentWindowSpendScopeSql,
-    range.startIso,
-    range.endIso,
-    allocateRoundedUsdValues
-  );
-  const roundedBreakdown = allocateRoundedUsdValues(
-    Object.fromEntries(
-      modelSpendRows.map((item) => [item.model, num(item.value)])
-    ),
-    num(modelSpendRows[0]?.total)
-  );
-  const kpis: KpiStat[] = [
-    kpi(
-      "tokens",
-      "Tokens",
-      tokenCountValue(row?.tokens, "insights.agents.tokens"),
-      KpiFormat.Tokens,
-      "consumed in range"
-    ),
-    kpi(
-      "input-tokens",
-      "Input tokens",
-      inputTokens,
-      KpiFormat.Tokens,
-      "prompt tokens"
-    ),
-    kpi(
-      "output-tokens",
-      "Output tokens",
-      outputTokens,
-      KpiFormat.Tokens,
-      "completion tokens"
-    ),
-    kpi(
-      "cache-tokens",
-      "Cache saved",
-      cacheTokens,
-      KpiFormat.Tokens,
-      "cache read/write tokens"
-    ),
-    kpi(
-      "models",
-      "Models in use",
-      num(row?.models),
-      KpiFormat.Number,
-      "distinct models"
-    ),
-    kpi(
-      "tool-runs",
-      "Tool runs",
-      num(tools[0]?.n),
-      KpiFormat.Number,
-      "tool invocations"
-    ),
-  ];
-
-  // Spend + token series share the same top-N models so the shared chart's $/#
-  // toggle only swaps y-values (FEA-3497).
-  const modelSeries = buildModelSeries(overTime, range);
-
-  return {
-    kpis,
-    charts: {
-      modelUsageOverTime: modelSeries.spend,
-      modelTokensOverTime: modelSeries.tokens,
-      autonomyTrend: gapFilledSeries(
-        new Map(autonomy.map((r) => [r.day, num(r.median)])),
-        range,
-        { key: "autonomy", label: "Autonomy" },
-        null
-      ),
-      modelBreakdown: modelSpendRows.map((r) => ({
-        key: r.model,
-        label: r.model,
-        // USD spend (float), allocated to cents — NOT a token count.
-        value: roundedBreakdown[r.model] ?? 0,
-      })),
-      tokenDistribution: [
-        { key: "input", label: "Input", value: inputTokens },
-        { key: "output", label: "Output", value: outputTokens },
-        { key: "cache-read", label: "Cache read", value: cacheReadTokens },
-        { key: "cache-write", label: "Cache write", value: cacheWriteTokens },
-      ],
-      toolUsage: toolUsage.map((row) => ({
-        key: row.tool_name,
-        label: row.tool_name,
-        value: num(row.n),
-      })),
-      // Typed agent.groupBy returns `_count._all` (a number); the SQL's
-      // `ORDER BY n DESC` is reproduced by sorting the groups in JS.
-      agentsByStatus: [...agentsByStatus]
-        .sort((a, b) => b._count._all - a._count._all)
-        .map((g) => ({
-          key: g.status,
-          label: labelize(g.status),
-          value: num(g._count._all),
-        })),
-      agentsByType: [...agentsByType]
-        .sort((a, b) => b._count._all - a._count._all)
-        .map((g) => ({
-          // a.type is nullable; mirror the SQL's COALESCE(type, 'unknown').
-          key: g.type ?? "unknown",
-          label: labelize(g.type ?? "unknown"),
-          value: num(g._count._all),
-        })),
-      toolRunsOverTime: gapFilledSeries(
-        new Map(toolsOverTime.map((row) => [row.day, num(row.n)])),
-        range,
-        { key: "tool-runs", label: "Tool runs" }
-      ),
-      agentPipeline: {
-        nodes: agentPipelineNodes,
-        edges: agentPipelineEdges,
-      },
-      spendByOutcome,
-    },
-  };
-}
-
 async function computeUtilization(
   prisma: DesktopPrisma,
   range: Range
 ): Promise<UtilizationInsightsResponse> {
-  // FILTER aggregate + a correlated COUNT subquery over `events` (no session
-  // relation) — no typed-delegate form, stays raw.
+  // ISS-10604: the ONE column this section's session window is measured
+  // against, resolved upstream and carried on the range.
+  const windowTs = sessionDateWindowTsExpr(range.dateWindowField);
+  const windowNotNull = sessionDateWindowNotNullSql(range.dateWindowField);
+  const sessionsWindow = sessionsWindowSql(
+    range.dateWindowField,
+    range.sessionsWindow
+  );
+  // FILTER aggregate over `sessions` — no typed-delegate form, stays raw.
+  //
+  // The "Events" KPI deliberately does NOT live here: it rides on the
+  // `eventsByType` breakdown below, which already scans that cohort (see there).
+  // The `sessions` and `events` figures therefore do not share a statement and
+  // can straddle a concurrent commit — invisible, because they count different
+  // tables and no rendered figure is derived from both (these reads are
+  // separately dispatched and never snapshot-consistent; see the
+  // `computeDelivery` header). The pairing a reader COULD see disagree — the
+  // events KPI against its own breakdown — is the one held in a single read.
   const totals = await prisma.read((reader) =>
     reader.$queryRawUnsafe<
       {
         sessions: bigint;
         runtime_ms: number;
-        events: bigint;
       }[]
     >(
       `SELECT COUNT(*) AS sessions,
@@ -661,28 +231,24 @@ async function computeUtilization(
               ) FILTER (
                 WHERE s.ended_at IS NOT NULL
                   AND s.ended_at > s.started_at
-              ), 0) AS runtime_ms,
-              (
-                SELECT COUNT(*)
-                FROM events e
-                JOIN sessions es ON es.id = e.session_id
-                WHERE es.started_at IS NOT NULL
-                  AND es.started_at BETWEEN $1 AND $2
-              ) AS events
+              ), 0) AS runtime_ms
        FROM sessions s
-       WHERE s.started_at IS NOT NULL AND s.started_at BETWEEN $1 AND $2`,
-      range.startIso,
-      range.endIso
+       WHERE ${sessionsWindow.sql}`,
+      ...sessionsWindow.params
     )
   );
+  // ISS-10604: the day series is bucketed AND windowed on the same column the
+  // KPI above counts on. Splitting them would put a session the KPI counts in a
+  // bucket outside the chart's own axis, which is a tile disagreeing with the
+  // sparkline directly beneath it.
   const perDay = await prisma.read((reader) =>
     reader.$queryRawUnsafe<DayCount[]>(
-      `SELECT ${localDay("started_at")} AS day, COUNT(*) AS n
-       FROM sessions
-       WHERE started_at BETWEEN $1 AND $2
+      `SELECT ${localDay(windowTs)} AS day, COUNT(*) AS n
+       FROM sessions s
+       WHERE ${windowNotNull} AND ${windowTs} BETWEEN $1 AND $2
        GROUP BY day`,
       range.trendStartIso,
-      range.endIso
+      range.elapsedEndIso
     )
   );
   // FEA-3091: scope the events-per-day series by the EVENT time
@@ -705,12 +271,28 @@ async function computeUtilization(
          AND e.created_at BETWEEN $1 AND $2
        GROUP BY day`,
       range.trendStartIso,
-      range.endIso
+      range.elapsedEndIso
     )
   );
+  // `total` is the "Events" KPI AND, since ISS-9842, the denominator the
+  // "Events by type" ring divides every slice by; `categories` is how many
+  // event-type groups exist, so the ring can say how many types its "Other"
+  // slice folds. Both are unpartitioned windows over the GROUPED result, which
+  // SQLite evaluates after `GROUP BY` and before `ORDER BY`/`LIMIT`, so they
+  // cover EVERY event-type group — including one this `LIMIT 12` discards, and
+  // including the EMPTY-STRING `event_type` bucket `GROUP BY` keeps as a group
+  // of its own (the column is NOT NULL in the shipped DDL, so there is no NULL
+  // bucket to reason about). Summing the twelve
+  // RETURNED rows would under-report on any store with more than twelve event
+  // types, which every real one has.
   const eventsByType = await prisma.read((reader) =>
-    reader.$queryRawUnsafe<{ event_type: string; n: bigint }[]>(
-      `SELECT e.event_type AS event_type, COUNT(*) AS n
+    reader.$queryRawUnsafe<
+      { event_type: string; n: bigint; total: bigint; categories: bigint }[]
+    >(
+      `SELECT e.event_type AS event_type,
+              COUNT(*) AS n,
+              SUM(COUNT(*)) OVER () AS total,
+              COUNT(*) OVER () AS categories
        FROM events e
        JOIN sessions s ON s.id = e.session_id
        WHERE s.started_at IS NOT NULL
@@ -723,9 +305,28 @@ async function computeUtilization(
     )
   );
   // Typed: sessions.status is a plain column; the date filter is a column range.
+  //
+  // ISS-10604: windowed on the SAME column as the `sessions` KPI above, which
+  // this chart decomposes. Cloud gets that for free — its status buckets fall
+  // out of `fetchSessionRollup`'s own GROUP BY — so leaving desktop on the
+  // started-at column would have made a donut that does not sum to the number
+  // beside it, and made desktop disagree with web about one org.
   const sessionsByStatus = await prisma.client.session.groupBy({
     by: ["status"],
-    where: { startedAt: { gte: range.startIso, lte: range.endIso } },
+    // DERIVED from the range, exactly like the KPI above whose total this donut
+    // decomposes — not spelled out a second time. ISS-10541 narrowed
+    // `range.dateWindowField` to one literal, so the started-at arm this used to
+    // carry is unreachable and gone; a literal HERE would still be a second
+    // declaration of the window column, and tsc cannot catch it drifting from
+    // the KPI's (#7678 review, tamsinb).
+    // ISS-12263: the Sessions-list window, so an absent bound (Prisma ignores
+    // an `undefined` operator) leaves "all" as unbounded as the KPI above.
+    where: {
+      [range.dateWindowField]: {
+        gte: range.sessionsWindow.startDate,
+        lte: range.sessionsWindow.endDate,
+      },
+    },
     _count: { _all: true },
   });
   // ISS-5936: resolve the delivery-population gate once for the section, the
@@ -739,39 +340,22 @@ async function computeUtilization(
     resolveNonDeliveryOnlyArtifactIds(reader)
   );
   // FEA-2951: the "Review backlog" KPI (kpi:backlog) approximates the shared
-  // tile's documented population — "Open PRs awaiting review". This is a
-  // desktop-local APPROXIMATION of, not an exact match for, the web/cloud
-  // `fetchReviewQueue` backlog, which counts OPEN, non-merged PRs whose
-  // `reviewDecision IS NULL` (ISS-4629 scoped it to OPEN + `merged_at IS NULL`;
-  // it is no longer `reviewDecision IS NULL regardless of pr_state`). Desktop has
-  // no per-PR review-decision signal (the `artifacts` table only carries
-  // `pr_state`), so the two populations still legitimately diverge: an open PR
-  // that already has a decision counts here but not on web (web can exclude it,
-  // desktop cannot). FEA-3455: this KPI's tile is Unavailable under personal
-  // scope (see the tileAvailability map below), so the value is retained for
-  // peers that read it but is not rendered.
-  //
-  // Count only PRs we positively know are open (LOWER(pr_state) = PrState.Open,
-  // same casing guard as the merge-rate KPI, FEA-2486) plus un-enriched rows
-  // (pr_state IS NULL) as the intended fallback. We deliberately avoid
-  // `NOT IN ('merged','closed')`: that would fabricate "open" for any
-  // future/unknown lifecycle value, inflating the KPI. Since PLN-1535 M5 the
-  // column has no writer, so every row takes the NULL arm; the guard stays for
-  // whatever fills it next. Unknown non-null states stay OUT of the backlog —
-  // indeterminate, per the rest of the desktop lifecycle code.
+  // tile's "Open PRs awaiting review". Desktop stores no PR state or review
+  // decision (ISS-12709), so every delivery-population PR counts as open, where
+  // web/cloud's `fetchReviewQueue` counts only OPEN PRs with
+  // `reviewDecision IS NULL`. FEA-3455: this KPI's tile is Unavailable under
+  // personal scope (see the tileAvailability map below), so the value is
+  // retained for peers that read it but is not rendered.
   const reviewBacklog = await prisma.read((reader) =>
     reader.$queryRawUnsafe<{ n: bigint }[]>(
       `SELECT COUNT(*) AS n
        FROM artifacts
        WHERE kind = 'pull_request'
          -- ISS-5764: a PR this corpus only ever NAMED in prose is not in its
-         -- review backlog. Without this gate every prose-mentioned PR lands in
-         -- the un-enriched pr_state IS NULL fallback arm below and is counted
-         -- as an open PR awaiting review (measured: 29 -> 52 on the golden
-         -- corpus). Same delivery-population gate the capture/merge KPIs use.
+         -- review backlog. Same delivery-population gate the capture/merge
+         -- KPIs use.
          AND ${excludeNonDeliveryOnlyArtifacts("artifacts.id", nonDeliveryOnlyIds)}
-         AND COALESCE(observed_at, created_at) IS NOT NULL
-         AND (LOWER(pr_state) = '${PrState.Open}' OR pr_state IS NULL)`
+         AND COALESCE(observed_at, created_at) IS NOT NULL`
     )
   );
   // Hour×day TURN density, split into Human vs Agent per turn via
@@ -802,7 +386,7 @@ async function computeUtilization(
        GROUP BY day, hour
        HAVING day IS NOT NULL`,
       range.trendStartIso,
-      range.endIso
+      range.elapsedEndIso
     )
   );
   // Match SQLite's `GROUP BY day, hour` output order (sorted by the group key)
@@ -849,7 +433,9 @@ async function computeUtilization(
     kpi(
       "events",
       "Events",
-      num(row?.events),
+      // Carried identically on every `eventsByType` row; absent (no rows at all)
+      // means no captured events in range, which reads 0.
+      num(eventsByType[0]?.total),
       KpiFormat.Number,
       "captured local events"
     ),
@@ -881,7 +467,7 @@ async function computeUtilization(
       activityHeatmap: {
         // Capped trend window (see the heatmap query above) so the column axis
         // never exceeds 90 days — matches the "Last 90 days (max)" caption.
-        days: eachDay(range.trendStartIso, range.endIso),
+        days: eachDay(range.trendStartIso, range.elapsedEndIso),
         cells: heatmap.map((r) => ({
           day: r.day,
           hour: num(r.hour),
@@ -893,6 +479,7 @@ async function computeUtilization(
         key: row.event_type,
         label: labelize(row.event_type),
         value: num(row.n),
+        ...windowPopulationField(row),
       })),
       // Typed session.groupBy → `_count._all`; sort desc in JS for ORDER BY n DESC.
       sessionsByStatus: [...sessionsByStatus]
@@ -910,6 +497,3 @@ async function computeUtilization(
     },
   };
 }
-
-// A `localDay()`-bucketed COUNT row, shared by the three per-day trend reads.
-type DayCount = { day: string; n: bigint };

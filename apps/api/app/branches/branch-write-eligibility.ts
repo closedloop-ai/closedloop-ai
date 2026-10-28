@@ -30,6 +30,14 @@ export const CloudBranchNonMaterializationKind = {
   ConflictingAuthority: "conflicting_authority",
   DefaultBranch: "default_branch",
   IdentityMismatch: "identity_mismatch",
+  /**
+   * ISS-8148 (PRD-683 Ruling 2): the repository authority accepted this branch,
+   * but no evidence yet proves it reached the remote. The ref is DEFERRED, not
+   * dropped — the desktop re-sends its full ref set every sync, so the next tick
+   * carrying push evidence materializes the row and attaches the producing
+   * session retroactively.
+   */
+  NotPushed: "not_pushed",
 } as const;
 export type CloudBranchNonMaterializationKind =
   (typeof CloudBranchNonMaterializationKind)[keyof typeof CloudBranchNonMaterializationKind];

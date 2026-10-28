@@ -1,116 +1,19 @@
 /**
  * @file enrichment-helpers.test.ts
- * @description FEA-1899 Desktop KLOC Attribution Engine — pure enrichment
- * helpers: shortstat parsing / repo-name normalization / sha validation
- * (git-exec). No I/O; exact-value assertions.
+ * @description FEA-1899 Desktop KLOC Attribution Engine — the pure enrichment
+ * helper that survives: repo-name normalization (git-exec). No I/O;
+ * exact-value assertions.
  *
  * PLN-1535 M5 removed the commit-stat-summing and LOC-rollup cases along with
- * `git-enrichment.ts` / `rollup.ts`; the git-exec helpers below stay because
- * repo-identity capture and the git-only historical backfill still use them.
+ * `git-enrichment.ts` / `rollup.ts`. ISS-5703 then removed the shortstat/SHA
+ * subsystem itself (`gitShowShortstat`, `gitDiffThreeDotShortstat`,
+ * `catFileType`, `isAncestor` and the `parseShortstat` / `validateSha` helpers
+ * behind them) once nothing called it; `normalizeRepoFullName` stays because
+ * repo-identity capture still uses it.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import {
-  normalizeRepoFullName,
-  parseShortstat,
-  validateSha,
-} from "../src/main/enrichment/git-exec.js";
-
-// ---------------------------------------------------------------------------
-// validateSha
-// ---------------------------------------------------------------------------
-
-test("validateSha: accepts 7-char short SHA", () => {
-  assert.equal(validateSha("abc1234"), true);
-});
-
-test("validateSha: accepts 40-char full SHA", () => {
-  assert.equal(validateSha("a".repeat(40)), true);
-});
-
-test("validateSha: accepts mixed hex digits", () => {
-  assert.equal(validateSha("0123456789abcdef0123456789abcdef01234567"), true);
-});
-
-test("validateSha: rejects 6-char SHA (too short)", () => {
-  assert.equal(validateSha("abc123"), false);
-});
-
-test("validateSha: rejects 41-char SHA (too long)", () => {
-  assert.equal(validateSha("a".repeat(41)), false);
-});
-
-test("validateSha: rejects uppercase hex", () => {
-  assert.equal(validateSha("ABCDEF1234567"), false);
-});
-
-test("validateSha: rejects non-hex characters", () => {
-  assert.equal(validateSha("zzzzzzzzzzzzzz"), false);
-});
-
-test("validateSha: rejects empty string", () => {
-  assert.equal(validateSha(""), false);
-});
-
-test("validateSha: rejects SHA with leading dash", () => {
-  assert.equal(validateSha("-abc1234"), false);
-});
-
-// ---------------------------------------------------------------------------
-// parseShortstat
-// ---------------------------------------------------------------------------
-
-test("parseShortstat: standard with insertions and deletions", () => {
-  assert.deepEqual(
-    parseShortstat(" 3 files changed, 10 insertions(+), 5 deletions(-)"),
-    { filesChanged: 3, linesAdded: 10, linesRemoved: 5 }
-  );
-});
-
-test("parseShortstat: insertions only (no deletions)", () => {
-  assert.deepEqual(parseShortstat(" 1 file changed, 4 insertions(+)"), {
-    filesChanged: 1,
-    linesAdded: 4,
-    linesRemoved: 0,
-  });
-});
-
-test("parseShortstat: deletions only (no insertions)", () => {
-  assert.deepEqual(parseShortstat(" 2 files changed, 3 deletions(-)"), {
-    filesChanged: 2,
-    linesAdded: 0,
-    linesRemoved: 3,
-  });
-});
-
-test("parseShortstat: single file changed with counts", () => {
-  assert.deepEqual(
-    parseShortstat(" 1 file changed, 1 insertion(+), 1 deletion(-)"),
-    { filesChanged: 1, linesAdded: 1, linesRemoved: 1 }
-  );
-});
-
-test("parseShortstat: returns null for empty string", () => {
-  assert.equal(parseShortstat(""), null);
-});
-
-test("parseShortstat: returns null for unrelated output", () => {
-  assert.equal(parseShortstat("nothing here"), null);
-});
-
-test("parseShortstat: handles output with trailing newline", () => {
-  assert.deepEqual(
-    parseShortstat(" 5 files changed, 20 insertions(+), 2 deletions(-)\n"),
-    { filesChanged: 5, linesAdded: 20, linesRemoved: 2 }
-  );
-});
-
-test("parseShortstat: large numbers", () => {
-  assert.deepEqual(
-    parseShortstat(" 100 files changed, 9999 insertions(+), 8888 deletions(-)"),
-    { filesChanged: 100, linesAdded: 9999, linesRemoved: 8888 }
-  );
-});
+import { test } from "vitest";
+import { normalizeRepoFullName } from "../src/main/enrichment/git-exec.js";
 
 // ---------------------------------------------------------------------------
 // normalizeRepoFullName

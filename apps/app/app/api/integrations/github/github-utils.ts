@@ -1,6 +1,14 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import { GitHubConnectReturnStatus } from "@repo/api/src/types/github-status";
+import {
+  GITHUB_CLERK_LINK_PATH,
+  GITHUB_RESUME_INSTALLATION_ID_PARAM,
+} from "@repo/api/src/types/github-clerk-link";
+import {
+  GitHubConnectReturnStatus,
+  type GitHubErrorCode,
+} from "@repo/api/src/types/github-status";
 import { z } from "zod";
+import { getCompatibleGitHubReturnPath } from "@/app/api/integrations/github/github-return-path";
 import { env } from "@/env";
 
 // Cookie name for OAuth state (CSRF protection)
@@ -11,9 +19,8 @@ export const GITHUB_OAUTH_RETURN_TO_COOKIE_PATH = "/api/integrations/github";
 const GITHUB_OAUTH_RETURN_TO_COOKIE_VERSION = 1;
 const GITHUB_OAUTH_RETURN_TO_COOKIE_MAX_AGE_MS = 10 * 60 * 1000;
 const GITHUB_OAUTH_RETURN_TO_STATE_HASH_PREFIX = "github_oauth_return_to:v1:";
-const ENCODED_SEPARATOR_OR_DOT_PATTERN = /%(?:2e|2f|5c)/i;
-const ENCODED_DOT_OR_BACKSLASH_PATTERN = /%(?:2e|5c)/i;
-const CR_LF_OR_BACKSLASH_PATTERN = /[\r\n\\]/;
+/** GitHub installation ids are positive integers; anything else is not ours. */
+const NUMERIC_INSTALLATION_ID_PATTERN = /^\d{1,20}$/u;
 const returnToPayloadSchema = z
   .object({
     v: z.literal(GITHUB_OAUTH_RETURN_TO_COOKIE_VERSION),
@@ -37,70 +44,6 @@ export function timingSafeCompare(a: string, b: string): boolean {
   }
 
   return timingSafeEqual(bufferA, bufferB);
-}
-
-/** Validate the custom OAuth return targets GitHub-gated product surfaces support. */
-export function getCanonicalBranchViewReturnPath(
-  returnTo: string | null,
-  options: { orgSlug?: string | null } = {}
-): string | null {
-  if (!returnTo || returnTo.length > 200) {
-    return null;
-  }
-  const canonicalReturnTo = qualifyOrglessGitHubReturnPath(
-    returnTo,
-    options.orgSlug
-  );
-  if (
-    CR_LF_OR_BACKSLASH_PATTERN.test(canonicalReturnTo) ||
-    canonicalReturnTo.startsWith("//") ||
-    canonicalReturnTo.includes("?") ||
-    canonicalReturnTo.includes("#") ||
-    canonicalReturnTo.startsWith("/api/")
-  ) {
-    return null;
-  }
-  const [, orgSlug, firstSegment, secondSegment, ...extra] =
-    canonicalReturnTo.split("/");
-  if (!isSafeBranchViewPathSegment(orgSlug)) {
-    return null;
-  }
-  if (firstSegment === "branches") {
-    if (secondSegment === undefined && extra.length === 0) {
-      return `/${orgSlug}/branches`;
-    }
-    if (
-      secondSegment !== undefined &&
-      extra.length === 0 &&
-      isSafeBranchDetailPathSegment(secondSegment)
-    ) {
-      return `/${orgSlug}/branches/${secondSegment}`;
-    }
-    return null;
-  }
-  if (
-    firstSegment === "insights" &&
-    secondSegment === undefined &&
-    extra.length === 0
-  ) {
-    return `/${orgSlug}/insights`;
-  }
-  if (
-    firstSegment === "agents" &&
-    secondSegment === undefined &&
-    extra.length === 0
-  ) {
-    return `/${orgSlug}/agents`;
-  }
-  if (
-    extra.length > 0 ||
-    firstSegment !== "build" ||
-    ENCODED_SEPARATOR_OR_DOT_PATTERN.test(canonicalReturnTo) ||
-    !isSafeBranchViewPathSegment(secondSegment)
-  ) {
-    return null;
-  }
-  return `/${orgSlug}/build/${secondSegment}`;
 }
 
 /** Serialize a state-bound return cookie for GitHub OAuth. */
@@ -148,32 +91,7 @@ export function verifyGitHubOAuthReturnToCookie(input: {
   ) {
     return null;
   }
-  return getCanonicalBranchViewReturnPath(parsed.payload.returnTo);
-}
-
-/**
- * Error codes for OAuth failures.
- * Using an allowlist prevents open redirect attacks via error messages.
- */
-export const GITHUB_ERROR_CODES = {
-  NOT_AUTHENTICATED: "not_authenticated",
-  NOT_CONFIGURED: "not_configured",
-  MISSING_PARAMS: "missing_params",
-  INVALID_STATE: "invalid_state",
-  INVALID_REQUEST: "invalid_request",
-  CONNECTION_FAILED: "connection_failed",
-  OAUTH_FAILED: "oauth_failed",
-  TOKEN_EXCHANGE_FAILED: "token_exchange_failed",
-} as const;
-
-export type GitHubErrorCode =
-  (typeof GITHUB_ERROR_CODES)[keyof typeof GITHUB_ERROR_CODES];
-
-/**
- * Get the GitHub OAuth callback URL.
- */
-export function getGitHubCallbackUrl(): string {
-  return `${env.NEXT_PUBLIC_APP_URL}/api/integrations/github/callback`;
+  return getCompatibleGitHubReturnPath(parsed.payload.returnTo);
 }
 
 /**
@@ -188,6 +106,28 @@ export function getErrorRedirectUrl(
   const url = new URL(base, env.NEXT_PUBLIC_APP_URL);
   url.searchParams.set("github", GitHubConnectReturnStatus.Error);
   url.searchParams.set("code", errorCode);
+  return url.toString();
+}
+
+/**
+ * Redirect target when a claim was refused only because the caller has no
+ * usable Clerk GitHub grant (PLN-1742 M5). The App is already installed at
+ * this point, so the generic "Failed to connect" error would be a dead end:
+ * linking is the one action that fixes it, and `resumeInstallationId` lets
+ * the linking page finish the claim instead of making the user re-install.
+ * The id is echoed only after a digits check — it arrives on a query string.
+ */
+export function getGitHubLinkRedirectUrl(
+  installationId: string,
+  returnTo?: string
+): string {
+  const url = new URL(GITHUB_CLERK_LINK_PATH, env.NEXT_PUBLIC_APP_URL);
+  if (returnTo) {
+    url.searchParams.set("returnTo", returnTo);
+  }
+  if (NUMERIC_INSTALLATION_ID_PATTERN.test(installationId)) {
+    url.searchParams.set(GITHUB_RESUME_INSTALLATION_ID_PARAM, installationId);
+  }
   return url.toString();
 }
 
@@ -265,74 +205,4 @@ function base64UrlEncode(value: string): string {
 
 function base64UrlDecode(value: string): string {
   return Buffer.from(value, "base64url").toString("utf8");
-}
-
-function isSafeBranchViewPathSegment(
-  value: string | null | undefined
-): boolean {
-  return Boolean(
-    value &&
-      value !== "." &&
-      value !== ".." &&
-      !value.includes("/") &&
-      !value.includes("\\") &&
-      !value.includes("%")
-  );
-}
-
-function isSafeBranchDetailPathSegment(value: string | undefined): boolean {
-  if (
-    !value ||
-    value === "." ||
-    value === ".." ||
-    value.includes("/") ||
-    value.includes("\\") ||
-    ENCODED_DOT_OR_BACKSLASH_PATTERN.test(value)
-  ) {
-    return false;
-  }
-  try {
-    const decoded = decodeURIComponent(value);
-    return (
-      decoded.length > 0 &&
-      !CR_LF_OR_BACKSLASH_PATTERN.test(decoded) &&
-      !decoded.split("/").some((segment) => segment === "." || segment === "..")
-    );
-  } catch {
-    return false;
-  }
-}
-
-function qualifyOrglessGitHubReturnPath(
-  returnTo: string,
-  orgSlug: string | null | undefined
-): string {
-  if (!isSafeBranchViewPathSegment(orgSlug)) {
-    return returnTo;
-  }
-  const [, firstSegment, secondSegment, ...extra] = returnTo.split("/");
-  if (
-    firstSegment === "insights" &&
-    secondSegment === undefined &&
-    extra.length === 0
-  ) {
-    return `/${orgSlug}/insights`;
-  }
-  if (
-    firstSegment === "agents" &&
-    secondSegment === undefined &&
-    extra.length === 0
-  ) {
-    return `/${orgSlug}/agents`;
-  }
-  if (firstSegment !== "branches" || extra.length > 0) {
-    return returnTo;
-  }
-  if (secondSegment === undefined) {
-    return `/${orgSlug}/branches`;
-  }
-  if (isSafeBranchDetailPathSegment(secondSegment)) {
-    return `/${orgSlug}/branches/${secondSegment}`;
-  }
-  return returnTo;
 }

@@ -13,8 +13,8 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import type { WebContents } from "electron";
+import { test } from "vitest";
 import {
   CRASH_RELOAD_WINDOW_MS,
   evaluateRenderProcessGone,
@@ -59,7 +59,7 @@ test("sendToRendererWindow swallows a throwing webContents getter on a torn-down
   });
   let result: boolean | undefined;
   assert.doesNotThrow(() => {
-    result = sendToRendererWindow(window, "desktop:command-keys-changed");
+    result = sendToRendererWindow(window, "desktop:onboarding-state-changed");
   });
   assert.equal(result, false);
 });
@@ -85,7 +85,7 @@ test("sendToRendererWindow swallows the disposed-frame error instead of throwing
   });
   let result: boolean | undefined;
   assert.doesNotThrow(() => {
-    result = sendToRendererWindow(window, "desktop:command-keys-changed");
+    result = sendToRendererWindow(window, "desktop:onboarding-state-changed");
   });
   assert.equal(result, false);
 });

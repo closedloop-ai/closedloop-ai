@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "MCP OAuth authorization codes, read only by the MCP server token exchange."
+}

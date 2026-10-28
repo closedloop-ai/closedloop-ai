@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
+import { test } from "vitest";
 import type { AgentSessionSyncSource } from "../src/main/agent-sync/agent-session-sync-source.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 import { getSharedAgentSessions } from "../src/main/session/shared-agent-sessions-api.js";
@@ -119,7 +119,8 @@ async function seedCorpus(db: SqliteDb): Promise<void> {
   // which is AFTER the visit as an INSTANT but sorts BEFORE it as wall-clock
   // text. A lexical `ended_at >= ?` would wrongly EXCLUDE it; the instant-aware
   // `julianday` comparison counts it, matching the hydrated `new Date(endedAt)`
-  // path. `isoTs` persists such strings unchanged (harnesses can emit offsets).
+  // path. Rows written before ISS-6738 persist such strings unchanged
+  // (harnesses can emit offsets); `toIso` canonicalizes new ones.
   await insertSession(db, {
     id: "c-offset-after",
     status: "inactive",
@@ -197,6 +198,12 @@ test("FEA-4142: count-only reads match the hydrated total and hydrate no rows", 
       { status: SESSION_STATUS.ERROR },
       // Non-terminal status branches.
       { statuses: ["active"] },
+      // ISS-10629 retired the `waiting` branch on both paths. Kept in the sweep
+      // as a FALLTHROUGH probe — it must resolve to the stored-status equality
+      // on both, so a branch re-grown on one side alone still reddens here —
+      // but it no longer counts a live row, so it is not on its own proof the
+      // two predicates agree about anything non-empty. The `active` row above
+      // and the retired-spelling straggler are what carry that.
       { statuses: ["waiting"] },
       // Multi-status + completion bound.
       { statuses: [SESSION_STATUS.INACTIVE, "failed"], completedAfter: VISIT },
@@ -262,13 +269,13 @@ test("FEA-4142: count-only reads match the hydrated total and hydrate no rows", 
   }
 });
 
-test("FEA-4142: a non-count-expressible query falls back to the hydrated read", async () => {
+test("FEA-4142: compact substantive quality uses the same filtered COUNT", async () => {
   const { db, dir } = await openTempDb();
   try {
     await seedCorpus(db);
     const base = db.syncSource as AgentSessionSyncSource;
     let countCalls = 0;
-    // Spy on countSessions so we can prove the fallback never invokes it.
+    // Spy on countSessions so the compact quality path cannot silently hydrate.
     const source: AgentSessionSyncSource = {
       ...base,
       countSessions: (filters) => {
@@ -287,8 +294,8 @@ test("FEA-4142: a non-count-expressible query falls back to the hydrated read", 
     assert.equal(countCalls, 1, "count-expressible read uses countSessions");
     assert.equal(counted.total, 4);
 
-    // The substantive quality gate is not SQL-expressible, so it must fall back
-    // to the hydrated path — countSessions is never called.
+    // ISS-9525/9526: compact substantive quality is SQL-expressible and shares
+    // the list's filtered population rather than forcing an unfiltered count.
     countCalls = 0;
     const gated = await getSharedAgentSessions(source, {
       statuses: [SESSION_STATUS.INACTIVE],
@@ -298,9 +305,17 @@ test("FEA-4142: a non-count-expressible query falls back to the hydrated read", 
     });
     assert.equal(
       countCalls,
-      0,
-      "substantive gate falls back off the count path"
+      1,
+      "substantive gate uses the compact filtered count path"
     );
+    const hydrated = await getSharedAgentSessions(source, {
+      statuses: [SESSION_STATUS.INACTIVE],
+      completedAfter: VISIT,
+      quality: "substantive",
+      sortBy: "cost",
+    });
+    assert.equal(countCalls, 1, "the full-row read does not take COUNT");
+    assert.equal(gated.total, hydrated.total);
     assert.equal(gated.viewerScope, "self");
   } finally {
     await db.close();

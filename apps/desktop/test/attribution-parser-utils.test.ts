@@ -4,7 +4,7 @@
  * Split out of the former fea1459-attribution-accuracy.test.ts (FEA-2235 D2).
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { toIso } from "../src/main/collectors/parsing/parser-utils.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -31,9 +31,12 @@ test("toIso: ISO string with offset parsed to UTC", () => {
   assert.equal(result, "2026-06-07T10:00:00.000Z");
 });
 
-test("toIso: garbage string returned as-is (invalid date)", () => {
+test("toIso: garbage string returns null (ISS-6738)", () => {
+  // Was returned as-is, so `"not-a-date"` reached `startedAt`/`endedAt` and then
+  // sorted lexically against real ISO stamps. A value that cannot be read as a
+  // datetime is absent, and null is how absence is expressed.
   const result = toIso("not-a-date");
-  assert.equal(result, "not-a-date");
+  assert.equal(result, null);
 });
 
 test("toIso: null returns null", () => {

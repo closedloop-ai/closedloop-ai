@@ -29,7 +29,7 @@ const {
   mockListDocsInFolder,
   mockExportDocAsMarkdown,
   mockRefreshAccessToken,
-  mockResolveIntegrationToken,
+  mockResolveEncryptedIntegrationToken,
 } = vi.hoisted(() => ({
   mockFindUnique: vi.fn(),
   mockUpdate: vi.fn(),
@@ -38,7 +38,7 @@ const {
   mockListDocsInFolder: vi.fn(),
   mockExportDocAsMarkdown: vi.fn(),
   mockRefreshAccessToken: vi.fn(),
-  mockResolveIntegrationToken: vi.fn(),
+  mockResolveEncryptedIntegrationToken: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -71,7 +71,7 @@ vi.mock("@/app/projects/service", () => ({
 
 vi.mock("@/lib/integration-encryption", () => ({
   encryptTokenPair: vi.fn(),
-  resolveIntegrationToken: mockResolveIntegrationToken,
+  resolveEncryptedIntegrationToken: mockResolveEncryptedIntegrationToken,
 }));
 
 import { log } from "@repo/observability/log";
@@ -114,7 +114,7 @@ function happyPath() {
     // no refresh is attempted.
     expiresAt: new Date(Date.now() + 60 * 60 * 1000),
   });
-  mockResolveIntegrationToken.mockResolvedValue("access-token-1");
+  mockResolveEncryptedIntegrationToken.mockResolvedValue("access-token-1");
   mockFindById.mockResolvedValue({ id: PROJECT_ID });
   mockListDocsInFolder.mockResolvedValue(makeDocs(2));
   mockExportDocAsMarkdown.mockResolvedValue("# hello");
@@ -159,7 +159,7 @@ describe("importDocsFromFolder — preconditions", () => {
   });
 
   it("refuses when the access token cannot be resolved", async () => {
-    mockResolveIntegrationToken.mockResolvedValue(null);
+    mockResolveEncryptedIntegrationToken.mockResolvedValue(null);
 
     const result = await run();
 
@@ -609,7 +609,8 @@ describe("importDocsFromFolder — oversized documents", () => {
         status: DocumentStatus.Draft,
         title: "Doc 0",
         fileName: "Doc 0.md",
-      })
+      }),
+      undefined
     );
   });
 });

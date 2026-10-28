@@ -26,11 +26,11 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, test } from "node:test";
 import {
   AGENT_COMPONENT_INVOCATION_SYNC_MAX_ITEM_BYTES,
   AgentComponentInvocationKind,
 } from "@repo/api/src/types/agent-component-invocation";
+import { describe, test } from "vitest";
 import {
   AGENT_COMPONENT_INVOCATION_SYNC_SOURCE_KEY,
   AgentComponentInvocationSyncLocalError,

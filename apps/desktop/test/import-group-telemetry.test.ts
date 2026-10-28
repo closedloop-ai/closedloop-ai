@@ -10,7 +10,7 @@
  * threshold case here is exact and instant.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   createImportGroupTimer,
   EVICTED_IMPORT_GROUP_FIELD,

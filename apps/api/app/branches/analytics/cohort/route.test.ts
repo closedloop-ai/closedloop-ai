@@ -49,9 +49,14 @@ describe("POST /branches/analytics/cohort", () => {
 
     expect(response.status).toBe(200);
     expect(mocks.withAnyAuthOptions).toEqual([{ requiredScopes: ["read"] }]);
-    expect(mocks.getBranchCohortAnalytics).toHaveBeenCalledWith("org-1", {
-      branchIds: [BRANCH_ID],
-    });
+    expect(mocks.getBranchCohortAnalytics).toHaveBeenCalledWith(
+      "org-1",
+      { branchIds: [BRANCH_ID] },
+      // ISS-11117: no date window on this request, so the route binds the
+      // cohort's Pensero reader. The window rule itself is pinned by
+      // `lib/delivery-points/__tests__/delivery-point-window.test.ts`.
+      expect.any(Function)
+    );
   });
 
   it("accepts an inclusive UTC-day cohort window", async () => {
@@ -64,7 +69,15 @@ describe("POST /branches/analytics/cohort", () => {
     const response = await POST(request(body), routeContext());
 
     expect(response.status).toBe(200);
-    expect(mocks.getBranchCohortAnalytics).toHaveBeenCalledWith("org-1", body);
+    expect(mocks.getBranchCohortAnalytics).toHaveBeenCalledWith(
+      "org-1",
+      body,
+      // ISS-11117 (PR #7863): a WINDOWED cohort gets a reader too, carrying
+      // this window — the numerator is summed over the same period the cost
+      // denominator covers. Withholding here was the defect both reviewers
+      // caught, because the listing's default view is always windowed.
+      expect.any(Function)
+    );
   });
 
   it("forwards an exact 101-identity cohort", async () => {
@@ -73,9 +86,11 @@ describe("POST /branches/analytics/cohort", () => {
     const response = await POST(request({ branchIds }), routeContext());
 
     expect(response.status).toBe(200);
-    expect(mocks.getBranchCohortAnalytics).toHaveBeenCalledWith("org-1", {
-      branchIds,
-    });
+    expect(mocks.getBranchCohortAnalytics).toHaveBeenCalledWith(
+      "org-1",
+      { branchIds },
+      expect.any(Function)
+    );
   });
 
   it("rejects a body above 64 KiB before service work", async () => {

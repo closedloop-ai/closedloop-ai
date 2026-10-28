@@ -13,56 +13,25 @@
  * The only way to not produce it is to not issue the request. This store is
  * therefore built to *stop* probing once it has a confirmed negative, and to
  * resume only on a real signal -- never on a timer.
- *
- * ISS-6084 closes the remaining hole in that design: stopping after one sweep
- * still charged EVERY visitor one sweep per page load, including the majority
- * who have never installed the desktop app, so production consoles showed four
- * refused loopback requests on every navigation. An `ambient` loop -- the
- * background bootstrap mounted on every authenticated page -- now issues no
- * request at all unless there is durable evidence this user actually has a
- * desktop app. See {@link isGatewayProbePermitted} for the two signals and how
- * a first-ever detection still bootstraps.
  */
 
 import { useEffect, useSyncExternalStore } from "react";
 import { probeGateway } from "./gateway-probe";
-import { getStorageItem, removeStorageItem, setStorageItem } from "./storage";
 import type { GatewayDetectionState } from "./types";
 
 const CACHE_TTL_MS = 60_000;
-/**
- * Durable "a desktop gateway has been detected in this browser before" marker.
- *
- * Written on the first successful probe and never cleared by a later absence:
- * the question it answers is "is it worth looking here at all?", and a desktop
- * app that is merely closed right now does not change that answer. Versioned
- * so the shape can change without misreading an old value.
- *
- * Deliberately device-scoped rather than user- or org-scoped, and the stored
- * value is a bare `"1"` -- no port, machine name, gateway id, or token. On a
- * shared browser the marker therefore outlives the account that earned it, so a
- * second user signing in on the same machine may ambient-probe once even though
- * their own account-level signal says nothing. That is the accepted tradeoff:
- * the cost is the same handful of refused loopback requests this gate accepts
- * for any browser that has genuinely seen a gateway, it discloses nothing about
- * the first user, and every real dispatch is still authorized server-side by
- * the gateway. Scoping the key per user would instead re-probe for the SAME
- * person on every account switch, which is the louder failure.
- */
-const GATEWAY_SEEN_STORAGE_KEY = "closedloop-gateway-seen:v1";
-const GATEWAY_SEEN_STORAGE_VALUE = "1";
 // Responsive cadence used only while a desktop gateway is present, so a
 // capability/version change or the gateway going offline is picked up promptly.
 const DETECTED_POLL_INTERVAL_MS = 10_000;
 /**
- * Absent-sweep budget for ambient web probing (every surface except onboarding).
+ * Absent-sweep budget for a loop started without `fastPoll`.
  *
  * One sweep. A user with the desktop app running is detected by it; a user
  * without one has answered the question, and asking again on a timer only
  * reproduces the unsuppressable refused-request log. Past the budget the poll
  * loop arms no timer at all and detection resumes only on a re-arm signal.
  */
-const AMBIENT_MAX_ABSENT_SWEEPS = 1;
+const DEFAULT_MAX_ABSENT_SWEEPS = 1;
 /**
  * Absent-sweep budget for `fastPoll` callers (the onboarding desktop-setup
  * flow), where the user is actively installing the desktop app on the very
@@ -73,13 +42,13 @@ const FAST_POLL_MAX_ABSENT_SWEEPS = 12;
 /**
  * Absent-sweep budget granted after the gateway was actually seen.
  *
- * The ambient budget of 1 answers "is a desktop app running here?" for a user
+ * The default budget of 1 answers "is a desktop app running here?" for a user
  * who never had one. It must NOT be applied to a gateway that was detected and
  * then went quiet for a single sweep -- a desktop self-update, a machine
  * sleep/resume, or one dropped probe would otherwise stop detection for good
  * while the app is still running, and every consumer would report not-detected
  * until the user happened to refocus the tab. A user who really did quit the
- * app still converges: once this budget is spent the ambient rule takes over
+ * app still converges: once this budget is spent the default rule takes over
  * again, so the total cost of a genuine shutdown is a few sweeps, not forever.
  */
 const RECOVERY_MAX_ABSENT_SWEEPS = 3;
@@ -123,7 +92,7 @@ let absentSweeps = 0;
  *
  * The absent budget is a property of the loop that is actually running, not of
  * whoever is rendering, so a render site must not restate it. Counted rather
- * than flagged because ambient and onboarding loops coexist: the onboarding
+ * than flagged because several loops can coexist: the onboarding
  * step raises the budget for as long as it is mounted, and disposal has to put
  * it back. Read by {@link isGatewayDetectionExhausted}.
  */
@@ -133,7 +102,7 @@ let rearmAttempts = 0;
  * Whether a gateway was seen recently enough that a run of absent sweeps should
  * be treated as a blip to recover from rather than a confirmed negative. Cleared
  * once {@link RECOVERY_MAX_ABSENT_SWEEPS} is spent, so a real shutdown converges
- * on the ambient rule instead of buying a fresh recovery budget every re-arm.
+ * on the default rule instead of buying a fresh recovery budget every re-arm.
  */
 let sawGateway = false;
 
@@ -168,7 +137,6 @@ function recordProbeOutcome(detected: boolean): void {
     absentSweeps = 0;
     rearmAttempts = 0;
     sawGateway = true;
-    rememberGatewaySeen();
     return;
   }
   absentSweeps = Math.min(absentSweeps + 1, FAST_POLL_MAX_ABSENT_SWEEPS + 1);
@@ -271,7 +239,7 @@ export function getAbsentSweepCount(): number {
  * Detected -> responsive cadence (pick up capability/offline changes promptly).
  *
  * Absent -> the caller gets a bounded number of sweeps
- * (`AMBIENT_MAX_ABSENT_SWEEPS`, or `FAST_POLL_MAX_ABSENT_SWEEPS` when `fastPoll`
+ * (`DEFAULT_MAX_ABSENT_SWEEPS`, or `FAST_POLL_MAX_ABSENT_SWEEPS` when `fastPoll`
  * is set for the onboarding flow) and then `null`: the loop arms no timer and
  * detection is over until a re-arm signal arrives. A slower cadence would not
  * do -- a page left open would still emit refused loopback requests forever,
@@ -302,14 +270,14 @@ function resolveAbsentBudget(options?: {
   if (options?.recovering) {
     return RECOVERY_MAX_ABSENT_SWEEPS;
   }
-  return AMBIENT_MAX_ABSENT_SWEEPS;
+  return DEFAULT_MAX_ABSENT_SWEEPS;
 }
 
 /**
  * Whether a gateway was seen recently enough to still be worth recovering.
  *
  * Read by the poll loop so a detected gateway that goes quiet gets the recovery
- * budget instead of the one-sweep ambient rule.
+ * budget instead of the one-sweep default rule.
  */
 export function isRecoveringGatewayDetection(): boolean {
   return sawGateway;
@@ -421,29 +389,15 @@ export function startGatewayDetectionPolling(
   let timer: ReturnType<typeof setTimeout> | undefined;
   let disposed = false;
 
-  // ISS-6084: an ambient loop with no evidence of a desktop app must not issue
-  // a single loopback request -- not one sweep, not one port. Returning here
-  // instead of probing-then-stopping is the whole fix: the refused-request log
-  // is emitted by the browser's network stack, so the only way to not produce
-  // it is to not make the request. No timer and no re-arm listener is armed,
-  // so a focus/visibility signal cannot resurrect probing either; the React
-  // effect re-runs (and this loop is rebuilt) if `desktopKnown` later flips.
-  if (!isGatewayProbePermitted(options)) {
-    settleWithoutProbing();
-    return () => {
-      // Nothing was started, so there is nothing to tear down.
-    };
-  }
-
   // `absentSweeps` is module-global so concurrent mount sites share one budget,
   // but it also outlives any single loop. A `fastPoll` consumer is the onboarding
   // desktop-setup step, and a fresh mount of it is explicit user intent: the user
   // is on the screen installing the app. Without this reset it would inherit an
-  // already-spent counter -- from an earlier visit to the same step, or from an
-  // ambient sweep elsewhere in the app -- and start with no budget at all,
-  // arming no timer and never probing, so the step could sit on "not detected"
-  // forever with Desktop actually running. Ambient loops deliberately do NOT
-  // reset, which is what keeps a route-change remount from re-flooding.
+  // already-spent counter -- from an earlier visit to the same step, or from
+  // another loop's sweep -- and start with no budget at all, arming no timer and
+  // never probing, so the step could sit on "not detected" forever with Desktop
+  // actually running. Other loops deliberately do NOT reset, which is what keeps
+  // a route-change remount from re-flooding.
   if (options?.fastPoll) {
     absentSweeps = 0;
     fastPollLoops += 1;
@@ -555,47 +509,27 @@ export function useGatewayDetection(
   options?: GatewayDetectionPollOptions
 ): GatewayDetectionState {
   const fastPoll = options?.fastPoll ?? false;
-  const ambient = options?.ambient ?? false;
-  const desktopKnown = options?.desktopKnown ?? false;
   const state = useSyncExternalStore(
     subscribeGatewayDetection,
     getGatewayDetectionSnapshot,
     () => DEFAULT_STATE
   );
 
-  // Destructured to primitives on purpose: an inline `options` object literal at
+  // Destructured to a primitive on purpose: an inline `options` object literal at
   // the call site is a new reference every render, so depending on it would tear
   // down and restart the poll loop (and its probe) on every re-render.
   useEffect(() => {
     if (!enabled) {
       return;
     }
-    // Rebuilt as one variant or the other rather than one flat object: the
-    // options type is a discriminated union precisely so an ambient loop cannot
-    // also claim the intentful `fastPoll` guarantee, and spreading all three
-    // keys would erase that distinction at the one call site that matters.
-    return ambient
-      ? startGatewayDetectionPolling({ ambient: true, desktopKnown })
-      : startGatewayDetectionPolling({ fastPoll });
-  }, [ambient, desktopKnown, enabled, fastPoll]);
+    return startGatewayDetectionPolling({ fastPoll });
+  }, [enabled, fastPoll]);
 
   if (!enabled) {
     return DISABLED_STATE;
   }
 
   return state;
-}
-
-/**
- * Expire the cached detection result.
- *
- * Used by the fetch interceptor when a dispatch to a gateway we believed was
- * present fails, so the next probe re-checks. It deliberately does NOT clear a
- * remembered negative -- that is {@link rearmGatewayDetection}'s job, and only
- * an explicit signal should restart probing.
- */
-export function invalidateGatewayDetectionCache(): void {
-  expiresAt = 0;
 }
 
 export function resetGatewayDetectionForTests(): void {
@@ -608,7 +542,6 @@ export function resetGatewayDetectionForTests(): void {
   sawGateway = false;
   listeners.clear();
   resumeHandlers.clear();
-  removeStorageItem(GATEWAY_SEEN_STORAGE_KEY);
 }
 
 /**
@@ -621,7 +554,7 @@ export function resetGatewayDetectionForTests(): void {
  * arguments at the render site, because the budget depends on which loop is
  * running ({@link fastPollLoops}), which only this module knows. A consumer
  * that hardcoded `fastPoll: true` would keep claiming "still looking" through
- * eleven sweeps that an ambient loop is never going to run.
+ * eleven sweeps that a loop without `fastPoll` is never going to run.
  */
 export function isGatewayDetectionExhausted(): boolean {
   return (
@@ -634,160 +567,11 @@ export function isGatewayDetectionExhausted(): boolean {
 }
 
 /** Options accepted by {@link startGatewayDetectionPolling} and {@link useGatewayDetection}. */
-/**
- * How a poll loop was started, as a discriminated union on `ambient`.
- *
- * The two modes are mutually exclusive BY CONSTRUCTION rather than by a
- * precedence rule a reader has to memorise. `fastPoll` documents itself as
- * "always permits probing" while an ambient loop is gated by
- * {@link isGatewayProbePermitted}, so `{ fastPoll: true, ambient: true }` is a
- * direct self-contradiction -- and it used to be silently resolved in ambient's
- * favour, quietly breaking the stronger of the two guarantees. It is now a
- * compile error instead (ISS-6084 review).
- *
- * `desktopKnown` is likewise confined to the ambient variant: it exists only to
- * open the ambient gate, and an intentful loop probes regardless of it, so
- * accepting it there would imply an influence it does not have.
- */
-export type GatewayDetectionPollOptions =
-  | {
-      /**
-       * Intentful loop: the user asked for the desktop app (installing it in
-       * onboarding, selecting LocalElectron routing, clicking "Check again", or
-       * dispatching a gateway request). Always permitted to probe.
-       */
-      ambient?: false;
-      /**
-       * The onboarding desktop-setup flow, where the user is installing the
-       * desktop app on the very screen that is watching for it. Raises the
-       * absent-sweep budget -- it is the most explicit intent signal there is.
-       */
-      fastPoll?: boolean;
-      /** Meaningless for an intentful loop, which probes either way. */
-      desktopKnown?: never;
-    }
-  | {
-      /**
-       * Background bootstrap with no user intent behind it -- the loop mounted
-       * by the authenticated layout on every page. Probes only when
-       * {@link isGatewayProbePermitted} says there is durable evidence of a
-       * desktop app.
-       */
-      ambient: true;
-      /**
-       * Account-level evidence that this user has a desktop app, supplied by the
-       * caller (the web bootstrap reads it from the user's registered compute
-       * targets). Additive and optional: an older/unknown value simply leaves
-       * the ambient loop on the browser-local marker.
-       */
-      desktopKnown?: boolean;
-      /** An ambient loop is by definition not the onboarding fast path. */
-      fastPoll?: never;
-    };
-
-/**
- * Whether this loop is allowed to issue loopback probes at all.
- *
- * Non-ambient loops always are -- they exist because a user asked for the
- * desktop app (installing it in onboarding, selecting LocalElectron routing,
- * clicking "Check again", or dispatching a gateway request).
- *
- * An ambient loop needs evidence, from either of two independent signals, so a
- * visitor who has never installed the desktop app makes ZERO localhost requests:
- *
- *  1. `desktopKnown` -- the signed-in user owns a registered compute target,
- *     which only exists because a desktop app connected to the cloud under that
- *     account. Account-scoped, so it works on a browser profile that has never
- *     detected anything itself.
- *  2. {@link hasSeenGatewayBefore} -- this browser has detected a gateway here
- *     before. Covers a desktop app running with cloud sync off, which registers
- *     no compute target, and makes the gate self-heal after any one detection.
- *
- * Neither signal is produced by ambient probing, so this is not a gate that can
- * only open after it has already opened. A first-ever detection bootstraps from
- * an intentful loop, both of which probe unconditionally and write signal 2 on
- * success: the onboarding desktop-setup step (`fastPoll`), and the explicit
- * "Check again" control that sits beside it.
- *
- * KNOWN RESIDUAL (ISS-6084 review): both of those live under `(onboarding)`, and
- * signal 1 needs a desktop that reached the cloud. So a user who skipped the
- * onboarding desktop step AND runs a desktop app with cloud sync disabled AND is
- * on a browser that has never detected one has no ambient bootstrap left, and
- * recovers only by re-entering onboarding. Before this gate they self-healed on
- * the next page load, at the cost of the refused-request flood this exists to
- * stop. Closing it properly needs a "check for Desktop" affordance on an
- * authenticated surface (or an account-level installed-desktop signal); do NOT
- * close it by letting an ambient loop probe speculatively again.
- */
-export function isGatewayProbePermitted(
-  options?: GatewayDetectionPollOptions
-): boolean {
-  if (options?.ambient !== true) {
-    return true;
-  }
-  return options.desktopKnown === true || hasSeenGatewayBefore();
-}
-
-/**
- * Whether a desktop gateway has ever been detected in this browser.
- *
- * Reads through {@link getStorageItem}, which is SSR-safe, and treats a storage
- * failure (Safari private mode, disabled storage) as "no evidence" -- the quiet
- * answer, since a false negative only costs a user an explicit re-check while a
- * false positive would reintroduce the refused-request flood for everyone.
- */
-export function hasSeenGatewayBefore(): boolean {
-  try {
-    return (
-      getStorageItem(GATEWAY_SEEN_STORAGE_KEY) === GATEWAY_SEEN_STORAGE_VALUE
-    );
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Record that a gateway was detected here, so ambient probing is permitted from
- * now on. Best-effort: a storage write that throws must never fail the probe
- * that succeeded.
- */
-function rememberGatewaySeen(): void {
-  try {
-    setStorageItem(GATEWAY_SEEN_STORAGE_KEY, GATEWAY_SEEN_STORAGE_VALUE);
-  } catch {
-    // Storage is an optimization here, never a correctness requirement.
-  }
-}
-
-/**
- * Publish a settled not-detected state for a loop that is not permitted to
- * probe, so consumers are not stuck on `loading` forever.
- *
- * `checkedAt` deliberately stays `null`. It is the store's "a probe has answered
- * this" marker: the fetch interceptor's LocalElectron dispatch reads it to
- * decide whether to force a probe, and {@link ensureGatewayDetection} reads it
- * for its TTL. Stamping it here would make a suppressed ambient loop look like a
- * completed negative sweep and silently stop an intentful caller from ever
- * probing.
- */
-function settleWithoutProbing(): void {
-  // An intentful caller's probe is already running, and it has not answered yet
-  // -- `checkedAt` is still null and `loading` still true, which is exactly the
-  // state this function otherwise treats as "nobody has settled this, so I
-  // will". Publishing here would announce a settled NEGATIVE over a pending
-  // LocalElectron check, and `EngineerTransportBootstrap` acts on `loading:
-  // false` the moment it lands: a user with a working local desktop gets routed
-  // to CloudRelay while their own gateway is still answering (ISS-6084 review).
-  // The in-flight probe publishes the real verdict when it resolves, so the
-  // correct move is to say nothing.
-  if (inFlight !== null) {
-    return;
-  }
-  // Never overwrite a real probe result, and stay idempotent across the several
-  // consumers that mount this loop on one page.
-  if (snapshot.checkedAt !== null || !snapshot.loading) {
-    return;
-  }
-  snapshot = { ...DEFAULT_STATE, loading: false };
-  emitChange();
-}
+export type GatewayDetectionPollOptions = {
+  /**
+   * The onboarding desktop-setup flow, where the user is installing the
+   * desktop app on the very screen that is watching for it. Raises the
+   * absent-sweep budget -- it is the most explicit intent signal there is.
+   */
+  fastPoll?: boolean;
+};

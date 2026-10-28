@@ -12,6 +12,12 @@ export type EnrichedTelemetryEvent = TelemetryEventPayload & {
 
 export type TelemetryServiceOptions = {
   sendTelemetry: (event: EnrichedTelemetryEvent) => void;
+  /**
+   * ISS-9743 — the commit this bundle was built from, already validated by
+   * `resolveDesktopBuildCommit`. Absent when the process cannot resolve one, in
+   * which case the trace key stays omitted rather than carrying a placeholder.
+   */
+  desktopBuildCommit?: string;
 };
 
 /**
@@ -19,6 +25,9 @@ export type TelemetryServiceOptions = {
  *
  * TelemetryService wraps the raw sendTelemetry transport callback with:
  * - computeTargetId auto-injection into every event's trace context
+ * - desktopBuildCommit auto-injection (ISS-9743), for the same reason: it is a
+ *   per-process constant, so every category carries it rather than the handful
+ *   whose call sites happen to build a trace
  * - logTail truncation to TELEMETRY_MAX_FIELD_BYTES (4 KiB)
  * - try/catch so emit() never throws regardless of callback behavior
  *
@@ -27,11 +36,13 @@ export type TelemetryServiceOptions = {
  */
 export class TelemetryService {
   private readonly options: TelemetryServiceOptions;
+  private readonly desktopBuildCommit: string | undefined;
   private computeTargetId: string | undefined;
   private gatewaySessionId: string | undefined;
 
   constructor(options: TelemetryServiceOptions) {
     this.options = options;
+    this.desktopBuildCommit = options.desktopBuildCommit;
   }
 
   /**
@@ -101,18 +112,54 @@ export class TelemetryService {
       };
     }
 
+    // Pulled out of the spread rather than read from `trace` below — see the
+    // note on the conditional. Named `resolved`, not `caller`: the block above
+    // has already merged the SERVICE's session over the caller's, deliberately,
+    // because the gateway session identifies this process rather than whoever
+    // is emitting.
+    const {
+      gatewaySessionId: resolvedGatewaySessionId,
+      // ISS-9743: destructured OUT for the same reason as gatewaySessionId — a
+      // caller forwarding an absent value puts the key on the object, and a
+      // conditional spread after it can add a key but cannot remove one.
+      desktopBuildCommit: _callerBuildCommit,
+      ...restTrace
+    } = trace ?? {};
+    const gatewaySessionId = resolvedGatewaySessionId ?? this.gatewaySessionId;
+
     return {
       ...event,
       schemaVersion: "1",
       timestamp: new Date().toISOString(),
+      // ISS-7488: the caller's trace spreads FIRST and the three fields the
+      // cloud schema requires are applied after it, so they always win. Every
+      // member of `TelemetryTraceContext` is optional, and a caller that
+      // forwards an absent value (`commandId: args.commandId`) puts the key on
+      // the object holding `undefined` — spreading that last used to clobber
+      // the default back off, and `trace.commandId: z.string()` then rejected
+      // the WHOLE event as `telemetry.validation_failed`.
       trace: {
-        commandId: "",
-        operationId: "",
-        computeTargetId: this.computeTargetId ?? "",
-        ...(this.gatewaySessionId
-          ? { gatewaySessionId: this.gatewaySessionId }
+        ...restTrace,
+        commandId: trace?.commandId ?? "",
+        operationId: trace?.operationId ?? "",
+        computeTargetId: trace?.computeTargetId ?? this.computeTargetId ?? "",
+        // Conditional so an absent session stays OMITTED rather than carried as
+        // an explicit `undefined` key (root AGENTS.md, Cross-Repo
+        // Compatibility). `gatewaySessionId` is destructured OUT of the spread
+        // above for that to actually hold: a caller forwarding an absent value
+        // (`gatewaySessionId: args.sessionId`) puts the key on the object, and a
+        // conditional spread AFTER it can add a key but cannot remove one — so
+        // spreading the caller wholesale would leave the very
+        // present-but-undefined key this branch exists to avoid. That is the
+        // same defect ISS-7488 fixes for the three required fields, one field
+        // over, and it is why this is a destructure and not another `??`.
+        ...(gatewaySessionId ? { gatewaySessionId } : {}),
+        // ISS-9743: the build identity describes THIS process, so the service's
+        // value wins over a caller's — the same rule gatewaySessionId follows
+        // one field above. Conditional so an unresolved commit stays omitted.
+        ...(this.desktopBuildCommit
+          ? { desktopBuildCommit: this.desktopBuildCommit }
           : {}),
-        ...trace,
       },
       diagnostics,
     };

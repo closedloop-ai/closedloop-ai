@@ -150,23 +150,25 @@ describe("Agents inventory renders every column (ISS-6245)", () => {
   // `Source` and `Harness` are the two tracks ISS-5813's budget yielded at these
   // widths. Naming them specifically is the point: a generic "some columns
   // render" assertion would survive the exact regression this guards.
-  it.each(
-    VIEWPORT_WIDTHS_PX
-  )("keeps the columns the budget used to drop at a %spx viewport", (viewportWidthPx) => {
-    renderTableAt(viewportWidthPx - APP_CHROME_WIDTH_PX);
-    const labels = renderedHeaderLabels();
-    expect(labels).toContain("Component");
-    expect(labels).toContain("Source");
-    expect(labels).toContain("Harness");
-  });
+  it.each(VIEWPORT_WIDTHS_PX)(
+    "keeps the columns the budget used to drop at a %spx viewport",
+    (viewportWidthPx) => {
+      renderTableAt(viewportWidthPx - APP_CHROME_WIDTH_PX);
+      const labels = renderedHeaderLabels();
+      expect(labels).toContain("Component");
+      expect(labels).toContain("Source");
+      expect(labels).toContain("Harness");
+    }
+  );
 
-  it.each(
-    VIEWPORT_WIDTHS_PX
-  )("overflows its container at a %spx viewport, so the host scrolls sideways", (viewportWidthPx) => {
-    const containerWidthPx = viewportWidthPx - APP_CHROME_WIDTH_PX;
-    renderTableAt(containerWidthPx);
-    expect(renderedTableWidthPx()).toBeGreaterThan(containerWidthPx);
-  });
+  it.each(VIEWPORT_WIDTHS_PX)(
+    "overflows its container at a %spx viewport, so the host scrolls sideways",
+    (viewportWidthPx) => {
+      const containerWidthPx = viewportWidthPx - APP_CHROME_WIDTH_PX;
+      renderTableAt(containerWidthPx);
+      expect(renderedTableWidthPx()).toBeGreaterThan(containerWidthPx);
+    }
+  );
 
   it("ignores a stale enabled value for the retired width-budget flag", () => {
     const containerWidthPx = 1280 - APP_CHROME_WIDTH_PX;

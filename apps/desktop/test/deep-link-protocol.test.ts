@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import { DESKTOP_DEEP_LINK_URL } from "@repo/api/src/types/desktop-deep-link";
+import { describe, test } from "vitest";
 import {
   classifyDeepLink,
   classifyInitialDeepLink,

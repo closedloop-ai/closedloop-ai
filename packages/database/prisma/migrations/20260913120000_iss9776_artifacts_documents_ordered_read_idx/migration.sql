@@ -1,0 +1,76 @@
+-- ISS-9776: give the Documents ordered read an index that can SERVE its ORDER
+-- BY, instead of sorting the whole matching set before any LIMIT applies.
+--
+-- WHAT ASKS FOR IT. `GET /documents` builds its predicate in
+-- `buildDocumentListWhere` and orders every arm by (created_at DESC, id DESC)
+-- (`document-list-read.ts`). The org Documents index sends
+-- `{ type: DOC, unassignedProject: true }`, which renders as
+-- `organization_id = $1 AND project_id IS NULL AND subtype = 'DOC' AND type =
+-- 'DOCUMENT'`. No shipped index carries `subtype`, and none can emit that
+-- population in created_at order, so the planner's best option was a Bitmap
+-- Heap Scan on `artifacts_organization_id_type_status_idx` followed by a Sort.
+--
+-- WHY IT IS PARTIAL, AND WHY THAT IS THE LOAD-BEARING PART. Written without the
+-- predicate, this index leads with (organization_id, type, subtype) — which is
+-- EXACTLY the equality set of the ISS-7804 subtype-narrowed reference search
+-- (`type = DOCUMENT AND subtype IN (FEATURE, ISSUE)`). The planner preferred it
+-- there on selectivity, and then had to add a sort, because this index orders by
+-- `created_at` while that query orders by `updated_at`. Measured on the ISS-7804
+-- fixture: its ordered Index Scan on `artifacts_org_type_updated_id_idx` became
+--
+--   Limit -> Sort (top-N heapsort) -> Bitmap Heap Scan (745 rows, 520 heap
+--   blocks) -> Bitmap Index Scan on artifacts_org_type_subtype_created_id_idx
+--
+-- which is the performance contract ISS-7804 established, broken. The Documents
+-- read carries `project_id IS NULL`; NO reference-search arm does. Restricting
+-- the index to those rows means the planner cannot choose it for ISS-7804's
+-- query at all, so the two indexes stop competing rather than being ranked
+-- against each other. `packages/database/__tests__/integration/
+-- iss7804-artifact-reference-search-indexes.integration.test.ts` passes 7/7 with
+-- this predicate and fails without it.
+--
+-- MEASURED on PostgreSQL 16, 120,000 artifacts across 12 organizations with
+-- independent `hashtext` draws per dimension (the ISS-9760 correlated-draw trap:
+-- org and type drawn from one expression produced a tenant with ZERO DOCUMENT
+-- rows and every plan below would have described an empty scan). The tenant under
+-- test holds 540 project-less DOC rows. Both arms measured on the SAME fixture,
+-- index dropped and recreated between them, `VACUUM (ANALYZE)` each time so the
+-- visibility map is set — without that step the count arm measures as a Bitmap
+-- Heap Scan and an Index Only Scan is not available to the planner at all.
+-- `EXPLAIN (ANALYZE, BUFFERS)`:
+--
+--   arm                     BEFORE                      AFTER
+--   unpaged ordered read    1,651 buffers               484 buffers
+--                           Bitmap Heap + Sort          Bitmap Heap + Sort
+--   paged, LIMIT 50         1,651 buffers               53 buffers
+--                           Bitmap Heap + top-N Sort    Index Scan, NO Sort
+--   count()                 1,651 buffers               9 buffers
+--                           Bitmap Heap                 Index Only Scan
+--                                                       Heap Fetches: 0
+--
+-- WHAT THAT DOES AND DOES NOT BUY. The bounded arms are transformed: the LIMIT is
+-- finally served from the index rather than after a Sort of the whole population
+-- (31x), and the honest-total `count()` behind `includeTotal=true` becomes an
+-- Index Only Scan (183x). The UNPAGED arm — which is the one the Documents index
+-- itself issues, since it sends no `limit` — improves 3.4x but KEEPS its Sort:
+-- every one of its rows is returned, so the heap fetches cannot be avoided by any
+-- index, and the gain is only the rows the sharper `Index Cond` no longer draws.
+-- Nobody should read this migration as making the Documents index read cheap; it
+-- makes PAGING and COUNTING cheap, and narrows the unpaged scan.
+--
+-- SIZE. 8,272 kB for 120,000 rows against a 15 MB table (~70 B/row). The predicate trims less
+-- than it looks: SESSION, BRANCH and DEPLOYMENT artifacts are project-less in
+-- practice, so most rows still qualify — it is chosen for plan isolation, not for
+-- bytes. That puts the ticket's 64 MB estimate at roughly production scale, and
+-- that is the cost being accepted on a table the desktop sync path writes
+-- continuously, in exchange for the three arms above.
+--
+-- WHY CONCURRENTLY. A plain CREATE INDEX takes a lock on `artifacts` for the
+-- whole build, and `artifacts` is on the desktop sync write path. `IF NOT
+-- EXISTS` is deliberately absent: with CONCURRENTLY a failed build leaves a
+-- same-named INVALID index behind, and `scripts/lint/destructive-migrations/
+-- index-ddl.ts` requires the retry to fail closed on it rather than silently
+-- mark the migration applied.
+CREATE INDEX CONCURRENTLY "artifacts_org_type_subtype_created_id_idx"
+  ON "artifacts" ("organization_id", "type", "subtype", "created_at" DESC, "id" DESC)
+  WHERE "project_id" IS NULL;

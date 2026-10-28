@@ -121,14 +121,14 @@ describe("initialFacetParamsSource", () => {
     globalThis.history.replaceState(null, "", "/sessions?status=merged");
     const snapshot = new URLSearchParams("status=open");
 
-    expect(initialFacetParamsSource(snapshot)).toBe(snapshot);
+    expect(initialFacetParamsSource(snapshot, "/sessions")).toBe(snapshot);
   });
 
   test("falls back to the browser URL when the snapshot is still empty", () => {
     // Reload/deep-link on the web App Router: the first client render can see
     // an empty search-params snapshot while the browser URL has the filters.
     globalThis.history.replaceState(null, "", "/sessions?status=open&owner=a");
-    const source = initialFacetParamsSource(new URLSearchParams());
+    const source = initialFacetParamsSource(new URLSearchParams(), "/sessions");
 
     expect(source.getAll("status")).toEqual(["open"]);
     expect(source.getAll("owner")).toEqual(["a"]);
@@ -137,6 +137,41 @@ describe("initialFacetParamsSource", () => {
   test("returns the empty snapshot itself when the browser URL has no query", () => {
     const snapshot = new URLSearchParams();
 
-    expect(initialFacetParamsSource(snapshot)).toBe(snapshot);
+    expect(initialFacetParamsSource(snapshot, "/")).toBe(snapshot);
+  });
+
+  test("ignores a browser URL that belongs to another surface", () => {
+    // ISS-8187. An App Router transition renders the DESTINATION — running this
+    // mount-only seed — while the address bar still carries the ORIGIN's query.
+    // Sessions and Branches both name their owner facet `owner` over different
+    // identity vocabularies, so an unscoped fallback adopted the Sessions
+    // selection as a Branches filter and emptied the list.
+    globalThis.history.replaceState(
+      null,
+      "",
+      "/closedloop-ai/sessions?owner=019c24ff-4a67-74ae-bd2a-6f990ee13cca"
+    );
+    const snapshot = new URLSearchParams();
+
+    expect(initialFacetParamsSource(snapshot, "/closedloop-ai/branches")).toBe(
+      snapshot
+    );
+  });
+
+  test("still restores a deep link when the browser URL is this surface", () => {
+    // The sibling of the case above, and the capability it must not cost: the
+    // same empty snapshot on the SAME path is the reload/deep-link gap the
+    // fallback exists for, so it must still seed.
+    globalThis.history.replaceState(
+      null,
+      "",
+      "/closedloop-ai/branches?owner=closedloop%3A019c24ff"
+    );
+    const source = initialFacetParamsSource(
+      new URLSearchParams(),
+      "/closedloop-ai/branches"
+    );
+
+    expect(source.getAll("owner")).toEqual(["closedloop:019c24ff"]);
   });
 });

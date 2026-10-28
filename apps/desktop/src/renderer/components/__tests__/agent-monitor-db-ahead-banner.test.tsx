@@ -1,10 +1,8 @@
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentMonitorRuntimeStatusKind } from "../../../shared/agent-monitor-status";
-import {
-  __resetRuntimeStatusPollForTests,
-  parseAgentMonitorStatus,
-} from "../../hooks/use-ingest-progress";
+import { parseAgentMonitorStatus } from "../../hooks/use-agent-monitor-status";
+import { __resetRuntimeStatusPollForTests } from "../../hooks/use-runtime-status-poll";
 import {
   AgentMonitorDbAheadBanner,
   DB_AHEAD_BANNER_MESSAGE,
@@ -169,7 +167,7 @@ describe("AgentMonitorDbAheadBanner", () => {
 
   it("stops polling once a terminal DB-ahead verdict is observed", async () => {
     // ISS-4714 (whitlockk review): the runtime verdict is terminal at boot, so the
-    // shared 1s poll (which reads authorized_keys.json on main each tick) must
+    // shared 1s poll must
     // latch off after the first Failed/Ready snapshot instead of running for the
     // whole session.
     const getRuntimeStatus = installRuntimeStatus({

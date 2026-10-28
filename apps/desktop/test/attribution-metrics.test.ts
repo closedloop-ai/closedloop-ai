@@ -8,15 +8,17 @@
  * no human ground truth is involved.
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import {
+  AutonomyBand,
+  autonomyBandFor,
+} from "@repo/api/src/types/session-activity-metrics";
+import { describe, test } from "vitest";
 import { Harness } from "../src/main/collectors/types.js";
 import {
   ACTIVITY_STATE_VALUES,
   ActivityState,
   ATTRIBUTION_METRIC_VERSION,
-  AutonomyBand,
   attributeSegmentSpendUsd,
-  autonomyBandFor,
   type ClassifiedSegment,
   COHORT_AXIS_VALUES,
   CONFIDENCE_BUCKET_VALUES,

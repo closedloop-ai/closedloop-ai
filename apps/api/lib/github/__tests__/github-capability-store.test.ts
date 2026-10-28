@@ -8,26 +8,20 @@ vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
 }));
 
-import { withDb } from "@repo/database";
 import {
   GITHUB_SYNC_REPO_VERDICT_TTL_MS,
   GitHubCapabilityTtlMs,
-  GitHubSyncHealthState,
 } from "@/lib/github/github-access";
 import {
+  activeRepoVerdictBatchWhere,
   activeRepoVerdictWhere,
   type GitHubCapabilityVerdict,
   type GitHubRepoVerdictRow,
   hasActiveNoAccessVerdict,
   hasDurableNoAccessVerdict,
-  markGitHubConnectionRevoked,
   saveCapabilityVerdict,
 } from "@/lib/github/github-capability-store";
 import { GITHUB_REPO_SCOPE } from "@/lib/github/github-connection-credential";
-
-const mockWithDb = withDb as unknown as ReturnType<typeof vi.fn> & {
-  tx: ReturnType<typeof vi.fn>;
-};
 
 const NOW = new Date("2026-07-30T12:00:00.000Z");
 
@@ -104,6 +98,8 @@ describe("saveCapabilityVerdict", () => {
         targetRepo: null,
         ...DATA,
       },
+      // ISS-6322 narrowed this discarded write's RETURNING to the primary key.
+      select: { id: true },
     });
   });
 
@@ -153,102 +149,67 @@ describe("saveCapabilityVerdict", () => {
   });
 });
 
-describe("markGitHubConnectionRevoked", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  function makeTx(revokeCount: number) {
-    return {
-      gitHubUserConnection: {
-        updateMany: vi.fn().mockResolvedValue({ count: revokeCount }),
-      },
-      gitHubAccessCapability: {
-        deleteMany: vi.fn().mockResolvedValue({ count: 3 }),
-      },
-    };
-  }
-
-  it("revokes the failing credential and drops its capabilities in one transaction", async () => {
-    const tx = makeTx(1);
-    mockWithDb.tx.mockImplementation((fn: (client: typeof tx) => unknown) =>
-      fn(tx)
-    );
-
-    await markGitHubConnectionRevoked({
-      organizationId: "org-1",
-      githubUserConnectionId: "connection-1",
-      accessTokenEncrypted: "cipher-a",
-      now: NOW,
-    });
-
-    expect(mockWithDb.tx).toHaveBeenCalledTimes(1);
-    expect(tx.gitHubUserConnection.updateMany).toHaveBeenCalledWith({
-      where: {
-        id: "connection-1",
-        organizationId: "org-1",
-        revokedAt: null,
-        accessTokenEncrypted: "cipher-a",
-      },
-      data: { revokedAt: NOW, healthState: GitHubSyncHealthState.Unhealthy },
-    });
-    expect(tx.gitHubAccessCapability.deleteMany).toHaveBeenCalledWith({
-      where: {
-        githubUserConnectionId: "connection-1",
-        organizationId: "org-1",
-      },
-    });
-  });
-
-  it("does nothing when the stored credential no longer matches (post-reconnect 401)", async () => {
-    // A late 401 from a client built on the replaced token: the CAS misses,
-    // and neither the replacement credential nor its capability rows are
-    // touched.
-    const tx = makeTx(0);
-    mockWithDb.tx.mockImplementation((fn: (client: typeof tx) => unknown) =>
-      fn(tx)
-    );
-
-    await markGitHubConnectionRevoked({
-      organizationId: "org-1",
-      githubUserConnectionId: "connection-1",
-      accessTokenEncrypted: "cipher-old",
-      now: NOW,
-    });
-
-    expect(tx.gitHubAccessCapability.deleteMany).not.toHaveBeenCalled();
-  });
-});
-
 describe("activeRepoVerdictWhere", () => {
   it("normalizes mixed-case owner and repo to lowercase and gates on expiresAt > now", () => {
     const result = activeRepoVerdictWhere(
-      [{ owner: "Acme", repo: "Widgets" }],
+      { owner: "Acme", repo: "Widgets" },
       NOW
     );
     expect(result).toEqual({
-      OR: [{ normalizedTargetOwner: "acme", targetRepo: "widgets" }],
+      normalizedTargetOwner: { in: ["acme"] },
+      targetRepo: { in: ["widgets"] },
       expiresAt: { gt: NOW },
     });
   });
+});
 
-  it("produces one OR branch per target when called with two repos", () => {
-    const result = activeRepoVerdictWhere(
+describe("activeRepoVerdictBatchWhere", () => {
+  it("emits two top-level IN lists rather than one OR disjunct per target (ISS-6577)", () => {
+    // An OR list costs Postgres the whole expression per scanned row and 2 bind
+    // parameters per target. Two hashed IN checks are flat in the repo count and
+    // cost one parameter per DISTINCT value.
+    const result = activeRepoVerdictBatchWhere(
       [
         { owner: "Acme", repo: "Widgets" },
         { owner: "OtherOrg", repo: "Backend" },
       ],
       NOW
     );
-    expect(result.OR).toHaveLength(2);
-    expect(result.OR[0]).toEqual({
-      normalizedTargetOwner: "acme",
-      targetRepo: "widgets",
+    expect(result).toEqual({
+      normalizedTargetOwner: { in: ["acme", "otherorg"] },
+      targetRepo: { in: ["widgets", "backend"] },
+      expiresAt: { gt: NOW },
     });
-    expect(result.OR[1]).toEqual({
-      normalizedTargetOwner: "otherorg",
-      targetRepo: "backend",
-    });
+    expect(result).not.toHaveProperty("OR");
+  });
+
+  it("collapses repeated owners and repo names so the bind-parameter count tracks distinct values", () => {
+    const result = activeRepoVerdictBatchWhere(
+      [
+        { owner: "Acme", repo: "Widgets" },
+        { owner: "ACME", repo: "widgets" },
+        { owner: "acme", repo: "Backend" },
+      ],
+      NOW
+    );
+    expect(result.normalizedTargetOwner).toEqual({ in: ["acme"] });
+    expect(result.targetRepo).toEqual({ in: ["widgets", "backend"] });
+  });
+
+  it("agrees exactly with the single-target fragment for one repo", () => {
+    // Same definition of "active" for both carriers — the drift ISS-5093 exists
+    // to remove. A one-element IN list IS an equality, so the batch variant only
+    // over-selects once it holds more than one target.
+    const target = { owner: "Acme", repo: "Widgets" };
+    expect(activeRepoVerdictBatchWhere([target], NOW)).toEqual(
+      activeRepoVerdictWhere(target, NOW)
+    );
+  });
+
+  it("matches nothing when given no targets", () => {
+    const result = activeRepoVerdictBatchWhere([], NOW);
+    expect(result.normalizedTargetOwner).toEqual({ in: [] });
+    expect(result.targetRepo).toEqual({ in: [] });
   });
 });
 

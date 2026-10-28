@@ -1,4 +1,8 @@
-import { vi } from "vitest";
+import { afterEach, beforeEach, vi } from "vitest";
+import {
+  DASHBOARD_FLAG_SET,
+  dashboardOnboardedStorageKey,
+} from "../components/dashboard/dashboard-storage-keys";
 
 /**
  * Install an in-memory `window.localStorage` for a renderer test.
@@ -38,7 +42,18 @@ export function installLocalStorage(): () => void {
     configurable: true,
     value: storage,
   });
-
+  // An installed store models an install that HAS RUN BEFORE, not a first
+  // launch. ISS-10195 made that distinction load-bearing: the guided onboarding
+  // run arms on a first run and reads this latch, so a bare store put a blocking
+  // modal — `pointer-events: none` on the body, the shell `aria-hidden` — over
+  // every suite that mounts the shell without seeding it.
+  //
+  // Same seed and same reason as `setupReturningInstallStorage` below, moved
+  // here so a suite gets it by installing a store rather than by remembering.
+  // A suite whose SUBJECT is first run either stubs `globalThis.localStorage`
+  // instead (`stubLocalStorage`), which replaces this store wholesale, or
+  // removes the key after installing it (`app-shell-first-run.test.tsx`).
+  storage.setItem(dashboardOnboardedStorageKey, DASHBOARD_FLAG_SET);
   return () => {
     if (originalDescriptor === undefined) {
       Reflect.deleteProperty(window, "localStorage");
@@ -46,4 +61,31 @@ export function installLocalStorage(): () => void {
     }
     Object.defineProperty(window, "localStorage", originalDescriptor);
   };
+}
+
+/**
+ * Model an install that has run before, for a suite whose subject is the app
+ * shell rather than first launch.
+ *
+ * Call once inside `describe`; it owns its own `beforeEach`/`afterEach`.
+ *
+ * Load-bearing because the ISS-10195 guided onboarding run arms on `firstRun`,
+ * and `firstRun` is "no first-run key in `localStorage`", which an empty store
+ * answers YES to. So a suite with an empty store opens the blocking welcome
+ * modal over the shell it is trying to assert on. That is correct product
+ * behavior on a genuinely fresh install; it is simply not what these suites are
+ * about.
+ */
+export function setupReturningInstallStorage(): void {
+  let restore: (() => void) | undefined;
+
+  beforeEach(() => {
+    restore = installLocalStorage();
+    window.localStorage.setItem(dashboardOnboardedStorageKey, "1");
+  });
+
+  afterEach(() => {
+    restore?.();
+    restore = undefined;
+  });
 }

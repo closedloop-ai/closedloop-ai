@@ -16,7 +16,6 @@ Closedloop.ai relies on a specific toolchain so agents can execute reliably. Ins
 | `just` | current | desktop client command runner |
 | `jq` | current | plugin installers and shell scripts |
 | `git` | 2.30+ | plan/critic/judge workflows and worktrees |
-| `gh` CLI | current | PR automation (creation, comments, reviews) |
 | `bash` | 3.2+ | plugin shell scripts |
 
 ## Optional tools
@@ -32,14 +31,14 @@ Closedloop.ai relies on a specific toolchain so agents can execute reliably. Ins
 | OS | Desktop client | Plugins |
 |---|---|---|
 | macOS (Apple Silicon and Intel) | packaged DMG, primary target | supported |
-| Linux | runs in dev mode via `just desktop-dev`; not packaged | supported |
+| Linux (x64) | packaged AppImage | supported |
 | Windows | not supported for the desktop client | plugins work inside WSL or supported terminals |
 
 ## Accounts and credentials
 
 - A Closedloop.ai account with access to at least one team and project.
 - A Closedloop API key. The desktop client reads it from `CLOSEDLOOP_API_KEY` or from encrypted local storage. `SYMPHONY_API_KEY` is accepted as a legacy fallback.
-- A GitHub account authorized for any repositories you plan to connect, and `gh auth login` completed.
+- A GitHub account authorized for any repositories you plan to connect.
 
 ## Installing the base tools
 
@@ -50,7 +49,7 @@ Closedloop.ai relies on a specific toolchain so agents can execute reliably. Ins
 brew install anthropic/claude/claude
 
 # Language toolchains
-brew install node@22 python@3.13 pnpm just jq git gh
+brew install node@22 python@3.13 pnpm just jq git
 
 # Enable pnpm via corepack
 corepack enable && corepack prepare pnpm@9.15.0 --activate
@@ -71,7 +70,7 @@ corepack enable && corepack prepare pnpm@9.15.0 --activate
 # just
 cargo install just
 
-# Claude Code CLI and gh via their official installers
+# Claude Code CLI via its official installer
 ```
 
 After you finish this page, continue to [Install the plugins](./install-plugins).

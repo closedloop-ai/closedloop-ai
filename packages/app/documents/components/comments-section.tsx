@@ -8,7 +8,10 @@ import {
   formatDateTimeOrFallback,
   formatRelativeTimeOrFallback,
 } from "@repo/app/shared/lib/date-utils";
-import { mentionDisplayName } from "@repo/app/shared/lib/mentions";
+import {
+  type MentionUser,
+  mentionDisplayName,
+} from "@repo/app/shared/lib/mentions";
 import {
   useCurrentUser,
   useOrganizationUsers,
@@ -69,6 +72,7 @@ export type CommentThreadItem = {
 
 type CommentsSectionProps = {
   documentId: string;
+  active?: boolean;
   defaultOpen?: boolean;
 };
 
@@ -94,6 +98,7 @@ type CommentsSectionViewProps = {
   viewerId?: string | null;
   /** Active org member display names, for chipping "@Name" runs on read. */
   mentionNames?: readonly string[];
+  members?: readonly MentionUser[];
   disabled?: boolean;
   isSubmitting?: boolean;
   /** True while a reply post is in flight — disables the open reply composer. */
@@ -123,15 +128,18 @@ type CommentsSectionViewProps = {
  */
 export function CommentsSection({
   documentId,
+  active = true,
   defaultOpen = false,
 }: Readonly<CommentsSectionProps>) {
   const [isOpen, setIsOpen] = useState(defaultOpen);
   const { data: comments, isLoading: isLoadingComments } = useDocumentComments(
     documentId,
-    isOpen
+    active && isOpen
   );
-  const { data: currentUser } = useCurrentUser({ enabled: isOpen });
-  const { data: orgUsers } = useOrganizationUsers({ enabled: isOpen });
+  const { data: currentUser } = useCurrentUser({ enabled: active && isOpen });
+  const { data: orgUsers } = useOrganizationUsers({
+    enabled: active && isOpen,
+  });
   const createComment = useCreateDocumentComment(documentId);
   const replyToComment = useReplyToDocumentComment(documentId);
   const toggleResolved = useToggleDocumentThreadResolved(documentId);
@@ -150,6 +158,7 @@ export function CommentsSection({
       isLoading={isLoadingComments}
       isReplyPending={replyToComment.isPending}
       isSubmitting={createComment.isPending}
+      members={orgUsers}
       mentionNames={mentionNames}
       onOpenChange={setIsOpen}
       // Return the mutation promise so the composer retains the draft on a
@@ -175,6 +184,7 @@ export function CommentsSectionView({
   isLoading = false,
   viewerId,
   mentionNames = [],
+  members,
   disabled = false,
   isSubmitting = false,
   isReplyPending = false,
@@ -202,6 +212,7 @@ export function CommentsSectionView({
       isReplyOpen={replyingToId === thread.id}
       isReplyPending={isReplyPending}
       key={thread.id}
+      members={members}
       mentionNames={mentionNames}
       now={now}
       onCloseReply={() => setReplyingToId(null)}
@@ -255,6 +266,7 @@ export function CommentsSectionView({
             disabled={disabled}
             isPending={isSubmitting}
             labelledBy={composerLabelId}
+            members={members}
             onSubmit={({ body }) => onSubmitComment(body)}
             placeholder="Share feedback or ask a question…"
             submitLabel="Comment"
@@ -308,6 +320,7 @@ function CommentThreadItemCard({
   thread,
   viewerId,
   mentionNames,
+  members,
   isReplyOpen,
   isReplyPending,
   now,
@@ -319,6 +332,7 @@ function CommentThreadItemCard({
   thread: CommentThreadItem;
   viewerId?: string | null;
   mentionNames: readonly string[];
+  members?: readonly MentionUser[];
   isReplyOpen: boolean;
   isReplyPending: boolean;
   now?: Date | number;
@@ -447,6 +461,7 @@ function CommentThreadItemCard({
         <ThreadReplyFooter
           isReplyOpen={isReplyOpen}
           isReplyPending={isReplyPending}
+          members={members}
           onCloseReply={onCloseReply}
           onOpenReply={onOpenReply}
           onReply={(body) => onReply(thread.id, body)}
@@ -457,12 +472,14 @@ function CommentThreadItemCard({
 }
 
 function ThreadReplyFooter({
+  members,
   isReplyOpen,
   isReplyPending,
   onOpenReply,
   onCloseReply,
   onReply,
 }: Readonly<{
+  members?: readonly MentionUser[];
   isReplyOpen: boolean;
   isReplyPending: boolean;
   onOpenReply: () => void;
@@ -475,6 +492,7 @@ function ThreadReplyFooter({
         <MentionComposer
           autoFocus
           isPending={isReplyPending}
+          members={members}
           minHeightClassName="min-h-[64px]"
           onCancel={onCloseReply}
           onSubmit={({ body }) => {

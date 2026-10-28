@@ -1,21 +1,26 @@
+import { ActorTurnSide } from "@repo/app/shared/lib/actor-color-domain";
 import { describe, expect, it } from "vitest";
 import {
   makeBranchDetail,
   makeBranchSession,
 } from "../../__tests__/branch-fixtures";
+import { buildActorColorDomain } from "../branch-actor-domain";
 import {
-  BranchActorTurnSide,
-  buildActorColorDomain,
-} from "../branch-actor-domain";
-import { buildSessionTimeline } from "../branch-session-buckets";
+  BranchTimelineGrouping,
+  buildSessionTimeline,
+} from "../branch-session-buckets";
 
-function timelineOf(detail: ReturnType<typeof makeBranchDetail>) {
+function timelineOf(
+  detail: ReturnType<typeof makeBranchDetail>,
+  grouping: BranchTimelineGrouping = BranchTimelineGrouping.SessionOwner
+) {
   // The production human domain keys actors by stable user ID, with a normalized
   // legacy label only when an older producer has no ID. Mirror that identity
   // contract here so duplicate display names cannot collapse actor colors.
   return buildSessionTimeline(
     detail,
-    buildActorColorDomain(detail.sessions.map(sessionActorIdentity))
+    buildActorColorDomain(detail.sessions.map(sessionActorIdentity)),
+    grouping
   );
 }
 
@@ -50,7 +55,7 @@ describe("buildSessionTimeline (FEA-3576: per-user cost)", () => {
     expect(segment?.color).toBe(
       buildActorColorDomain(["legacy:cosimo"]).colorForTurn(
         "Cosimo",
-        BranchActorTurnSide.Human,
+        ActorTurnSide.Human,
         "legacy:cosimo"
       )
     );
@@ -351,26 +356,6 @@ describe("buildSessionTimeline (FEA-3576: per-user cost)", () => {
     );
   });
 
-  it("caps the span when a session has an outlier far-future end (no unbounded loop)", () => {
-    const detail = makeBranchDetail({
-      sessions: [
-        makeBranchSession({
-          sessionId: "s1",
-          startedAt: "2026-06-10T10:00:00.000Z",
-          endedAt: "9999-01-01T00:00:00.000Z",
-          estimatedCostUsd: 100,
-          ownerUserName: "Cosimo",
-        }),
-      ],
-    });
-    const { columns, startMs, endMs } = timelineOf(detail);
-    // Bounded to the 90-day hourly ceiling instead of millions of columns.
-    const maxHours = 24 * 90;
-    expect(columns).toHaveLength(maxHours);
-    expect(startMs).toBe(Date.parse("2026-06-10T10:00:00.000Z"));
-    expect(endMs).toBe((startMs ?? 0) + maxHours * 3_600_000);
-  });
-
   it("conserves total cost: a session's spend is distributed ONCE, not double-counted", () => {
     // Thread A: cost is split by active-time fraction across the hours a burst
     // touches, keyed by the session's single owner. It must NOT be split again
@@ -440,6 +425,207 @@ describe("buildSessionTimeline (FEA-3576: per-user cost)", () => {
     ).toBe(10);
   });
 
+  it("re-cuts the same hourly cost by activity phase without changing totals", () => {
+    const start = Date.parse("2026-06-10T10:00:00.000Z");
+    const detail = makeBranchDetail({
+      estimatedCostUsd: 10,
+      sessions: [
+        makeBranchSession({
+          sessionId: "s1",
+          startedAt: "2026-06-10T10:00:00.000Z",
+          endedAt: "2026-06-10T11:00:00.000Z",
+          estimatedCostUsd: 10,
+          ownerUserName: "Cosimo",
+          activitySegments: [
+            {
+              confidence: 1,
+              costUsd: 5,
+              inputTokens: 500,
+              outputTokens: 0,
+              phase: "implement",
+              startMs: start,
+              endMs: start + 30 * 60_000,
+            },
+            {
+              confidence: 1,
+              costUsd: 5,
+              inputTokens: 500,
+              outputTokens: 0,
+              phase: "review",
+              startMs: start + 30 * 60_000,
+              endMs: start + 60 * 60_000,
+            },
+          ],
+        }),
+      ],
+    });
+
+    const ownerColumn = timelineOf(detail).columns[0];
+    const phaseColumn = timelineOf(detail, BranchTimelineGrouping.ActivityPhase)
+      .columns[0];
+
+    expect(ownerColumn?.total).toBe(10);
+    expect(phaseColumn?.total).toBe(ownerColumn?.total);
+    expect(phaseColumn?.segments.map((segment) => segment.label)).toEqual([
+      "Implement",
+      "Review",
+    ]);
+    expect(phaseColumn?.segments.map((segment) => segment.owner)).toEqual([
+      null,
+      null,
+    ]);
+    expect(phaseColumn?.segments.map((segment) => segment.value)).toEqual([
+      5, 5,
+    ]);
+  });
+
+  it("uses priced activity phase evidence instead of elapsed duration", () => {
+    const start = Date.parse("2026-06-10T10:00:00.000Z");
+    const detail = makeBranchDetail({
+      estimatedCostUsd: 10,
+      sessions: [
+        makeBranchSession({
+          sessionId: "s1",
+          startedAt: "2026-06-10T10:00:00.000Z",
+          endedAt: "2026-06-10T11:00:00.000Z",
+          estimatedCostUsd: 10,
+          inputTokens: 1000,
+          ownerUserName: "Cosimo",
+          activitySegments: [
+            {
+              confidence: 1,
+              costUsd: 1,
+              inputTokens: 100,
+              outputTokens: 0,
+              phase: "implement",
+              startMs: start,
+              endMs: start + 50 * 60_000,
+            },
+            {
+              confidence: 1,
+              costUsd: 9,
+              inputTokens: 900,
+              outputTokens: 0,
+              phase: "review",
+              startMs: start + 50 * 60_000,
+              endMs: start + 60 * 60_000,
+            },
+          ],
+        }),
+      ],
+    });
+
+    const phaseColumn = timelineOf(detail, BranchTimelineGrouping.ActivityPhase)
+      .columns[0];
+
+    expect(phaseColumn?.total).toBe(10);
+    expect(phaseColumn?.segments.map((segment) => segment.label)).toEqual([
+      "Implement",
+      "Review",
+    ]);
+    expect(phaseColumn?.segments.map((segment) => segment.value)).toEqual([
+      1, 9,
+    ]);
+    expect(phaseColumn?.segments.map((segment) => segment.input)).toEqual([
+      100, 900,
+    ]);
+  });
+
+  it("does not add duration fallback to a metric that already has phase evidence", () => {
+    const start = Date.parse("2026-06-10T10:00:00.000Z");
+    const detail = makeBranchDetail({
+      estimatedCostUsd: 10,
+      sessions: [
+        makeBranchSession({
+          sessionId: "s1",
+          startedAt: "2026-06-10T10:00:00.000Z",
+          endedAt: "2026-06-10T11:00:00.000Z",
+          estimatedCostUsd: 10,
+          inputTokens: 1000,
+          ownerUserName: "Cosimo",
+          activitySegments: [
+            {
+              confidence: 1,
+              costUsd: 1,
+              inputTokens: 100,
+              outputTokens: 0,
+              phase: "implement",
+              startMs: start,
+              endMs: start + 40 * 60_000,
+            },
+            {
+              confidence: 1,
+              costUsd: 9,
+              inputTokens: 900,
+              outputTokens: 0,
+              phase: "review",
+              startMs: start + 40 * 60_000,
+              endMs: start + 50 * 60_000,
+            },
+          ],
+        }),
+      ],
+    });
+
+    const phaseColumn = timelineOf(detail, BranchTimelineGrouping.ActivityPhase)
+      .columns[0];
+    const segmentValues =
+      phaseColumn?.segments.map((segment) => segment.value) ?? [];
+
+    expect(phaseColumn?.total).toBe(10);
+    expect(phaseColumn?.segments.map((segment) => segment.label)).toEqual([
+      "Implement",
+      "Review",
+    ]);
+    expect(segmentValues).toEqual([1, 9]);
+    expect(segmentValues.reduce((total, value) => total + value, 0)).toBe(10);
+  });
+
+  it("scales priced activity phase evidence to the branch's even-split session share", () => {
+    const start = Date.parse("2026-06-10T10:00:00.000Z");
+    const detail = makeBranchDetail({
+      estimatedCostUsd: 5,
+      sessions: [
+        makeBranchSession({
+          sessionId: "s1",
+          startedAt: "2026-06-10T10:00:00.000Z",
+          endedAt: "2026-06-10T11:00:00.000Z",
+          estimatedCostUsd: 10,
+          evenSplitCostUsd: 5,
+          ownerUserName: "Cosimo",
+          activitySegments: [
+            {
+              confidence: 1,
+              costUsd: 1,
+              inputTokens: 100,
+              outputTokens: 0,
+              phase: "implement",
+              startMs: start,
+              endMs: start + 50 * 60_000,
+            },
+            {
+              confidence: 1,
+              costUsd: 9,
+              inputTokens: 900,
+              outputTokens: 0,
+              phase: "review",
+              startMs: start + 50 * 60_000,
+              endMs: start + 60 * 60_000,
+            },
+          ],
+        }),
+      ],
+    });
+
+    const phaseColumn = timelineOf(detail, BranchTimelineGrouping.ActivityPhase)
+      .columns[0];
+
+    expect(phaseColumn?.total).toBe(5);
+    expect(phaseColumn?.segments.map((segment) => segment.value)).toEqual([
+      0.5, 4.5,
+    ]);
+  });
+
   it("uses the server's per-session even-split share (mixed branch counts) so bars match the header exactly", () => {
     // Thread 1 (PRRT_kwDOQ4gDpM6TAbzr): the server even-splits PER SESSION (full
     // cost ÷ that session's OWN branch count), NOT with one branch-wide ratio.
@@ -481,6 +667,36 @@ describe("buildSessionTimeline (FEA-3576: per-user cost)", () => {
       .flatMap((column) => column.segments)
       .reduce((total, segment) => total + segment.value, 0);
     expect(Math.round(summed * 100) / 100).toBe(detail.estimatedCostUsd);
+  });
+
+  it("scales only the unstamped residual when per-session shares are mixed", () => {
+    const detail = makeBranchDetail({
+      attributedCostUsd: 15,
+      estimatedCostUsd: 20,
+      sessions: [
+        makeBranchSession({
+          sessionId: "s1",
+          startedAt: "2026-06-10T10:00:00.000Z",
+          endedAt: "2026-06-10T11:00:00.000Z",
+          estimatedCostUsd: 10,
+          evenSplitCostUsd: 10,
+          ownerUserName: "Cosimo",
+        }),
+        makeBranchSession({
+          sessionId: "s2",
+          startedAt: "2026-06-10T10:00:00.000Z",
+          endedAt: "2026-06-10T11:00:00.000Z",
+          estimatedCostUsd: 10,
+          ownerUserName: "Tamsin",
+        }),
+      ],
+    });
+    const { columns } = timelineOf(detail);
+    expect(columns[0]?.segments.map((s) => [s.owner, s.value])).toEqual([
+      ["Cosimo", 10],
+      ["Tamsin", 5],
+    ]);
+    expect(columns[0]?.total).toBe(15);
   });
 
   it("prefers the per-session even-split share over the branch-wide fallback scale", () => {
@@ -646,33 +862,6 @@ describe("buildSessionTimeline (FEA-3576: per-user cost)", () => {
       timeline.truncatedSessions.map((session) => session.sessionId)
     ).toEqual(["late"]);
     expect(timeline.nonBucketableSessions).toEqual([]);
-  });
-
-  it("uses full active duration when one Session is clamped by the timeline span cap", () => {
-    const timeline = timelineOf(
-      makeBranchDetail({
-        estimatedCostUsd: 100,
-        sessions: [
-          makeBranchSession({
-            sessionId: "long-running",
-            startedAt: "2026-01-01T10:00:00.000Z",
-            endedAt: "2026-04-11T10:00:00.000Z",
-            estimatedCostUsd: 100,
-          }),
-        ],
-      })
-    );
-    const renderedCost = timeline.columns.reduce(
-      (total, column) => total + column.total,
-      0
-    );
-
-    expect(timeline.columns).toHaveLength(24 * 90);
-    expect(timeline.chartableCostUsd).toBeCloseTo(90);
-    expect(timeline.chartableCostUsd).toBeCloseTo(renderedCost);
-    expect(
-      timeline.truncatedSessions.map((session) => session.sessionId)
-    ).toEqual(["long-running"]);
   });
 
   it("retains known rendered cost when one owner-hour also has unpriced activity", () => {

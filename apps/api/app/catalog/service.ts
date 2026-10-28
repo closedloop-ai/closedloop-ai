@@ -1,16 +1,10 @@
 import "server-only";
-
-import type {
-  ContextPackAgent,
-  ContextPackRepoConfig,
-} from "@closedloop-ai/loops-api/context-pack";
-import { catalogTargetKindToComponentKind } from "@repo/api/src/catalog-component-kind";
 import {
   type CatalogItemDto,
   CatalogItemSource,
   type ImportPackZipResponse,
 } from "@repo/api/src/types/distribution";
-import { Result } from "@repo/api/src/types/result";
+import { Result, Status } from "@repo/api/src/types/result";
 import {
   CatalogAssetTooLargeError,
   catalogAssetKey,
@@ -19,740 +13,42 @@ import {
   getCatalogAssetUploadUrl,
   headCatalogAsset,
   resolveCatalogBucket,
-} from "@repo/aws";
+} from "@repo/aws/catalog-assets";
 import {
   GitHubInstallationStatus,
   Prisma,
-  SourceOccurrenceType,
   type TransactionClient,
   withDb,
 } from "@repo/database";
+import { BoundedMap } from "@repo/lib/bounded-map";
 import { log } from "@repo/observability/log";
 import { v7 as uuidv7 } from "uuid";
-import { registerDefinitionVersion } from "@/app/definition-registry/service";
 import {
-  agentComponentProjection,
-  type SearchProjectionInput,
-} from "@/app/search/search-index-service";
-import { BoundedCache } from "@/lib/bounded-cache";
-import { getPrismaErrorCode } from "@/lib/db-utils";
+  materializeCloudAgentComponent,
+  materializeCloudAgentComponentsBatch,
+} from "@/app/catalog/service/cloud-agent-component";
+import { linkPackMemberDefinition } from "@/app/catalog/service/pack-definition-link";
+import {
+  canUpdateCatalogItem,
+  catalogItemUpdateWhere,
+  isImmutableCatalogItemUpdate,
+  type UpdateCatalogError,
+  type UpdateCatalogInput,
+  updateRefusalStatus,
+} from "@/app/catalog/service/update-authorization";
+import type { SearchProjectionInput } from "@/app/search/search-index-service";
+import type { OrganizationWriteOutcome } from "@/lib/organization-write-receipt";
+import {
+  type RecordWriteInTransaction,
+  writeRecorded,
+} from "@/lib/record-write-in-transaction";
+import { CatalogAssetError, type ConfirmUploadError } from "./asset-errors";
 import { flushCatalogSearchIndex } from "./catalog-search-index";
 import { deriveComponentUuid } from "./component-uuid";
 import type { ParsedComponent } from "./pack-component-parse";
 import { fetchRepoComponents } from "./pack-repo-import";
 import { PackZipTooLargeError, parsePackZip } from "./pack-zip-import";
 import { createCatalogItemBodySchema } from "./validators";
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Slugify a string into a URL-safe identifier.
- * Matches the logic from apps/api/app/agents/service.ts so that roles
- * produce identical slugs after migration.
- */
-function slugify(input: string): string {
-  return input
-    .toLowerCase()
-    .replaceAll(/[^a-z0-9]+/g, "-")
-    .replaceAll(/^-+|-+$/g, "")
-    .slice(0, 64);
-}
-
-/**
- * Derive a context-pack slug from a CatalogItem's role or name.
- * `role` is the bootstrap dedup key and mirrors `Agent.role`; falling
- * back to `name` ensures items without a role still produce a slug.
- *
- * Used only as the base for `generateUniqueAgentSlug` at ingest and as a
- * last-resort fallback in `listAgentsForContextPack` for legacy rows whose
- * `agentSlug` was never persisted — the persisted slug is otherwise SSOT.
- */
-function catalogItemSlug(role: string | null, name: string): string {
-  return slugify(role ?? name);
-}
-
-/**
- * Compute an org-scoped-unique context-pack slug for a new agent CatalogItem,
- * disambiguating same-base collisions with -2/-3/… suffixes. Mirrors the
- * superseded `agentsService.generateUniqueSlug` so two agents that share a
- * `role` but differ by `sourceRepo` get distinct, stable harness file names
- * (`.claude/agents/{slug}.md`) instead of silently overwriting one another
- * (FEA-2923). Uniqueness is enforced at the DB by the partial unique index
- * `catalog_items_organization_id_agent_slug_agent_key`; this pre-check keeps
- * the common path collision-free so the P2002 retry stays rare.
- */
-async function generateUniqueAgentSlug(
-  tx: TransactionClient,
-  organizationId: string,
-  base: string
-): Promise<string> {
-  const exists = async (candidate: string): Promise<boolean> => {
-    const found = await tx.catalogItem.findFirst({
-      where: {
-        organizationId,
-        targetKind: "agent",
-        agentSlug: candidate,
-      },
-      select: { id: true },
-    });
-    return found !== null;
-  };
-
-  if (!(await exists(base))) {
-    return base;
-  }
-  for (let suffix = 2; suffix <= 100; suffix++) {
-    const candidate = `${base}-${suffix}`;
-    if (!(await exists(candidate))) {
-      return candidate;
-    }
-  }
-  throw new Error(`Could not generate unique agent slug for base "${base}"`);
-}
-
-// ---------------------------------------------------------------------------
-// listAgentsForContextPack
-// ---------------------------------------------------------------------------
-
-/**
- * Returns enabled CatalogItem rows of targetKind='agent' whose sourceRepo is
- * in {"", ...repos} (org-wide agents + repo-specific agents), together with
- * the RepoBootstrapConfig critic-gates for the given repos.
- *
- * Emits the ContextPackAgent wire shape {slug, name, prompt} expected by the
- * harness. Prompt is sourced from the latest CatalogItemVersion.content
- * (content is nullable for asset-only items; items with null content are
- * excluded because the harness cannot use them).
- *
- * Semantically identical to agentsService.getContextPackData.
- */
-export async function listAgentsForContextPack(
-  orgId: string,
-  repos?: string[]
-): Promise<{
-  agents: ContextPackAgent[];
-  repoConfigs: ContextPackRepoConfig[];
-}> {
-  const sourceRepoFilter = repos ? { sourceRepo: { in: ["", ...repos] } } : {};
-
-  const [items, repoConfigs] = await withDb((db) =>
-    Promise.all([
-      db.catalogItem.findMany({
-        where: {
-          organizationId: orgId,
-          targetKind: "agent",
-          enabled: true,
-          archived: false,
-          ...sourceRepoFilter,
-        },
-        select: {
-          role: true,
-          name: true,
-          agentSlug: true,
-          versions: {
-            orderBy: { version: "desc" },
-            take: 1,
-            select: { content: true },
-          },
-        },
-        orderBy: { role: "asc" },
-      }),
-      db.repoBootstrapConfig.findMany({
-        where: {
-          organizationId: orgId,
-          ...(repos ? { repoFullName: { in: repos } } : {}),
-        },
-        select: { repoFullName: true, criticGates: true },
-      }),
-    ])
-  );
-
-  const agents: ContextPackAgent[] = [];
-  for (const item of items) {
-    const prompt = item.versions[0]?.content;
-    if (!prompt) {
-      // Asset-only items have no inline prompt; skip them for context pack
-      continue;
-    }
-    agents.push({
-      // Prefer the persisted, disambiguated slug (SSOT). Fall back to the
-      // role-derived slug only for legacy rows that predate agentSlug backfill
-      // — recomputing on read would re-introduce the same-role/different-repo
-      // collision this column exists to prevent (FEA-2923).
-      slug: item.agentSlug ?? catalogItemSlug(item.role, item.name),
-      name: item.name,
-      prompt,
-    });
-  }
-
-  return {
-    agents,
-    repoConfigs: repoConfigs.map((c) => ({
-      repoFullName: c.repoFullName,
-      criticGates: c.criticGates as Record<string, unknown>,
-    })),
-  };
-}
-
-// ---------------------------------------------------------------------------
-// bulkIngestAgents
-// ---------------------------------------------------------------------------
-
-type AgentIngestInput = {
-  name: string;
-  role: string;
-  description?: string;
-  prompt: string;
-};
-
-type BulkIngestInput = {
-  agents: AgentIngestInput[];
-  bootstrapRunId: string;
-  sourceRepo: string;
-  criticGates?: Record<string, unknown>;
-};
-
-type BulkIngestCatalogItemsResult = {
-  created: number;
-  updated: number;
-  items: Array<{ id: string; role: string | null; name: string }>;
-};
-
-/**
- * Dedup-aware transactional ingest of bootstrap-generated agents into
- * CatalogItem + CatalogItemVersion.
- *
- * Preserves exact semantics from agentsService.bulkIngest (service.ts:345):
- *   - Dedup input by role (last-wins within the batch).
- *   - Upsert by (organizationId, sourceRepo, role) unique index.
- *   - Existing → bump currentVersion via increment + new CatalogItemVersion
- *     with changeNote='Re-generated by bootstrap'.
- *   - New → create with version=1, changeNote='Initial version from bootstrap'.
- *   - criticGates → upsert RepoBootstrapConfig (table is kept).
- *
- * Returns {created, updated, items} for observability.
- */
-/**
- * Max attempts for the whole ingest transaction. A retry only fires when a
- * concurrent bootstrap of the same (org, sourceRepo, role) claims the same
- * next CatalogItemVersion.version and one loses the
- * unique(catalogItemId, version) race. Bootstrap is near-single-flight, so a
- * small budget converges quickly.
- */
-const MAX_INGEST_ATTEMPTS = 5;
-
-export async function bulkIngestAgents(
-  organizationId: string,
-  userId: string,
-  input: BulkIngestInput
-): Promise<BulkIngestCatalogItemsResult> {
-  // CatalogItem has no atomic integer version counter to `{ increment: 1 }`
-  // (its `version` column is a semver string); the numeric version lives on
-  // CatalogItemVersion and is derived as max(version)+1. Two concurrent
-  // bootstraps of the same (org, sourceRepo, role) can each read the same
-  // max(version) and both write max+1, colliding on the
-  // unique(catalogItemId, version) index. The loser's whole interactive
-  // transaction is poisoned by the P2002, so we retry the entire transaction
-  // (rather than swallowing the error mid-transaction) — on retry it re-reads
-  // the now-advanced max(version) and claims the next free number, restoring
-  // the idempotency the old atomic-increment path had.
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await runBulkIngestTransaction(organizationId, userId, input);
-    } catch (error) {
-      if (
-        getPrismaErrorCode(error) === "P2002" &&
-        attempt < MAX_INGEST_ATTEMPTS - 1
-      ) {
-        continue;
-      }
-      throw error;
-    }
-  }
-}
-
-async function runBulkIngestTransaction(
-  organizationId: string,
-  userId: string,
-  input: BulkIngestInput
-): Promise<BulkIngestCatalogItemsResult> {
-  let created = 0;
-  let updated = 0;
-  const items: BulkIngestCatalogItemsResult["items"] = [];
-  // FEA-4011 Slice A: collected inside the tx, flushed fail-open after commit.
-  const pendingSearchIndex: SearchProjectionInput[] = [];
-
-  await withDb.tx(async (tx) => {
-    const dedupedAgents = dedupeByRole(input.agents);
-    const roles = dedupedAgents.map((a) => a.role);
-
-    const existingItems = await findExistingByRoles(
-      tx,
-      organizationId,
-      input.sourceRepo,
-      roles
-    );
-    const byRole = new Map(existingItems.map((ci) => [ci.role ?? "", ci]));
-
-    for (const agent of dedupedAgents) {
-      const existing = byRole.get(agent.role);
-
-      if (existing) {
-        await updateExistingItem(
-          tx,
-          existing,
-          agent,
-          userId,
-          input,
-          organizationId
-        );
-        items.push({ id: existing.id, role: existing.role, name: agent.name });
-        updated++;
-      } else {
-        const newItem = await createNewItem(
-          tx,
-          organizationId,
-          userId,
-          agent,
-          input,
-          pendingSearchIndex
-        );
-        items.push({ id: newItem.id, role: newItem.role, name: newItem.name });
-        created++;
-      }
-    }
-
-    if (input.criticGates) {
-      await upsertRepoBootstrapConfig(
-        tx,
-        organizationId,
-        input.sourceRepo,
-        input.criticGates,
-        input.bootstrapRunId
-      );
-    }
-  });
-
-  flushCatalogSearchIndex(pendingSearchIndex);
-  return { created, updated, items };
-}
-
-// ---------------------------------------------------------------------------
-// Private helpers (extracted to keep cognitive complexity <20)
-// ---------------------------------------------------------------------------
-
-function dedupeByRole(agents: AgentIngestInput[]): AgentIngestInput[] {
-  return [...new Map(agents.map((a) => [a.role, a])).values()];
-}
-
-function findExistingByRoles(
-  tx: TransactionClient,
-  organizationId: string,
-  sourceRepo: string,
-  roles: string[]
-) {
-  return tx.catalogItem.findMany({
-    where: {
-      organizationId,
-      targetKind: "agent",
-      sourceRepo,
-      role: { in: roles },
-    },
-    select: {
-      id: true,
-      role: true,
-      name: true,
-      versions: {
-        orderBy: { version: "desc" },
-        take: 1,
-        select: { version: true },
-      },
-    },
-  });
-}
-
-async function updateExistingItem(
-  tx: TransactionClient,
-  existing: {
-    id: string;
-    role: string | null;
-    versions: Array<{ version: number }>;
-  },
-  agent: AgentIngestInput,
-  userId: string,
-  input: BulkIngestInput,
-  organizationId: string
-) {
-  const currentVersion = existing.versions[0]?.version ?? 0;
-  const nextVersion = currentVersion + 1;
-
-  await tx.catalogItem.update({
-    where: { id: existing.id },
-    data: {
-      name: agent.name,
-      description: agent.description ?? null,
-      sourceLoopId: input.bootstrapRunId,
-      updatedAt: new Date(),
-      // Re-generated content re-derives the content-addressed identity so the
-      // dedup/analytics key tracks the current body (same source/owner).
-      componentUuid: deriveComponentUuid({
-        content: agent.prompt,
-        sourceRepo: input.sourceRepo,
-        organizationId,
-      }),
-    },
-  });
-
-  // A concurrent bootstrap can claim this same `nextVersion` and trip the
-  // unique(catalogItemId, version) index, poisoning this transaction. That
-  // P2002 is caught at the transaction boundary in bulkIngestAgents, which
-  // retries the whole ingest and re-reads the advanced max(version).
-  await tx.catalogItemVersion.create({
-    data: {
-      catalogItemId: existing.id,
-      version: nextVersion,
-      name: agent.name,
-      content: agent.prompt,
-      changeNote: "Re-generated by bootstrap",
-      changedById: userId,
-    },
-  });
-}
-
-async function createNewItem(
-  tx: TransactionClient,
-  organizationId: string,
-  userId: string,
-  agent: AgentIngestInput,
-  input: BulkIngestInput,
-  pendingSearchIndex?: SearchProjectionInput[]
-) {
-  const agentSlug = await generateUniqueAgentSlug(
-    tx,
-    organizationId,
-    catalogItemSlug(agent.role, agent.name)
-  );
-
-  const newItem = await tx.catalogItem.create({
-    data: {
-      organizationId,
-      targetKind: "agent",
-      source: "org_custom",
-      scope: "org",
-      name: agent.name,
-      description: agent.description ?? null,
-      sourceRepo: input.sourceRepo,
-      role: agent.role,
-      agentSlug,
-      sourceLoopId: input.bootstrapRunId,
-      createdById: userId,
-      // Same content-addressed identity as every other content-bearing writer
-      // so a bootstrap-ingested agent dedups/joins with the manually-authored
-      // or promoted copy of the same file.
-      componentUuid: deriveComponentUuid({
-        content: agent.prompt,
-        sourceRepo: input.sourceRepo,
-        organizationId,
-      }),
-    },
-    select: { id: true, role: true, name: true },
-  });
-
-  await tx.catalogItemVersion.create({
-    data: {
-      catalogItemId: newItem.id,
-      version: 1,
-      name: agent.name,
-      content: agent.prompt,
-      changeNote: "Initial version from bootstrap",
-      changedById: userId,
-    },
-  });
-
-  // FEA-2923 (Gap A, forward path): the one-time backfill migration only
-  // snapshotted EXISTING org_custom agents into `agent_components` (the table
-  // the Agents workspace reads via agentComponentsService.listForOrg). This
-  // native creation path is the live, ongoing writer of org_custom catalog
-  // items (bootstrap loop ingestion → bulkIngestAgents), so without mirroring
-  // the write here every NEW org_custom agent would again have no
-  // agent_components row and be invisible in the UI. Materialize the inventory
-  // row now, using the same deterministic (compute_target_id, component_kind,
-  // external_component_id) mapping the migration used so the two tables stay in
-  // sync on write and a later backfill re-run is a no-op.
-  await materializeCloudAgentComponent(
-    tx,
-    {
-      organizationId,
-      catalogItemId: newItem.id,
-      name: agent.name,
-      componentKey: agentSlug,
-      description: agent.description ?? null,
-      sourceRepo: input.sourceRepo,
-      createdById: userId,
-    },
-    pendingSearchIndex
-  );
-
-  return newItem;
-}
-
-/**
- * Reserved machine_name for the synthetic per-org "cloud" sentinel compute
- * target. Mirrors the literal used by the FEA-2923 backfill migration so the
- * forward path and the backfill converge on the same sentinel row (the
- * `@@unique([userId, machineName])` constraint makes it single-flight per user,
- * and the guard below keeps it single-flight per org).
- */
-const CLOUD_SENTINEL_MACHINE_NAME = "__cloud_sentinel__";
-
-/**
- * Ensure the org's cloud sentinel compute target exists (creating it on first
- * use, owned by the org's earliest active user — the same owner the backfill
- * migration picks) and return its id. Runs inside the ingest transaction.
- */
-async function ensureCloudSentinelTarget(
-  tx: TransactionClient,
-  organizationId: string
-): Promise<string | null> {
-  const existing = await tx.computeTarget.findFirst({
-    where: { organizationId, isCloudSentinel: true },
-    select: { id: true },
-  });
-  if (existing) {
-    return existing.id;
-  }
-
-  // Owner: the org's earliest-created active user (deterministic id tie-break),
-  // matching migration 20260712000000. user_id is a NOT NULL FK; the sentinel
-  // is org-owned in spirit but must reference a concrete user.
-  const owner = await tx.user.findFirst({
-    where: { organizationId, active: true },
-    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-    select: { id: true },
-  });
-  if (!owner) {
-    // Defensive — every org has active users in practice. Without one we can't
-    // satisfy the sentinel's NOT NULL user FK; skip materialization rather than
-    // fail the whole ingest. The catalog item still lands; a later backfill
-    // (once the org has a user) restores visibility.
-    return null;
-  }
-
-  const created = await tx.computeTarget.create({
-    data: {
-      organizationId,
-      userId: owner.id,
-      machineName: CLOUD_SENTINEL_MACHINE_NAME,
-      platform: "cloud",
-      isCloudSentinel: true,
-      selectedHarness: "claude",
-    },
-    select: { id: true },
-  });
-  return created.id;
-}
-
-/**
- * Upsert the `agent_components` inventory row for a natively-created org_custom
- * agent onto the org's cloud sentinel target, mirroring the FEA-2923 backfill
- * migration's mapping:
- *   component_kind        = 'subagent'
- *   external_component_id = 'cloud:agent:<catalogItemId>'
- *   harness               = 'claude'
- *   component_key         = agentSlug (falls back to name)
- *   scope                 = 'org'
- * Keyed on the (compute_target_id, component_kind, external_component_id)
- * unique index — the same key desktop sync and the backfill dedupe on — so this
- * is idempotent and can never collide with a real device's rows.
- */
-async function materializeCloudAgentComponent(
-  tx: TransactionClient,
-  params: {
-    organizationId: string;
-    catalogItemId: string;
-    name: string;
-    componentKey: string;
-    description: string | null;
-    sourceRepo: string;
-    createdById: string;
-  },
-  // FEA-4011 Slice A: the upserted component's search projection is pushed here
-  // and flushed by the top-level caller AFTER the transaction commits (fail-open,
-  // post-commit — the index write must never roll back this catalog write).
-  pendingSearchIndex?: SearchProjectionInput[]
-): Promise<void> {
-  const sentinelId = await ensureCloudSentinelTarget(tx, params.organizationId);
-  if (!sentinelId) {
-    return;
-  }
-
-  const externalComponentId = `cloud:agent:${params.catalogItemId}`;
-  const sourceUrl = params.sourceRepo === "" ? null : params.sourceRepo;
-  const now = new Date();
-
-  const upserted = await tx.agentComponent.upsert({
-    where: {
-      computeTargetId_componentKind_externalComponentId: {
-        computeTargetId: sentinelId,
-        componentKind: "subagent",
-        externalComponentId,
-      },
-    },
-    create: {
-      organizationId: params.organizationId,
-      computeTargetId: sentinelId,
-      componentKind: "subagent",
-      externalComponentId,
-      harness: "claude",
-      name: params.name,
-      componentKey: params.componentKey || params.name,
-      version: "1.0.0",
-      description: params.description,
-      sourceUrl,
-      scope: "org",
-      metadata: {
-        cloudAuthored: true,
-        catalogItemId: params.catalogItemId,
-        legacyAgentId: null,
-        source: "org_custom",
-        createdById: params.createdById,
-      },
-      firstSeenAt: now,
-      lastSeenAt: now,
-    },
-    update: {
-      name: params.name,
-      componentKey: params.componentKey || params.name,
-      description: params.description,
-      sourceUrl,
-      lastSeenAt: now,
-    },
-  });
-
-  pendingSearchIndex?.push(
-    agentComponentProjection({
-      id: upserted.id,
-      organizationId: upserted.organizationId,
-      componentKind: upserted.componentKind,
-      name: upserted.name,
-      componentKey: upserted.componentKey,
-      externalComponentId: upserted.externalComponentId,
-      description: upserted.description,
-      updatedAt: upserted.updatedAt,
-      // FEA-4335: route the search hit to the content-hash detail URI when the
-      // row carries a hash (null for this cloud-authored row ⇒ name-level slug).
-      contentHash: upserted.contentHash,
-    })
-  );
-}
-
-/**
- * Batch variant of {@link materializeCloudAgentComponent} for pack import:
- * materialize the `agent_components` rows for a set of freshly-created,
- * agent-kind pack components in a single `createMany` instead of one upsert per
- * agent. The org's cloud-sentinel target is resolved ONCE (shared by every
- * agent in the import) rather than re-read per component. A plain insert is
- * safe here (no upsert needed) because each row carries a brand-new catalogItem
- * id, so its `cloud:agent:<id>` external component id is guaranteed unique and
- * cannot collide with an existing row.
- */
-async function materializeCloudAgentComponentsBatch(
-  tx: TransactionClient,
-  params: {
-    organizationId: string;
-    createdById: string;
-    components: ReadonlyArray<{
-      catalogItemId: string;
-      name: string;
-      description: string | null;
-    }>;
-  },
-  // FEA-4011 Slice A: each materialized component's search projection is pushed
-  // here and flushed by the top-level caller AFTER the transaction commits.
-  pendingSearchIndex?: SearchProjectionInput[]
-): Promise<void> {
-  if (params.components.length === 0) {
-    return;
-  }
-  const sentinelId = await ensureCloudSentinelTarget(tx, params.organizationId);
-  if (!sentinelId) {
-    return;
-  }
-  const now = new Date();
-  // Pre-derive each row's UUIDv7 id (matching schema.prisma's @default(uuid(7)))
-  // so the search projection can carry the component id without a per-row
-  // read-back after the batched createMany.
-  const rows = params.components.map((component) => ({
-    id: uuidv7(),
-    organizationId: params.organizationId,
-    computeTargetId: sentinelId,
-    componentKind: "subagent",
-    externalComponentId: `cloud:agent:${component.catalogItemId}`,
-    harness: "claude",
-    name: component.name,
-    componentKey: component.name,
-    version: "1.0.0",
-    description: component.description,
-    sourceUrl: null,
-    scope: "org",
-    metadata: {
-      cloudAuthored: true,
-      catalogItemId: component.catalogItemId,
-      legacyAgentId: null,
-      source: "org_custom",
-      createdById: params.createdById,
-    },
-    firstSeenAt: now,
-    lastSeenAt: now,
-  }));
-  await tx.agentComponent.createMany({ data: rows });
-
-  if (pendingSearchIndex) {
-    for (const row of rows) {
-      pendingSearchIndex.push(
-        agentComponentProjection({
-          id: row.id,
-          organizationId: row.organizationId,
-          componentKind: row.componentKind,
-          name: row.name,
-          componentKey: row.componentKey,
-          externalComponentId: row.externalComponentId,
-          description: row.description,
-          updatedAt: now,
-        })
-      );
-    }
-  }
-}
-
-async function upsertRepoBootstrapConfig(
-  tx: TransactionClient,
-  organizationId: string,
-  repoFullName: string,
-  criticGates: Record<string, unknown>,
-  bootstrapRunId: string
-) {
-  await tx.repoBootstrapConfig.upsert({
-    where: {
-      organizationId_repoFullName: {
-        organizationId,
-        repoFullName,
-      },
-    },
-    create: {
-      organizationId,
-      repoFullName,
-      criticGates: criticGates as Prisma.InputJsonValue,
-      bootstrapRunId,
-    },
-    update: {
-      criticGates: criticGates as Prisma.InputJsonValue,
-      bootstrapRunId,
-    },
-  });
-}
 
 // ---------------------------------------------------------------------------
 // Catalog store methods (admin CRUD + asset management) — T-15.13
@@ -890,7 +186,7 @@ type CachedLogoUrl = { url: string; expiresAtMs: number };
  * URL. Avoiding an S3 HeadObject per read is intentional: fetching the real ETag
  * on every listing would reintroduce the per-read S3 round-trip this fix removes.
  */
-const logoUrlCache = new BoundedCache<string, CachedLogoUrl>(
+const logoUrlCache = new BoundedMap<string, CachedLogoUrl>(
   LOGO_URL_CACHE_MAX_ENTRIES
 );
 
@@ -1287,13 +583,12 @@ async function createCatalogItemInTx(
     }
   }
 
-  // FEA-2923 (Gap A, second forward path): POST /catalog is the other live
-  // writer of org_custom agents (alongside bulkIngestAgents -> createNewItem).
-  // Mirror the same materialization so a POST-created org_custom agent also
-  // gets an agent_components row (owned by the org's cloud sentinel target)
-  // and is visible in the Agents workspace — using the identical deterministic
+  // FEA-2923 (Gap A, forward path): POST /catalog is the live writer of
+  // org_custom agents. Materialize an agent_components row (owned by the org's
+  // cloud sentinel target) so a POST-created org_custom agent is visible in the
+  // Agents workspace — using the identical deterministic
   // (compute_target_id, 'subagent', 'cloud:agent:<id>') mapping the backfill
-  // migration and createNewItem use, so the two tables stay in sync on write
+  // migration uses, so the two tables stay in sync on write
   // and a later backfill re-run is a no-op. This admin-create path has no
   // agentSlug, so componentKey falls back to the agent name in the helper.
   if (created.targetKind === "agent") {
@@ -1330,7 +625,8 @@ async function createCatalogItemInTx(
  * org-owned Pack the caller may attach to.
  */
 export async function createCatalogItem(
-  input: CreateCatalogInput
+  input: CreateCatalogInput,
+  recordWrite?: RecordWriteInTransaction<OrganizationWriteOutcome>
 ): Promise<Result<CatalogItemDto, CreateCatalogError>> {
   // Runs in a transaction so that, for agent items, the agent_components
   // inventory row is materialized atomically with the catalog row.
@@ -1339,9 +635,15 @@ export async function createCatalogItem(
   // FEA-4011 Slice A: collect the component search projection inside the tx and
   // flush it fail-open after commit.
   const pendingSearchIndex: SearchProjectionInput[] = [];
-  const result = await withDb.tx((tx) =>
-    createCatalogItemInTx(tx, input, { pendingSearchIndex })
-  );
+  const result = await withDb.tx(async (tx) => {
+    const created = await createCatalogItemInTx(tx, input, {
+      pendingSearchIndex,
+    });
+    if (created.ok) {
+      await recordWrite?.(tx, { changed: true });
+    }
+    return created;
+  });
 
   if (!result.ok) {
     return result;
@@ -1355,23 +657,6 @@ export async function createCatalogItem(
 // update
 // ---------------------------------------------------------------------------
 
-type UpdateCatalogInput = {
-  id: string;
-  organizationId: string;
-  userId: string;
-  canUpdateAny?: boolean;
-  name?: string;
-  description?: string;
-  sortOrder?: number;
-  enabled?: boolean;
-  coaching?: boolean;
-  coachingConfig?: Record<string, unknown>;
-  /** New authored body; appended as a new CatalogItemVersion when present. */
-  content?: string;
-};
-
-type UpdateCatalogError = 404 | 403;
-
 /**
  * Update mutable fields on a CatalogItem.
  * Admins can update every mutable field on org-owned custom items. Non-admin
@@ -1380,7 +665,8 @@ type UpdateCatalogError = 404 | 403;
  * fail closed.
  */
 export async function updateCatalogItem(
-  input: UpdateCatalogInput
+  input: UpdateCatalogInput,
+  recordWrite?: RecordWriteInTransaction<OrganizationWriteOutcome>
 ): Promise<Result<CatalogItemDto, UpdateCatalogError>> {
   // Look up through the visible catalog predicate so readable read-only
   // sources return 403 while foreign org-owned rows remain hidden as 404.
@@ -1409,14 +695,19 @@ export async function updateCatalogItem(
   );
 
   if (!existing) {
-    return Result.err(404);
+    return Result.err(Status.NotFound);
   }
-  if (
-    existing.source !== CatalogItemSource.OrgCustom ||
-    existing.archived ||
-    !canUpdateCatalogItem(existing, input)
-  ) {
-    return Result.err(403);
+  // Two refusals wore one 403 and they answer different questions (ISS-8661).
+  // An IMMUTABLE item refuses an org admin too, so no role lookup could have
+  // changed the answer: it stays a decision even when nobody could read the
+  // caller's role, and must never be re-answered as a retryable 503.
+  if (isImmutableCatalogItemUpdate(existing, input)) {
+    return Result.err(Status.Forbidden);
+  }
+  // Authorization-dependent: an admin WOULD have been allowed here, so a
+  // refusal reached while the role was unresolved is "we could not decide".
+  if (!canUpdateCatalogItem(existing, input)) {
+    return Result.err(updateRefusalStatus(input));
   }
 
   const updatedResult = await withDb.tx(async (tx) => {
@@ -1445,7 +736,12 @@ export async function updateCatalogItem(
       },
     });
     if (update.count !== 1) {
-      return Result.err<CatalogRow, UpdateCatalogError>(403);
+      // A lost race against a concurrent writer, not a fresh verdict: the
+      // predicate still narrows on `createdById` for a non-admin, so this
+      // refusal is authorization-dependent and carries the same status.
+      return Result.err<CatalogRow, UpdateCatalogError>(
+        updateRefusalStatus(input)
+      );
     }
 
     const row = await tx.catalogItem.findUnique({
@@ -1453,7 +749,7 @@ export async function updateCatalogItem(
       select: CATALOG_ITEM_SELECT,
     });
     if (!row) {
-      return Result.err<CatalogRow, UpdateCatalogError>(404);
+      return Result.err<CatalogRow, UpdateCatalogError>(Status.NotFound);
     }
 
     // A new authored body appends a new version (monotonic max+1), so edits are
@@ -1489,6 +785,7 @@ export async function updateCatalogItem(
       }
     }
 
+    await recordWrite?.(tx, { changed: true });
     return Result.ok<CatalogRow, UpdateCatalogError>(row);
   });
 
@@ -1498,78 +795,6 @@ export async function updateCatalogItem(
 
   const dto = await rowToDto(updatedResult.value);
   return Result.ok(dto);
-}
-
-type UpdateCatalogAuthorizationRow = {
-  source: string;
-  archived: boolean;
-  targetKind: string;
-  organizationId: string | null;
-  createdById: string | null;
-};
-
-const CatalogTargetKind = {
-  Agent: "agent",
-  Command: "command",
-  Hook: "hook",
-  Mcp: "mcp",
-  Pack: "pack",
-  Plugin: "plugin",
-  Skill: "skill",
-} as const;
-
-function canUpdateCatalogItem(
-  row: UpdateCatalogAuthorizationRow,
-  input: UpdateCatalogInput
-): boolean {
-  if (input.content !== undefined && !canUpdateContent(row.targetKind)) {
-    return false;
-  }
-  if (input.canUpdateAny === true) {
-    return true;
-  }
-  if (row.createdById !== input.userId) {
-    return false;
-  }
-  return !hasAdminOnlyUpdateFields(input);
-}
-
-function hasAdminOnlyUpdateFields(input: UpdateCatalogInput): boolean {
-  return (
-    input.sortOrder !== undefined ||
-    input.enabled !== undefined ||
-    input.coaching !== undefined ||
-    input.coachingConfig !== undefined
-  );
-}
-
-function canUpdateContent(targetKind: string): boolean {
-  switch (targetKind) {
-    case CatalogTargetKind.Agent:
-    case CatalogTargetKind.Command:
-    case CatalogTargetKind.Hook:
-    case CatalogTargetKind.Mcp:
-    case CatalogTargetKind.Plugin:
-    case CatalogTargetKind.Skill:
-      return true;
-    default:
-      return false;
-  }
-}
-
-function catalogItemUpdateWhere(
-  input: UpdateCatalogInput
-): Prisma.CatalogItemWhereInput {
-  const where: Prisma.CatalogItemWhereInput = {
-    id: input.id,
-    organizationId: input.organizationId,
-    source: CatalogItemSource.OrgCustom,
-    archived: false,
-  };
-  if (input.canUpdateAny !== true) {
-    where.createdById = input.userId;
-  }
-  return where;
 }
 
 // ---------------------------------------------------------------------------
@@ -1588,12 +813,13 @@ type ArchiveCatalogError = 404 | 403;
  * Curated items cannot be archived by orgs (403).
  */
 export async function archiveCatalogItem(
-  input: ArchiveCatalogInput
+  input: ArchiveCatalogInput,
+  recordWrite?: RecordWriteInTransaction<OrganizationWriteOutcome>
 ): Promise<Result<{ archived: true }, ArchiveCatalogError>> {
   const existing = await withDb((db) =>
     db.catalogItem.findFirst({
       where: { id: input.id, organizationId: input.organizationId },
-      select: { id: true, source: true },
+      select: { id: true, source: true, archived: true },
     })
   );
 
@@ -1604,11 +830,18 @@ export async function archiveCatalogItem(
     return Result.err(403);
   }
 
-  await withDb((db) =>
-    db.catalogItem.update({
-      where: { id: input.id },
-      data: { archived: true },
-    })
+  // ISS-12552: archiving an archived item moves nothing, so it is a no-op.
+  await writeRecorded(
+    recordWrite,
+    () =>
+      withDb((db) =>
+        db.catalogItem.update({
+          where: { id: input.id },
+          data: { archived: true },
+          select: { id: true },
+        })
+      ),
+    () => ({ changed: !existing.archived })
   );
 
   return Result.ok({ archived: true });
@@ -1675,7 +908,8 @@ type ImportPackZipError = 404 | 403 | 400 | 413;
  */
 async function createPackComponents(
   input: { id: string; organizationId: string; userId: string },
-  components: ReadonlyArray<{ kind: string; name: string; content: string }>
+  components: ReadonlyArray<{ kind: string; name: string; content: string }>,
+  recordWrite?: RecordWriteInTransaction<OrganizationWriteOutcome>
 ): Promise<ImportPackZipResponse> {
   // Validate every recognized entry against the same schema the manual create
   // path uses before we open a write transaction. Invalid entries (oversized
@@ -1849,6 +1083,7 @@ async function createPackComponents(
         }
       }
 
+      await recordWrite?.(tx, { changed: itemRows.length > 0 });
       return { created: itemRows.length, skipped: skippedCount };
     },
     {
@@ -1877,7 +1112,8 @@ async function createPackComponents(
  * parent lookup.
  */
 export async function importPackZipComponents(
-  input: ImportPackZipInput
+  input: ImportPackZipInput,
+  recordWrite?: RecordWriteInTransaction<OrganizationWriteOutcome>
 ): Promise<Result<ImportPackZipResponse, ImportPackZipError>> {
   const pack = await withDb((db) =>
     db.catalogItem.findFirst({
@@ -1929,7 +1165,7 @@ export async function importPackZipComponents(
     throw error;
   }
 
-  const result = await createPackComponents(input, components);
+  const result = await createPackComponents(input, components, recordWrite);
   return Result.ok(result);
 }
 
@@ -1957,7 +1193,8 @@ type ImportPackRepoError = 404 | 403 | 400;
  * validation, atomicity, and cross-org guards as the zip path.
  */
 export async function importPackRepoComponents(
-  input: ImportPackRepoInput
+  input: ImportPackRepoInput,
+  recordWrite?: RecordWriteInTransaction<OrganizationWriteOutcome>
 ): Promise<Result<ImportPackZipResponse, ImportPackRepoError>> {
   const pack = await withDb((db) =>
     db.catalogItem.findFirst({
@@ -2011,7 +1248,7 @@ export async function importPackRepoComponents(
     subPath: input.subPath,
   });
 
-  const result = await createPackComponents(input, components);
+  const result = await createPackComponents(input, components, recordWrite);
   return Result.ok(result);
 }
 
@@ -2120,14 +1357,13 @@ type ConfirmUploadInput = {
   s3Key: string;
 };
 
-type ConfirmUploadError = 404 | 403 | "asset_not_found";
-
 /**
  * Verify a previously-PUT catalog asset exists in S3 (HeadObject) and record
  * its key in the CatalogItem row. Returns the updated CatalogItemDto on success.
  */
 export async function confirmAssetUpload(
-  input: ConfirmUploadInput
+  input: ConfirmUploadInput,
+  recordWrite?: RecordWriteInTransaction<OrganizationWriteOutcome>
 ): Promise<Result<CatalogItemDto, ConfirmUploadError>> {
   const existing = await withDb((db) =>
     db.catalogItem.findFirst({
@@ -2150,12 +1386,12 @@ export async function confirmAssetUpload(
     input.fileType === "zip" ? "zip" : "logo"
   );
   if (input.s3Key !== expectedPrefix) {
-    return Result.err("asset_not_found");
+    return Result.err(CatalogAssetError.AssetNotFound);
   }
 
   const assetMeta = await headCatalogAsset(input.s3Key);
   if (!assetMeta) {
-    return Result.err("asset_not_found");
+    return Result.err(CatalogAssetError.AssetNotFound);
   }
 
   // Persist the resolved PLUGIN_STORE_BUCKET alongside the key so download-URL
@@ -2167,87 +1403,19 @@ export async function confirmAssetUpload(
       ? { zipAssetBucket: assetBucket, zipAssetKey: input.s3Key }
       : { logoAssetBucket: assetBucket, logoAssetKey: input.s3Key };
 
-  const updated = await withDb((db) =>
-    db.catalogItem.update({
-      where: { id: input.catalogItemId },
-      data: updateData,
-      select: CATALOG_ITEM_SELECT,
-    })
+  const updated = await writeRecorded(
+    recordWrite,
+    () =>
+      withDb((db) =>
+        db.catalogItem.update({
+          where: { id: input.catalogItemId },
+          data: updateData,
+          select: CATALOG_ITEM_SELECT,
+        })
+      ),
+    () => ({ changed: true })
   );
 
   const dto = await rowToDto(updated);
   return Result.ok(dto);
-}
-
-/**
- * FEA-3909 / PRD-527 F4 — map a pack member's exact definition to the F1
- * `DefinitionVersion` registry and record a `pack` `SourceOccurrence`.
- *
- * Called for a content-bearing pack member (a child `CatalogItem` with
- * `parentPackId != null`) right after its first `CatalogItemVersion` is written.
- * Delegates to {@link registerDefinitionVersion} — the SSOT — which
- * provenance-freely fingerprints the body (`computeDefinitionHash`, never a local
- * hash), upserts the exact version on `(org, definitionHash)`, and idempotently
- * upserts a `SourceOccurrence(occurrenceType = pack, packId)`. This closes the
- * previously-never-written `pack` seam (the writer only ever passed `local`).
- *
- * Then it stamps the resulting `definitionVersionId` onto the version row just
- * created, so the catalog is linked to the registry (readers prefer this link
- * over the provenance-tainted `componentUuid`, which is preserved alongside).
- *
- * Many-to-many (PD3): the same body in N packs upserts ONE `DefinitionVersion`
- * and one `pack` occurrence per distinct `packId` — the version is referenced,
- * never copied. The Pack itself is never versioned (PD2).
- *
- * Conservative (PD5-aligned): a member with no stored body never reaches here
- * (the caller only invokes it when `content != null`), so it can never mint an
- * invented version. Runs on the caller's `tx` so the registry rows land atomically
- * with the member create.
- */
-async function linkPackMemberDefinition(
-  tx: TransactionClient,
-  args: {
-    organizationId: string;
-    packId: string;
-    catalogItemVersionId: string;
-    targetKind: string;
-    content: string;
-  }
-): Promise<void> {
-  // Conservative (PD5): mint a version ONLY from real stored bytes. An empty body
-  // is left unlinked (definitionVersionId stays NULL) on EVERY live writer, so the
-  // live create/edit/import paths and the conservative backfill
-  // (`backfill-pack-definition-versions.ts`, which skips `content.length === 0`)
-  // classify the same empty-content member identically — no live-vs-backfill drift.
-  if (!isLinkableDefinitionContent(args.content)) {
-    return;
-  }
-  const definitionVersionId = await registerDefinitionVersion(tx, {
-    organizationId: args.organizationId,
-    // Canonicalize the catalog's `targetKind` (`"agent"` → `subagent`) before it
-    // is folded into the fingerprint, so a pack-imported member and a device-synced
-    // `subagent` of identical bytes dedupe to ONE F1 `DefinitionVersion`. The
-    // conservative backfill applies the SAME mapping, so a live-linked member and a
-    // backfilled one share the `definitionHash`.
-    componentKind: catalogTargetKindToComponentKind(args.targetKind),
-    content: args.content,
-    occurrenceType: SourceOccurrenceType.pack,
-    packId: args.packId,
-  });
-
-  await tx.catalogItemVersion.update({
-    where: { id: args.catalogItemVersionId },
-    data: { definitionVersionId },
-  });
-}
-
-/**
- * Whether a member's stored body is real bytes we can conservatively fingerprint
- * (PD5). The SSOT guard shared by every live pack-member writer so the empty /
- * absent-body classification never forks from the conservative backfill.
- */
-function isLinkableDefinitionContent(
-  content: string | null
-): content is string {
-  return content != null && content.length > 0;
 }

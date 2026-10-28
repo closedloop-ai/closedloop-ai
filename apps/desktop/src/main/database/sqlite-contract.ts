@@ -11,7 +11,6 @@
  * The one value import is `createWriteQueue`, used solely as
  * `ReturnType<typeof createWriteQueue>`.
  */
-
 import type {
   AgentsInsightsResponse,
   DeliveryInsightsResponse,
@@ -19,8 +18,6 @@ import type {
   InsightsSection,
   UtilizationInsightsResponse,
 } from "@closedloop-ai/loops-api/insights";
-import type { TaskUpsert } from "@repo/crewd";
-import type { RunRecord, ScheduledTask } from "@repo/crewd/model";
 import type {
   AgentHierarchyNode,
   AgentRow,
@@ -55,16 +52,23 @@ import type {
   TokenUsageCounts,
   TokenUsageRow,
 } from "../dashboard/agent-dashboard-db-types.js";
+import type { ClaudeCodeOtelSideTableSignal } from "../otel/claude-code-otel-signal-contract.js";
+import type { ClaudeCodeOtelPersistenceSummary } from "../otel/claude-code-persistence.js";
+import type { ClaudeCodeSignalDropReason } from "../otel/claude-code-signal-drop.js";
 import type {
   PackInstallRunEndInput,
   PackInstallRunStartInput,
 } from "../packs/catalog-store.js";
-import type { ScheduledReviewRunner } from "../scheduler/scheduled-review-dispatch.js";
+import type { ParsePolicy } from "../parse-policy/parse-policy.js";
+import type { StorePerfDiagnostics } from "../telemetry/telemetry-protocol.js";
 import type { AnalyticsRollupRecomputeResult } from "./analytics-recompute.js";
 import type { BranchReadFacadeMethods } from "./branch-read-facades.js";
+import type { CollectorIngestStoreRow } from "./collector-ingest-store.js";
+import type { StorePerfSampler } from "./db-host/store-perf-sampler.js";
 import type { DiagnosticsMethods } from "./diagnostics-methods.js";
 import type { Prisma } from "./generated/client.js";
 import type { openMigrationDatabase } from "./migration/migration-executor.js";
+import type { MigrationStep } from "./migration/migration-runner.js";
 import type { DbHostPrisma, DesktopPrisma } from "./prisma-client.js";
 import type {
   SessionIdentity,
@@ -74,11 +78,14 @@ import type {
 import type { StoreHealthMethods } from "./store-health-methods.js";
 import type { TranscriptExtract } from "./transcript.js";
 import type { TranscriptSyncStore } from "./transcript-sync-store.js";
-import type { createWriteQueue } from "./write-queue.js";
+import type {
+  createWriteQueue,
+  WriteQueueTaskObserver,
+} from "./write-queue.js";
 
 /* The clone-safe STORE-HEALTH reads the FEA-1999 probe consumes are intersected
    in from `store-health-methods.ts` rather than restated here — they share one
-   contract, and this file is on the shrink-only grandfather list. */
+   contract, and restating them here would only grow this file. */
 /* ISS-5957 — a NEW named Branch read facade goes into `branch-read-facades.ts`,
    NOT into this intersection. Only what enters `BranchReadFacadeMethods` is
    exhausted by `BRANCH_READ_OP_LANES`; a facade added as a fourth top-level
@@ -96,6 +103,25 @@ export type SqliteAgentDatabase = StoreHealthMethods &
     syncSource: AgentSessionSyncSource;
     /** FEA-2715: durable per-transcript-file fingerprint + upload-cursor store. */
     transcriptSync: TranscriptSyncStore;
+    /**
+     * ISS-9838: the persisted collector ingest stores (catchup cache, parse
+     * quarantine, Codex linkage). Clone-safe args and results — strings and
+     * numbers only — so both ops forward unchanged through the db-host proxy.
+     */
+    collectorIngestStores: {
+      /**
+       * Every persisted store, read once at boot BEFORE the collectors are
+       * constructed (ISS-9837 R1). Returns rows rather than a hydrated map so
+       * the result stays a clone-safe array across the proxy.
+       */
+      loadAll(): Promise<CollectorIngestStoreRow[]>;
+      /** Replace one store's snapshot wholesale. */
+      save(
+        storeKey: string,
+        formatVersion: number,
+        payload: string
+      ): Promise<void>;
+    };
     sessions: {
       getById(id: string): Promise<SessionRow | undefined>;
       /** Total rows in `sessions` (raw COUNT(*) on the reader pool; FEA-2211). */
@@ -137,6 +163,28 @@ export type SqliteAgentDatabase = StoreHealthMethods &
       ): Promise<void>;
       getBySession(sessionId: string): Promise<TokenUsageRow[]>;
     };
+    claudeCodeOtel: {
+      /**
+       * ISS-7352. Side-table signals ONLY — `token_usage` is owned by the
+       * transcript parser and is excluded from the parameter type, so a caller
+       * that reaches for it fails typecheck. The implementation rejects it at
+       * runtime too, because this facade is a process boundary and a type
+       * cannot constrain what arrives over IPC.
+       */
+      persistSignals(
+        signals: ClaudeCodeOtelSideTableSignal[]
+      ): Promise<ClaudeCodeOtelPersistenceSummary>;
+      /**
+       * ISS-10717: record signals this machine LOST, by reason. The three drop
+       * sites used to log the loss and discard it, which is why nothing
+       * downstream could say how complete the corpus was.
+       */
+      recordSignalDrop(input: {
+        harness: string;
+        reason: ClaudeCodeSignalDropReason;
+        count: number;
+      }): Promise<void>;
+    };
     codexOtel: {
       persistBatch(batch: unknown): Promise<void>;
     };
@@ -150,8 +198,10 @@ export type SqliteAgentDatabase = StoreHealthMethods &
       getInsights(
         section: InsightsSection,
         period: InsightsPeriod,
-        // Optional fixed clock — defaults to real time in production; tests pin it
-        // so the date-windowed insights (trend series) are deterministic.
+        // Optional fixed clock. Omitted, the read runs on the STORE's clock
+        // (`now` below) — real time in production, the injected instant in a
+        // test — so the date-windowed insights (trend series) are deterministic
+        // without every call site restating the date (ISS-9279).
         now?: Date
       ): Promise<
         | DeliveryInsightsResponse
@@ -164,7 +214,7 @@ export type SqliteAgentDatabase = StoreHealthMethods &
         // undefined keeps the 30-day default; `null` means all-time (unbounded).
         lookbackDays?: number | null
       ): Promise<AnalyticsData>;
-      getWorkflowData(now?: Date): Promise<WorkflowQueryData>;
+      getWorkflowData(): Promise<WorkflowQueryData>;
       getCoreFeatures(): Promise<DashboardCoreFeatures>;
       getPacks(): Promise<DashboardPackSummary[]>;
       getSkills(): Promise<DashboardSkillSummary[]>;
@@ -206,9 +256,32 @@ export type SqliteAgentDatabase = StoreHealthMethods &
       externalSessionId: string
     ): Promise<void>;
     loadMeteredUsageRows(cutoffIso: string): Promise<MeteredUsageRow[]>;
-    listStaleRevisionSessions(
-      currentRevision: number
-    ): Promise<Array<{ id: string; harness: string | null; status: string }>>;
+    listStaleRevisionSessions(currentRevision: number): Promise<
+      Array<{
+        id: string;
+        harness: string | null;
+        status: string;
+        /**
+         * ISS-8601: the age anchor the rebuild's admission test reads. NOT NULL
+         * in the schema and indexed by `idx_sessions_last_activity`; the same
+         * column the SQL aggregate and the JS staleness fold already share.
+         */
+        lastActivityAt: string;
+      }>
+    >;
+    /**
+     * ISS-8601: the store's clock, as an ISO-8601 string — the same one that
+     * stamps writes and anchors the in-transaction rebuild guards. Exposed so a
+     * MAIN-process reader can classify a row against the instant the guards will
+     * use rather than against its own wall clock; the two disagreeing is what
+     * turns the rebuild's age bound back into an unbounded retry. Over the
+     * db-host proxy this resolves as a promise, so callers await it — and the
+     * RETURN TYPE says so rather than leaving the prose to carry it. Typed
+     * `string` it would be the first synchronous member on this contract, and a
+     * main-process caller writing `new Date(db.now())` would compile clean and
+     * silently get an Invalid Date.
+     */
+    now(): string | Promise<string>;
     /**
      * All session ids currently in the DB. Used by the collector manager to
      * self-heal catchup-cache/DB divergence: a source the persistent ingest
@@ -218,25 +291,58 @@ export type SqliteAgentDatabase = StoreHealthMethods &
     listExistingSessionIds(): Promise<Set<string>>;
     rebuildSessionFromParse(
       session: NormalizedSession,
-      harness: Harness
-      // FEA-3659: `contentChanged` mirrors the impl (and the
-      // DataRevisionRebuildDatabase declaration) — true when the re-derived
-      // payload actually bumped the session's `updated_at` sync watermark, so the
-      // data-revision rebuild enqueues ONLY genuinely-changed rows for cloud sync.
+      harness: Harness,
+      // ISS-8741: the source revision to stamp as the new known-good projection,
+      // written in the SAME transaction as the replacement. Optional — omitting
+      // it is the pre-substrate behaviour and leaves the row's stamp alone.
+      projectionRevision?: string | null,
+      // ISS-12552: the policy the session was re-parsed under; absent, the
+      // store's own current policy.
+      parsePolicy?: ParsePolicy
+      // FEA-3659: `needsResync` mirrors the impl (and the
+      // DataRevisionRebuildDatabase declaration) — true when the row must
+      // re-sync (payload changed and `updated_at` bumped, or ISS-12251 only
+      // `created_at` moved), so the rebuild enqueues ONLY those rows for sync.
     ): Promise<{
       rebuilt: boolean;
       activeRace: boolean;
-      contentChanged?: boolean;
+      needsResync?: boolean;
     }>;
+    /**
+     * ISS-8741: mark a session as having a projection replacement IN FLIGHT at
+     * `revision`, in its own transaction, before the replacement is built. The
+     * known-good stamp is deliberately NOT here: it rides inside
+     * {@link rebuildSessionFromParse}'s transaction, because a stamp that could
+     * commit separately from the rows it describes would be the split this
+     * substrate exists to prevent.
+     *
+     * Flat methods rather than a nested store object because every path here
+     * crosses the db-host proxy, whose dotted op paths are a narrower, more
+     * failure-prone surface than a plain method name.
+     */
+    claimProjectionCandidate(
+      sessionId: string,
+      revision: string
+    ): Promise<void>;
+    /** ISS-8741: clear the in-flight marker, leaving the known-good stamp alone. */
+    releaseProjectionCandidate(sessionId: string): Promise<void>;
     rebuildComponentInvocationsFromStoredRows(
       sessionId: string,
-      currentRevision: number
+      currentRevision: number,
+      // ISS-12552: off also clears the session's attribution evidence.
+      parsePolicy?: ParsePolicy
     ): Promise<{
       rebuilt: boolean;
       activeRace: boolean;
-      contentChanged?: boolean;
+      needsResync?: boolean;
     }>;
-    deleteSessionRow(sessionId: string): Promise<void>;
+    /**
+     * Deletes the row and its session-attributable derived rows, and REPORTS
+     * whether it did (ISS-8601). It refuses a non-terminal row in its own
+     * transaction; while that outcome was `void`, callers read every non-throwing
+     * call as a deletion and counted and logged ones that never happened.
+     */
+    deleteSessionRow(sessionId: string): Promise<boolean>;
     /**
      * FEA-2641: recompute `session_analytics` rollups for sessions the
      * data-revision rebuild cannot re-derive (source transcript gone). The
@@ -260,14 +366,6 @@ export type SqliteAgentDatabase = StoreHealthMethods &
      * proxy); returns the number of sessions linked. See pr-link-maintenance.ts.
      */
     propagateAllBranchPrLinks(): Promise<number>;
-    /**
-     * FEA-4379 post-backfill content correlation: mint a `created` session→PR link
-     * when a commit SHA the session authored is byte-identical to a PR's head or
-     * merge-commit SHA (attributes out-of-band-created PRs). Runs in the db host
-     * (its `prisma.write` can't cross the method proxy); returns the number of
-     * links minted. See pr-link-maintenance.ts.
-     */
-    correlateCommitShaPrLinks(): Promise<number>;
     /**
      * FEA-4377 upgrade remediation: delete `branch_pr_association` workspace links
      * minted before the authoring-evidence gate for sessions with no `created`
@@ -295,68 +393,6 @@ export type SqliteAgentDatabase = StoreHealthMethods &
       id: number,
       input: PackInstallRunEndInput
     ): Promise<void>;
-    /**
-     * FEA-3813 (PRD-553 M1): the local crewd scheduler host. Clone-safe control
-     * methods so the main process can start/stop the daemon across the db-host
-     * boundary (the daemon + its SQLite-mirrored `SqliteTaskStore` own a
-     * `prisma.write` writer connection that can't cross the method proxy, so they
-     * live entirely in the child). `start()` is gated by the caller on the
-     * `scheduledTasks` Labs flag; `stop()` is called at shutdown and is disposed
-     * with the db in `close()`. `tickOnce()` fires a single scheduler pass (tests /
-     * a future run-now). All idempotent; safe to call `stop()`/`tickOnce()` before
-     * `start()`.
-     */
-    scheduler: {
-      start(): Promise<void>;
-      stop(): Promise<void>;
-      tickOnce(): Promise<void>;
-      isRunning(): Promise<boolean>;
-      /**
-       * FEA-3814 (PRD-553 M2): the current task list, for the read-only Scheduled
-       * Tasks UI. Clone-safe (plain `ScheduledTask[]`) so it crosses the db-host
-       * method proxy. Empty before `start()`.
-       */
-      list(): Promise<ScheduledTask[]>;
-      /**
-       * FEA-3814 (PRD-553 M2): recent run history for the run-history drawer,
-       * optionally scoped to one task (each run's `attempts` is the cascade trail).
-       * Clone-safe (plain `RunRecord[]`). Empty before `start()`.
-       */
-      runs(taskId?: string, limit?: number): Promise<RunRecord[]>;
-      /**
-       * FEA-3853 (PRD-553 M3): create a task or replace one in place (by id) from
-       * the create/edit modal's already-validated save payload. Returns the stored
-       * task (clone-safe). Rejects when the daemon is not running.
-       */
-      upsert(input: TaskUpsert): Promise<ScheduledTask>;
-      /**
-       * FEA-3853 (PRD-553 M3): delete a task by id (its runs cascade). Resolves to
-       * whether a task was removed. Rejects when the daemon is not running.
-       */
-      remove(id: string): Promise<boolean>;
-      /**
-       * FEA-3853 (PRD-553 M3): flip a task's `enabled` flag (the list-row toggle).
-       * Resolves to the updated task, or null for an unknown id. Rejects when the
-       * daemon is not running.
-       */
-      setEnabled(id: string, enabled: boolean): Promise<ScheduledTask | null>;
-      /**
-       * FEA-3853 (PRD-553 M3): fire one task once off-schedule ("Run now"). Resolves
-       * to whether the run was launched (false for an unknown id / already-in-flight
-       * task). Rejects when the daemon is not running.
-       */
-      runNow(id: string): Promise<boolean>;
-      /**
-       * FEA-3853 (PRD-553 M3): validate a cron and preview its next `count` fire
-       * times for the create/edit modal. Pure over the crewd cron primitive — works
-       * before `start()`. Clone-safe (ISO strings). Never rejects on a bad cron.
-       */
-      previewSchedule(
-        cron: string,
-        timezone: string,
-        count?: number
-      ): Promise<{ valid: boolean; error: string | null; nextRuns: string[] }>;
-    };
     /**
      * Resolves once the background boot-maintenance chain (analytics backfill,
      * re-pricing, headless recompute, FEA-2866 bare-`repo_full_name` repair, …) has
@@ -406,33 +442,44 @@ export type OpenSqliteAgentDatabaseOptions = {
   dataDir: string;
   detectBillingMode: (harness: string, model?: string | null) => string;
   emit?: (sessionId: string) => void;
+  /**
+   * ISS-7110: fired after any write-queue task's underlying work resolves —
+   * every `prisma.write` path (backfill, importer, sync, live hooks,
+   * maintenance), including a task whose caller was evicted (ISS-4572) but
+   * whose transaction still committed; never for a write that rejected. The
+   * db-host worker wires this to the FEA-2055 insights-cache epoch bump —
+   * `emit` above fires only from the live-hook lifecycle and cannot see
+   * importer/backfill writes.
+   */
+  onCommittedWrite?: () => void;
+  /**
+   * ISS-7256 (whitlockk review): fired on each tokened write-queue task's
+   * `queued`/`dispatched`/`settled` transition, synchronously at the transition.
+   * The db-host store thread wires this to a `WriteTask` message so the
+   * DISPATCHER can answer `importer.hasUndispatchedWrite` from a mirror while
+   * this thread is parked inside a synchronous statement — the window in which a
+   * pull is answered by nothing. Omitted in the in-process topology, where
+   * `probeUndispatchedTask` reads the queue directly.
+   */
+  onWriteTaskPhase?: WriteQueueTaskObserver;
   /** Fired once when a live SessionEnd hook drives a session terminal. */
   onSessionTerminal?: (notice: { sessionId: string; status: string }) => void;
   extractTranscript?: (path: string) => TranscriptExtract | null;
   getUserIdentity?: SessionIdentityProvider;
   resolveGitPath?: () => string;
   log?: (message: string) => void;
+  /**
+   * The store's clock, as an ISO-8601 string. Omitted ⇒ real time. It stamps
+   * writes and boot maintenance (including the retention sweep),
+   * AND anchors the date-windowed dashboard reads (ISS-9279), so a test that
+   * pins it gets one instant for both halves rather than a writer and a reader
+   * that disagree by however long ago the fixtures were written.
+   */
   now?: () => string;
   staleMinutes?: number;
   // Data-governance retention window (days). Terminal sessions older than this
   // are purged by the boot retention sweep; omit to use the module default.
   retentionDays?: number;
-  /**
-   * FEA-3814 (PRD-553 M2): fired after any crewd scheduler task/run mutation
-   * (a tick firing a run, a run finishing, an enable/upsert/remove). The db-host
-   * worker wires this to post a `SchedulerChanged` notification, which main
-   * forwards to the renderer as `desktop:scheduled-tasks:changed`. Payload-free.
-   */
-  onSchedulerChanged?: () => void;
-  /**
-   * FEA-4143: the child→main proxy the crewd scheduler's review dispatch uses to
-   * run a scheduled review through the main-process `AuditService` (throwaway
-   * workspace + main-side credentials). The db-host worker wires this to a
-   * `ScheduledReviewRun` request/reply round-trip. Omitted ⇒ no review runner
-   * wired, so a fired review task degrades to a recorded skip (fires + persists,
-   * spawns nothing) — the pre-FEA-4143 behavior.
-   */
-  runScheduledReview?: ScheduledReviewRunner;
   /**
    * ISS-5400 test seam: opens the boot-time migration handle. Production omits
    * it and gets `openMigrationDatabase`.
@@ -445,4 +492,41 @@ export type OpenSqliteAgentDatabaseOptions = {
    * the refusal itself still comes from the real runner against a real store.
    */
   openMigrationDatabase?: typeof openMigrationDatabase;
+  /**
+   * ISS-6339 test seam: sink for each executed migration's duration/outcome.
+   * Production omits it and gets `reportMigrationStep`, which emits on the
+   * desktop telemetry transport.
+   */
+  onMigrationStep?: (step: MigrationStep) => void;
+  /**
+   * ISS-6339 test seam: sink for each periodic store-performance sample.
+   * Production omits it and gets `reportStorePerfSample`.
+   *
+   * Both seams exist so a test can assert the PRODUCTION WIRING — that opening
+   * the store really does hook the statement recorder to the adapter and the
+   * sampler to the emit — without standing up `Observability`, whose emitter is
+   * a null no-op outside the main-process composition root and so would make an
+   * unwired seam and a wired one indistinguishable.
+   */
+  onStorePerfSample?: (sample: StorePerfDiagnostics) => void;
+  /**
+   * ISS-6339 test seam: the sampler's tick. Production omits it and gets the
+   * store-integrity heartbeat cadence, which a test cannot wait 30 minutes for.
+   */
+  storePerfSampleIntervalMs?: number;
+  /**
+   * ISS-7919 test seam: hands back the sampler this open started, so the wiring
+   * test can await its `whenSamplesSettled()` — the sampler's own signal that
+   * the work a tick began has finished — instead of guessing how long the
+   * tick's real `stat` needs.
+   *
+   * It hands back the sampler to OBSERVE, not to drive: the wiring test still
+   * gets its samples from the production interval, because a store that wired
+   * the sink but never started the timer would satisfy a direct `sampleOnce()`
+   * and emit nothing in the field. Production omits this and the sampler is
+   * unreachable from outside, exactly as before.
+   */
+  onStorePerfSamplerStarted?: (sampler: StorePerfSampler) => void;
+  /** ISS-8876 test seam: force the portable event-fingerprint fallback. */
+  rowDigestSupportProbe?: () => Promise<boolean>;
 };

@@ -102,8 +102,11 @@ vi.mock("@repo/app/search/components/unified-search-results", () => ({
       <span data-testid="hide-active-facet-chips">
         {String(Boolean(hideActiveFacetChips))}
       </span>
-      <button onClick={() => onToggleType(SearchEntityType.Loop)} type="button">
-        toggle-loop
+      <button
+        onClick={() => onToggleType(SearchEntityType.Project)}
+        type="button"
+      >
+        toggle-project
       </button>
       <button onClick={() => onSelectResult?.()} type="button">
         pick-result
@@ -120,13 +123,13 @@ const SEARCH_PROMPT_PATTERN = /Type : to filter by field, @ to find a person\./;
 
 function sampleHit(): SearchHit {
   return {
-    entityType: SearchEntityType.Loop,
-    entityId: "loop-1",
-    title: "Alpha loop",
-    snippet: "run the alpha loop",
+    entityType: SearchEntityType.AgentSession,
+    entityId: "session-1",
+    title: "Alpha session",
+    snippet: "run the alpha session",
     rank: 0.5,
     updatedAt: new Date("2026-01-01"),
-    deepLink: "/loops/loop-1",
+    deepLink: "/sessions/session-1",
   };
 }
 
@@ -279,16 +282,16 @@ describe("MobileSearchOverlay", () => {
 
     const user = await openOverlay();
     await user.type(screen.getByRole("textbox", { name: "Search" }), "alpha");
-    await user.click(screen.getByRole("button", { name: "toggle-loop" }));
+    await user.click(screen.getByRole("button", { name: "toggle-project" }));
 
     expect(screen.getByTestId("active-types")).toHaveTextContent(
-      SearchEntityType.Loop
+      SearchEntityType.Project
     );
     // The active facet is passed to the hook on the next render.
     const lastCall = mockUseSearchPanelState.mock.calls.at(-1)?.[0] as {
       types: SearchEntityType[];
     };
-    expect(lastCall.types).toContain(SearchEntityType.Loop);
+    expect(lastCall.types).toContain(SearchEntityType.Project);
   });
 
   it("carries active facets into the full-search URL on submit and closes", async () => {
@@ -299,11 +302,11 @@ describe("MobileSearchOverlay", () => {
     const user = await openOverlay();
     await user.type(screen.getByRole("textbox", { name: "Search" }), "alpha");
     // Select a facet, then submit — the destination must keep the filter.
-    await user.click(screen.getByRole("button", { name: "toggle-loop" }));
+    await user.click(screen.getByRole("button", { name: "toggle-project" }));
     await user.click(screen.getByRole("button", { name: "submit" }));
 
     expect(navigate).toHaveBeenCalledWith(
-      `/acme/search?q=alpha&types=${SearchEntityType.Loop}`
+      `/acme/search?q=alpha&types=${SearchEntityType.Project}`
     );
     expect(screen.queryByRole("dialog")).toBeNull();
   });

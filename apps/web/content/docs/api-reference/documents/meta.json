@@ -5,6 +5,11 @@
     "getDocument",
     "createDocument",
     "updateDocument",
-    "deleteDocument"
+    "deleteDocument",
+    "batchUpdateDocumentStatus",
+    "batchUpdateDocumentStatusV2",
+    "batchUpdateDocumentPriorityV2",
+    "batchMoveDocumentsV2",
+    "batchDeleteDocumentsV2"
   ]
 }

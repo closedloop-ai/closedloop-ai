@@ -1,42 +1,26 @@
 /**
  * @file electron-module-mock.ts
- * @description Electron-module mock for the desktop `test:node` runner
- * (ISS-4845).
+ * @description Electron-module mock for the desktop main-process suites
+ * (ISS-4845, ISS-6258).
  *
  * WHY THIS EXISTS. A main-process module that does `import { ipcMain } from
- * "electron"` cannot be imported under `tsx --test`: outside a real Electron
- * process the `electron` package's entrypoint is a path string, so the named
- * import fails at module-evaluation time and the module's Zod wire schema and
- * version-skew transform are unreachable to a test. The alternative — extracting
- * the schema into a standalone module — was tried and reverted on ISS-4667,
- * because relocating the compat-alias references into a NEW file needs a new
- * entry in the shrink-only source-gate allowlist, which that ratchet rejects.
+ * "electron"` cannot be imported outside a real Electron process: there the
+ * `electron` package's entrypoint is a path string, so the module's Zod wire
+ * schema and version-skew transform are unreachable to a test. The alternative —
+ * extracting the schema into a standalone module — was tried and reverted on
+ * ISS-4667, because relocating the compat-alias references into a NEW file needs
+ * a new entry in the shrink-only source-gate allowlist, which that ratchet
+ * rejects.
  *
- * HOW. `module.registerHooks` installs a synchronous, in-thread resolve hook
- * that redirects the bare `electron` specifier to
- * {@link ./electron-module-stub.ts}. It is registered LAST, so it runs before
- * tsx's own resolver and short-circuits; the stub is a `.ts` file, so tsx's load
- * hook still transpiles it. The redirect is scoped to the exact `electron`
- * specifier — every other import resolves normally.
- *
- * The mock must be registered BEFORE the module under test is imported, so
- * callers use a dynamic `import()` after {@link registerElectronModuleMock}
- * returns. Always `deregister()` in the test's teardown: the hook is
- * process-global, and node:test runs files in the same process by default.
+ * HOW. `vi.doMock` redirects the bare `electron` specifier to
+ * {@link ./electron-main-module-stub.ts} for every import after
+ * {@link registerElectronModuleMock} returns, so callers load the module under
+ * test with a dynamic `import()`. The stub re-exports the bindings of
+ * `./electron-module-stub.js`, which the test imports directly, so the test and
+ * the module under test share one recording instance and a test can read back
+ * the handler its subject registered.
  */
-import { registerHooks } from "node:module";
-
-/** The bare specifier main-process modules import Electron through. */
-const ELECTRON_SPECIFIER = "electron";
-
-/**
- * The stub's URL, resolved from this file so it matches the URL a direct
- * `import "./electron-module-stub.js"` produces — same URL means Node's module
- * cache hands the test and the module under test the SAME stub instance, which
- * is what lets the test read back the handler the module registered.
- */
-const ELECTRON_STUB_URL = new URL("./electron-module-stub.ts", import.meta.url)
-  .href;
+import { vi } from "vitest";
 
 /** A registered mock; call {@link ElectronModuleMock.deregister} in teardown. */
 export type ElectronModuleMock = {
@@ -48,17 +32,48 @@ export type ElectronModuleMock = {
  * the returned handle.
  */
 export function registerElectronModuleMock(): ElectronModuleMock {
-  const hooks = registerHooks({
-    resolve(specifier, context, nextResolve) {
-      if (specifier === ELECTRON_SPECIFIER) {
-        return { url: ELECTRON_STUB_URL, shortCircuit: true };
-      }
-      return nextResolve(specifier, context);
-    },
+  vi.doMock("electron", async () => {
+    const stub = await import("./electron-main-module-stub.js");
+    return { ...stub, default: stub.default };
   });
   return {
     deregister: () => {
-      hooks.deregister();
+      vi.doUnmock("electron");
+    },
+  };
+}
+
+/**
+ * The preload twin: a preload bridge reaches `electron` both by static import
+ * and through `createRequire` (`preload-common.ts`), so both specifiers are
+ * redirected to the recording stub the test reads back. Call it before the
+ * dynamic `import()` of the preload under test.
+ */
+export function registerElectronPreloadMock(): ElectronModuleMock {
+  vi.doMock("electron", async () => {
+    const stub = await import("./electron-module-stub.js");
+    return { ...stub, default: stub.default };
+  });
+  vi.doMock("node:module", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("node:module")>();
+    const stub = await import("./electron-module-stub.js");
+    return {
+      ...actual,
+      createRequire: (from: string | URL) => {
+        const required = actual.createRequire(from);
+        return new Proxy(required, {
+          apply: (_target, _thisArg, args: unknown[]) =>
+            args[0] === "electron"
+              ? stub
+              : Reflect.apply(required, undefined, args as [string]),
+        });
+      },
+    };
+  });
+  return {
+    deregister: () => {
+      vi.doUnmock("electron");
+      vi.doUnmock("node:module");
     },
   };
 }

@@ -52,7 +52,7 @@ afterEach(() => {
 });
 
 const LONG_PATH =
-  "/workspace/example-repo/apps/app/app/(authenticated)/[orgSlug]/build";
+  "/workspace/closedloop-ai/apps/app/app/(authenticated)/[orgSlug]/build";
 const LONG_BRANCH =
   "bot/nightly-storyteller-steve-2026-06-13-some-very-long-descriptive-branch";
 

@@ -83,9 +83,9 @@ function say(sessionId: string, t: string): MergedTraceItem {
 }
 
 const meta = {
-  title: "App Core/Branches/PR Session Swimlane",
+  title: "Composites v1.0/Branches/Branch PR Session Swimlane",
   component: BranchPrSessionSwimlane,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
 } satisfies Meta<typeof BranchPrSessionSwimlane>;
 

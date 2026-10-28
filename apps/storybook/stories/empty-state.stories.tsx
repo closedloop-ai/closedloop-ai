@@ -5,9 +5,9 @@ import { SearchXIcon } from "lucide-react";
 import { fn } from "storybook/test";
 
 const meta = {
-  title: "Design System/Primitives/Empty State",
+  title: "Primitives v1.0/Feedback & Status/Empty State",
   component: EmptyState,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "centered" },
   args: {
     description:

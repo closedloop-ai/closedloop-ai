@@ -24,10 +24,9 @@
  *     win this module exists to produce.
  *   - an in-flight map collapses OVERLAPPING resolutions of one key to a single
  *     spawn (the db-host does not await prior requests, so a completed-values-
- *     only memo would still let a fan-out all miss and all spawn). Same shape as
- *     `cloud/desktop-cloud-github-hydration.ts`'s `pending` map, including
- *     evicting a REJECTED entry so a later caller retries instead of inheriting
- *     the failure forever.
+ *     only memo would still let a fan-out all miss and all spawn). A REJECTED
+ *     entry is evicted so a later caller retries instead of inheriting the
+ *     failure forever.
  *   - only a `NoOrigin` outcome is memoized as a negative. A transient spawn
  *     failure (ENOENT/EAGAIN/EMFILE/timeout) leaves the key unmemoized, or it
  *     would degrade live-first precedence to the stale stored value for the
@@ -44,12 +43,14 @@
  * which cloud identity is syncing, and a fire-and-forget clear across the IPC
  * boundary is the ISS-4620/ISS-4818 crash class).
  */
+
+import { getOverrideBinaryPaths } from "../../server/operations/binary-path-overrides.js";
 import {
   type RepoFullNameOutcome,
   RepoFullNameStatus,
   resolveRepoFullNameOutcomeAsync,
 } from "../../server/operations/git-helpers.js";
-import { getOverrideBinaryPaths } from "../../server/operations/symphony-loop.js";
+import { isTccProtectedPath } from "../../shared/sandbox-policy.js";
 import { createColdReadGate } from "../collectors/parsing/cold-read-gate.js";
 import { yieldDbHostLoop } from "../database/db-host/yield-db-host-loop.js";
 
@@ -90,7 +91,10 @@ export const ATTRIBUTION_YIELD_INTERVAL = 64;
 
 /** Where a resolved `org/repo` came from on this call. */
 export const AttributionRepoSource = {
-  /** A real `git remote get-url origin` spawn ran for this call. */
+  /**
+   * A real `git remote get-url origin` spawn ran for this call, or the path is
+   * TCC-protected and is never resolved (ISS-11914).
+   */
   Live: "live",
   /** Served from a still-valid memo entry; no process was spawned. */
   Memo: "memo",
@@ -274,6 +278,11 @@ function startAttributionResolution(
   now: number,
   load: AttributionRepoLoader
 ): Promise<string | null> {
+  // ISS-11914: `git` would read `.git/config` inside a TCC-protected folder and
+  // raise a macOS permission prompt, so such a path never resolves.
+  if (isTccProtectedPath(repoPath)) {
+    return Promise.resolve(null);
+  }
   const pending = inFlight.get(key);
   if (pending) {
     return pending;

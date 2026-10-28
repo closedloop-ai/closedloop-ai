@@ -1,7 +1,7 @@
 // Stub for @mdxeditor/editor - prevents bundler from resolving the real module
 // (which pulls in sandpack/stitches, crashing in jsdom).
 // Test files provide per-test behavior via vi.mock().
-import { createElement } from "react";
+import { createElement, type ReactNode } from "react";
 
 export const IS_BOLD = 1;
 export const IS_ITALIC = 2;
@@ -25,7 +25,15 @@ export const markdownShortcutPlugin = () => ({});
 export const quotePlugin = () => ({});
 export const toolbarPlugin = () => ({});
 
-export function MDXEditor({ markdown, placeholder, className }: any) {
+export function MDXEditor({
+  markdown,
+  placeholder,
+  className,
+}: {
+  markdown: string;
+  placeholder?: ReactNode;
+  className?: string;
+}) {
   return createElement(
     "div",
     { "data-testid": "mdx-editor", className, "data-placeholder": placeholder },

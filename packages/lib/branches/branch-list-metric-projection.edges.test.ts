@@ -6,28 +6,38 @@
  * 3. boundedEndFromStart — ThirtyDays branch (days = 30)
  * 4. validDate — Date instance path (value instanceof Date → date = value directly)
  */
-import { BranchMetricPeriod } from "@repo/api/src/types/branch-metrics";
+import { BranchStatus } from "@repo/api/src/types/branch";
+import {
+  BranchMetricAvailability,
+  BranchMetricPeriod,
+} from "@repo/api/src/types/branch-metrics";
 import { describe, expect, it } from "vitest";
+import type { BranchMetricCostContribution } from "./branch-cost-evidence";
+import { costFactsFromContributions } from "./branch-cost-facts-from-contributions";
 import {
   branchMetricPeriodForRange,
+  type CanonicalBranchListMetricProjectionInput,
+  projectCanonicalBranchListMetrics,
   resolveCanonicalBranchMetricWindows,
 } from "./branch-list-metric-projection";
+import { branchMetricFactWindows } from "./branch-pull-request-metrics";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 describe("branchMetricPeriodForRange edge cases", () => {
+  it("classifies an exact 60-day range as SixtyDays rather than falling through to all-time", () => {
+    const start = new Date("2026-07-27T00:00:00.000Z");
+    const end = new Date(start.getTime() + 60 * DAY_MS);
+    expect(branchMetricPeriodForRange(start, end, false)).toBe(
+      BranchMetricPeriod.SixtyDays
+    );
+  });
+
   it("classifies exactly-7-days range as SevenDays when tolerance is disabled", () => {
     const start = new Date("2026-07-27T00:00:00.000Z");
     const end = new Date(start.getTime() + 7 * DAY_MS);
     // allowStartOnlyTolerance = false (default) → difference must be exactly 0
     const period = branchMetricPeriodForRange(start, end, false);
-    expect(period).toBe(BranchMetricPeriod.SevenDays);
-  });
-
-  it("classifies exactly-7-days range as SevenDays when allowTolerance is also false (omitted)", () => {
-    const start = new Date("2026-07-27T00:00:00.000Z");
-    const end = new Date(start.getTime() + 7 * DAY_MS);
-    const period = branchMetricPeriodForRange(start, end);
     expect(period).toBe(BranchMetricPeriod.SevenDays);
   });
 
@@ -107,4 +117,234 @@ describe("resolveCanonicalBranchMetricWindows — boundedEndFromStart NinetyDays
     expect(windows.period).toBe(BranchMetricPeriod.NinetyDays);
     expect(windows.current.endAt).toBe(now.toISOString());
   });
+});
+
+const IN_WINDOW = "2026-08-01T00:00:00.000Z";
+
+function forwardingInput(
+  overrides: Partial<CanonicalBranchListMetricProjectionInput>
+): CanonicalBranchListMetricProjectionInput {
+  return {
+    branches: [
+      { id: "a", status: BranchStatus.Open, lastActivityAt: IN_WINDOW },
+    ],
+    pullRequests: [
+      {
+        identity: "org/repo#1",
+        mergedAt: IN_WINDOW,
+        closedAt: IN_WINDOW,
+        additions: 30,
+        deletions: 10,
+      },
+    ],
+    pullRequestCoverageComplete: true,
+    startDate: "2026-07-27T00:00:00.000Z",
+    endDate: "2026-08-03T00:00:00.000Z",
+    now: new Date("2026-08-03T00:00:00.000Z"),
+    locContributions: [
+      {
+        sourceEventId: "loc-1",
+        branchId: "a",
+        occurredAt: IN_WINDOW,
+        additions: 100,
+        deletions: 0,
+      },
+    ],
+    locCompleteBranchIds: ["a"],
+    costContributions: [
+      {
+        sourceEventId: "cost-1",
+        branchId: "a",
+        sessionId: "session-1",
+        occurredAt: IN_WINDOW,
+        costUsd: 10,
+        qualifyingBranchCount: 1,
+      },
+    ],
+    costCompleteBranchIds: ["a"],
+    aiSpendFacts: spendFactsFor([costRow("cost-1", 10)]),
+    ...overrides,
+  };
+}
+
+/** Spend as a producer folds it, for the fixture's own window. */
+function spendFactsFor(contributions: BranchMetricCostContribution[]) {
+  return costFactsFromContributions(
+    contributions,
+    branchMetricFactWindows(
+      resolveCanonicalBranchMetricWindows({
+        startDate: "2026-07-27T00:00:00.000Z",
+        endDate: "2026-08-03T00:00:00.000Z",
+        now: new Date("2026-08-03T00:00:00.000Z"),
+      })
+    )
+  );
+}
+
+function costRow(
+  sourceEventId: string,
+  costUsd: number
+): BranchMetricCostContribution {
+  return {
+    sourceEventId,
+    branchId: "a",
+    sessionId: `session-${sourceEventId}`,
+    occurredAt: IN_WINDOW,
+    costUsd,
+    qualifyingBranchCount: 1,
+  };
+}
+
+describe("projectCanonicalBranchListMetrics — optional evidence forwarding", () => {
+  it("publishes complete figures from the base fixture", () => {
+    const metrics = projectCanonicalBranchListMetrics(forwardingInput({}));
+    expect(metrics.locPerDollar.current).toEqual({
+      state: BranchMetricAvailability.Complete,
+      value: 10,
+    });
+    expect(metrics.aiSpendUsd.current).toEqual({
+      state: BranchMetricAvailability.Complete,
+      value: 10,
+    });
+    expect(metrics.canonicalLocPerDollar?.current.state).toBe(
+      BranchMetricAvailability.Unavailable
+    );
+    expect(metrics.penseroPointsPerDollar).toBeUndefined();
+  });
+
+  it("forwards cohortCoverageComplete=false", () => {
+    const metrics = projectCanonicalBranchListMetrics(
+      forwardingInput({ cohortCoverageComplete: false })
+    );
+    expect(metrics.activeBranches.current.state).toBe(
+      BranchMetricAvailability.Unavailable
+    );
+  });
+
+  it("forwards locCoverageComplete=false", () => {
+    const metrics = projectCanonicalBranchListMetrics(
+      forwardingInput({ locCoverageComplete: false })
+    );
+    expect(metrics.locPerDollar.current.state).toBe(
+      BranchMetricAvailability.Partial
+    );
+  });
+
+  it("forwards an in-window locCoverageGap", () => {
+    const metrics = projectCanonicalBranchListMetrics(
+      forwardingInput({
+        locCoverageGaps: [{ sourceEventId: "gap-1", occurredAt: IN_WINDOW }],
+      })
+    );
+    expect(metrics.locPerDollar.current.state).toBe(
+      BranchMetricAvailability.Partial
+    );
+  });
+
+  it("forwards an empty pullRequestCoverageGaps list over a false flag", () => {
+    const flagOnly = projectCanonicalBranchListMetrics(
+      forwardingInput({ pullRequestCoverageComplete: false })
+    );
+    const withGaps = projectCanonicalBranchListMetrics(
+      forwardingInput({
+        pullRequestCoverageComplete: false,
+        pullRequestCoverageGaps: [],
+      })
+    );
+    expect(flagOnly.mergeRatePct.current.state).toBe(
+      BranchMetricAvailability.Partial
+    );
+    expect(withGaps.mergeRatePct.current.state).toBe(
+      BranchMetricAvailability.Complete
+    );
+  });
+
+  it("forwards aiSpendFacts as the spend", () => {
+    const metrics = projectCanonicalBranchListMetrics(
+      forwardingInput({ aiSpendFacts: spendFactsFor([costRow("spend-1", 25)]) })
+    );
+    expect(metrics.aiSpendUsd.current).toEqual({
+      state: BranchMetricAvailability.Complete,
+      value: 25,
+    });
+  });
+
+  it("forwards an unusable event in aiSpendFacts as a partial spend", () => {
+    const metrics = projectCanonicalBranchListMetrics(
+      forwardingInput({
+        aiSpendFacts: spendFactsFor([
+          costRow("spend-1", 25),
+          { ...costRow("unpriced", 0), costUsd: null },
+        ]),
+      })
+    );
+    expect(metrics.aiSpendUsd.current.state).toBe(
+      BranchMetricAvailability.Partial
+    );
+  });
+
+  it("forwards locPerDollarCostContributions as the ratio denominator", () => {
+    const metrics = projectCanonicalBranchListMetrics(
+      forwardingInput({
+        locPerDollarCostContributions: [costRow("ratio-1", 50)],
+      })
+    );
+    expect(metrics.locPerDollar.current).toEqual({
+      state: BranchMetricAvailability.Complete,
+      value: 2,
+    });
+  });
+
+  it("forwards an empty locPerDollarQualifyingSessionIds list", () => {
+    const metrics = projectCanonicalBranchListMetrics(
+      forwardingInput({ locPerDollarQualifyingSessionIds: [] })
+    );
+    expect(metrics.locPerDollar.current.state).toBe(
+      BranchMetricAvailability.NoData
+    );
+  });
+
+  it("forwards locPerDollarCostCoverageComplete=false", () => {
+    const metrics = projectCanonicalBranchListMetrics(
+      forwardingInput({ locPerDollarCostCoverageComplete: false })
+    );
+    expect(metrics.locPerDollar.current.state).toBe(
+      BranchMetricAvailability.Partial
+    );
+  });
+
+  it("forwards canonicalEstimatedCostUsd and penseroPoints", () => {
+    const metrics = projectCanonicalBranchListMetrics(
+      forwardingInput({
+        canonicalEstimatedCostUsd: 20,
+        penseroPoints: {
+          points: 40,
+          hasFailedAcquisitionDay: false,
+          hasAmbiguousPoints: false,
+          hasUnreadablePointValues: false,
+        },
+      })
+    );
+    expect(metrics.canonicalLocPerDollar?.current).toEqual({
+      state: BranchMetricAvailability.Complete,
+      value: 5,
+    });
+    expect(metrics.penseroPointsPerDollar?.current.value).toBe(2);
+  });
+});
+
+describe("projectCanonicalBranchListMetrics — invalid endDate", () => {
+  it.each([
+    ["string", "not-a-date"],
+    ["Date", new Date("invalid")],
+  ])(
+    "falls back to the start-bounded period for an invalid %s",
+    (_label, endDate) => {
+      const metrics = projectCanonicalBranchListMetrics(
+        forwardingInput({ endDate })
+      );
+      expect(metrics.period).toBe(BranchMetricPeriod.SevenDays);
+      expect(metrics.window.endAt).toBe("2026-08-03T00:00:00.000Z");
+    }
+  );
 });

@@ -21,7 +21,7 @@ Closedloop.ai distributes its agent and orchestration layer as six Claude Code p
 Plugins have implicit cross-dependencies:
 
 - `code` depends on `judges` (via the `eval-cache` and `run-judges` skills).
-- `code` depends on `self-learning` (via `learning-quality` skill and the 7 Python pipeline scripts called from `run-loop.sh`).
+- `code` depends on `self-learning` (via `learning-quality` skill).
 - `code-review` depends on `code` (uses `code:code-review-worker`).
 - `code-review` depends on `judges` (reuses `validate_judge_report` and `JUDGE_REGISTRY`).
 - `bootstrap` depends on `code` (uses `code:find-plugin-file`).
@@ -34,7 +34,6 @@ Commands are namespaced by plugin (`/<plugin>:<command>`). The full reference is
 
 - `/code:code` — start a Closedloop coding session against a PRD or plan.
 - `/code:amend-plan` — interactively amend a running plan.
-- `/code:cancel-code` — stop a running loop.
 - `/code:plan-with-codex` — run a Claude-versus-Codex debate to refine a plan.
 - `/code-review:start` — run multi-agent partitioned code review.
 - `/self-learning:process-learnings` — classify and merge pending learnings.

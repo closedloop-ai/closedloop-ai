@@ -2,19 +2,15 @@ import {
   ArtifactType,
   normalizeArtifactSubtype,
 } from "@repo/api/src/types/artifact";
-import { Priority } from "@repo/api/src/types/common";
 import {
   type ArtifactRepositorySnapshot,
   type Document,
   type DocumentStatus,
   type DocumentType,
+  type DocumentWithProject,
   SnapshotSource,
+  type SourceLinkedPlanPolicy,
 } from "@repo/api/src/types/document";
-import type {
-  LoopCommand,
-  LoopStatus,
-  SourceContextType,
-} from "@repo/api/src/types/loop";
 import type { BasicUser } from "@repo/api/src/types/user";
 import type {
   Prisma,
@@ -23,8 +19,12 @@ import type {
   Priority as PrismaPriority,
 } from "@repo/database";
 import { nanoid } from "nanoid";
-import { TAG_RELATION_INCLUDE } from "@/app/tags/service";
+import {
+  mapTagRelations,
+  TAG_RELATION_INCLUDE,
+} from "@/app/tags/tag-projection-select";
 import { basicUserSelect } from "@/lib/db-utils";
+import { buildDocumentStatusMutation } from "./document-status-mutation-capability";
 import { parseStoredSnapshot } from "./repository-snapshot-helpers";
 
 const EMPTY_REPOSITORY_SNAPSHOT: ArtifactRepositorySnapshot = {
@@ -69,7 +69,10 @@ export function toDocument(artifact: ArtifactWithDocumentDetail): Document {
     slug: artifact.slug!,
     fileName: detail?.fileName ?? null,
     status: artifact.status as DocumentStatus,
-    priority: artifact.priority ?? Priority.Medium,
+    // ISS-9665: the stored value, unfolded. A null here is "no priority", which
+    // `/search`, `/artifact-links/resolved` and the project tree already report
+    // as null — folding it to MEDIUM made one artifact serialize two priorities.
+    priority: artifact.priority,
     latestVersion: detail?.latestVersion ?? 1,
     createdById: artifact.createdById ?? "",
     createdBy: artifact.createdBy ?? null,
@@ -97,16 +100,17 @@ export function toDocument(artifact: ArtifactWithDocumentDetail): Document {
 export type DocumentPayloadInput = {
   // Artifact columns — NOT NULL in schema; disallow null here so the
   // returned Prisma update input stays valid.
-  projectId?: string;
   type?: DocumentType;
   title?: string;
   slug?: string;
   status?: string;
   // Artifact columns — nullable in schema.
+  projectId?: string | null;
   priority?: PrismaPriority | null;
   assigneeId?: string | null;
   dueDate?: Date | null;
   sortOrder?: number | null;
+  sourceLinkedPlanPolicy?: SourceLinkedPlanPolicy;
   // DocumentDetail columns.
   fileName?: string | null;
   approverId?: string | null;
@@ -145,6 +149,7 @@ export function splitDocumentPayload(
     templateForType,
     latestVersion,
     repositorySnapshot,
+    sourceLinkedPlanPolicy: _sourceLinkedPlanPolicy,
     ...artifactRest
   } = data;
   const artifact: Prisma.ArtifactUncheckedUpdateInput = { ...artifactRest };
@@ -213,41 +218,6 @@ export const documentIncludeWithContext = {
   ...documentIncludeWithUser,
 } as const;
 
-// Project summary used inside `DocumentWithRegenerationContext`. Mirrors the
-// Prisma `Project` shape with `settings` kept as the raw JSON value
-// (consumers coerce via `getProjectSettings`).
-export type RegenerationProject = {
-  id: string;
-  organizationId: string;
-  name: string;
-  settings: unknown;
-};
-
-/**
- * Document wire shape augmented with the project + source PRD context needed
- * for plan/loop context resolution. Returned by
- * `documentGenerationService.findWithRegenerationContext` and consumed by the
- * various generation/execution flows that branch off it.
- *
- * The source PRD is discovered by walking the artifact_links PRODUCES chain
- * upward from this document, replacing the legacy workstream join.
- */
-export type DocumentWithRegenerationContext = Document & {
-  project: RegenerationProject | null;
-  sourcePrd: SourceContext | null;
-};
-
-/**
- * Source artifact context used when resolving regeneration inputs.
- */
-export type SourceContext = {
-  id: string;
-  type: SourceContextType;
-  title: string;
-  content: string | null;
-  repositorySnapshot: ArtifactRepositorySnapshot;
-};
-
 /**
  * Raw Prisma artifact shape returned by queries that use
  * `documentIncludeWithContext`. Must stay in sync with that include shape.
@@ -270,28 +240,30 @@ export type RawDocumentWithContext = PrismaArtifact & {
   tagArtifacts?: Array<{ tag: { id: string; name: string; color: string } }>;
 };
 
-// Result types shared across regenerate / execute / request-changes flows.
-export type StartPlanLoopFromLocalResult =
-  | { outcome: "needs-selection"; documents: { id: string; title: string }[] }
-  | {
-      outcome: "invalid-document";
-      existingDocuments: { id: string; title: string }[];
-    }
-  | {
-      outcome: "already-running";
-      loopId: string;
-      documentId: string;
-      documentSlug: string;
-      localRepoPath: string;
-    }
-  | {
-      outcome: "already-active-conflict";
-      activeLoop: { id: string; command: LoopCommand; status: LoopStatus };
-    }
-  | { outcome: "error"; reason: "missing-local-path" }
-  | {
-      outcome: "ready-to-launch";
-      documentId: string;
-      documentSlug: string;
-      document: DocumentWithRegenerationContext;
-    };
+/**
+ * Transform Artifact + detail into the DocumentWithProject wire shape.
+ *
+ * Lives here with `toDocument` and the include shape it consumes rather than in
+ * `document-service.ts`, so the list-read path can build a document row without
+ * importing the CRUD service (ISS-7211).
+ */
+export function toDocumentWithProject(
+  artifact: RawDocumentWithContext
+): DocumentWithProject {
+  const base = toDocument(artifact);
+
+  return {
+    ...base,
+    statusMutation: buildDocumentStatusMutation(base.type),
+    project: artifact.project
+      ? {
+          id: artifact.project.id,
+          name: artifact.project.name,
+          teams: artifact.project.teams.map(
+            (pt: { team: { id: string; name: string } }) => pt.team
+          ),
+        }
+      : null,
+    tags: mapTagRelations(artifact.tagArtifacts ?? []),
+  };
+}

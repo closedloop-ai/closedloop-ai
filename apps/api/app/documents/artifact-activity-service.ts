@@ -14,8 +14,11 @@ import type { JsonValue } from "@repo/api/src/types/common";
 import {
   Prisma,
   type ArtifactActivityEvent as PrismaArtifactActivityEvent,
+  type TransactionClient,
   withDb,
 } from "@repo/database";
+import { chunksOf } from "@/lib/chunks-of";
+import { POSTGRES_MAX_ACCEPTED_BIND_PARAMETERS } from "@/lib/postgres-bind-parameters";
 
 /**
  * Artifact activity event store service (FEA-3859 / FEA-3535 Slice 1).
@@ -25,10 +28,12 @@ import {
  * captured mutation; `listActivityEvents` returns an org-scoped, per-artifact,
  * newest-first, keyset-paginated page.
  *
- * SHIPS DARK: this slice adds the store only. `recordActivityEvent` is NOT yet
- * called from the `PUT /documents/[id]` write path — that capture seam is
- * Slice 2. There is no read endpoint (Slice 3) or UI (Slice 4+); the list
- * service exists so those slices have a tested read primitive to build on.
+ * The record calls come from `apps/api/lib/artifact-activity-capture.ts` on the
+ * document write paths (FEA-3864). `listActivityEvents` has no production
+ * caller: `GET /documents/[id]/activity` reads `artifact_activity_events`
+ * itself, in `artifact-activity-feed-service.ts` (`projectEvents`), with its
+ * own projection and keyset fragment — so this is a second reader of the same
+ * table, kept today only by its own tests.
  *
  * Org-scoping is mandatory on every query for multi-tenant isolation: reads
  * filter on `organizationId` (never `artifactId` alone), and writes both stamp
@@ -78,9 +83,7 @@ export function fromJsonColumn(value: unknown): JsonValue | null {
  * `recordActivityEventInputSchema`), so no row carries an out-of-vocabulary
  * value.
  */
-function toActivityEvent(
-  row: PrismaArtifactActivityEvent
-): ArtifactActivityEvent {
+function toActivityEvent(row: ActivityEventRow): ArtifactActivityEvent {
   return {
     id: row.id,
     organizationId: row.organizationId,
@@ -102,47 +105,67 @@ function toActivityEvent(
  * caller cannot stamp an event under the wrong tenant. Returns the persisted
  * event as the shared DTO.
  *
- * Not yet wired to any mutation path (Slice 2). Callers are expected to record
- * one event per changed field (a status change and an assignee change on the
- * same PUT are two rows), so the feed can render each independently.
+ * Called from artifact mutation paths through the shared capture helpers.
+ * Callers record one event per changed field (a status change and an
+ * assignee change on the same PUT are two rows), so the feed can render each
+ * independently.
+ *
+ * `client` is the MUTATION's transaction (ISS-10993). Supplied, the row is
+ * written on it, so the receipt and the change it describes commit or roll back
+ * together; a row that cannot be written fails the mutation rather than leaving
+ * a hole in a published feed. Omitted — the DB-backed tests of this store, which
+ * have no mutation to join — it opens its own.
  */
 async function recordActivityEvent(
-  input: RecordActivityEventInput
+  input: RecordActivityEventInput,
+  client?: TransactionClient
 ): Promise<ArtifactActivityEvent> {
   const parsed = recordActivityEventInputSchema.parse(input);
 
-  const row = await withDb.tx(async (tx) => {
-    // Tenant guard: the FK on `artifact_id` alone does not prove the artifact
-    // belongs to `organizationId`, so a mismatched caller could otherwise
-    // stamp an event under the wrong tenant while pointing at another org's
-    // artifact. Verify org ownership in the same transaction before inserting.
-    const artifact = await tx.artifact.findFirst({
-      where: {
-        id: parsed.artifactId,
-        organizationId: parsed.organizationId,
-      },
-      select: { id: true },
-    });
-    if (artifact === null) {
-      throw new Error(
-        `artifact ${parsed.artifactId} not found in organization ${parsed.organizationId}`
-      );
-    }
-
-    return tx.artifactActivityEvent.create({
-      data: {
-        organizationId: parsed.organizationId,
-        artifactId: parsed.artifactId,
-        actorType: parsed.actorType,
-        actorId: parsed.actorId ?? null,
-        action: parsed.action,
-        before: toJsonInput(parsed.before),
-        after: toJsonInput(parsed.after),
-      },
-    });
-  });
+  const row = client
+    ? await insertActivityEvent(client, parsed)
+    : await withDb.tx((tx) => insertActivityEvent(tx, parsed));
 
   return toActivityEvent(row);
+}
+
+/**
+ * Tenant guard plus insert, on whichever client the caller owns. The FK on
+ * `artifact_id` alone does not prove the artifact belongs to `organizationId`,
+ * so a mismatched caller could otherwise stamp an event under the wrong tenant
+ * while pointing at another org's artifact — the check therefore has to share a
+ * transaction with the insert it protects.
+ */
+async function insertActivityEvent(
+  tx: TransactionClient,
+  parsed: RecordActivityEventInput
+): Promise<PrismaArtifactActivityEvent> {
+  const artifact = await tx.artifact.findFirst({
+    where: {
+      id: parsed.artifactId,
+      organizationId: parsed.organizationId,
+    },
+    select: { id: true },
+  });
+  if (artifact === null) {
+    throw new Error(
+      `artifact ${parsed.artifactId} not found in organization ${parsed.organizationId}`
+    );
+  }
+
+  return await tx.artifactActivityEvent.create({
+    data: {
+      organizationId: parsed.organizationId,
+      artifactId: parsed.artifactId,
+      actorType: parsed.actorType,
+      actorId: parsed.actorId ?? null,
+      action: parsed.action,
+      before: toJsonInput(parsed.before),
+      after: toJsonInput(parsed.after),
+      transactionId: parsed.transactionId ?? null,
+      undoOfTransactionId: parsed.undoOfTransactionId ?? null,
+    },
+  });
 }
 
 /**
@@ -151,35 +174,68 @@ async function recordActivityEvent(
  * request can touch hundreds of artifacts: recording each event through its own
  * `recordActivityEvent` transaction would open one pooled DB connection per
  * artifact and starve the pool (`apps/api/AGENTS.md` bounded-fan-out rule). This
- * collapses the whole batch into two queries inside one transaction — one
- * `findMany` to keep only artifacts that belong to `organizationId`, then one
- * `createMany` insert — so a 500-item batch costs exactly one connection.
+ * collapses the whole batch into one transaction — per slice of
+ * `ACTIVITY_EVENT_WRITE_CHUNK_SIZE` events, one `findMany` to keep only
+ * artifacts that belong to `organizationId`, then one `createMany` insert — so
+ * a 500-item batch costs exactly one connection and two statements.
+ *
+ * Sliced because the statement is REFUSED, not slowed, past the bind ceiling
+ * (ISS-9158, whitlockk review): `POST /artifact-links/batch-move` with
+ * `includeDownstream` is uncapped and has walked 9,875-node graphs, whose
+ * events issued as one `createMany` would bind ~89,000 parameters against a
+ * budget of 32,766. Every slice runs inside the same transaction, so the write
+ * stays all-or-nothing.
  *
  * Tenant isolation is preserved: any event whose `artifactId` does not belong
  * to `organizationId` is dropped (never inserted under the wrong tenant), the
  * same guarantee `recordActivityEvent` enforces per-row. Returns the number of
  * rows actually inserted.
+ *
+ * `client` is the MUTATION's transaction (ISS-10993); see
+ * {@link recordActivityEvent}. Every slice runs on it, so the whole batch and
+ * the mutation it describes share one commit.
  */
 async function recordActivityEvents(
-  input: RecordActivityEventsInput
+  input: RecordActivityEventsInput,
+  client?: TransactionClient
 ): Promise<number> {
   const parsed = recordActivityEventsInputSchema.parse(input);
   if (parsed.events.length === 0) {
     return 0;
   }
 
-  return await withDb.tx(async (tx) => {
-    const artifactIds = [...new Set(parsed.events.map((e) => e.artifactId))];
-    // Tenant guard: one query resolves which of the requested artifacts belong
-    // to the org. Events pointing at any other artifact are dropped so a caller
-    // cannot stamp events under the wrong tenant (mirrors the per-row guard in
-    // `recordActivityEvent`).
+  return client
+    ? await insertActivityEvents(client, parsed)
+    : await withDb.tx((tx) => insertActivityEvents(tx, parsed));
+}
+
+/**
+ * The sliced batch insert, on whichever client the caller owns. Slicing is
+ * inside one transaction so the write stays all-or-nothing across slices.
+ */
+async function insertActivityEvents(
+  tx: TransactionClient,
+  parsed: RecordActivityEventsInput
+): Promise<number> {
+  let inserted = 0;
+  for (const events of chunksOf(
+    parsed.events,
+    ACTIVITY_EVENT_WRITE_CHUNK_SIZE
+  )) {
+    const artifactIds = [...new Set(events.map((e) => e.artifactId))];
+    // Tenant guard: one query resolves which of the requested artifacts
+    // belong to the org. Events pointing at any other artifact are dropped so
+    // a caller cannot stamp events under the wrong tenant (mirrors the
+    // per-row guard in `recordActivityEvent`).
     const owned = await tx.artifact.findMany({
-      where: { id: { in: artifactIds }, organizationId: parsed.organizationId },
+      where: {
+        id: { in: artifactIds },
+        organizationId: parsed.organizationId,
+      },
       select: { id: true },
     });
     const ownedIds = new Set(owned.map((row) => row.id));
-    const rows = parsed.events
+    const rows = events
       .filter((event) => ownedIds.has(event.artifactId))
       .map((event) => ({
         organizationId: parsed.organizationId,
@@ -189,13 +245,16 @@ async function recordActivityEvents(
         action: event.action,
         before: toJsonInput(event.before),
         after: toJsonInput(event.after),
+        transactionId: parsed.transactionId ?? null,
+        undoOfTransactionId: parsed.undoOfTransactionId ?? null,
       }));
     if (rows.length === 0) {
-      return 0;
+      continue;
     }
     const result = await tx.artifactActivityEvent.createMany({ data: rows });
-    return result.count;
-  });
+    inserted += result.count;
+  }
+  return inserted;
 }
 
 /**
@@ -232,6 +291,7 @@ async function listActivityEvents(
       // Lookahead: fetch one extra row to detect whether a next page exists.
       take: take + 1,
       ...(parsed.cursor ? { cursor: { id: parsed.cursor }, skip: 1 } : {}),
+      select: ACTIVITY_EVENT_SELECT,
     })
   );
 
@@ -248,3 +308,64 @@ export const artifactActivityService = {
   recordActivityEvents,
   listActivityEvents,
 };
+
+/**
+ * Columns one `ArtifactActivityEvent` row binds in a `createMany`: the nine
+ * the store writes plus the `id` and `createdAt` Prisma fills client-side
+ * (`uuid(7)` / `now()`). Counted off the model rather than off the object
+ * literal above, because a default the CLIENT fills is a bind the literal
+ * never shows — the same count `judge-score-fanout.ts` makes.
+ *
+ * A column added to that literal without this number moving sizes the chunk
+ * below on a width the statement no longer has, so a FULL chunk is refused
+ * outright — and `recordBatchEvents` swallows the refusal, losing the whole
+ * slice with no signal. ISS-10458 review.
+ */
+export const BIND_PARAMETERS_PER_ACTIVITY_EVENT_ROW = 11;
+
+/**
+ * Events per `recordActivityEvents` slice. Sized off the `createMany`, the
+ * wider of the slice's two statements: the tenant-guard `findMany` binds one
+ * parameter per distinct artifact id plus the org, so it always fits under
+ * the same slice. Floors at 1 so a future ceiling change cannot make the loop
+ * issue empty statements forever.
+ */
+export const ACTIVITY_EVENT_WRITE_CHUNK_SIZE = Math.max(
+  1,
+  Math.floor(
+    POSTGRES_MAX_ACCEPTED_BIND_PARAMETERS /
+      BIND_PARAMETERS_PER_ACTIVITY_EVENT_ROW
+  )
+);
+
+/** The columns {@link toActivityEvent} reads off an activity-event row. */
+type ActivityEventRow = Pick<
+  PrismaArtifactActivityEvent,
+  | "id"
+  | "organizationId"
+  | "artifactId"
+  | "actorType"
+  | "actorId"
+  | "action"
+  | "before"
+  | "after"
+  | "createdAt"
+>;
+
+/**
+ * A pin, not a reduction: it is what stops a column added later from reaching
+ * the list response without anyone choosing to put it there. `transaction_id`
+ * (ISS-9465) is the first column it holds back — the rows carry it, and it
+ * gains a reader when a surface needs to group a bulk mutation's receipts.
+ */
+const ACTIVITY_EVENT_SELECT = {
+  id: true,
+  organizationId: true,
+  artifactId: true,
+  actorType: true,
+  actorId: true,
+  action: true,
+  before: true,
+  after: true,
+  createdAt: true,
+} as const satisfies Record<keyof ActivityEventRow, true>;

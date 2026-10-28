@@ -15,9 +15,8 @@ import {
  * Two consequences, and the session-detail "Linked artifacts" row paid for both.
  * It gates its pills on `identity?.organizationSlug`, so each mount rendered the
  * settled "not reachable" label first and flipped to a link once the IPC landed
- * — the row asserting something it had not checked. And the sidebar AccountMenu,
- * the Settings Account tab and every detail mount each paid for a round trip
- * that had already been made.
+ * — the row asserting something it had not checked. And the sidebar AccountMenu
+ * and every detail mount each paid for a round trip that had already been made.
  *
  * So the contract under test is: the payload is cached and deduped, and `null`
  * now carries `isResolved` so a caller can tell "not known YET" from "there is
@@ -131,6 +130,64 @@ describe("useDesktopIdentity (ISS-5366)", () => {
 
     await waitFor(() => expect(result.current.isResolved).toBe(true));
     expect(result.current.identity).toBeNull();
+  });
+
+  it("does NOT cache a failed read: a later mount starts pending and re-reads", async () => {
+    // ISS-11145 review (tamsinb): the failure used to be written to the cache as
+    // a `null` indistinguishable from "this account has no identity", so every
+    // later mount seeded from it synchronously and no read ever ran again. A
+    // consumer that renders "checking…" while the name is unknown was then
+    // announcing a check that had finished for good.
+    let attempt = 0;
+    const getDesktopIdentity = installIdentity(() => {
+      attempt += 1;
+      return attempt === 1
+        ? Promise.reject(new Error("boom"))
+        : Promise.resolve(IDENTITY);
+    });
+
+    const first = renderHook(() =>
+      useDesktopIdentity(DesktopAuthStatus.Authenticated, "u-1")
+    );
+    await waitFor(() => expect(first.result.current.isResolved).toBe(true));
+    expect(first.result.current.identity).toBeNull();
+
+    const second = renderHook(() =>
+      useDesktopIdentity(DesktopAuthStatus.Authenticated, "u-1")
+    );
+
+    // The failure is not a cached answer, so this mount is genuinely PENDING on
+    // first render rather than seeded with a settled absence.
+    expect(second.result.current.isResolved).toBe(false);
+    expect(second.result.current.identity).toBeNull();
+
+    // ...and the read really does run again, which is what makes the pending
+    // claim honest.
+    await waitFor(() => expect(second.result.current.isResolved).toBe(true));
+    expect(second.result.current.identity).toEqual(IDENTITY);
+    expect(getDesktopIdentity).toHaveBeenCalledTimes(2);
+  });
+
+  it("DOES cache a read that answered 'no identity', with no pending window", async () => {
+    // The other half of the distinction: an ANSWER of `null` is still settled and
+    // still seeds a later mount synchronously, so not-caching failures did not
+    // reintroduce the ISS-5366 flash for a genuine absence.
+    const getDesktopIdentity = installIdentity(() => Promise.resolve(null));
+
+    const first = renderHook(() =>
+      useDesktopIdentity(DesktopAuthStatus.Authenticated, "u-1")
+    );
+    await waitFor(() => expect(first.result.current.isResolved).toBe(true));
+
+    const second = renderHook(() =>
+      useDesktopIdentity(DesktopAuthStatus.Authenticated, "u-1")
+    );
+
+    expect(second.result.current.isResolved).toBe(true);
+    expect(second.result.current.identity).toBeNull();
+    await waitFor(() =>
+      expect(getDesktopIdentity.mock.calls.length).toBeGreaterThan(1)
+    );
   });
 
   it("settles when the bridge is absent rather than pending forever", async () => {

@@ -6,27 +6,32 @@ import {
   BUILD_APP_VERSION,
   BUILD_COMMIT_HASH,
 } from "../../shared/build-info.js";
+import {
+  type DurableLogLevel,
+  drainPreInitLogToLocalTransport,
+  installLocalDurableTransport,
+  PERSISTED_GATEWAY_ENTRY_PREFIX,
+  writePersistentLog,
+} from "./durable-log-sink.js";
 import type { LogEntry, LogLevel } from "./gateway-logger.js";
 import {
   formatDesktopBootLine,
   type MainLogLocationInput,
   resolveMainLogDirectory,
 } from "./main-log-location.js";
-import { PreInitLogBuffer } from "./pre-init-log-buffer.js";
 
 const MAIN_LOG_FILE_NAME = "main.log";
 const MAIN_LOG_MAX_SIZE_BYTES = 5 * 1024 * 1024;
-const PERSISTED_GATEWAY_ENTRY_PREFIX = "closedloop-gateway-log ";
 const DEFAULT_PREVIOUS_SESSION_TAIL_LINES = 200;
 const LOG_TAIL_READ_CHUNK_BYTES = 64 * 1024;
 const LOG_TAIL_MAX_BYTES = 512 * 1024;
 const ELECTRON_LOG_PREFIX_RE =
   /^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}\] \[[^\]]+\]\s*/;
-// Cap on lines held before {@link initializePersistentLogging} runs, so a launch
-// path that exits before initializing can never grow this without bound.
-const MAX_PREINIT_BUFFERED_LINES = 500;
 const { app, shell } = electron;
 disableElectronLogConsoleTransport();
+// ISS-8906: `durable-log-sink.ts` owns the write path and must stay
+// electron-free; this is the process-local transport it falls back to.
+installLocalDurableTransport(writeToElectronLogFile);
 
 type ElectronLogFile = {
   path: string;
@@ -34,12 +39,6 @@ type ElectronLogFile = {
 };
 
 let initialized = false;
-// ISS-4916 (codex review): every write before the redirect is configured would
-// otherwise land in the operator's production main.log even on a redirected
-// launch. Held here and replayed by initializePersistentLogging.
-const preInitLog = new PreInitLogBuffer<LogLevel | "debug">(
-  MAX_PREINIT_BUFFERED_LINES
-);
 
 /**
  * Configures the durable Desktop main-process log file. The file transport is
@@ -52,9 +51,9 @@ const preInitLog = new PreInitLogBuffer<LogLevel | "debug">(
  * Callers pass the resolved Electron paths so this module stays free of an
  * `electron` import and the decision stays unit-testable.
  *
- * Writes made before this runs are buffered (see {@link PreInitLogBuffer}) and
- * replayed here, so a redirected launch's earliest lines land in its own profile
- * rather than in the production log the transport defaults to.
+ * Writes made before this runs are buffered by `durable-log-sink.ts` and replayed
+ * here, so a redirected launch's earliest lines land in its own profile rather
+ * than in the production log the transport defaults to.
  */
 export function initializePersistentLogging(
   location?: MainLogLocationInput
@@ -90,9 +89,7 @@ export function initializePersistentLogging(
   initialized = true;
   // Drain AFTER the transport is configured: `drain()` closes the buffer, so the
   // replayed lines fall through to the real (now correctly located) file.
-  for (const buffered of preInitLog.drain()) {
-    writeElectronLog(buffered.level, buffered.line);
-  }
+  drainPreInitLogToLocalTransport();
 }
 
 /** Returns the absolute path to the durable Desktop main log. */
@@ -127,21 +124,6 @@ export async function openMainLogFile(): Promise<
 > {
   const result = await shell.openPath(ensureMainLogFile());
   return result ? { ok: false, error: result } : { ok: true };
-}
-
-/** Writes a GatewayLogger entry to the durable file transport. */
-export function writeGatewayLogEntry(entry: LogEntry): void {
-  const line = `${PERSISTED_GATEWAY_ENTRY_PREFIX}${JSON.stringify(entry)}`;
-  writeElectronLog(entry.level, line);
-}
-
-/** Writes a non-GatewayLogger line to the durable file transport. */
-export function writePersistentLog(
-  level: LogLevel | "debug",
-  tag: string,
-  message: string
-): void {
-  writeElectronLog(level, `[${tag}] ${message}`);
 }
 
 /**
@@ -225,10 +207,12 @@ export function parsePreviousSessionLogLine(line: string): LogEntry {
   };
 }
 
-function writeElectronLog(level: LogLevel | "debug", line: string): void {
-  if (preInitLog.capture(level, line)) {
-    return;
-  }
+/**
+ * The process-local durable writer, handed to `durable-log-sink.ts` below. It is
+ * the ONLY electron-log write path; every caller goes through that module, which
+ * decides between the pre-init buffer, an installed relay sink, and this.
+ */
+function writeToElectronLogFile(level: DurableLogLevel, line: string): void {
   try {
     ensureMainLogDirectory();
     if (level === "error") {

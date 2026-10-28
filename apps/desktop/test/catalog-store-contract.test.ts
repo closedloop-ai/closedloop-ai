@@ -15,7 +15,7 @@
  * install-run lifecycle (autoincrement id, in-flight lookup, end) works.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   applyContentsFetch,
   applyFetchResult,

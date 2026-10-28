@@ -1,4 +1,4 @@
-# Source of truth for TelemetryCategory values: packages/observability/telemetry/schema.ts — update this document when categories are added or removed.
+# Source of truth for TelemetryCategory values: packages/observability/telemetry/telemetry-category.ts — update this document when categories are added or removed.
 
 This document is the authoritative verification guide for structured telemetry events in the Closedloop relay pipeline.
 
@@ -13,7 +13,19 @@ This document is the authoritative verification guide for structured telemetry e
 
 ## Prerequisites — Datadog Pipeline
 
-`log.ts` batches `DatadogLogEntry[]` and flushes them to `https://http-intake.logs.{DD_SITE}/api/v2/logs`. For events emitted through `emitter.ts`, `logAtSeverity()` dispatches to `log.error`, `log.warn`, or `log.info` based on the event's `severity` — the resulting Datadog `level` attribute reflects that choice. In all three cases the event is emitted as a stringified JSON payload, so the telemetry fields (`category`, `severity`, `schemaVersion`, `trace`, etc.) land inside the `message` string rather than as top-level Datadog attributes. `origin` is the exception — it is always set as a top-level `DatadogLogEntry` attribute by `buildEntry()` in `log.ts`, so `@origin:` is facet-queryable without the pipeline rule regardless of emission path.
+`log.ts` batches `DatadogLogEntry[]` and flushes them to `https://http-intake.logs.{DD_SITE}/api/v2/logs`. For events emitted through `emitter.ts`, `logAtSeverity()` dispatches to `log.error`, `log.warn`, or `log.info` based on the event's `severity` — the resulting Datadog `level` attribute reflects that choice. In all three cases the event is emitted as a stringified JSON payload, so the telemetry fields (`category`, `severity`, `schemaVersion`, `trace`, etc.) land inside the `message` string rather than as top-level Datadog attributes. `origin` is the exception **on the agentless intake only** — `buildEntry()` in `log.ts` sets it as a top-level `DatadogLogEntry` attribute, so `@origin:` is facet-queryable there without the pipeline rule regardless of emission path. Nothing puts `origin` on the console line: `makeLogFn()` calls `buildEntry()` only inside `if (DD.target)`, and `writeConsole()` serializes `stampSeverity()` (`{ ...meta, message, level, status }`), which has no `origin`. On either console-drain sink below, `@origin:` matches nothing.
+
+### Which sink you are querying
+
+Three sinks carry these logs, and they do not answer the same queries. Pick the row that matches the service you are verifying before you trust a query in this document — `resolveStructuredConsole()` (`packages/observability/log.ts`) decides between the two console forms.
+
+| Sink | When | `@category:` | `@origin:` | Raw `@message:*<category>*` |
+|---|---|---|---|---|
+| Agentless HTTP intake | `DD_API_KEY` set | top-level for metadata-shaped calls; needs the pipeline rule for `emitter.ts` payloads | yes — `buildEntry()` | only for `emitter.ts` payloads |
+| Structured console → platform drain | `DD_LOGS_JSON=1`, or auto-on under Vercel | same as above | **no** | same as above |
+| Readable console → platform drain | the default everywhere else — including the relay's Fargate container, which sets neither (`apps/relay/Dockerfile:135-142`) | **no** — `util.inspect` renders the meta into the drained text | **no** | **yes — this is the working route here** |
+
+Every query in this document is written for the agentless intake, which is what the [Local Setup](#local-setup) and [Trigger Scenarios](#trigger-scenarios) sections configure. On a readable-console deployment, drop the `@origin:` term and use the fallback column.
 
 ### Pipeline rule required
 
@@ -38,6 +50,8 @@ Without the pipeline rule, fall back to **raw-text searches** against the unpars
 
 Raw-text searches are slower and cannot filter by structured facets, but they confirm events are reaching Datadog before the pipeline is configured.
 
+`*telemetry.validation_failed*` is the odd one out: `handleTelemetryEvent()` logs that category as metadata rather than a stringified payload (`apps/api/lib/desktop-telemetry-handler.ts:63`, `:76`), so on the agentless intake or a structured console drain the token is a top-level facet and never enters `message` — query `@category:"telemetry.validation_failed"` instead. It only behaves like the other five on the readable-console drain.
+
 ## Local Setup
 
 Set the following variables in `apps/api/.env.local`:
@@ -52,7 +66,7 @@ Set the following variables in `apps/api/.env.local`:
 
 ## Trigger Scenarios
 
-All five scenarios require `DD_API_KEY`, `DD_SITE`, and `DD_ENV` to be set. Scenario (a) additionally uses `$CLOSEDLOOP_API_KEY` — an org-issued API key. Scenarios (b), (c), (d), and (e) use `$INTERNAL_API_SECRET` — the relay↔API shared secret from `apps/api/.env.local`. Replace each with the value from your local env.
+All five scenarios require `DD_API_KEY`, `DD_SITE`, and `DD_ENV` to be set. Scenarios (a), (b), (c), and (d) additionally use `$CLOSEDLOOP_API_KEY` — an org-issued API key; replace it with the value from your local env. Scenario (e) needs no credential beyond a connected desktop worker.
 
 ### (a) API-native command lifecycle
 
@@ -73,27 +87,23 @@ Expected: `command.queued` telemetry is emitted once the DB row is created, foll
 
 ### (b) Desktop-forwarded telemetry event
 
-Simulate a relay-forwarded `desktop.telemetry` event for `TelemetryCategory.JobStarted = "job.started"`. This hits `handleTelemetryEvent()` in `apps/api/lib/desktop-telemetry-handler.ts`, which sets `origin = Origin.Desktop`:
+Post a Desktop telemetry event for `TelemetryCategory.JobStarted = "job.started"` to the write-lane route Desktop uses, `POST /desktop/telemetry`. The compute target must belong to the API key's user. This hits `handleTelemetryEvent()` in `apps/api/lib/desktop-telemetry-handler.ts`, which sets `origin = Origin.Desktop`:
 
 ```sh
-curl -X POST http://localhost:3002/internal/relay/socket-event \
+curl -X POST "http://localhost:3002/desktop/telemetry?computeTargetId=<your-compute-target-id>" \
   -H "Content-Type: application/json" \
-  -H "x-internal-secret: $INTERNAL_API_SECRET" \
+  -H "Authorization: Bearer $CLOSEDLOOP_API_KEY" \
   -d '{
-    "event": "desktop.telemetry",
-    "targetId": "<your-compute-target-id>",
-    "payload": {
-      "schemaVersion": "1",
-      "category": "job.started",
-      "severity": "info",
-      "timestamp": "2024-01-01T00:00:00.000Z",
-      "trace": {
-        "commandId": "test-cmd-001",
-        "operationId": "test-op-001",
-        "computeTargetId": "<your-compute-target-id>",
-        "gatewaySessionId": "00000000-0000-0000-0000-000000000001",
-        "schemaVersion": "1"
-      }
+    "schemaVersion": "1",
+    "category": "job.started",
+    "severity": "info",
+    "timestamp": "2024-01-01T00:00:00.000Z",
+    "trace": {
+      "commandId": "test-cmd-001",
+      "operationId": "test-op-001",
+      "computeTargetId": "<your-compute-target-id>",
+      "gatewaySessionId": "00000000-0000-0000-0000-000000000001",
+      "schemaVersion": "1"
     }
   }'
 ```
@@ -102,69 +112,61 @@ Expected: structured log entry in Datadog with `category: "job.started"` and `or
 
 ### (c) Desktop update and shutdown failure telemetry
 
-Simulate critical Desktop failure events sent through the existing relay-forwarded `desktop.telemetry` path. These events are intentionally bounded diagnostics only; raw log content is not part of the accepted schema, and unknown raw-log fields are stripped before Datadog logging.
+Post critical Desktop failure events to the same `POST /desktop/telemetry` route. These events are intentionally bounded diagnostics only; raw log content is not part of the accepted schema, and unknown raw-log fields are stripped before Datadog logging.
 
 ```sh
-curl -X POST http://localhost:3002/internal/relay/socket-event \
+curl -X POST "http://localhost:3002/desktop/telemetry?computeTargetId=<your-compute-target-id>" \
   -H "Content-Type: application/json" \
-  -H "x-internal-secret: $INTERNAL_API_SECRET" \
+  -H "Authorization: Bearer $CLOSEDLOOP_API_KEY" \
   -d '{
-    "event": "desktop.telemetry",
-    "targetId": "<your-compute-target-id>",
-    "payload": {
-      "schemaVersion": "1",
-      "category": "electron_update.failed",
-      "severity": "error",
-      "timestamp": "2024-01-01T00:00:00.000Z",
-      "trace": {
-        "commandId": "",
-        "operationId": "desktop-update-test-001",
-        "computeTargetId": "<your-compute-target-id>",
-        "gatewaySessionId": "00000000-0000-0000-0000-000000000001",
-        "schemaVersion": "1"
-      },
-      "diagnostics": {
-        "desktopUpdate": {
-          "trigger": "apply-before-downloaded",
-          "status": "available",
-          "downloaded": false,
-          "readyToInstall": false,
-          "error": "Update not downloaded"
-        }
+    "schemaVersion": "1",
+    "category": "electron_update.failed",
+    "severity": "error",
+    "timestamp": "2024-01-01T00:00:00.000Z",
+    "trace": {
+      "commandId": "",
+      "operationId": "desktop-update-test-001",
+      "computeTargetId": "<your-compute-target-id>",
+      "gatewaySessionId": "00000000-0000-0000-0000-000000000001",
+      "schemaVersion": "1"
+    },
+    "diagnostics": {
+      "desktopUpdate": {
+        "trigger": "apply-before-downloaded",
+        "status": "available",
+        "downloaded": false,
+        "readyToInstall": false,
+        "error": "Update not downloaded"
       }
     }
   }'
 ```
 
 ```sh
-curl -X POST http://localhost:3002/internal/relay/socket-event \
+curl -X POST "http://localhost:3002/desktop/telemetry?computeTargetId=<your-compute-target-id>" \
   -H "Content-Type: application/json" \
-  -H "x-internal-secret: $INTERNAL_API_SECRET" \
+  -H "Authorization: Bearer $CLOSEDLOOP_API_KEY" \
   -d '{
-    "event": "desktop.telemetry",
-    "targetId": "<your-compute-target-id>",
-    "payload": {
-      "schemaVersion": "1",
-      "category": "desktop.shutdown_failed",
-      "severity": "error",
-      "timestamp": "2024-01-01T00:00:00.000Z",
-      "trace": {
-        "commandId": "",
-        "operationId": "desktop-shutdown-test-001",
-        "computeTargetId": "<your-compute-target-id>",
-        "gatewaySessionId": "00000000-0000-0000-0000-000000000001",
-        "schemaVersion": "1"
-      },
-      "diagnostics": {
-        "desktopShutdown": {
-          "trigger": "outer-hard-exit",
-          "result": "timed_out",
-          "phase": "server.stop",
-          "duringUpdate": true,
-          "outerHardExit": true,
-          "elapsedMs": 12000,
-          "error": "Shutdown exceeded hard exit timeout"
-        }
+    "schemaVersion": "1",
+    "category": "desktop.shutdown_failed",
+    "severity": "error",
+    "timestamp": "2024-01-01T00:00:00.000Z",
+    "trace": {
+      "commandId": "",
+      "operationId": "desktop-shutdown-test-001",
+      "computeTargetId": "<your-compute-target-id>",
+      "gatewaySessionId": "00000000-0000-0000-0000-000000000001",
+      "schemaVersion": "1"
+    },
+    "diagnostics": {
+      "desktopShutdown": {
+        "trigger": "outer-hard-exit",
+        "result": "timed_out",
+        "phase": "server.stop",
+        "duringUpdate": true,
+        "outerHardExit": true,
+        "elapsedMs": 12000,
+        "error": "Shutdown exceeded hard exit timeout"
       }
     }
   }'
@@ -177,32 +179,28 @@ Expected: each Datadog log has top-level `origin: "desktop"` and top-level `cate
 Same endpoint as (b), but with an intentionally invalid payload (missing required `schemaVersion` field). This triggers `telemetry.validation_failed`:
 
 ```sh
-curl -X POST http://localhost:3002/internal/relay/socket-event \
+curl -X POST "http://localhost:3002/desktop/telemetry?computeTargetId=<your-compute-target-id>" \
   -H "Content-Type: application/json" \
-  -H "x-internal-secret: $INTERNAL_API_SECRET" \
+  -H "Authorization: Bearer $CLOSEDLOOP_API_KEY" \
   -d '{
-    "event": "desktop.telemetry",
-    "targetId": "<your-compute-target-id>",
-    "payload": {
-      "category": "job.started",
-      "severity": "info",
-      "timestamp": "2024-01-01T00:00:00.000Z",
-      "trace": {
-        "commandId": "test-cmd-001",
-        "operationId": "test-op-001",
-        "computeTargetId": "<your-compute-target-id>"
-      }
+    "category": "job.started",
+    "severity": "info",
+    "timestamp": "2024-01-01T00:00:00.000Z",
+    "trace": {
+      "commandId": "test-cmd-001",
+      "operationId": "test-op-001",
+      "computeTargetId": "<your-compute-target-id>"
     }
   }'
 ```
 
-Expected: log entry with `category: "telemetry.validation_failed"` and `issues` array describing the missing `schemaVersion`.
+Expected: a 400 response with `code: "validation_failed"`, and a log entry with `category: "telemetry.validation_failed"` and an `issues` array describing the missing `schemaVersion`.
 
 ### (e) Connection lifecycle events
 
 Connection lifecycle events require an actual Socket.IO connection from a desktop worker to the relay. They split by origin:
 
-- **Relay-origin** (`connection.socket_accepted`, `connection.reconnecting`, `connection.degraded`, `connection.disconnected`, `connection.stale_heartbeat`) — emitted directly by `apps/relay/src/index.ts` via `log.*(JSON.stringify({ category: ... }))`, bypassing the structured `emitter.ts` pipeline. Origin resolves to `relay` via `DD_SERVICE`. Severity is mixed: `connection.socket_accepted`, `connection.reconnecting`, and `connection.disconnected` use `log.info` and land with `level:"info"`; `connection.stale_heartbeat` and `connection.degraded` use `log.warn` and land with `level:"warn"`. Scoping a Datadog query with `level:info` would silently drop the two degradation signals.
+- **Relay-origin** (`connection.socket_accepted`, `connection.reconnecting`, `connection.degraded`, `connection.disconnected`, `connection.stale_heartbeat`) — emitted directly by `apps/relay/src/index.ts`, `apps/relay/src/worker-heartbeat.ts`, and `apps/relay/src/registry-ownership.ts` via `log.*(message, { category, ... })`, bypassing the structured `emitter.ts` pipeline. That call shape matters for how you query them: `stampSeverity()` in `packages/observability/log.ts` spreads the caller's metadata at the TOP LEVEL of the entry (`{ ...meta, message, level, status }`), which both the agentless `buildEntry()` payload and the STRUCTURED console line are built from. On those two sinks `@category:` and `@registryOperation:` are first-class Datadog attributes and are facet-queryable **without** the JSON-message pipeline rule — the opposite of the `emitter.ts` path, where the payload IS the message string and the fields only become facets after parsing. On the READABLE console line — the relay's own default in its Fargate container — none of that holds: `writeConsole()` falls through to `consoleFn(message, ...args)` and the drain sees `util.inspect` text, so use the fallback column. Origin resolves to `relay` via `DD_SERVICE`, but is stamped onto the entry only by `buildEntry()`, so `@origin:"relay"` is an agentless-intake term (see [Which sink you are querying](#which-sink-you-are-querying)). Severity is mixed: `connection.socket_accepted`, `connection.reconnecting`, and `connection.disconnected` use `log.info` and land with `level:"info"`; `connection.degraded` uses `log.warn` and lands with `level:"warn"`. `connection.stale_heartbeat` spans two levels — `log.warn` for the routine stale/heal/rollback signals, and `log.error` for a registry reclaim that FAILED against its backing store (ISS-6213), which leaves a connected target undiscoverable to every other relay instance. Scoping a Datadog query with `level:info` would silently drop the degradation signals, and scoping with `level:warn` would drop the reclaim failure.
 - **API-origin** (`connection.registered`, `connection.resumed`) — emitted from `apps/api/app/internal/relay/socket-event/service.ts` via `emitConnectionStateEvent()` through `emitter.ts`. Origin resolves to `api`.
 
 To trigger them: start the relay (`pnpm turbo dev --filter=relay`) and connect a desktop worker. The relay emits its categories on socket accept, disconnect, heartbeat-stale detection, and reconnect; the API emits its categories when acknowledging the worker's hello.
@@ -211,10 +209,12 @@ To trigger them: start the relay (`pnpm turbo dev --filter=relay`) and connect a
 
 The pipeline rule requirement varies by emission path:
 
-- **API-origin and relay-origin events** — emitted via `emitter.ts` (`log.*(JSON.stringify(payload))`) or the relay's direct `log.*(JSON.stringify({ ... }))` calls. `category`, `severity`, `trace`, etc. live inside the stringified `message` field and require the pipeline rule to be facet-queryable. Without it, use the raw-text fallbacks from the Prerequisites section.
-- **Desktop-origin events** — emitted via `handleTelemetryEvent()` using `log.info("message", { meta })`. `log.ts` spreads the meta object into top-level `DatadogLogEntry` attributes, so `@category:` and `@origin:` resolve without the pipeline rule.
+- **`emitter.ts`-produced events** — emitted as `log.*(JSON.stringify(payload))` via `logAtSeverity()`. `category`, `severity`, `trace`, etc. live inside the stringified `message` field and require the pipeline rule to be facet-queryable. Without it, use the raw-text fallbacks from the Prerequisites section. This is the shape of the API-origin events in the table below, but **not of every event the API emits** — see the exception directly below.
+- **API-origin events that bypass `emitter.ts`** — `handleTelemetryEvent()` (`apps/api/lib/desktop-telemetry-handler.ts:63`, `:76`) logs its own validation failures as `log.warn("<sentence>", { category: TelemetryCategory.TelemetryValidationFailed, ... })`. That is metadata, not a stringified payload, so `telemetry.validation_failed` is already a top-level facet with no pipeline rule — and the `*telemetry.validation_failed*` raw-text search listed under [Prerequisites](#prerequisites--datadog-pipeline) will NOT find it on a JSON-parsed sink, because the token never enters `message`.
+- **Relay-origin connection lifecycle events** — emitted as `log.*("<sentence>", { category, ... })` directly from `apps/relay`, which never calls `emitter.ts`. `category` and friends are top-level attributes, so they need no pipeline rule. `origin` is NOT among them — it is added only by `buildEntry()`, so `@origin:"relay"` resolves on the agentless intake and misses every record on either console drain. See [Relay connection events](#relay-connection-events-origin-relay).
+- **Desktop-origin events** — emitted via `handleTelemetryEvent()` using `log.info("message", { meta })`. `log.ts` spreads the meta object into top-level `DatadogLogEntry` attributes, so `@category:` resolves without the pipeline rule; `@origin:` carries the same agentless-only caveat as above.
 
-`@origin:` is always top-level and queryable without the rule regardless of path (see [Prerequisites](#prerequisites--datadog-pipeline)).
+`@origin:` is top-level and queryable without the pipeline rule regardless of emission path, but **only on the agentless intake** (see [Which sink you are querying](#which-sink-you-are-querying)).
 
 For desktop target traceability, prefer `@computeTargetId:"<compute-target-id>"` on API/app logs and `@trace.computeTargetId:"<compute-target-id>"` on structured telemetry. `targetId` may still appear in relay protocol payloads, path params, and older log rows, but new logs should expose `computeTargetId` as the stable Datadog field.
 
@@ -276,17 +276,35 @@ Desktop update and shutdown failure diagnostics are logged under `diagnostics.de
 
 ### Relay connection events (origin: `relay`)
 
-The relay emits the connection lifecycle events below via `log.info(JSON.stringify({ category: ... }))` **directly** — not through `emitter.ts`. This means they appear as raw stringified JSON in the `message` field and require the pipeline rule to be facet-queryable. The hello-ACK categories (`connection.registered`, `connection.resumed`) are NOT emitted from the relay — they are emitted from `apps/api` when the API acknowledges a worker's hello, and are listed in the [API-origin events table](#api-origin-events-origin-api) above.
+The relay emits the connection lifecycle events below via `log.*(message, { category, ... })` **directly** — not through `emitter.ts`. The structured fields therefore travel as log METADATA, which `stampSeverity()` (`packages/observability/log.ts`) spreads at the top level of the entry, so `@category:` and friends are already Datadog attributes here and do NOT depend on the JSON-message pipeline rule. The hello-ACK categories (`connection.registered`, `connection.resumed`) are NOT emitted from the relay — they are emitted from `apps/api` when the API acknowledges a worker's hello, and are listed in the [API-origin events table](#api-origin-events-origin-api) above.
 
 | Query | Fallback raw query | Category |
 |---|---|---|
-| `@category:"connection.socket_accepted" @origin:"relay"` | `@message:*connection.socket_accepted*` | `TelemetryCategory.ConnectionSocketAccepted` |
-| `@category:"connection.reconnecting" @origin:"relay"` | `@message:*connection.reconnecting*` | `TelemetryCategory.ConnectionReconnecting` |
-| `@category:"connection.degraded" @origin:"relay"` | `@message:*connection.degraded*` | `TelemetryCategory.ConnectionDegraded` — emitted via `log.warn` (`level:"warn"`) |
-| `@category:"connection.disconnected" @origin:"relay"` | `@message:*connection.disconnected*` | `TelemetryCategory.ConnectionDisconnected` |
-| `@category:"connection.stale_heartbeat" @origin:"relay"` | `@message:*connection.stale_heartbeat*` | `TelemetryCategory.ConnectionStaleHeartbeat` — emitted via `log.warn` (`level:"warn"`) |
+| `@category:"connection.socket_accepted" @origin:"relay"` | `@message:*connection.socket_accepted*` (readable-console drain only) | `TelemetryCategory.ConnectionSocketAccepted` |
+| `@category:"connection.reconnecting" @origin:"relay"` | `@message:*connection.reconnecting*` (readable-console drain only) | `TelemetryCategory.ConnectionReconnecting` |
+| `@category:"connection.degraded" @origin:"relay"` | `@message:*connection.degraded*` (readable-console drain only) | `TelemetryCategory.ConnectionDegraded` — emitted via `log.warn` (`level:"warn"`) |
+| `@category:"connection.disconnected" @origin:"relay"` | `@message:*connection.disconnected*` (readable-console drain only) | `TelemetryCategory.ConnectionDisconnected` |
+| `@category:"connection.stale_heartbeat" @origin:"relay"` | `@message:*connection.stale_heartbeat*` (readable-console drain only) | `TelemetryCategory.ConnectionStaleHeartbeat` — `log.warn` (`level:"warn"`) for stale/heal/rollback; `log.error` (`level:"error"`) when a registry reclaim failed against its store. Isolate that one with `@category:"connection.stale_heartbeat" @origin:"relay" @registryOperation:"reclaim" status:error` |
 
-**Note:** All `emitter.ts`-path events call `log.info(JSON.stringify(payload))` through `logAtSeverity()`. The structured fields land in `message` as stringified JSON. Faceted queries require the pipeline. The relay-origin connection events above bypass the emitter entirely but follow the same stringified-JSON-in-`message` pattern.
+**Note:** All `emitter.ts`-path events call `log.*(JSON.stringify(payload))` through `logAtSeverity()`, which picks the level from the event's `severity` — the payload IS the message string, so the structured fields land in `message` as stringified JSON and faceted queries require the pipeline rule. The relay-origin connection events above do NOT follow that pattern: they pass their fields as log metadata, which `stampSeverity()` spreads at the top level of the entry.
+
+**Which half of each row you need depends on the sink** ([table above](#which-sink-you-are-querying)):
+
+- **Agentless intake** (`DD_API_KEY` set) — the Query column works as written, pipeline rule or not.
+- **Structured console drain** (`DD_LOGS_JSON=1` / Vercel) — `@category:` works; drop `@origin:"relay"`, which is never stamped onto the console line.
+- **Readable console drain** — the relay's own default in its Fargate container, which sets neither `DD_LOGS_JSON` nor `VERCEL` (`apps/relay/Dockerfile:135-142`). `writeConsole()` falls through to `consoleFn(message, ...args)`, so the drain receives `util.inspect` text and neither `@category:` nor `@origin:` resolves. The fallback column is the only route here.
+
+One property of that fallback is worth knowing before you rely on it: `util.inspect` pretty-prints a multi-key meta object across **several lines**, so a drain without multi-line aggregation records one event as several logs. Verified by running the exact `apps/relay/src/index.ts:437` call shape through `console.info`:
+
+```
+Connection socket accepted {
+  category: 'connection.socket_accepted',
+  socketId: 'AbCdEf0123456789',
+  organizationId: '0190f6a1-5b2c-7d3e-8f40-6a7b8c9d0e1f'
+}
+```
+
+`@message:*connection.socket_accepted*` matches — but it matches the `category:` fragment line, which does not carry the human sentence; and a search for the sentence (`"Connection socket accepted"`) matches a different line, which does not carry the category. Neither text search returns a record holding the whole event. Use the fallback to confirm the event is arriving, then read the surrounding lines for its fields.
 
 ## Expected Field Values
 
@@ -356,7 +374,8 @@ A `.catch()` on a bare `log.flush()` promise without `waitUntil()` is a bug — 
 
 - [packages/observability/README.md](../../../packages/observability/README.md) — naming conventions, `origin` semantics, ddtag contract, and cardinality rules
 - [apps/api/docs/command-correlation.md](./command-correlation.md) — `commandId` minting, propagation, and correlation context contract
-- [`/packages/observability/telemetry/schema.ts`](/packages/observability/telemetry/schema.ts) — canonical `TelemetryCategory` and `TelemetryTraceContext` definitions
+- [`/packages/observability/telemetry/telemetry-category.ts`](/packages/observability/telemetry/telemetry-category.ts) — canonical `TelemetryCategory` and `TelemetrySeverity` definitions
+- [`/packages/observability/telemetry/schema.ts`](/packages/observability/telemetry/schema.ts) — canonical `TelemetryTraceContext` and the event envelope schemas
 - [`/packages/observability/telemetry/emitter.ts`](/packages/observability/telemetry/emitter.ts) — `emitCommandLifecycleEvent()`, `emitConnectionStateEvent()`, and `logAtSeverity()`
 - [`/packages/observability/log.ts`](/packages/observability/log.ts) — `buildEntry()`, `DatadogLogEntry`, flush behavior
 - [`/packages/observability/telemetry/origin.ts`](/packages/observability/telemetry/origin.ts) — `Origin` const and `ORIGIN` module-load resolution

@@ -12,9 +12,9 @@ import { Plus } from "lucide-react";
  * receives keyboard focus or the mouse hovers over it.
  */
 const meta: Meta<typeof TooltipContent> = {
-  title: "Design System/Primitives/Tooltip",
+  title: "Primitives v1.0/Overlays/Tooltip",
   component: TooltipContent,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   argTypes: {
     side: {
       options: ["top", "bottom", "left", "right"],

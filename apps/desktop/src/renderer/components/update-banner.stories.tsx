@@ -14,7 +14,8 @@ import type { UpdateBannerState } from "./update-banner-state";
  * drives the real reducer rather than a parallel mock of it.
  */
 const meta = {
-  title: "Desktop/App Shell/Update Banner",
+  title: "Composites v1.0/Desktop Shell/Update Banner",
+  tags: ["deprecated"],
   component: UpdateBanner,
   parameters: {
     layout: "fullscreen",

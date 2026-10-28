@@ -16,7 +16,7 @@ export function generateMetadata(): Metadata {
 // not a blank page — matching the Sessions routes' graceful degradation.
 //
 // ISS-5001: this is the one gated route that keeps the gate's header-less
-// default `pending`. Unlike /issues, /routines and /loops/usage, the loaded
+// default `pending`. Unlike /issues, the loaded
 // Insights page renders no `Header` — reserving one here would pop chrome OUT
 // when the flag lands, which is the same lie in the other direction.
 //

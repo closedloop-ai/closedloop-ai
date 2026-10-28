@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, test } from "node:test";
 import { computeDefinitionHash } from "@repo/api/src/definition-fingerprint";
 import { AgentComponentKind } from "@repo/api/src/types/agent-component";
 import {
@@ -11,6 +10,7 @@ import {
   AgentComponentInvocationKind,
   AgentComponentInvocationRelationship,
 } from "@repo/api/src/types/agent-component-invocation";
+import { describe, test } from "vitest";
 import {
   AGENT_COMPONENT_INVOCATION_SYNC_SOURCE_KEY,
   AgentComponentInvocationSyncLocalError,
@@ -448,12 +448,12 @@ describe("FEA-3294 Desktop component invocation materialization", () => {
          VALUES ($1, $2, 'branch', $3, $4, $5, $5),
                 ($6, $7, 'branch', $3, $8, $5, $5)`,
         "artifact-branch-proof",
-        "branch:closedloop-ai/example-repo:feat/fea-3294",
-        "closedloop-ai/example-repo",
+        "branch:closedloop-ai/closedloop-ai:feat/fea-3294",
+        "closedloop-ai/closedloop-ai",
         "feat/fea-3294",
         NOW,
         "artifact-branch-older",
-        "branch:closedloop-ai/example-repo:feat/older",
+        "branch:closedloop-ai/closedloop-ai:feat/older",
         "feat/older"
       );
       await db.run(
@@ -496,7 +496,7 @@ describe("FEA-3294 Desktop component invocation materialization", () => {
         {
           component_kind: "tool",
           git_branch: "feat/fea-3294",
-          repository_full_name: "closedloop-ai/example-repo",
+          repository_full_name: "closedloop-ai/closedloop-ai",
         },
       ]);
     } finally {

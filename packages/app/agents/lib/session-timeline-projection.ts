@@ -1,7 +1,4 @@
-import type {
-  ActivityBucket,
-  SyncedActivitySegmentRow,
-} from "@repo/api/src/types/agent-session";
+import type { ActivityBucket } from "@repo/api/src/types/agent-session";
 import type { ActivityMarker } from "@repo/app/agents/components/detail/session-timeline-axis";
 import {
   clampTimelineWindowStart,
@@ -11,8 +8,6 @@ import {
   type TimelineScale,
 } from "@repo/app/agents/lib/session-timeline-scale";
 import { formatTime } from "@repo/app/shared/lib/date-utils";
-import { UNATTRIBUTED_KEY } from "@repo/lib/branches/activity-rollup";
-import { IDLE_PHASE_KEY } from "@repo/lib/sessions/activity-segment-aggregation";
 
 /**
  * ISS-5819 — re-bin the Session Timeline's bars onto the clock window.
@@ -48,6 +43,17 @@ import { IDLE_PHASE_KEY } from "@repo/lib/sessions/activity-segment-aggregation"
  * {@link ProjectedTimeline.subColumnSource} so the caller can tell the reader the
  * bars are interpolated rather than let them read as newly measured resolution.
  *
+ * AND THE BINS DO NOT TILE THE RENDERED WINDOW (ISS-5850). Placing each bin from
+ * its own bounds fixes WHERE the money goes; it does not fix what the columns
+ * the bins never reached are allowed to say. The collector bins over the
+ * session's real activity extent while the axis window spans the whole run, and
+ * the two routinely disagree by a lot (`session-timeline-source-extent-flag.ts`
+ * carries the measurement). Every column beyond that coverage is emitted with
+ * all fields at zero — which the strip and its tooltip then render as observed
+ * quiet, a measured claim about an interval nobody measured.
+ * {@link ProjectedTimeline.columnCoverage} is where that difference is carried,
+ * from the extent the producer now states on `SessionSpan`.
+ *
  * CONSERVATION IS THE CONTRACT. Every cost that falls inside the visible window
  * is preserved exactly; cost outside it is dropped, because it is outside the
  * window the reader asked for. Nothing is invented and nothing is double-counted
@@ -65,8 +71,42 @@ import { IDLE_PHASE_KEY } from "@repo/lib/sessions/activity-segment-aggregation"
 export type TimelineSourceStrip = {
   readonly buckets: readonly ActivityBucket[];
   readonly endMs: number;
+  /**
+   * ISS-5850: the extent the producer's bins actually TILE, or `null` when the
+   * producer did not say.
+   *
+   * Deliberately separate from `startMs`/`endMs` above, which are the RENDERED
+   * window. The two are different clocks and routinely disagree — see
+   * {@link resolveColumnCoverage}.
+   */
+  readonly extent: TimelineSourceExtent | null;
   readonly startMs: number;
 };
+
+/** The wall-clock interval a strip's bins were measured across. */
+export type TimelineSourceExtent = {
+  readonly endMs: number;
+  readonly startMs: number;
+};
+
+/**
+ * ISS-5850 — what a rendered column's value is BACKED BY.
+ *
+ * Three genuinely different answers, kept as one closed union so no consumer can
+ * collapse two of them into a single "is it zero" test. The precedent is
+ * ISS-5566's `costUnmeasured`, which drew the same line for synthesized money.
+ */
+export const TimelineColumnCoverage = {
+  /** The source extent covers some of this column; its value is measured. */
+  Measured: "measured",
+  /** The producer stated an extent, and this column lies wholly outside it. */
+  Unmeasured: "unmeasured",
+  /** The producer stated no extent, so coverage cannot be established. */
+  Unknown: "unknown",
+} as const;
+
+export type TimelineColumnCoverage =
+  (typeof TimelineColumnCoverage)[keyof typeof TimelineColumnCoverage];
 
 /** One bin's producer-measured wall-clock bounds. */
 type ProducerBinBounds = {
@@ -81,19 +121,20 @@ export type ProjectedTimeline = {
    * label rail, the tooltip, the accessible names) keeps working unchanged.
    */
   readonly buckets: ActivityBucket[];
+  /**
+   * ISS-5850: per column, what its value is backed by. Parallel to `buckets`.
+   *
+   * The projection places every bin from the bin's own bounds, so the bars it
+   * draws are correct — but it draws {@link TIMELINE_VISIBLE_COLUMNS} of them
+   * across a window the source may only partly cover, and a column outside that
+   * coverage is emitted with every field at zero. Zero is indistinguishable from
+   * an observed quiet stretch, so without this array the strip reports "nothing
+   * was spent here" for an interval the producer never looked at. The caller owes
+   * the reader that difference.
+   */
+  readonly columnCoverage: readonly TimelineColumnCoverage[];
   readonly limitDotEvents: ActivityMarker[];
   readonly markers: ActivityMarker[];
-  /**
-   * Per column, cost split by activity-phase key. Parallel to `buckets`.
-   *
-   * A THUNK, not a value (ISS-6054). Only the Activity-phase cut renders this,
-   * and ISS-5841 made that cut unreachable while `SESSION_ACTIVITY_PHASES` is
-   * closed — so deriving it up front charged every reader a rescan of
-   * `segmentRows` per column, on every scroll, scale change and refetch, for a
-   * number nothing drew. Memoized, so the one caller that does read it still
-   * derives it once per projection.
-   */
-  readonly phaseCosts: () => readonly Record<string, number>[];
   /**
    * `true` when a target column is narrower than a source bin, so the bars are
    * interpolated within a bin rather than separately measured. The caller owes
@@ -112,14 +153,12 @@ export function projectSessionTimeline({
   limitDotEvents,
   markers,
   scale,
-  segmentRows,
   source,
   windowStart,
 }: {
   limitDotEvents: readonly ActivityMarker[];
   markers: readonly ActivityMarker[];
   scale: TimelineScale;
-  segmentRows: readonly SyncedActivitySegmentRow[];
   source: TimelineSourceStrip;
   windowStart: number;
 }): ProjectedTimeline {
@@ -170,10 +209,13 @@ export function projectSessionTimeline({
   }
   apportionColumnCounts(buckets);
 
-  let derivedPhaseCosts: readonly Record<string, number>[] | null = null;
-
   return {
     buckets,
+    columnCoverage: resolveColumnCoverage({
+      buckets,
+      edges,
+      extent: source.extent,
+    }),
     columnMs: geometry.columnMs,
     limitDotEvents: projectMarkers({
       edges,
@@ -191,14 +233,6 @@ export function projectSessionTimeline({
     }),
     maxWindowStart: geometry.maxWindowStart,
     originMs: geometry.originMs,
-    phaseCosts: () => {
-      derivedPhaseCosts ??= buildPhaseCosts({
-        columns: buckets,
-        edges,
-        segmentRows,
-      });
-      return derivedPhaseCosts;
-    },
     subColumnSource: widestBinMs > geometry.columnMs,
     totalColumns: geometry.totalColumns,
     windowEndMs,
@@ -495,206 +529,15 @@ function resolveMarkerMs(
 }
 
 /**
- * Split each column's cost across the activity phases its wall-time was
- * classified into, weighting by how much of the column each phase span covers.
- *
- * The weighting is by TIME, not by price, because the classifier tiling
- * (`activitySegmentRows`) carries spans and not per-span cost. Any part of a
- * column no span covers keeps its cost under {@link UNATTRIBUTED_KEY} rather
- * than being silently folded into a neighbouring phase.
- *
- * That residual is deliberately `unattributed`, NOT `other`: per `@repo/lib`'s
- * activity rollup, `other` is spend the classifier TILED but could not name,
- * while `unattributed` is spend the classifier never saw. Folding an untiled
- * stretch into `other` would claim a classification attempt that never happened.
- */
-function buildPhaseCosts({
-  columns,
-  edges,
-  segmentRows,
-}: {
-  columns: readonly ActivityBucket[];
-  edges: readonly number[];
-  segmentRows: readonly SyncedActivitySegmentRow[];
-}): Record<string, number>[] {
-  return columns.map((column, index) => {
-    const cost = column.cIn + column.cOut + column.cCache;
-    if (cost <= 0) {
-      return emptyStringKeyedRecord<number>();
-    }
-    const columnStartMs = edges[index] ?? 0;
-    const columnEndMs = edges[index + 1] ?? columnStartMs;
-    // ISS-5844: the column's REAL width, so the `unattributed` remainder below
-    // is measured against the 11 or 13 hours a DST column actually spans rather
-    // than the 12 its scale nominally names.
-    const columnMs = Math.max(0, columnEndMs - columnStartMs);
-    const clipped = clipSpansToColumn({
-      columnEndMs,
-      columnStartMs,
-      segmentRows,
-    });
-    /*
-     * ONE sweep produces both the covered union AND the per-phase weights, so
-     * the two cannot disagree — which is exactly what they used to do (#4753
-     * review, whitlockk + codex). `covered` measured the UNION while the weights
-     * summed each overlapping phase in FULL, and segment spans genuinely do
-     * overlap: a subagent's span is re-filed alongside the main agent's (see
-     * `SyncedActivitySegmentRow`'s `subagentId`). A 60m column tiled by a 40m
-     * `implement` and a 40m `review` that overlap for 30m emitted 40 + 40 + 10
-     * over a 60m denominator — 150% of the column's cost, so the stack overflows
-     * its bar and the tooltip invents spend the session never had.
-     */
-    const { covered, weights } = buildOverlapNormalizedWeights(clipped);
-    if (covered <= 0) {
-      const unattributed = emptyStringKeyedRecord<number>();
-      unattributed[UNATTRIBUTED_KEY] = cost;
-      return unattributed;
-    }
-    const uncovered = Math.max(0, columnMs - covered);
-    const totalWeight = covered + uncovered;
-    const costs = emptyStringKeyedRecord<number>();
-    for (const [phase, weight] of Object.entries(weights)) {
-      costs[phase] = (cost * weight) / totalWeight;
-    }
-    if (uncovered > 0) {
-      costs[UNATTRIBUTED_KEY] = (cost * uncovered) / totalWeight;
-    }
-    return costs;
-  });
-}
-
-/**
- * The classifier spans that overlap one column, clipped to it.
- *
- * Its own function so `buildPhaseCosts` stays inside the cognitive-complexity
- * ceiling: what it does — decide which rows count, and how much of each — is a
- * separable question from how the counted time becomes money.
- */
-function clipSpansToColumn({
-  columnEndMs,
-  columnStartMs,
-  segmentRows,
-}: {
-  columnEndMs: number;
-  columnStartMs: number;
-  segmentRows: readonly SyncedActivitySegmentRow[];
-}): ClippedPhaseSpan[] {
-  const clipped: ClippedPhaseSpan[] = [];
-  for (const row of segmentRows) {
-    /*
-     * `idle` is deliberately not a weight. It is a first-class phase in the
-     * display map, but it names wall-time with nothing running — attributing a
-     * share of real dollars to it would render "Idle: 90% of the spend", which
-     * is money assigned to a period defined by the absence of work. Its time
-     * falls through to `unattributed` in the caller, which is the honest answer:
-     * spend happened, and the tiling does not put it in a working phase.
-     */
-    if (row.phase === IDLE_PHASE_KEY) {
-      continue;
-    }
-    /*
-     * #4753 review (whitlockk): REJECT the malformed row before it is clipped.
-     * `SyncedActivitySegmentRow` crosses the sync wire out of SQLite, so its
-     * bounds are parse-boundary input, not something the in-process types
-     * constrain. A non-finite bound survives the clipping comparison below —
-     * `NaN <= NaN` is FALSE, so the `endMs <= startMs` guard waves it through —
-     * and then `endMs - startMs` puts `NaN` into the weights, `NaN` into the
-     * denominator, and a priced Activity column renders with every segment
-     * zero-width: a bar that silently shows nothing for money that was really
-     * spent. Dropping the row instead leaves that stretch untiled, so its cost
-     * lands under `unattributed` — which is the truthful reading of a
-     * classification we cannot use, and the same answer an absent row gets.
-     */
-    if (!(Number.isFinite(row.startMs) && Number.isFinite(row.endMs))) {
-      continue;
-    }
-    const startMs = Math.max(columnStartMs, row.startMs);
-    const endMs = Math.min(columnEndMs, row.endMs);
-    if (endMs <= startMs) {
-      continue;
-    }
-    clipped.push({ endMs, phase: row.phase, startMs });
-  }
-  return clipped;
-}
-
-/** One classifier span, already clipped to a single column. */
-type ClippedPhaseSpan = {
-  readonly endMs: number;
-  readonly phase: string;
-  readonly startMs: number;
-};
-
-/**
- * The covered union AND the per-phase weights that SUM TO IT, from one sweep.
- *
- * THE ATTRIBUTION RULE, stated plainly because overlap forces one: an instant
- * covered by N distinct phases gives each of them `1/N` of that instant. It is
- * the only rule available to a layer that has spans and no per-span cost —
- * nothing here can say the subagent's overlapping half-hour was the expensive
- * half — and it is the one rule that cannot invent money, because every instant
- * of covered time contributes exactly its own length no matter how many spans
- * claim it. `sum(weights) === covered` is therefore an identity of the sweep
- * rather than a property the caller has to re-check, and since the caller's
- * denominator is `covered + uncovered === columnMs`, the emitted segments
- * reconcile to the column's cost exactly.
- *
- * Two spans of the SAME phase overlapping (the main agent's `implement` and a
- * subagent's, re-filed) collapse to one claimant for the shared instant rather
- * than double-weighting it — which is why the active set is keyed by phase.
- *
- * Elementary intervals rather than sort-and-merge: a merged union can say how
- * much time was covered, but not by whom, and the two answers are what has to
- * agree. Inputs are clipped to one column, so the list is short.
- */
-function buildOverlapNormalizedWeights(spans: readonly ClippedPhaseSpan[]): {
-  covered: number;
-  weights: Record<string, number>;
-} {
-  const weights = emptyStringKeyedRecord<number>();
-  if (spans.length === 0) {
-    return { covered: 0, weights };
-  }
-  const boundaries = [
-    ...new Set(spans.flatMap((span) => [span.startMs, span.endMs])),
-  ].sort((left, right) => left - right);
-  let covered = 0;
-  for (const [index, sliceStartMs] of boundaries.entries()) {
-    const sliceEndMs = boundaries[index + 1];
-    if (sliceEndMs == null || sliceEndMs <= sliceStartMs) {
-      continue;
-    }
-    const active = new Set<string>();
-    for (const span of spans) {
-      if (span.startMs <= sliceStartMs && span.endMs >= sliceEndMs) {
-        active.add(span.phase);
-      }
-    }
-    if (active.size === 0) {
-      continue;
-    }
-    const sliceMs = sliceEndMs - sliceStartMs;
-    covered += sliceMs;
-    const share = sliceMs / active.size;
-    for (const phase of active) {
-      weights[phase] = (weights[phase] ?? 0) + share;
-    }
-  }
-  return { covered, weights };
-}
-
-/**
  * A prototype-less map for keys that come off the WIRE.
  *
- * `SyncedActivitySegmentRow.phase` is documented as a bounded FREE STRING, not a
- * closed union — the desktop stores it as TEXT and a taxonomy change is a
- * classifier-version bump, so the cloud never validates the value against a
- * list. Model names are the same. On a plain `{}`, a row whose phase is
- * `__proto__` makes `map[phase] ?? 0` resolve to `Object.prototype` rather than
- * `0`, so the accumulator adds a number to an object and the assignment mutates
- * the prototype. `Object.create(null)` removes the whole class of that (see
- * AGENTS.md, "Build event-dispatch tables and handler registries with
- * `Object.create(null)`").
+ * A model name is a bounded FREE STRING, not a closed union — it is whatever the
+ * producer reported, and nothing validates it against a list. On a plain `{}`, a
+ * bucket keyed `__proto__` makes `map[model] ?? 0` resolve to `Object.prototype`
+ * rather than `0`, so the accumulator adds a number to an object and the
+ * assignment mutates the prototype. `Object.create(null)` removes the whole
+ * class of that (see AGENTS.md, "Build event-dispatch tables and handler
+ * registries with `Object.create(null)`").
  */
 function emptyStringKeyedRecord<T>(): Record<string, T> {
   return Object.create(null) as Record<string, T>;
@@ -710,7 +553,7 @@ function emptyStringKeyedRecord<T>(): Record<string, T> {
  * and would otherwise put `NaN` cost into a column). Both are answered the same
  * way — this bin has no clock — rather than repaired into a guess.
  */
-function resolveProducerBinBounds(
+export function resolveProducerBinBounds(
   bucket: ActivityBucket
 ): ProducerBinBounds | null {
   const { binEndMs, binStartMs } = bucket;
@@ -774,4 +617,121 @@ export function resolveBinMidpointMs(bucket: ActivityBucket): number | null {
     return null;
   }
   return bounds.startMs + (bounds.endMs - bounds.startMs) / 2;
+}
+
+/**
+ * ISS-5850 — the producer's measured extent, off the wire, or `null` when it did
+ * not state a usable one.
+ *
+ * `startMs`/`endMs` are OPTIONAL cross-repo wire fields, so the in-process types
+ * do not constrain them at runtime: a version-skewed desktop build omits both, a
+ * partially-upgraded one can send a single half, and a corrupt persisted row can
+ * carry a non-finite or inverted pair. Every one of those is answered the same
+ * way — this producer did not tell us what it measured — rather than repaired
+ * into a guess, because a guessed extent is precisely the assumption this field
+ * exists to remove.
+ *
+ * Refusing a HALF-STATED extent is the case worth naming: taking `startMs` alone
+ * and pairing it with the rendered window's end would manufacture a coverage
+ * claim out of one real number and one borrowed one, which reads to the consumer
+ * exactly like a measured extent and is not one.
+ */
+export function resolveTimelineSourceExtent(
+  span: { endMs?: number; startMs?: number } | null | undefined
+): TimelineSourceExtent | null {
+  if (span == null) {
+    return null;
+  }
+  const { endMs, startMs } = span;
+  if (startMs == null || endMs == null) {
+    return null;
+  }
+  if (!(Number.isFinite(startMs) && Number.isFinite(endMs))) {
+    return null;
+  }
+  /*
+   * `!(end > start)` rather than `end < start`, so a ZERO-WIDTH extent is
+   * refused too: it would mark every column in the window unmeasured, turning a
+   * degenerate producer value into a strip that claims it knows nothing.
+   */
+  if (!(endMs > startMs)) {
+    return null;
+  }
+  return { endMs, startMs };
+}
+
+/**
+ * ISS-5850 — what backs each rendered column, resolved once per projection.
+ *
+ * OVERLAP, NOT CONTAINMENT, is the rule, and the boundary columns are why. A
+ * column that straddles the edge of the extent holds real measured cost for the
+ * part the producer covered and nothing for the rest; that value is measured,
+ * just over less time than the column's full width. Marking it unmeasured would
+ * withdraw a true figure, and on a session whose extent begins mid-column that
+ * is the very column the run starts in. Any overlap at all therefore reads as
+ * measured, and only a column the extent does not reach AT ALL is withdrawn.
+ *
+ * `Unknown` is not a third flavour of `Unmeasured`: absence of an extent is a
+ * fact about the PRODUCER (a build that predates the field), while `Unmeasured`
+ * is a fact about the INTERVAL. Folding them together would either withhold
+ * every column on every older payload — deleting the strip for most of the
+ * installed base — or claim coverage nobody stated. The caller decides what to
+ * say for each; this only refuses to conflate them.
+ */
+function resolveColumnCoverage({
+  buckets,
+  edges,
+  extent,
+}: {
+  buckets: readonly ActivityBucket[];
+  edges: readonly number[];
+  extent: TimelineSourceExtent | null;
+}): TimelineColumnCoverage[] {
+  return Array.from({ length: TIMELINE_VISIBLE_COLUMNS }, (_, index) => {
+    if (extent == null) {
+      return TimelineColumnCoverage.Unknown;
+    }
+    /*
+     * THE BINS OUTRANK THE STATED EXTENT (code review). A column a bin actually
+     * deposited into holds an observation, and no claim about the extent can
+     * make that observation go away — so a stale, corrupt, or foreign extent
+     * can never withdraw a figure the reader can see. Without this the only
+     * input is the extent, and the failure is silent and inverted: the strip
+     * withholds a bar it is simultaneously drawing.
+     */
+    if (hasDepositedContent(buckets[index])) {
+      return TimelineColumnCoverage.Measured;
+    }
+    const columnStartMs = edges[index];
+    const columnEndMs = edges[index + 1];
+    if (columnStartMs == null || columnEndMs == null) {
+      return TimelineColumnCoverage.Unknown;
+    }
+    const overlapMs =
+      Math.min(columnEndMs, extent.endMs) -
+      Math.max(columnStartMs, extent.startMs);
+    return overlapMs > 0
+      ? TimelineColumnCoverage.Measured
+      : TimelineColumnCoverage.Unmeasured;
+  });
+}
+
+/**
+ * Whether any source bin landed anything in this column.
+ *
+ * Deliberately wider than cost: a bin can carry events or tool calls at zero
+ * dollars, and that is still an observation of the interval. Only a column with
+ * nothing at all on any axis is a candidate for being withdrawn.
+ */
+function hasDepositedContent(bucket: ActivityBucket | undefined): boolean {
+  if (bucket == null) {
+    return false;
+  }
+  return (
+    bucket.cIn > 0 ||
+    bucket.cOut > 0 ||
+    bucket.cCache > 0 ||
+    bucket.total > 0 ||
+    bucket.toolStart > 0
+  );
 }

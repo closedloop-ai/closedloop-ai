@@ -102,6 +102,8 @@ describe("projectBranchPhaseAttribution", () => {
     expect(result.segments[0].phase).toBe(BranchVisibleLifecyclePhase.Review);
   });
 
+  // The priced $1 segment reaches phaseForSegment, matches no phase arm, and is
+  // dropped, so coverage cannot claim to have covered it.
   it("does not create Review from passive or pending evidence", () => {
     const result = projectBranchPhaseAttribution({
       sessions: [
@@ -115,8 +117,8 @@ describe("projectBranchPhaseAttribution", () => {
 
     expect(result.segments).toEqual([]);
     expect(result.coverage).toEqual({
-      completeness: BranchPhaseAttributionCompleteness.Complete,
-      subtotalUsd: 0,
+      completeness: BranchPhaseAttributionCompleteness.Unavailable,
+      reason: BranchPhaseAttributionCompletenessReason.LifecycleIncomplete,
     });
   });
 

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deleteEnvForTest } from "../../__tests__/test-helpers";
 
 // ---------------------------------------------------------------------------
@@ -24,6 +24,15 @@ vi.mock("@opentelemetry/sdk-trace-node", () => ({
   ParentBasedSampler: class {},
   TraceIdRatioBasedSampler: class {},
 }));
+
+// Both slots are process-wide (ISS-5857, ISS-6817), so the unregistered state
+// the case below asserts on must be established, not assumed.
+beforeEach(async () => {
+  const { resetSpanFlushHook } = await import("../hooks");
+  resetSpanFlushHook();
+  const { resetTraceContextProvider } = await import("../../trace-context");
+  resetTraceContextProvider();
+});
 
 afterEach(async () => {
   const { resetTracingForTest } = await import("../provider");

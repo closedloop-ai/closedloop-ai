@@ -84,9 +84,9 @@ export function useTeamRepositoriesUnion({
 }
 
 /**
- * User-facing copy for a failed team-repository read. Lives here, with the only
- * code that can produce the failure, because consumers render this string
- * verbatim (ISS-5095) — a second copy at a call site is how one surface ends up
+ * User-facing copy for a failed team-repository read. Its consumers render it
+ * verbatim (ISS-5095; the team modal's single-team read too, ISS-9895) — a
+ * second copy at a call site is how one surface ends up
  * claiming the pool is empty while another says it couldn't be read. Names an
  * action the user can actually take: there is no in-place refetch on these
  * surfaces, and against a 403 a Retry button could never succeed anyway.

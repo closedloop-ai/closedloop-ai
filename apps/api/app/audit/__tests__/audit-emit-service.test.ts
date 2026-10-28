@@ -25,6 +25,7 @@ const {
   mockOutboxUpdateMany,
   mockAppendClaimingOutbox,
   mockWaitUntil,
+  mockLogFlush,
 } = vi.hoisted(() => ({
   mockOutboxCreate: vi.fn(),
   mockOutboxCreateMany: vi.fn(),
@@ -32,6 +33,7 @@ const {
   mockOutboxUpdateMany: vi.fn(),
   mockAppendClaimingOutbox: vi.fn(),
   mockWaitUntil: vi.fn(),
+  mockLogFlush: vi.fn(),
 }));
 
 vi.mock("@vercel/functions", () => ({
@@ -58,6 +60,21 @@ vi.mock("../audit-ledger-service", () => ({
   auditLedgerService: { appendClaimingOutbox: mockAppendClaimingOutbox },
 }));
 
+const logError = vi.hoisted(() => vi.fn());
+
+vi.mock("@repo/observability/log", () => ({
+  log: {
+    error: logError,
+    flush: mockLogFlush,
+    info: vi.fn(),
+    warn: vi.fn(),
+  },
+}));
+
+import {
+  AUDIT_OUTBOX_ENQUEUE_FAILED_EVENT,
+  clearAuditOutboxEnqueueFailureThrottle,
+} from "@/lib/observability/audit-outbox-enqueue-telemetry";
 import {
   dispatchAuditEvent,
   dispatchAuditEvents,
@@ -106,6 +123,7 @@ describe("audit emit actor helpers", () => {
 describe("emitAuditEvent", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockLogFlush.mockResolvedValue(undefined);
   });
 
   it("writes one outbox row with the correct action/object/actor", async () => {
@@ -148,8 +166,16 @@ describe("emitAuditEvent", () => {
     expect(mockOutboxCreate.mock.calls[0][0].data.detail).toEqual({});
   });
 
-  it("dispatchAuditEvent is fire-and-forget: hands the emit promise to waitUntil off the response path", () => {
-    mockOutboxCreate.mockResolvedValue({ id: "outbox-3" });
+  it("dispatchAuditEvent keeps enqueue and flush in one deferred lifetime", async () => {
+    const settled: string[] = [];
+    mockOutboxCreate.mockImplementation(() => {
+      settled.push("enqueue");
+      return Promise.resolve({ id: "outbox-3" });
+    });
+    mockLogFlush.mockImplementation(() => {
+      settled.push("flush");
+      return Promise.resolve();
+    });
 
     // Returns void synchronously — the caller never awaits it on the hot path.
     const returned = dispatchAuditEvent({
@@ -163,8 +189,11 @@ describe("emitAuditEvent", () => {
 
     expect(returned).toBeUndefined();
     expect(mockWaitUntil).toHaveBeenCalledTimes(1);
-    // The scheduled work is the (non-throwing) emit promise.
-    expect(mockWaitUntil.mock.calls[0][0]).toBeInstanceOf(Promise);
+    const deferred = mockWaitUntil.mock.calls[0][0];
+    expect(deferred).toBeInstanceOf(Promise);
+    await deferred;
+    expect(settled).toEqual(["enqueue", "flush"]);
+    expect(mockLogFlush).toHaveBeenCalledTimes(1);
   });
 
   it("FAILURE ISOLATION: a thrown outbox insert never rejects to the caller", async () => {
@@ -183,11 +212,41 @@ describe("emitAuditEvent", () => {
       })
     ).resolves.toBeUndefined();
   });
+
+  /**
+   * #7225 review, whitlockk. Swallowing the failure is correct; swallowing it into
+   * a prose sentence is not — a raw log is not an alert. A dropped enqueue
+   * leaves NOTHING behind: no outbox row, no drain retry, no record that an
+   * event was ever owed, so it is the one ledger failure that can only be seen
+   * if it is reported here.
+   */
+  it("reports a dropped enqueue on the monitored event name", async () => {
+    clearAuditOutboxEnqueueFailureThrottle();
+    mockOutboxCreate.mockRejectedValue(new Error("db down"));
+
+    await emitAuditEvent({
+      organizationId: ORG_ID,
+      actor: userAuditActor(USER_ID),
+      action: AuditAction.ProjectStatusChanged,
+      objectType: AuditObjectType.Project,
+      objectId: "project-9",
+    });
+
+    expect(logError).toHaveBeenCalledWith(
+      AUDIT_OUTBOX_ENQUEUE_FAILED_EVENT,
+      expect.objectContaining({
+        organizationId: ORG_ID,
+        action: AuditAction.ProjectStatusChanged,
+        occurrences: 1,
+      })
+    );
+  });
 });
 
 describe("emitAuditEvents (bulk)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockLogFlush.mockResolvedValue(undefined);
   });
 
   it("enqueues MANY events in a SINGLE bulk createMany (bounded fan-out)", async () => {
@@ -258,8 +317,67 @@ describe("emitAuditEvents (bulk)", () => {
     ).resolves.toBeUndefined();
   });
 
-  it("dispatchAuditEvents is fire-and-forget: hands the bulk promise to waitUntil", () => {
-    mockOutboxCreateMany.mockResolvedValue({ count: 1 });
+  it("reports each action's lost-entry count for a mixed bulk enqueue", async () => {
+    clearAuditOutboxEnqueueFailureThrottle();
+    mockOutboxCreateMany.mockRejectedValue(new Error("db down"));
+
+    await emitAuditEvents([
+      {
+        organizationId: ORG_ID,
+        actor: userAuditActor(USER_ID),
+        action: AuditAction.ProjectStatusChanged,
+        objectType: AuditObjectType.Project,
+        objectId: "project-a",
+      },
+      {
+        organizationId: ORG_ID,
+        actor: userAuditActor(USER_ID),
+        action: AuditAction.ProjectStatusChanged,
+        objectType: AuditObjectType.Project,
+        objectId: "project-b",
+      },
+      {
+        organizationId: ORG_ID,
+        actor: userAuditActor(USER_ID),
+        action: AuditAction.ProjectPriorityChanged,
+        objectType: AuditObjectType.Project,
+        objectId: "project-a",
+      },
+    ]);
+
+    expect(logError).toHaveBeenCalledTimes(2);
+    expect(logError).toHaveBeenNthCalledWith(
+      1,
+      AUDIT_OUTBOX_ENQUEUE_FAILED_EVENT,
+      expect.objectContaining({
+        organizationId: ORG_ID,
+        action: AuditAction.ProjectStatusChanged,
+        count: 2,
+        occurrences: 2,
+      })
+    );
+    expect(logError).toHaveBeenNthCalledWith(
+      2,
+      AUDIT_OUTBOX_ENQUEUE_FAILED_EVENT,
+      expect.objectContaining({
+        organizationId: ORG_ID,
+        action: AuditAction.ProjectPriorityChanged,
+        count: 1,
+        occurrences: 1,
+      })
+    );
+  });
+
+  it("dispatchAuditEvents keeps bulk enqueue and flush in one deferred lifetime", async () => {
+    const settled: string[] = [];
+    mockOutboxCreateMany.mockImplementation(() => {
+      settled.push("enqueue-many");
+      return Promise.resolve({ count: 1 });
+    });
+    mockLogFlush.mockImplementation(() => {
+      settled.push("flush");
+      return Promise.resolve();
+    });
 
     const returned = dispatchAuditEvents([
       {
@@ -273,7 +391,11 @@ describe("emitAuditEvents (bulk)", () => {
 
     expect(returned).toBeUndefined();
     expect(mockWaitUntil).toHaveBeenCalledTimes(1);
-    expect(mockWaitUntil.mock.calls[0][0]).toBeInstanceOf(Promise);
+    const deferred = mockWaitUntil.mock.calls[0][0];
+    expect(deferred).toBeInstanceOf(Promise);
+    await deferred;
+    expect(settled).toEqual(["enqueue-many", "flush"]);
+    expect(mockLogFlush).toHaveBeenCalledTimes(1);
   });
 });
 

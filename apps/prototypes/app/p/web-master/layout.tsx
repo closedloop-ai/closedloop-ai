@@ -1,18 +1,15 @@
-import {
-  SidebarInset,
-  SidebarProvider,
-} from "@repo/design-system/components/ui/sidebar";
+import { WebMasterPreviewShell } from "@repo/app/shell/v2/components/web-master-preview/web-master-preview-shell";
+import Image from "next/image";
 import type { ReactNode } from "react";
-import { AppSidebar } from "./components/app-sidebar";
+import { prototypeNavigationAdapter } from "@/lib/navigation/next-prototype-adapter";
 
-// Persistent shell for the master demo: the sidebar survives navigation
-// between the combined surfaces; each subpage renders its own header +
-// content through PageChrome.
 const WebMasterLayout = ({ children }: { children: ReactNode }) => (
-  <SidebarProvider className="h-svh">
-    <AppSidebar />
-    <SidebarInset>{children}</SidebarInset>
-  </SidebarProvider>
+  <WebMasterPreviewShell
+    imageComponent={Image}
+    navigationAdapter={prototypeNavigationAdapter}
+  >
+    {children}
+  </WebMasterPreviewShell>
 );
 
 export default WebMasterLayout;

@@ -104,7 +104,7 @@ async function drive(
   return res;
 }
 
-describe.sequential("HTTP CORS handler", () => {
+describe("HTTP CORS handler", { concurrent: false }, () => {
   it("always sets Vary:Origin even when the request carries no Origin header", async () => {
     const handler = await loadHandler({});
     const res = await drive(handler, "GET", "/health");

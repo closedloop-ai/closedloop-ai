@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { TelemetryAttribute } from "../src/attributes";
-import { GenAiTelemetrySchema } from "../src/gen-ai";
+import { GenAiOperationName, GenAiTelemetrySchema } from "../src/gen-ai";
 import { genAiPayload } from "../src/test-fixtures";
 
 describe("GenAiTelemetrySchema", () => {
@@ -14,6 +14,7 @@ describe("GenAiTelemetrySchema", () => {
         [TelemetryAttribute.GenAiUsageCacheCreationInputTokens]: 3,
         [TelemetryAttribute.GenAiUsageCacheReadInputTokens]: 4,
         [TelemetryAttribute.GenAiCostUsage]: 0.0234,
+        [TelemetryAttribute.GenAiOperationName]: GenAiOperationName.Chat,
       })
     ).toMatchObject({
       [TelemetryAttribute.GenAiRequestModel]: "gpt-5",
@@ -57,6 +58,10 @@ describe("GenAiTelemetrySchema", () => {
       genAiPayload({ [TelemetryAttribute.GenAiResponseId]: 123 }),
       genAiPayload({ [TelemetryAttribute.GenAiResponseId]: "resp\nabc" }),
       genAiPayload({ "gen_ai.system": "anthropic" }),
+      // ISS-11347: PostHog names the event from this value, so it is closed;
+      // `embeddings` is a real semconv value that would mint `$ai_embedding`.
+      genAiPayload({ [TelemetryAttribute.GenAiOperationName]: "embeddings" }),
+      genAiPayload({ [TelemetryAttribute.GenAiOperationName]: "" }),
     ]) {
       expect(GenAiTelemetrySchema.safeParse(payload).success).toBe(false);
     }

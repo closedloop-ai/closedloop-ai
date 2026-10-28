@@ -18,12 +18,14 @@ export type NavigateOptions = {
  * Imperative navigation actions exposed by `useNavigation()`.
  *
  * `refresh` re-synchronizes the current view with server state (web: Next
- * router refresh; other shells re-fetch as appropriate).
+ * router refresh; other shells re-fetch as appropriate). Back and forward
+ * use the host's own history, so Desktop does not require a browser control.
  */
 export type NavigationActions = {
   navigate: (href: string, options?: NavigateOptions) => void;
   replace: (href: string, options?: NavigateOptions) => void;
   back: () => void;
+  forward: () => void;
   refresh: () => void;
 };
 
@@ -94,6 +96,17 @@ export type NavigationAdapter = {
   usePathValue: () => string;
   useRouteParamsValue: () => RouteParams;
   useSearchParamsSnapshot: () => ReadonlySearchParams;
+  /**
+   * Optional. A number the host bumps on every navigation that is NOT a shared
+   * writer's own `replace` (navigate, back, forward, a `Link` click, popstate),
+   * and that is the SAME for every hook reading it in one render, unlike the
+   * search params object, which a host may hand each hook as its own copy. A
+   * host that bumps it on a writer's own `replace` must do so no later than the
+   * snapshot that reflects it. A host that omits it degrades safely: the shared
+   * writers then detect only back and forward, through popstate, and a push or
+   * `Link` click to the current URL while a write is pending is not detected.
+   */
+  useNavigationEpoch?: () => number;
   useOrgPathBuilder: () => OrgPathBuilder;
   Link: ComponentType<NavigationLinkProps>;
 };

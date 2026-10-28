@@ -14,7 +14,11 @@ import {
   useGitHubIntegrationStatus,
   useGitHubRepositories,
 } from "@repo/app/github/hooks/use-github-integration";
+import { GitHubConnectAction } from "@repo/app/github/lib/github-connect-action";
+import { GITHUB_CONNECT_COPY } from "@repo/app/github/lib/github-connect-copy";
+import { IntegrationConnectionCard } from "@repo/app/settings/v2/components/integration-connection-card";
 import { ConfirmationDialog } from "@repo/app/shared/components/confirmation-dialog";
+import { GitHubLogo } from "@repo/app/shared/feature-flags/github-logo";
 import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import {
   Alert,
@@ -30,14 +34,13 @@ import {
   AlertCircleIcon,
   CheckCircleIcon,
   ExternalLinkIcon,
-  GithubIcon,
   Loader2Icon,
   LockIcon,
   RefreshCwIcon,
 } from "lucide-react";
 import { useState } from "react";
+import { useGitHubAuthorizeHref } from "@/hooks/use-github-authorize-href";
 import { getGitHubConnectUrl } from "@/lib/integration-connect-urls";
-import { IntegrationConnectionCard } from "./integration-connection-card";
 import { PublicRepositoriesSection } from "./public-repositories-section";
 
 function SuspendedState({
@@ -121,7 +124,7 @@ function RepositoryList({
       <ul className="space-y-1">
         {repositories.map((repo) => (
           <li className="flex items-center gap-2 text-sm" key={repo.id}>
-            <GithubIcon className="h-4 w-4 text-muted-foreground" />
+            <GitHubLogo className="h-4 w-4 text-muted-foreground" />
             <a
               className="text-foreground hover:underline"
               href={`https://github.com/${repo.fullName}`}
@@ -210,10 +213,12 @@ function ConnectedState({
 }
 
 function DisconnectedState({
+  connectLabel,
   onConnect,
   onInstall,
   isConnecting,
 }: {
+  connectLabel: string;
   onConnect: () => void;
   onInstall: () => void;
   isConnecting: boolean;
@@ -240,7 +245,7 @@ function DisconnectedState({
           ) : (
             <>
               <ExternalLinkIcon className="h-4 w-4" />
-              Connect GitHub
+              {connectLabel}
             </>
           )}
         </Button>
@@ -313,9 +318,23 @@ export function GitHubIntegrationCard() {
   } = useGitHubIntegrationStatus();
   const { data: repositories, isLoading: repositoriesLoading } =
     useGitHubRepositories();
-  const authorizeUrl = getGitHubConnectUrl("authorize");
+  const authorizeUrl = useGitHubAuthorizeHref();
   const installUrl = getGitHubConnectUrl("install");
-  const disconnectGitHub = useDisconnectGitHub();
+  // ISS-5958 M5: the personal-connect control's verb is read from the one
+  // connect copy map rather than spelled here, so it cannot drift from the
+  // gated CTAs elsewhere.
+  //
+  // Deliberately NOT the resolved per-user action: this card gates on the org's
+  // App INSTALLATION (D3), so the row beside this button says "Not connected"
+  // and "Connect GitHub to enable repository integrations" about that
+  // installation. A button that read "Reconnect GitHub" off the user's own grant
+  // would argue with its own row. Surfacing reconnect here means moving the row
+  // to the same source, which is App-installation wording and out of scope.
+  const connectLabel =
+    GITHUB_CONNECT_COPY[GitHubConnectAction.Connect].ctaLabel;
+  const disconnectGitHub = useDisconnectGitHub({
+    onError: () => toast.error("Failed to disconnect GitHub"),
+  });
 
   const handleConnect = () => {
     setConnecting(true);
@@ -333,7 +352,8 @@ export function GitHubIntegrationCard() {
       await disconnectGitHub.mutateAsync();
       toast.success("GitHub disconnected successfully");
     } catch {
-      toast.error("Failed to disconnect GitHub");
+      // Reported by the mutation's `onError` above. Swallowed so the
+      // confirmation dialog still closes on failure.
     }
   };
 
@@ -361,7 +381,7 @@ export function GitHubIntegrationCard() {
         description="Connect your GitHub account to enable repository integrations"
         isLoading
         title="GitHub"
-        titleIcon={<GithubIcon className="h-5 w-5" />}
+        titleIcon={<GitHubLogo className="h-5 w-5" />}
       />
     );
   }
@@ -371,7 +391,7 @@ export function GitHubIntegrationCard() {
       <IntegrationConnectionCard
         description="Connect your GitHub account to enable repository integrations"
         title="GitHub"
-        titleIcon={<GithubIcon className="h-5 w-5" />}
+        titleIcon={<GitHubLogo className="h-5 w-5" />}
       >
         <div className="flex items-start gap-3">
           <AlertCircleIcon className="mt-0.5 h-5 w-5 text-destructive" />
@@ -410,7 +430,7 @@ export function GitHubIntegrationCard() {
               </Button>
               <Button disabled={connecting} onClick={handleConnect} size="sm">
                 <ExternalLinkIcon className="h-4 w-4" />
-                Connect GitHub
+                {connectLabel}
               </Button>
             </div>
           </div>
@@ -423,6 +443,7 @@ export function GitHubIntegrationCard() {
     if (!status?.connected) {
       return (
         <DisconnectedState
+          connectLabel={connectLabel}
           isConnecting={connecting}
           onConnect={handleConnect}
           onInstall={handleInstall}
@@ -456,7 +477,7 @@ export function GitHubIntegrationCard() {
       <IntegrationConnectionCard
         description="Connect your GitHub account to enable repository integrations"
         title="GitHub"
-        titleIcon={<GithubIcon className="h-5 w-5" />}
+        titleIcon={<GitHubLogo className="h-5 w-5" />}
       >
         {content}
         {publicReposEnabled && (

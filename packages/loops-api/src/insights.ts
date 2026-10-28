@@ -357,10 +357,26 @@ export function formatDeltaPct(deltaPct: number | null): string | null {
   return `${sign}${deltaPct}%`;
 }
 
+/**
+ * Row cap the cloud producer applies to the per-user session breakdown
+ * (`UtilizationInsightsResponse.charts.userBreakdown`). Shared so a consumer
+ * deciding whether the breakdown is COMPLETE (a full page may have dropped
+ * users) reads the same number the SQL `LIMIT` uses.
+ */
+export const INSIGHTS_USER_BREAKDOWN_ROW_CAP = 50;
+
 export type CategoryBucket = {
   key: string;
   label: string;
   value: number;
+  /**
+   * ISS-9842: the population these buckets are a PREFIX of, when the producer
+   * capped the breakdown. Carried identically on every bucket the way a SQL
+   * window total rides every row. Absent when the buckets ARE the population
+   * (the cloud producers do not cap) and on payloads from builds that predate
+   * the field, so a reader falls back to the slice sum.
+   */
+  population?: CategoryPopulation;
 };
 
 const MS_PER_HOUR = 3_600_000;
@@ -462,6 +478,8 @@ export type DeliveryInsightsResponse = {
     // Additive: older peers may omit this and clients should show an empty
     // state rather than failing the whole dashboard.
     klocTrend?: TimeSeries;
+    /** ISS-8184: {@link klocTrend} in raw lines, under the LOC terminology flag. */
+    locTrend?: TimeSeries;
     prByRepo: CategoryBucket[];
     meanTimeToMerge: CategoryBucket[];
     prByState: CategoryBucket[];
@@ -502,7 +520,8 @@ export type UtilizationInsightsResponse = {
     eventActivity: TimeSeries;
     // Additive: hour×day turn density split by session mode. Computed by both the
     // desktop-local backend and the cloud `/insights/utilization` route (FEA-3684);
-    // older peers omit it and clients render a graceful empty state.
+    // older peers omit it and both dashboard hosts drop the Event Activity row
+    // (`visibleDashboardRows`, ISS-9993).
     activityHeatmap?: ActivityHeatmap;
     // Additive local/desktop analytics widgets. Older peers may omit these and
     // clients should render a graceful empty state.
@@ -864,4 +883,86 @@ export function withSizeCoverage(
   // than it scanned must not print a negative sized count.
   const sized = Math.max(0, scanned - withoutLoc);
   return `${sub}${KPI_SUB_CLAUSE_SEPARATOR}sized ${sized} of ${scanned} ${population} scanned`;
+}
+
+/**
+ * The model-usage charts' residual-bucket key: the bucket every model outside
+ * the top-N collapses into, and the label that names it.
+ *
+ * The key is a product SENTINEL living in the same unconstrained string space as
+ * the model names it collects — a name rides in verbatim from
+ * `agent_session_token_usage.model` and nothing between the sync POST and the
+ * fold constrains it — so a model literally CALLED "other" would share it: its
+ * spend would be summed into the residual and the response would ship two
+ * `series` entries with one key and two labels (ISS-8564).
+ */
+const RESIDUAL_SERIES_KEY = "other";
+const RESIDUAL_SERIES_LABEL = "Other";
+
+/**
+ * The key and label to use when a real model has taken the sentinel.
+ *
+ * Namespaced rather than suffixed, because `other-2` is itself a legal model
+ * name and would just move the collision. Deliberately NOT
+ * `CHART_OTHER_SERIES_KEY` ("__chartOtherSeries",
+ * `packages/design-system/components/ui/chart-series-fold.ts`): that is the
+ * DOWNSTREAM aggregate this series is later folded into by `resolveAggregateKey`
+ * on the same chart, and the two must stay distinguishable.
+ */
+const RESIDUAL_SERIES_KEY_NAMESPACED = "__otherModels";
+const RESIDUAL_SERIES_LABEL_NAMESPACED = "Other models";
+
+/**
+ * Resolve the residual band's key and label against the keys actually EMITTED
+ * as series (the top-N), not against every model in the window.
+ *
+ * A model named "other" ranked OUTSIDE the top-N folds into the residual and
+ * emits no series entry of its own, so it cannot collide — renaming the band
+ * there would be a legend change with no cause.
+ *
+ * Declared here, in the package BOTH producers already import their `TimeSeries`
+ * types from, because the cloud fold (`apps/api/app/insights/service/
+ * model-series.ts`) and the desktop fold (`apps/desktop/src/main/database/
+ * local-insights-series.ts`) are deliberate mirrors — a second copy of this rule
+ * is exactly the drift that lets one surface merge a model the other charts
+ * separately. Neither can import the design-system resolver it mirrors:
+ * `resolveAggregateKey` lives in a React/browser package, and this runs in the
+ * API and in the desktop main process.
+ *
+ * Returns the bare sentinel whenever nothing collides — every payload in
+ * production today — so the emitted bytes are unchanged for valid input.
+ */
+export function residualSeries(emittedSeriesKeys: Iterable<string>): {
+  key: string;
+  label: string;
+} {
+  const taken = new Set(emittedSeriesKeys);
+  if (!taken.has(RESIDUAL_SERIES_KEY)) {
+    return { key: RESIDUAL_SERIES_KEY, label: RESIDUAL_SERIES_LABEL };
+  }
+  let key = RESIDUAL_SERIES_KEY_NAMESPACED;
+  let suffix = 2;
+  while (taken.has(key)) {
+    key = `${RESIDUAL_SERIES_KEY_NAMESPACED}${suffix}`;
+    suffix += 1;
+  }
+  return { key, label: RESIDUAL_SERIES_LABEL_NAMESPACED };
+}
+
+/**
+ * ISS-9842: the population a capped `CategoryBucket[]` is a prefix of.
+ * `total` sums every category's value; `categories` counts the categories.
+ */
+export type CategoryPopulation = {
+  total: number;
+  categories: number;
+};
+
+/**
+ * The day count an `InsightsPeriod` windows over, or `null` for all time.
+ * ISS-11915: the Dashboard's branch population resolves this through
+ * `stableUtcListWindow`, the same bounds the Branches list sends.
+ */
+export function insightsPeriodDays(period: InsightsPeriod): number | null {
+  return period === InsightsPeriod.All ? null : Number(period);
 }

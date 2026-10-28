@@ -15,7 +15,6 @@ import type { AgentComponentsDataSource } from "../../../data-source/agent-compo
 import { AgentComponentsDataSourceProvider } from "../../../data-source/provider";
 import { AgentsGroupedList } from "../agents-grouped-list";
 
-// ---------------------------------------------------------------------------
 // FEA-4086: honest installed-plugins inventory — component-level integration.
 //
 // These render <AgentsGroupedList> and drive the tab / time-window controls, so
@@ -24,7 +23,6 @@ import { AgentsGroupedList } from "../agents-grouped-list";
 // "installed"). They live in this sibling file (NOT the grandfathered
 // agents-grouped-list.test.tsx) so that file keeps shrinking; the pure
 // copy/scoping helpers are covered in agents-grouped-list-empty-state.test.ts.
-// ---------------------------------------------------------------------------
 
 const RE_NO_PLUGINS_INSTALLED = /no plugins installed\./i;
 const RE_ADD_PLUGINS_FROM_PACKS = /add plugins from packs/i;
@@ -60,6 +58,7 @@ function testDataSource(
 ): AgentComponentsDataSource {
   return {
     scope: "test",
+    honorsDateWindow: false,
     list: (filters) => {
       onList?.(filters);
       return Promise.resolve({
@@ -134,6 +133,7 @@ describe("AgentsGroupedList — honest Plugins empty state (FEA-4086)", () => {
     ];
     const dataSource: AgentComponentsDataSource = {
       scope: "agent-components:http",
+      honorsDateWindow: true,
       list: (filters) =>
         Promise.resolve({
           items: typeof filters.startDate === "string" ? [] : allTime,

@@ -1,13 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  ensureElectronDetection,
-  getElectronDetectionSnapshot,
-  resetElectronDetectionForTests,
-} from "@/lib/engineer/electron-detection";
+  ensureGatewayDetection,
+  getGatewayDetectionSnapshot,
+  resetGatewayDetectionForTests,
+} from "@repo/shared-platform/detection-store";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 const PROBE_PORTS = [19_432, 19_433, 19_434, 19_435] as const;
 
@@ -34,13 +32,11 @@ function makeNetworkError() {
   return Promise.reject(new TypeError("fetch failed"));
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
-describe("tier1-port-discovery: electron-detection port scanning", () => {
+describe("tier1-port-discovery: detection-store port scanning", () => {
   beforeEach(() => {
-    resetElectronDetectionForTests();
+    resetGatewayDetectionForTests();
   });
 
   afterEach(() => {
@@ -58,7 +54,7 @@ describe("tier1-port-discovery: electron-detection port scanning", () => {
       })
     );
 
-    await ensureElectronDetection();
+    await ensureGatewayDetection();
 
     expect(probedUrls).toEqual([
       "http://localhost:19432/health",
@@ -84,7 +80,7 @@ describe("tier1-port-discovery: electron-detection port scanning", () => {
       })
     );
 
-    const result = await ensureElectronDetection();
+    const result = await ensureGatewayDetection();
 
     expect(result.detected).toBe(true);
     expect(result.port).toBe(targetPort);
@@ -101,8 +97,8 @@ describe("tier1-port-discovery: electron-detection port scanning", () => {
 
     vi.stubGlobal("fetch", mockFetch);
 
-    const firstResult = await ensureElectronDetection();
-    const secondResult = await ensureElectronDetection();
+    const firstResult = await ensureGatewayDetection();
+    const secondResult = await ensureGatewayDetection();
 
     // fetch should only have been called once — cache is still valid
     expect(mockFetch).toHaveBeenCalledTimes(1);
@@ -117,7 +113,7 @@ describe("tier1-port-discovery: electron-detection port scanning", () => {
       vi.fn(() => makeNetworkError())
     );
 
-    const result = await ensureElectronDetection();
+    const result = await ensureGatewayDetection();
 
     expect(result.detected).toBe(false);
     expect(result.port).toBeNull();
@@ -140,7 +136,7 @@ describe("tier1-port-discovery: electron-detection port scanning", () => {
       )
     );
 
-    const result = await ensureElectronDetection();
+    const result = await ensureGatewayDetection();
 
     expect(result.detected).toBe(true);
     expect(result.port).toBe(port);
@@ -172,7 +168,7 @@ describe("tier1-port-discovery: electron-detection port scanning", () => {
       })
     );
 
-    const result = await ensureElectronDetection();
+    const result = await ensureGatewayDetection();
 
     expect(result.detected).toBe(true);
     expect(result.port).toBe(goodPort);
@@ -198,30 +194,30 @@ describe("tier1-port-discovery: electron-detection port scanning", () => {
       })
     );
 
-    const result = await ensureElectronDetection();
+    const result = await ensureGatewayDetection();
 
     expect(result.detected).toBe(true);
     expect(result.port).toBe(goodPort);
   });
 
-  it("resetElectronDetectionForTests clears cached state between tests", async () => {
+  it("resetGatewayDetectionForTests clears cached state between tests", async () => {
     const port = PROBE_PORTS[0];
     const mockFetch = vi.fn(() => Promise.resolve(makeOkResponse(port)));
 
     vi.stubGlobal("fetch", mockFetch);
 
     // First detection — populates cache
-    await ensureElectronDetection();
+    await ensureGatewayDetection();
     expect(mockFetch).toHaveBeenCalledTimes(1);
 
     // Reset clears cache
-    resetElectronDetectionForTests();
+    resetGatewayDetectionForTests();
 
     // Second detection — cache was cleared, should re-probe
-    await ensureElectronDetection();
+    await ensureGatewayDetection();
     expect(mockFetch).toHaveBeenCalledTimes(2);
 
-    const snap = getElectronDetectionSnapshot();
+    const snap = getGatewayDetectionSnapshot();
     expect(snap.detected).toBe(true);
   });
 });

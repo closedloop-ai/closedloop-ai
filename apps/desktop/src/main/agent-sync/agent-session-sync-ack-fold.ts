@@ -26,7 +26,7 @@ export type BoundedFailureFoldConfig = {
   recoverable: boolean;
   /** Deferred-retry backoff; `null` re-attempts next tick (ack_timeout). */
   backoffMs: number | null;
-  /** Whether a deferred retry is durably recorded in the outbox (ingestion). */
+  /** Whether a row-attributable deferred retry is durably recorded in the outbox. */
   recordOutboxOnDefer: boolean;
   /**
    * Whether a failure counts against the per-session budget. Default `true`.
@@ -52,14 +52,16 @@ export type BoundedFailureFoldDeps = {
     id: string,
     recoverable: boolean,
     reason: string,
-    attemptCount?: number
+    attemptCount?: number,
+    permanentAttemptCount?: number | null
   ) => void;
   dequeue: (syncMode: AgentSessionSyncMode, ids: string[]) => void;
   recordOutboxRetry: (
     id: string,
     attemptCount: number,
     nextAttemptAt: number,
-    reason: string
+    reason: string,
+    permanentAttemptCount?: number | null
   ) => void;
   /** Snapshot the queue/dead-letter sizes for the log lines. */
   queueSizes: () => {
@@ -98,7 +100,8 @@ function foldOneId(
       id,
       recoverable,
       reason,
-      recordOutboxOnDefer ? count : 0
+      recordOutboxOnDefer ? count : 0,
+      count
     );
     return "deadLettered";
   }
@@ -108,7 +111,13 @@ function foldOneId(
   if (retryDeadline !== null) {
     deps.nextRetryAfterMs.set(id, retryDeadline);
     if (recordOutboxOnDefer) {
-      deps.recordOutboxRetry(id, count, retryDeadline, reason);
+      deps.recordOutboxRetry(
+        id,
+        count,
+        retryDeadline,
+        reason,
+        countsToward ? count : null
+      );
     }
   }
   return "deferred";

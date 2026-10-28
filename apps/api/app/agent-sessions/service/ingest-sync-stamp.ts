@@ -35,11 +35,11 @@ import { log } from "@repo/observability/log";
  * distinct classes leave it untouched, and the stall classifier's contract is
  * exactly this list:
  *
- *   1. Refused BEFORE the batch is accepted — auth, org session-sync policy,
- *      Zod validation. Never an accepted batch, so never stamped. The
- *      fail-closed-policy case is covered far faster by
- *      `session.ingestion.policy_denied`, which fires on the FIRST denied
- *      request rather than after a stall threshold.
+ *   1. Refused BEFORE the batch is accepted — auth, Zod validation. Never an
+ *      accepted batch, so never stamped. (ISS-11449 removed a third member of
+ *      this class, the org session-sync policy, and with it the
+ *      `session.ingestion.policy_denied` signal that covered it faster than any
+ *      stall threshold could.)
  *   2. Failed AFTER acceptance, inside the transaction — this call is the LAST
  *      statement in `upsertSessions`'s `withDb.tx`, so anything that throws or
  *      rolls back before it (a write conflict, an

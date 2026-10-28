@@ -13,16 +13,17 @@
  * it (no cycle). Like the sibling passes it only widens/relabels existing
  * intervals, so complete tiling and Σ(segment spend) == session-total hold.
  */
+
+import {
+  ACTIVITY_PHASE,
+  type ActivityPhase,
+} from "@repo/api/src/types/activity-phase";
 import {
   coalesceAdjacentRuns,
   type RelabelableSegment,
   sameRunByProvenance,
 } from "./activity-segment-relabel.js";
-import {
-  ACTIVE_PHASE_ORDER,
-  ACTIVITY_PHASE,
-  type ActivityPhase,
-} from "./activity-taxonomy.js";
+import { ACTIVE_PHASE_ORDER } from "./activity-taxonomy.js";
 
 /**
  * AA-12: an ACTIVE segment shorter than this is a span-edge sliver — below this

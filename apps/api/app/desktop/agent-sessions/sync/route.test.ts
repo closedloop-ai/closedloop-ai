@@ -6,9 +6,11 @@ import {
   SYNC_CONTENT_ENCODING_HEADER,
   SyncPayloadEncoding,
 } from "@repo/api/src/types/agent-session";
+import { DESKTOP_SYNC_ACK_REASON_COMPUTE_TARGET_ID_INVALID } from "@repo/api/src/types/desktop-sync-ack-detail";
 import { Result, Status } from "@repo/api/src/types/result";
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { FIXED_WINDOW_RATE_LIMIT_RETRY_AFTER_SECONDS } from "@/lib/fixed-window-rate-limiter";
 
 const mocks = vi.hoisted(() => ({
   auth: {
@@ -36,6 +38,8 @@ vi.mock("./service", () => ({
 
 import { maxDuration, POST } from "./route";
 
+const COMPUTE_TARGET_ID = "11111111-1111-7111-8111-111111111111";
+
 describe("POST /desktop/agent-sessions/sync", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -53,13 +57,16 @@ describe("POST /desktop/agent-sessions/sync", () => {
 
     expect(response.status).toBe(200);
     expect(body).toEqual({ success: true, data: { synced: true } });
-    expect(mocks.sync).toHaveBeenCalledWith({
-      clerkUserId: "clerk-user-1",
-      computeTargetId: "target-1",
-      organizationId: "org-1",
-      rawBody: payload,
-      userId: "user-1",
-    });
+    expect(mocks.sync).toHaveBeenCalledWith(
+      {
+        clerkUserId: "clerk-user-1",
+        computeTargetId: COMPUTE_TARGET_ID,
+        organizationId: "org-1",
+        rawBody: payload,
+        userId: "user-1",
+      },
+      undefined
+    );
   });
 
   it("rejects oversized payloads before invoking sync", async () => {
@@ -94,6 +101,41 @@ describe("POST /desktop/agent-sessions/sync", () => {
     expect(body).toEqual({
       success: false,
       error: "computeTargetId is required",
+      details: { reason: DESKTOP_SYNC_ACK_REASON_COMPUTE_TARGET_ID_INVALID },
+    });
+    expect(mocks.sync).not.toHaveBeenCalled();
+  });
+
+  // ISS-8734: `ComputeTarget.id` is `@db.Uuid`; a malformed id used to reach
+  // the ownership lookup as a P2023 and come back as a retryable 500.
+  //
+  // `details.reason` is asserted, not incidental. The 500 this replaced mapped
+  // to `IngestionFailed` — lane-wide, budget-neutral, self-healing. A 400 maps
+  // to `ValidationFailed` and is charged to the rows in flight, so without a
+  // reason the desktop can discriminate on, three of these dead-letter them
+  // NON-recoverably (`agent-session-sync-validation-failure.ts`). Dropping the
+  // field here converts a self-healing failure into permanent local data loss.
+  it("rejects a malformed computeTargetId as a 400 before invoking sync", async () => {
+    const response = await POST(
+      new NextRequest(
+        "https://api.example.test/desktop/agent-sessions/sync?computeTargetId=abc",
+        {
+          body: JSON.stringify({
+            schemaVersion: AGENT_SESSION_SYNC_SCHEMA_VERSION,
+            sessions: [],
+          }),
+          method: "POST",
+        }
+      ),
+      routeContext()
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body).toEqual({
+      success: false,
+      error: "computeTargetId must be a UUID",
+      details: { reason: DESKTOP_SYNC_ACK_REASON_COMPUTE_TARGET_ID_INVALID },
     });
     expect(mocks.sync).not.toHaveBeenCalled();
   });
@@ -101,7 +143,7 @@ describe("POST /desktop/agent-sessions/sync", () => {
   it("rejects invalid JSON before invoking sync", async () => {
     const response = await POST(
       new NextRequest(
-        "https://api.example.test/desktop/agent-sessions/sync?computeTargetId=target-1",
+        `https://api.example.test/desktop/agent-sessions/sync?computeTargetId=${COMPUTE_TARGET_ID}`,
         {
           body: "{not-json",
           method: "POST",
@@ -119,32 +161,9 @@ describe("POST /desktop/agent-sessions/sync", () => {
     expect(mocks.sync).not.toHaveBeenCalled();
   });
 
-  it("maps shared feature-disabled rejections to a coded forbidden", async () => {
-    mocks.sync.mockResolvedValueOnce(
-      Result.err({ reason: DesktopAgentSessionsAckReason.FeatureDisabled })
-    );
-
-    const response = await POST(
-      request({
-        schemaVersion: AGENT_SESSION_SYNC_SCHEMA_VERSION,
-        sessions: [],
-      }),
-      routeContext()
-    );
-    const body = await response.json();
-
-    expect(response.status).toBe(403);
-    expect(body).toEqual({
-      success: false,
-      error: "Forbidden",
-      code: DesktopAgentSessionsSyncErrorCode.FeatureDisabled,
-    });
-  });
-
-  // FEA-3425: an ownership rejection must be distinguishable from a disabled
-  // capability — the desktop backs off on `feature_disabled` but must
-  // re-resolve identity on `target_not_owned` (waiting cannot fix a wrong id).
-  it("maps target-ownership rejections to a coded forbidden distinct from feature-disabled", async () => {
+  // FEA-3425: the desktop must re-resolve identity on `target_not_owned`
+  // (waiting cannot fix a wrong id).
+  it("maps target-ownership rejections to a coded forbidden", async () => {
     mocks.sync.mockResolvedValueOnce(Result.err({ reason: Status.Forbidden }));
 
     const response = await POST(
@@ -184,6 +203,34 @@ describe("POST /desktop/agent-sessions/sync", () => {
       error: "Rate limited",
       code: DesktopAgentSessionsSyncErrorCode.RateLimited,
     });
+    // ISS-10014: the throttle also states HOW LONG, per `apps/api/AGENTS.md`
+    // ("assert both the body metadata and header"). The value is derived from
+    // the limiter's own window rather than written down here, so a change to
+    // that window cannot leave the route telling clients a stale number.
+    expect(response.headers.get("Retry-After")).toBe(
+      String(FIXED_WINDOW_RATE_LIMIT_RETRY_AFTER_SECONDS)
+    );
+  });
+
+  it("ISS-10014: sends no Retry-After on a rejection a wait cannot fix", async () => {
+    mocks.sync.mockResolvedValueOnce(
+      Result.err({ reason: DesktopAgentSessionsAckReason.ValidationFailed })
+    );
+
+    const response = await POST(
+      request({
+        schemaVersion: AGENT_SESSION_SYNC_SCHEMA_VERSION,
+        sessions: [],
+      }),
+      routeContext()
+    );
+
+    expect(response.status).toBe(400);
+    // The header is OMITTED, not sent empty or zero: a desktop that read a
+    // `Retry-After` here would defer a payload rejection that waiting cannot
+    // fix, and the absent case is the one an older server produces for every
+    // status — so it has to stay distinguishable on the wire.
+    expect(response.headers.get("Retry-After")).toBeNull();
   });
 
   it("maps shared validation rejections to a coded 400 response", async () => {
@@ -305,13 +352,16 @@ describe("POST /desktop/agent-sessions/sync", () => {
     expect(response.status).toBe(200);
     expect(body).toEqual({ success: true, data: { synced: true } });
     // The decompressed rawBody is structurally identical to the sent payload.
-    expect(mocks.sync).toHaveBeenCalledWith({
-      clerkUserId: "clerk-user-1",
-      computeTargetId: "target-1",
-      organizationId: "org-1",
-      rawBody: payload,
-      userId: "user-1",
-    });
+    expect(mocks.sync).toHaveBeenCalledWith(
+      {
+        clerkUserId: "clerk-user-1",
+        computeTargetId: COMPUTE_TARGET_ID,
+        organizationId: "org-1",
+        rawBody: payload,
+        userId: "user-1",
+      },
+      undefined
+    );
   });
 
   // FEA-4138 skew: a legacy uncompressed body (no encoding header) still ingests
@@ -370,7 +420,8 @@ describe("POST /desktop/agent-sessions/sync", () => {
 
     expect(response.status).toBe(200);
     expect(mocks.sync).toHaveBeenCalledWith(
-      expect.objectContaining({ rawBody: payload })
+      expect.objectContaining({ rawBody: payload }),
+      undefined
     );
   });
 
@@ -379,7 +430,7 @@ describe("POST /desktop/agent-sessions/sync", () => {
   it("rejects a gzip-declared body that is not valid gzip", async () => {
     const response = await POST(
       new NextRequest(
-        "https://api.example.test/desktop/agent-sessions/sync?computeTargetId=target-1",
+        `https://api.example.test/desktop/agent-sessions/sync?computeTargetId=${COMPUTE_TARGET_ID}`,
         {
           body: "not-gzip-bytes",
           method: "POST",
@@ -397,25 +448,122 @@ describe("POST /desktop/agent-sessions/sync", () => {
     });
     expect(mocks.sync).not.toHaveBeenCalled();
   });
-  // FEA-4138: a compressed request whose body stream errors or is cancelled
-  // mid-read (client disconnect, aborted upload) must resolve to the route's
-  // 400 envelope, not leak the reader rejection into the handler's generic 500.
-  it("returns a 400 when the compressed request stream errors mid-read", async () => {
+  // FEA-4138 established that a compressed request whose body stream errors or
+  // is cancelled mid-read (client disconnect, aborted upload) must resolve to a
+  // route envelope rather than leaking the reader rejection into the handler.
+  // ISS-8688 changes WHICH envelope: a stream that failed to deliver its body is
+  // a read failure, and answering 400 is the misattribution the ticket exists to
+  // remove — this lane saturates under pool pressure, and calling that a client
+  // error points production triage at the wrong system. The requirement that it
+  // never reach `sync` is unchanged.
+  it("returns a 500 when the compressed request stream errors mid-read", async () => {
     const response = await POST(erroringGzipRequest(), routeContext());
     const body = await response.json();
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(500);
     expect(body).toEqual({
       success: false,
-      error: "Invalid compressed body",
+      error: "Failed to read request body",
     });
+    expect(mocks.sync).not.toHaveBeenCalled();
+  });
+
+  // ISS-8688: the desktop write lanes read bodies through their own bounded
+  // helpers and never reach `parseBody`, so they need the same classification.
+  it("returns a 500 for an uncompressed body short of its Content-Length", async () => {
+    const response = await POST(truncatedRequest(), routeContext());
+    const body = await response.json();
+
+    expect(response.status).toBe(500);
+    expect(body).toEqual({
+      success: false,
+      error: "Failed to read request body",
+    });
+    expect(mocks.sync).not.toHaveBeenCalled();
+  });
+
+  it("returns a 500 for a compressed body short of its Content-Length", async () => {
+    const response = await POST(truncatedGzipRequest(), routeContext());
+    const body = await response.json();
+
+    expect(response.status).toBe(500);
+    expect(body).toEqual({
+      success: false,
+      error: "Failed to read request body",
+    });
+    expect(mocks.sync).not.toHaveBeenCalled();
+  });
+
+  // The complement: a complete body is not reclassified just because a
+  // Content-Length is present. Without this, a predicate that always fired
+  // would pass every case above.
+  it("still returns a 400 for a complete malformed uncompressed body", async () => {
+    const response = await POST(malformedRequest(), routeContext());
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body).toEqual({ success: false, error: "Invalid JSON body" });
     expect(mocks.sync).not.toHaveBeenCalled();
   });
 });
 
+function shortStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(bytes);
+      controller.close();
+    },
+  });
+}
+
+function truncatedRequest(): NextRequest {
+  const partial = Buffer.from('{"protocolVersion":1,"sessions":[');
+  return new NextRequest(
+    `https://api.example.test/desktop/agent-sessions/sync?computeTargetId=${COMPUTE_TARGET_ID}`,
+    {
+      duplex: "half",
+      body: shortStream(new Uint8Array(partial)),
+      method: "POST",
+      headers: { "Content-Length": String(partial.byteLength + 8) },
+    } as ConstructorParameters<typeof NextRequest>[1]
+  );
+}
+
+function truncatedGzipRequest(): NextRequest {
+  const whole = gzipSync(
+    Buffer.from(JSON.stringify({ protocolVersion: 1, sessions: [] }))
+  );
+  const partial = whole.subarray(0, whole.byteLength - 4);
+  return new NextRequest(
+    `https://api.example.test/desktop/agent-sessions/sync?computeTargetId=${COMPUTE_TARGET_ID}`,
+    {
+      duplex: "half",
+      body: shortStream(new Uint8Array(partial)),
+      method: "POST",
+      headers: {
+        [SYNC_CONTENT_ENCODING_HEADER]: SyncPayloadEncoding.Gzip,
+        "Content-Length": String(whole.byteLength),
+      },
+    } as ConstructorParameters<typeof NextRequest>[1]
+  );
+}
+
+function malformedRequest(): NextRequest {
+  const bytes = Buffer.from("not valid json");
+  return new NextRequest(
+    `https://api.example.test/desktop/agent-sessions/sync?computeTargetId=${COMPUTE_TARGET_ID}`,
+    {
+      duplex: "half",
+      body: shortStream(new Uint8Array(bytes)),
+      method: "POST",
+      headers: { "Content-Length": String(bytes.byteLength) },
+    } as ConstructorParameters<typeof NextRequest>[1]
+  );
+}
+
 function request(body: unknown): NextRequest {
   return new NextRequest(
-    "https://api.example.test/desktop/agent-sessions/sync?computeTargetId=target-1",
+    `https://api.example.test/desktop/agent-sessions/sync?computeTargetId=${COMPUTE_TARGET_ID}`,
     {
       body: JSON.stringify(body),
       method: "POST",
@@ -425,7 +573,7 @@ function request(body: unknown): NextRequest {
 
 function gzipRequest(body: unknown): NextRequest {
   return new NextRequest(
-    "https://api.example.test/desktop/agent-sessions/sync?computeTargetId=target-1",
+    `https://api.example.test/desktop/agent-sessions/sync?computeTargetId=${COMPUTE_TARGET_ID}`,
     {
       body: gzipSync(Buffer.from(JSON.stringify(body))),
       method: "POST",
@@ -441,7 +589,7 @@ function erroringGzipRequest(): NextRequest {
     },
   });
   return new NextRequest(
-    "https://api.example.test/desktop/agent-sessions/sync?computeTargetId=target-1",
+    `https://api.example.test/desktop/agent-sessions/sync?computeTargetId=${COMPUTE_TARGET_ID}`,
     {
       duplex: "half",
       body,

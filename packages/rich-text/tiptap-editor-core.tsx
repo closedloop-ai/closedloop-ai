@@ -3,17 +3,11 @@
 import "./tiptap-editor.css";
 
 import { cn } from "@repo/design-system/lib/utils";
-import { TaskItem, TaskList } from "@tiptap/extension-list";
-import { Placeholder } from "@tiptap/extension-placeholder";
-import { Table } from "@tiptap/extension-table";
-import { TableCell } from "@tiptap/extension-table-cell";
-import { TableHeader } from "@tiptap/extension-table-header";
-import { TableRow } from "@tiptap/extension-table-row";
-import { Markdown } from "@tiptap/markdown";
 import { EditorContent, useEditor } from "@tiptap/react";
-import StarterKit from "@tiptap/starter-kit";
 import { useCallback, useEffect, useRef } from "react";
-import { InlineImageExtension } from "./inline-image-extension";
+import { synchronizeEditorDomSelection } from "./editor-dom-selection";
+import { createEditorExtensions } from "./editor-extensions";
+import { InlineImageResolverContext } from "./inline-image-extension";
 import {
   getInlineImageFilesFromTransfer,
   type InlineImageUploadPlaceholder,
@@ -21,11 +15,8 @@ import {
 } from "./inline-image-upload";
 import {
   findInlineImagePlaceholderPosition,
-  InlineImageUploadPlaceholderExtension,
   inlineImageUploadPlaceholderKey,
 } from "./inline-image-upload-placeholder";
-import { isAllowedLinkUri } from "./link-uri-policy";
-import { MermaidExtension } from "./mermaid-extension";
 import { RichTextToolbar } from "./rich-text-toolbar";
 import { setEditorMarkdown } from "./set-editor-markdown";
 import type { RichTextEditorProps, TiptapEditor } from "./types";
@@ -39,10 +30,10 @@ export function TiptapEditorCore({
   className,
   liveblocksExtension,
   liveblocksIsReady,
+  skipEmptyRoomSeed = false,
   scrollMode = "inner",
   externalToolbar = false,
   toolbarMode = "always",
-  mermaidEnhancementsEnabled = false,
   inlineImagesEnabled = false,
   uploadInlineImage,
   resolveInlineImages,
@@ -111,70 +102,7 @@ export function TiptapEditorCore({
   );
 
   const editor = useEditor({
-    extensions: [
-      StarterKit.configure({
-        // Configure heading levels to match markdown
-        heading: {
-          levels: [1, 2, 3],
-        },
-        // Keep the default codeBlock for non-mermaid code
-        codeBlock: {
-          languageClassPrefix: "language-",
-        },
-        // Disable built-in history when Liveblocks provides its own undo/redo via Yjs
-        ...(liveblocksExtension && { undoRedo: false }),
-        // Pin the link-protocol policy so it can't silently change across
-        // Tiptap upgrades. The bundled Link mark's default allowlist also
-        // permits ftp/tel/sms/etc, so we reject any scheme other than
-        // http(s)/mailto (this also blocks javascript:/data:). Schemeless URLs
-        // — relative paths and in-page #fragments — fall through to Tiptap's
-        // defaultValidate so existing markdown links keep working.
-        // isAllowedUri is the real XSS gate in Tiptap v3 (it guards setLink,
-        // toggleLink, paste, parseHTML and renderHTML), so pinning it here is
-        // true defense-in-depth covering non-toolbar callers (e.g. programmatic
-        // API consumers). HTMLAttributes pins the already-secure default (new
-        // tab + rel="noopener noreferrer nofollow") so it survives upgrades too.
-        link: {
-          protocols: ["http", "https", "mailto"],
-          isAllowedUri: (url, { defaultValidate }) =>
-            isAllowedLinkUri(url, defaultValidate),
-          HTMLAttributes: {
-            rel: "noopener noreferrer nofollow",
-            target: "_blank",
-          },
-        },
-      }),
-      Markdown.configure({
-        markedOptions: {
-          // Claude Code uses GitHub Flavored Markdown
-          gfm: true,
-        },
-      }),
-      Placeholder.configure({
-        placeholder,
-        // Keep the placeholder visible even when the editor is read-only so
-        // empty documents in the read-only-by-default shell still show a
-        // clickable "Add description" affordance.
-        showOnlyWhenEditable: false,
-      }),
-      MermaidExtension.configure({
-        enhancementsEnabled: mermaidEnhancementsEnabled,
-      }),
-      InlineImageExtension.configure({
-        enabled: inlineImagesEnabled,
-        resolveInlineImages,
-      }),
-      InlineImageUploadPlaceholderExtension,
-      Table.configure({
-        resizable: true,
-      }),
-      TableRow,
-      TableHeader,
-      TableCell,
-      TaskList,
-      TaskItem,
-      ...(liveblocksExtension ? [liveblocksExtension] : []),
-    ],
+    extensions: createEditorExtensions({ placeholder, liveblocksExtension }),
     // When using Liveblocks, don't set initial content here
     // The Liveblocks extension will handle syncing
     ...(!liveblocksExtension && { content: value, contentType: "markdown" }),
@@ -188,6 +116,7 @@ export function TiptapEditorCore({
           className
         ),
       },
+      handleKeyDown: synchronizeEditorDomSelection,
       handleDOMEvents: {
         drop: (_view, event) => {
           const files = Array.from(event.dataTransfer?.files ?? []);
@@ -290,6 +219,7 @@ export function TiptapEditorCore({
       const initialContent = initialContentRef.current;
 
       if (
+        skipEmptyRoomSeed ||
         !(
           editor &&
           liveblocksExtension &&
@@ -309,7 +239,13 @@ export function TiptapEditorCore({
 
       hasSeededContent.current = true;
     },
-    [editor, liveblocksExtension, liveblocksIsReady, setMarkdownContent]
+    [
+      editor,
+      liveblocksExtension,
+      liveblocksIsReady,
+      setMarkdownContent,
+      skipEmptyRoomSeed,
+    ]
   );
 
   return (
@@ -336,7 +272,9 @@ export function TiptapEditorCore({
       <div
         className={cn("min-h-0", !isOuterScroll && "flex-1 overflow-y-auto")}
       >
-        <EditorContent className="min-h-[200px]" editor={editor} />
+        <InlineImageResolverContext.Provider value={resolveInlineImages}>
+          <EditorContent className="min-h-[200px]" editor={editor} />
+        </InlineImageResolverContext.Provider>
       </div>
     </div>
   );

@@ -1,14 +1,12 @@
 /**
  * Direct SQLite seeding for the Branches E2E tests.
  *
- * Unlike `seedClaudeTranscripts` (which drives the real importer, but can only
- * ever produce a net-new Draft branch — the local importer captures PR creation,
- * not a MERGED lifecycle), some Branches assertions need a corpus the importer
- * cannot synthesize on its own: a MERGED, single-PR branch with NO LOC enrichment
- * (FEA-2159's "Median PR size" case). That requires a `pull_requests` row with
- * `merged_at` set plus a `kind='branch'` artifact whose `lines_added/removed/
- * files_changed` are NULL and NO matching `kind='pull_request'` artifact to fall
- * back to.
+ * Unlike `seedClaudeTranscripts` (which drives the real importer), some Branches
+ * assertions need a corpus the importer cannot synthesize on its own: a
+ * single-PR branch whose PR row carries only `closed_at` (FEA-2159's "Median PR
+ * size" case). That requires a `pull_requests` row with `closed_at` set plus a
+ * `kind='branch'` artifact and NO matching `kind='pull_request'` artifact. The
+ * local store derives no merged/closed state from it.
  *
  * The desktop store is a single libSQL/SQLite file (`agent-dashboard.sqlite`) in
  * the app's `--user-data-dir`, opened in WAL mode. WAL supports multi-process
@@ -25,7 +23,7 @@
  * for the rule and the `idle` opt-out.
  *
  * The db host opens + migrates the schema ASYNCHRONOUSLY after launch, so
- * `seedMergedUnenrichedSinglePrBranch` first polls `sqlite_master` until the
+ * `seedClosedAtOnlySinglePrBranch` first polls `sqlite_master` until the
  * tables exist, then commits the rows in one batch (FK-ordered: parents first).
  * Applies the same WAL/busy-timeout/foreign-keys PRAGMAs every desktop connection
  * applies (see connection-pragmas.ts) so the write behaves identically.
@@ -52,7 +50,7 @@ export function branchArtifactId(sessionId: string): string {
   return `artifact-branch-${sessionId}`;
 }
 
-export type MergedUnenrichedBranchSeed = {
+export type ClosedAtOnlyBranchSeed = {
   /** GitHub-style "owner/repo" (matched null-safely to the PR row). */
   repoFullName: string;
   /** The branch name (NOT a default branch — those are hidden by the read). */
@@ -61,8 +59,8 @@ export type MergedUnenrichedBranchSeed = {
   sessionId: string;
   /** The single linked PR's number. */
   prNumber: number;
-  /** ISO merge instant — makes the PR state MERGED (status → Merged). */
-  mergedAt: string;
+  /** ISO instant written to `pull_requests.closed_at` (read as Last-active evidence). */
+  closedAt: string;
 };
 
 export type NoPullRequestBranchSeed = {
@@ -113,15 +111,15 @@ export async function waitForBranchesSchema(
 }
 
 /**
- * Seed a MERGED, single-PR, LOC-un-enriched branch straight into the launched
- * app's SQLite store, so the app's real `getSharedBranchAnalytics` projection
- * medians it in as size 0 (FEA-2159). Polls for the migrated schema first (the
+ * Seed a single-PR branch whose PR row carries only `closed_at`, straight into
+ * the launched app's SQLite store, so the app's real `getSharedBranchAnalytics`
+ * projection runs over a branch with no stored LOC (FEA-2159). Polls for the migrated schema first (the
  * db host migrates async after launch), then inserts the four rows in one
  * FK-ordered batch.
  */
-export async function seedMergedUnenrichedSinglePrBranch(
+export async function seedClosedAtOnlySinglePrBranch(
   userDataDir: string,
-  seed: MergedUnenrichedBranchSeed,
+  seed: ClosedAtOnlyBranchSeed,
   options: {
     schemaTimeoutMs?: number;
     /**
@@ -139,13 +137,12 @@ export async function seedMergedUnenrichedSinglePrBranch(
      * `pullRequestRows` from `session_artifact_links` joined to
      * `artifacts WHERE kind='pull_request' AND pr_number IS NOT NULL` and a
      * `created`/`workspace` relation (or a `harness_pr_link` method) — the
-     * `pull_requests` table is consulted only for merged/closed lifecycle
-     * enrichment. Without this artifact the session-detail "Pull requests" row
+     * `pull_requests` table is consulted only for the PR's `closed_at`.
+     * Without this artifact the session-detail "Pull requests" row
      * renders "None".
      *
-     * Defaults to false so the FEA-2159 median-PR-size corpus (which requires NO
-     * `kind='pull_request'` artifact for its LOC fallback to stay null) is
-     * unchanged.
+     * Defaults to false so the FEA-2159 median-PR-size corpus (which seeds no
+     * `kind='pull_request'` artifact) is unchanged.
      */
     linkPullRequestArtifact?: boolean;
     /**
@@ -173,19 +170,18 @@ export async function seedMergedUnenrichedSinglePrBranch(
     await waitForBranchSchema(client, options.schemaTimeoutMs ?? 30_000);
 
     const artifactId = branchArtifactId(seed.sessionId);
-    const now = seed.mergedAt;
+    const now = seed.closedAt;
     // The session's `last_activity_at` is the retention sweep's age anchor
     // (`sweepExpiredSessions` deletes terminal sessions whose last activity
     // predates the 90-day window, cascading its links + PR rows). Stamp it to a
     // RECENT instant so the seeded session survives the boot retention sweep;
-    // this is independent of the branch's own `lastActivityAt` (which the read
-    // derives from the PR's merge instant), so the branch still reads as merged.
+    // this is independent of the branch's own `lastActivityAt`, which the read
+    // derives from the PR's `closed_at`.
     const sessionLastActivity =
       options.sessionLastActivityAt ?? new Date().toISOString();
     // One atomic batch, FK-ordered (sessions → events/artifacts → link → pull_requests).
-    // The branch artifact's lines_* are NULL (un-enriched) and there is NO
-    // kind='pull_request' artifact, so the read's PR-LOC fallback is also null —
-    // the branch is fully un-enriched, the exact FEA-2159 corpus. The synthetic
+    // The branch artifact carries no LOC and there is no kind='pull_request'
+    // artifact, matching the FEA-2159 corpus. The synthetic
     // PreToolUse row makes the session substantive under the shared FEA-3284
     // quality gate, matching a real agent run without affecting branch LOC.
     await client.batch(
@@ -197,9 +193,9 @@ export async function seedMergedUnenrichedSinglePrBranch(
                 VALUES (?, 'completed', ?, ?, ?, ?, 1)`,
           args: [
             seed.sessionId,
-            seed.mergedAt,
-            seed.mergedAt,
-            seed.mergedAt,
+            seed.closedAt,
+            seed.closedAt,
+            seed.closedAt,
             sessionLastActivity,
           ],
         },
@@ -207,10 +203,8 @@ export async function seedMergedUnenrichedSinglePrBranch(
         {
           sql: `INSERT INTO artifacts
                   (id, identity_key, kind, repo_full_name, branch_name,
-                   lines_added, lines_removed, files_changed,
                    created_at, last_seen_at, observed_at)
                 VALUES (?, ?, 'branch', ?, ?,
-                        NULL, NULL, NULL,
                         ?, ?, ?)`,
           args: [
             artifactId,
@@ -242,9 +236,9 @@ export async function seedMergedUnenrichedSinglePrBranch(
         {
           sql: `INSERT INTO pull_requests
                   (id, session_id, pr_url, pr_number, repo_full_name, branch_name,
-                   state, closed_at, merged_at, title, observed_at, created_at)
+                   closed_at, observed_at, created_at)
                 VALUES (?, ?, ?, ?, ?, ?,
-                        'closed', ?, ?, ?, ?, ?)`,
+                        ?, ?, ?)`,
           args: [
             `pr-${seed.sessionId}`,
             seed.sessionId,
@@ -252,9 +246,7 @@ export async function seedMergedUnenrichedSinglePrBranch(
             seed.prNumber,
             seed.repoFullName,
             seed.branchName,
-            seed.mergedAt,
-            seed.mergedAt,
-            `Seeded merged PR #${seed.prNumber}`,
+            seed.closedAt,
             now,
             now,
           ],
@@ -408,10 +400,15 @@ export type SessionListSeed = {
    */
   endedAt?: string | null;
   /**
-   * `last_activity_at` — the Sessions read's default-window filter AND the
-   * retention sweep's age anchor. Defaults to "now" so the row is in-window on
-   * every range and survives the boot retention sweep (which deletes terminal
-   * sessions whose last activity predates the 90-day window).
+   * `last_activity_at` — the Sessions read's default-window filter, its default
+   * SORT key, AND the retention sweep's age anchor. Defaults to "now" so the row
+   * is in-window on every range and survives the boot retention sweep (which
+   * deletes terminal sessions whose last activity predates the 90-day window).
+   *
+   * The sort half is what a LIST spec needs: `listSqliteSessionCursorPage`
+   * ORDERs BY this column bare, so this — not `at`, and not {@link
+   * SessionListSeed.activityEventAt} — is the lever that decides which row lands
+   * on which page. Seed it alongside `at` on every row of an ordered corpus.
    */
   lastActivityAt?: string;
   /**
@@ -435,6 +432,8 @@ export type SessionListSeed = {
    * NULL, so every existing seed is byte-unchanged.
    */
   awaitingInputSince?: string | null;
+  /** ISS-12251: `sessions.created_at`. Defaults to NULL, as an unimported row. */
+  createdAt?: string;
   /**
    * FEA-3343 / FEA-3284: seed a genuinely IDLE (0-turn / 0-token) session — the
    * "phantom" row the default `quality=substantive` list hides. Defaults to
@@ -475,18 +474,25 @@ export type SessionListSeed = {
    * ISS-4902: an ISO instant for a SECOND synthetic tool event, on top of the
    * one stamped at `at`.
    *
-   * This is the ONE lever that moves the PROJECTED `lastActivityAt`. The desktop
-   * read does NOT project the `sessions.last_activity_at` column — `sync-source.ts`
-   * re-derives the field per row as `max(started_at, max(events.created_at))`,
-   * so a `lastActivityAt` seed alone leaves the projected value pinned to `at`
-   * and any surface deriving a span from it (the session-detail timeline axis,
-   * whose end is `resolveSessionDurationEnd`/`resolveSessionTimelineAxisEnd`
-   * over that projected value) collapses to a 0-length window.
+   * This is the ONE lever that moves the PROJECTED `lastActivityAt` — the value
+   * the FULL HYDRATION path renders. That path loads the event rows and derives
+   * the field as `max(started_at, max(events.created_at))` rather than reading
+   * the stored column (`assembleSyncedSessions` sets `preferStoredLastActivityAt`
+   * only on the event-less usage load), so a `lastActivityAt` seed alone leaves
+   * the projected value pinned to `at` and any surface deriving a span from it
+   * (the session-detail timeline axis, whose end is
+   * `resolveSessionDurationEnd`/`resolveSessionTimelineAxisEnd` over that
+   * projected value) collapses to a 0-length window.
+   *
+   * It is NOT the lever for the LIST. `listSqliteSessionCursorPage` ORDERs BY
+   * the denormalized `sessions.last_activity_at` column, so a spec pinning which
+   * row lands on which page seeds {@link SessionListSeed.lastActivityAt}, not
+   * this.
    *
    * Seed this at the instant the session's activity really ends to give the
    * detail a non-degenerate calendar span. The column-level `lastActivityAt`
-   * remains a separate lever (the list date-window filter + the retention
-   * sweep's age anchor) and should normally be set to the same instant.
+   * remains a separate lever (the list date-window filter, the list sort + the
+   * retention sweep's age anchor) and should normally be set to the same instant.
    * Defaults to undefined (one event, at `at`).
    */
   activityEventAt?: string;
@@ -532,9 +538,10 @@ export type CacheWriteTtlSplitSeed = {
 /**
  * Seed `sessions` rows straight into the launched app's SQLite store so the real
  * Sessions list (and the Insights bounded table) projects them — WITHOUT the
- * transcript importer, whose read-your-writes WAL race quarantined
- * `sessions-flow.spec.ts` (FEA-2187). Unlike Branches, the Sessions read path
- * projects the `sessions` table directly (no artifact/link join). Seeds while the
+ * transcript importer, so a caller's failure is the read path and never the
+ * ingest (`sessions-flow.spec.ts` is the spec that does cover that ingest).
+ * Unlike Branches, the Sessions read path projects the `sessions` table directly
+ * (no artifact/link join). Seeds while the
  * app is DOWN (no cross-process WAL contention), then checkpoints so the next
  * boot reads the rows from the main db file.
  *
@@ -547,8 +554,8 @@ export type CacheWriteTtlSplitSeed = {
  *
  * Pass `idle: true` to make a row a genuine phantom session: it withholds BOTH
  * substantive signals, so the row stays 0-turn / 0-tool and renders with the
- * canonical `IdleConcept.PhantomSession` badge — the case
- * `sessions-idle-badge.spec.ts` pins. (Since FEA-4194 reverted the quality
+ * canonical `IdleConcept.PhantomSession` badge. The shared-only idle-badge
+ * spec was removed in ISS-10527. (Since FEA-4194 reverted the quality
  * segment the default list no longer HIDES idle rows; it shows them, badged.)
  */
 export async function seedSessionsList(
@@ -568,9 +575,7 @@ export async function seedSessionsList(
       const row = sessionRowBatchItem(session, at, now);
       // An idle seed must withhold EVERY substantive signal, not just one:
       // `isSubstantiveSession` ORs turns/tokens/toolUse, so leaving the tool
-      // event in place would make the "idle" row substantive anyway and the
-      // idle-badge assertion in sessions-idle-badge.spec.ts would silently pass
-      // for the wrong reason.
+      // event in place would make the "idle" row substantive anyway.
       if (session.idle) {
         return [row];
       }
@@ -856,15 +861,13 @@ export async function seedFutureMigrationRow(
  * `sync-source.ts` derives a session's `prs` from `session_artifact_links` joined
  * to `artifacts WHERE kind='pull_request' AND pr_number IS NOT NULL`, gated on a
  * `created`/`workspace` relation or a `harness_pr_link` method — never from the
- * `pull_requests` table, which it reads only for merged/closed lifecycle facts.
+ * `pull_requests` table, which it reads only for `closed_at`.
  * `method='harness_pr_link'` is the real observation shape for a PR the harness
  * opened, and it satisfies the gate from both sides.
  *
- * `pr_state` is what the pill's status word is derived from; `lines_*` are left
- * NULL so the artifact stays LOC-un-enriched like its branch sibling.
  */
 function pullRequestArtifactBatchItems(
-  seed: MergedUnenrichedBranchSeed,
+  seed: ClosedAtOnlyBranchSeed,
   observedAt: string
 ): Array<{ sql: string; args: Array<string | number> }> {
   const artifactId = `artifact-pr-${seed.sessionId}`;
@@ -872,11 +875,9 @@ function pullRequestArtifactBatchItems(
     {
       sql: `INSERT INTO artifacts
               (id, identity_key, kind, repo_full_name, branch_name, pr_number,
-               pr_state, url, title, lines_added, lines_removed, files_changed,
-               created_at, last_seen_at, observed_at)
+               url, title, created_at, last_seen_at, observed_at)
             VALUES (?, ?, 'pull_request', ?, ?, ?,
-                    'merged', ?, ?, NULL, NULL, NULL,
-                    ?, ?, ?)`,
+                    ?, ?, ?, ?, ?)`,
       args: [
         artifactId,
         `pull_request:${seed.repoFullName}:${seed.prNumber}`,
@@ -884,7 +885,7 @@ function pullRequestArtifactBatchItems(
         seed.branchName,
         seed.prNumber,
         `https://github.com/${seed.repoFullName}/pull/${seed.prNumber}`,
-        `Seeded merged PR #${seed.prNumber}`,
+        `Seeded PR #${seed.prNumber}`,
         observedAt,
         observedAt,
         observedAt,
@@ -1007,8 +1008,8 @@ function sessionRowBatchItem(
     sql: `INSERT INTO sessions
             (id, name, status, started_at, ended_at, updated_at,
              last_activity_at, awaiting_input_since, cwd, repo_full_name,
-             cost_usd_estimated, billing_mode, data_revision)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+             cost_usd_estimated, billing_mode, created_at, data_revision)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
     args: [
       session.sessionId,
       session.name ?? null,
@@ -1024,6 +1025,7 @@ function sessionRowBatchItem(
       session.repoFullName ?? null,
       session.estimatedCost ?? null,
       session.billingMode ?? null,
+      session.createdAt ?? null,
     ],
   };
 }

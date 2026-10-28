@@ -82,6 +82,54 @@ export type TokenTrendResponse = {
    * Convenience for frontends building a model legend.
    */
   models: string[];
+  /**
+   * ISS-6887 — the `sessionStartedAt` window the read ACTUALLY applied, as ISO
+   * strings. `since` is always present server-side because the read always
+   * resolves a lower bound: the caller's `?since=` verbatim when supplied, else
+   * a `DEFAULT_TOKEN_TREND_LOOKBACK_DAYS`-day default anchored on `until` (or
+   * now). `until` is omitted when the read was unbounded above.
+   *
+   * Before this the default window was invisible on the wire: the shipped
+   * clients send neither param, so a component with older usage rendered a
+   * 90-day slice with nothing saying so, and the response was indistinguishable
+   * from one covering the component's whole history.
+   *
+   * Additive and OPTIONAL so a version-skewed reader that predates the field —
+   * or a response served by an older API — sees exactly today's shape.
+   */
+  appliedWindow?: TokenTrendWindowRange;
+  /**
+   * ISS-6887 — TRUE when the read hit its raw-row ceiling
+   * (`MAX_TOKEN_TREND_USAGE_ROWS`) and therefore THIS RESPONSE carries only the
+   * most recent sessions inside {@link appliedWindow}, not every session in it.
+   * Since ISS-9851 a response that sets it also carries {@link nextCursor}, so
+   * the rest of the window is readable; a reader that does not follow the
+   * cursor sees exactly the disclosure it always did.
+   *
+   * Stated by the PRODUCER off the read whose `take` actually bound, never
+   * re-derived from `points.length` — points are (session × model) pairs, so
+   * their count has no fixed relation to the row ceiling.
+   *
+   * Additive/optional and OMITTED (not `false`) when nothing was dropped, so
+   * absence stays skew-safe "not truncated".
+   */
+  truncated?: boolean;
+  /**
+   * ISS-9851 — pass back as `?cursor=` (with the same `since`/`until`) to read
+   * the sessions after this response's last one. Omitted on the last page.
+   * Opaque: it names a session position, never a row, so no session is ever
+   * split across two responses.
+   */
+  nextCursor?: string;
+};
+
+/**
+ * The resolved `sessionStartedAt` bounds of a token-trend read (ISS-6887).
+ * ISO-8601 strings; `until` is omitted when the read was unbounded above.
+ */
+export type TokenTrendWindowRange = {
+  since: string;
+  until?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -326,4 +374,59 @@ export function usageVersionIdentityKey(
     slug,
     resolveVersionFingerprint(componentVersionHash, definitionHash)
   );
+}
+
+/**
+ * ISS-10815: the inverse of {@link fingerprintIdentityKey} — decode a
+ * NAME-QUALIFIED identity id (`${kind}::${name}@${fingerprint}`) back into its
+ * three parts.
+ *
+ * The catalog list publishes that id, beside a BARE-HASH `slug`, for any row
+ * with no inventory UUID behind it — a usage-only entry's `id` is seeded with
+ * `fingerprintIdentityKey`. Until this existed it was the one published spelling
+ * of a component's identity that no endpoint would resolve: passing it to the
+ * detail read decoded `name@hash` as a whole name, matched nothing, and 404'd
+ * the very row the list had just described.
+ *
+ * Deliberately a SEPARATE decoder rather than a widening of
+ * {@link decodeComponentHashKey}: that one's "exactly one of fingerprint/key is
+ * non-null" contract is relied on by the desktop inventory resolver and the
+ * breadcrumb's digest test, and a name-qualified id must not start reading as a
+ * bare content hash there. Returns null for anything that is not this shape —
+ * no `::`, an empty name, or a trailing segment that is not a full 64-hex
+ * fingerprint — so a caller falls back to {@link decodeComponentHashKey} and a
+ * legacy `${kind}::${name}` link containing an `@` still decodes as a name.
+ *
+ * A MATCH IS A SHAPE, NOT AN IDENTITY (whitlockk). `componentKey` is unconstrained
+ * against this shape, so a legacy component named `notify@<64 hex>` decodes here
+ * as key `notify` + that fingerprint, indistinguishable from the qualified id.
+ * This decoder is pure and cannot settle that — it has no inventory to ask — and
+ * deliberately does not guess: the API-side resolver
+ * (`compoundLegacyNameScope`, apps/api/app/agent-components/content-hash-identity.ts)
+ * probes the full compound name against live inventory FIRST and resolves it as
+ * the legacy component it really is. Any other consumer of this decoder owes the
+ * same probe before treating the split as the component's identity.
+ */
+export function decodeFingerprintIdentityKey(id: string): {
+  kind: string;
+  key: string;
+  fingerprint: string;
+} | null {
+  const decoded = decodeComponentSlug(id);
+  if (!decoded) {
+    return null;
+  }
+  const at = decoded.key.lastIndexOf("@");
+  if (at <= 0) {
+    return null;
+  }
+  const fingerprint = decoded.key.slice(at + 1);
+  if (!CONTENT_HASH_KEY_RE.test(fingerprint)) {
+    return null;
+  }
+  return {
+    kind: decoded.kind,
+    key: decoded.key.slice(0, at),
+    fingerprint,
+  };
 }

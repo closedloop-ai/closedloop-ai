@@ -1,4 +1,6 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
+
 export type HttpRouteHandler = (
-  req: import("node:http").IncomingMessage,
-  res: import("node:http").ServerResponse
+  req: IncomingMessage,
+  res: ServerResponse
 ) => void | Promise<void>;

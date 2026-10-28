@@ -20,8 +20,7 @@ import proxy from "@/proxy";
  * signed-IN user bounced back through GitHub OAuth on every settings visit.
  *
  * Only Clerk's `authMiddleware` wrapper is replaced (it cannot run under vitest,
- * and its callback plumbing is not what is under test), following the sibling
- * `proxy-gateway-guard-wiring.test.ts`.
+ * and its callback plumbing is not what is under test).
  */
 
 vi.mock("@repo/auth/proxy", () => ({

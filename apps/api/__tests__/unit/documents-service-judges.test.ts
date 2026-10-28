@@ -139,7 +139,7 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
     description:
       "Happy path returns JudgeFeedbackItem array from JudgeScore rows",
     setupMocks: () => {
-      mockWithDb.mockImplementation((callback: any) =>
+      mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
         callback({
           artifactEvaluation: {
             findFirst: vi.fn().mockResolvedValue({
@@ -162,7 +162,7 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
     description:
       "When no evaluation exists in database, returns not_found status",
     setupMocks: () => {
-      mockWithDb.mockImplementation((callback: any) =>
+      mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
         callback({
           artifactEvaluation: {
             findFirst: vi.fn().mockResolvedValue(null),
@@ -177,7 +177,7 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
     description:
       "When evaluation exists but no judge scores, returns empty array",
     setupMocks: () => {
-      mockWithDb.mockImplementation((callback: any) =>
+      mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
         callback({
           artifactEvaluation: {
             findFirst: vi.fn().mockResolvedValue({
@@ -231,7 +231,7 @@ describe("documentEvaluationService.getEvaluationFeedback (PLAN)", () => {
       judgeScores: [MOCK_JUDGE_SCORE_ROW],
     });
 
-    mockWithDb.mockImplementation((callback: any) =>
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
       callback({ artifactEvaluation: { findFirst } })
     );
 
@@ -261,7 +261,7 @@ describe("documentEvaluationService.getEvaluationFeedback (PLAN)", () => {
     // the direct organizationId column filter excludes cross-tenant rows.
     const findFirst = vi.fn().mockResolvedValue(null);
 
-    mockWithDb.mockImplementation((callback: any) =>
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
       callback({ artifactEvaluation: { findFirst } })
     );
 
@@ -284,7 +284,7 @@ describe("documentEvaluationService.getEvaluationFeedback (PLAN)", () => {
 
   it("queries only PLAN evaluations via reportType", async () => {
     const findFirst = vi.fn().mockResolvedValue(null);
-    mockWithDb.mockImplementation((callback: any) =>
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
       callback({
         artifactEvaluation: { findFirst },
       })
@@ -319,7 +319,7 @@ describe("documentEvaluationService.getEvaluationFeedback (PLAN)", () => {
       prompt: { id: "prompt-123", name: "DRY Principle Judge" },
     });
 
-    mockWithDb.mockImplementation((callback: any) =>
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
       callback({
         artifactEvaluation: {
           findFirst: vi.fn().mockResolvedValue({
@@ -362,7 +362,7 @@ describe("documentEvaluationService.getEvaluationFeedback (PRD)", () => {
 
   it("queries only PRD evaluations via reportType", async () => {
     const findFirst = vi.fn().mockResolvedValue(null);
-    mockWithDb.mockImplementation((callback: any) =>
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
       callback({
         artifactEvaluation: { findFirst },
       })
@@ -397,7 +397,7 @@ describe("documentEvaluationService.getEvaluationFeedback (PRD)", () => {
       prompt: null,
     });
 
-    mockWithDb.mockImplementation((callback: any) =>
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
       callback({
         artifactEvaluation: {
           findFirst: vi.fn().mockResolvedValue({
@@ -432,7 +432,7 @@ describe("documentEvaluationService.getEvaluationFeedback (PRD)", () => {
   });
 
   it("returns not_found when no PRD evaluation exists", async () => {
-    mockWithDb.mockImplementation((callback: any) =>
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
       callback({
         artifactEvaluation: {
           findFirst: vi.fn().mockResolvedValue(null),
@@ -461,7 +461,7 @@ describe("documentEvaluationService.getEvaluationFeedback (CODE)", () => {
 
   it("queries only CODE evaluations via reportType", async () => {
     const findFirst = vi.fn().mockResolvedValue(null);
-    mockWithDb.mockImplementation((callback: any) =>
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
       callback({
         artifactEvaluation: { findFirst },
       })
@@ -497,7 +497,7 @@ describe("documentEvaluationService.getEvaluationFeedback (error path)", () => {
   });
 
   it("returns error status when database throws", async () => {
-    mockWithDb.mockImplementation((callback: any) =>
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
       callback({
         artifactEvaluation: {
           findFirst: vi.fn().mockRejectedValue(new Error("DB connection lost")),
@@ -518,7 +518,7 @@ describe("documentEvaluationService.getEvaluationFeedback (error path)", () => {
   });
 
   it("returns error status with stringified error when non-Error is thrown", async () => {
-    mockWithDb.mockImplementation((callback: any) =>
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
       callback({
         artifactEvaluation: {
           findFirst: vi.fn().mockRejectedValue("unexpected string error"),
@@ -555,7 +555,9 @@ describe("documentEvaluationService.getBatchJudgeScores", () => {
    */
   function setupTwoStepMock(
     artifactIds: string[],
-    evaluations: ReturnType<typeof buildEvalRow>[]
+    evaluations: (ReturnType<typeof buildEvalRow> & {
+      judgeScores: ReturnType<typeof createMockJudgeScoreRow>[];
+    })[]
   ) {
     const artifactFindMany = vi
       .fn()
@@ -563,10 +565,10 @@ describe("documentEvaluationService.getBatchJudgeScores", () => {
     const evaluationFindMany = vi.fn().mockResolvedValue(evaluations);
 
     mockWithDb
-      .mockImplementationOnce((callback: any) =>
+      .mockImplementationOnce((callback: (db: unknown) => unknown) =>
         callback({ artifact: { findMany: artifactFindMany } })
       )
-      .mockImplementationOnce((callback: any) =>
+      .mockImplementationOnce((callback: (db: unknown) => unknown) =>
         callback({ artifactEvaluation: { findMany: evaluationFindMany } })
       );
 
@@ -649,10 +651,7 @@ describe("documentEvaluationService.getBatchJudgeScores", () => {
     };
 
     // Prisma returns results ordered by createdAt desc — newer first
-    setupTwoStepMock(["artifact-shared"], [
-      newerEvaluation,
-      olderEvaluation,
-    ] as any);
+    setupTwoStepMock(["artifact-shared"], [newerEvaluation, olderEvaluation]);
 
     const result = await documentEvaluationService.getBatchJudgeScores(
       "project-123",
@@ -763,10 +762,10 @@ describe("documentEvaluationService.getBatchJudgeScores", () => {
       ],
     };
 
-    setupTwoStepMock(["artifact-plan-1", "artifact-prd-1"], [
-      planEvaluation,
-      prdEvaluation,
-    ] as any);
+    setupTwoStepMock(
+      ["artifact-plan-1", "artifact-prd-1"],
+      [planEvaluation, prdEvaluation]
+    );
 
     const result = await documentEvaluationService.getBatchJudgeScores(
       "project-123",
@@ -807,7 +806,7 @@ describe("documentEvaluationService.getBatchJudgeScores", () => {
       ],
     };
 
-    setupTwoStepMock(["artifact-prd-2"], [prdEvaluation] as any);
+    setupTwoStepMock(["artifact-prd-2"], [prdEvaluation]);
 
     const result = await documentEvaluationService.getBatchJudgeScores(
       "project-123",
@@ -845,7 +844,7 @@ describe("documentEvaluationService.getBatchJudgeScores", () => {
       ],
     };
 
-    setupTwoStepMock(["artifact-code-1"], [codeEvaluation] as any);
+    setupTwoStepMock(["artifact-code-1"], [codeEvaluation]);
 
     const result = await documentEvaluationService.getBatchJudgeScores(
       "project-123",
@@ -897,7 +896,7 @@ describe("documentEvaluationService.getBatchJudgeScores", () => {
       ],
     };
 
-    setupTwoStepMock(["artifact-plan-2"], [planEvaluation] as any);
+    setupTwoStepMock(["artifact-plan-2"], [planEvaluation]);
 
     const result = await documentEvaluationService.getBatchJudgeScores(
       "project-123",

@@ -7,8 +7,9 @@ import {
 import {
   DOCUMENT_STATUS_LABELS,
   ISSUE_STATUS_LABELS,
-} from "@repo/app/projects/lib/project-constants";
+} from "@repo/app/shared/lib/artifact-status-labels";
 import { NO_MEASURE_DASH_COLOR } from "@repo/design-system/components/ui/internal/status-icon-shared";
+import { StatusIcon } from "@repo/design-system/components/ui/status-icon";
 import { StatusDash } from "@repo/design-system/components/ui/status-icon-primitives";
 import { StatusPercentageIcon } from "@repo/design-system/components/ui/status-percentage-icon";
 import { render } from "@testing-library/react";
@@ -63,6 +64,34 @@ describe("DocumentStatusIcon", () => {
     expect(container.querySelector("path")).toBeNull();
     expect(container.querySelectorAll("circle").length).toBe(1);
   });
+
+  it("keeps caller spread overrides for the filled terminal mark", () => {
+    const { container } = render(
+      <DocumentStatusIcon
+        fill="rgb(1, 2, 3)"
+        status={DocumentStatus.Executed}
+      />
+    );
+
+    expect(container.querySelector("circle")?.getAttribute("fill")).toBe(
+      "rgb(1, 2, 3)"
+    );
+  });
+
+  it.each(["__proto__", "constructor", "toString"])(
+    "treats prototype-chain status %s as unknown",
+    (status) => {
+      const { container } = render(
+        <DocumentStatusIcon status={status as DocumentStatus} />
+      );
+
+      expect(svgOf(container).getAttribute("aria-label")).toBe("Status");
+      expect(container.querySelector("path")).toBeNull();
+      expect(container.querySelector("circle")?.getAttribute("stroke")).toBe(
+        "var(--progress)"
+      );
+    }
+  );
 });
 
 describe("IssueStatusIcon", () => {
@@ -94,6 +123,31 @@ describe("IssueStatusIcon", () => {
     const track = container.querySelector("circle");
     expect(track?.getAttribute("stroke-dasharray")).toBe("3 3");
   });
+
+  it("keeps caller spread overrides for the filled terminal mark", () => {
+    const { container } = render(
+      <IssueStatusIcon fill="rgb(4, 5, 6)" status={IssueStatus.Done} />
+    );
+
+    expect(container.querySelector("circle")?.getAttribute("fill")).toBe(
+      "rgb(4, 5, 6)"
+    );
+  });
+
+  it.each(["__proto__", "constructor", "toString"])(
+    "treats prototype-chain status %s as unknown",
+    (status) => {
+      const { container } = render(
+        <IssueStatusIcon status={status as IssueStatus} />
+      );
+
+      expect(svgOf(container).getAttribute("aria-label")).toBe("Status");
+      expect(container.querySelector("path")).toBeNull();
+      expect(container.querySelector("circle")?.getAttribute("stroke")).toBe(
+        "var(--progress)"
+      );
+    }
+  );
 });
 
 describe("empty population vs 0% vs Backlog (ISS-4835 / ISS-4812)", () => {
@@ -158,6 +212,16 @@ describe("empty population vs 0% vs Backlog (ISS-4835 / ISS-4812)", () => {
       "No documents or issues yet"
     );
     expect(svgOf(emptyMark()).getAttribute("role")).toBe("img");
+  });
+
+  it("keeps caller spread overrides for the complete percentage mark", () => {
+    const { container } = render(
+      <StatusPercentageIcon fill="rgb(7, 8, 9)" size={16} value={100} />
+    );
+
+    expect(container.querySelector("circle")?.getAttribute("fill")).toBe(
+      "rgb(7, 8, 9)"
+    );
   });
 });
 
@@ -241,5 +305,149 @@ describe("ArtifactStatusIcon", () => {
     const label = svgOf(container).getAttribute("aria-label");
     expect(label).not.toBe("Draft");
     expect(label).toBe("Status");
+  });
+});
+
+describe("one mark per meaning across the status families (ISS-9557)", () => {
+  /**
+   * The marks more than one vocabulary draws. Each row is a mark and the
+   * statuses that reach it: a Document status, an Issue status, and the generic
+   * phase status `StatusIcon` renders for branch and session rows.
+   *
+   * These three families each used to hand-write the (percentage, tone, glyph)
+   * tuple for these rows against the same primitives, so a row could be edited
+   * in one copy and left in the other two — the divergence this pins shut. The
+   * comparison is on what each icon DRAWS, with the accessible name excluded,
+   * because the name is exactly the part that must stay per-artifact.
+   */
+  const SHARED_MARKS = [
+    {
+      mark: "complete",
+      document: DocumentStatus.Executed,
+      issue: IssueStatus.Done,
+      phase: "complete",
+    },
+    {
+      mark: "terminal by decision",
+      document: DocumentStatus.Obsolete,
+      issue: IssueStatus.Canceled,
+      phase: "wont-do",
+    },
+    {
+      mark: "needs attention",
+      document: DocumentStatus.ChangesRequested,
+      issue: IssueStatus.Blocked,
+      phase: null,
+    },
+    {
+      mark: "not started",
+      document: DocumentStatus.Draft,
+      issue: IssueStatus.Todo,
+      phase: "todo",
+    },
+    {
+      mark: "half done",
+      document: DocumentStatus.InReview,
+      issue: IssueStatus.InProgress,
+      phase: "in-progress",
+    },
+    {
+      mark: "fully measured",
+      document: DocumentStatus.Approved,
+      issue: null,
+      phase: "executed",
+    },
+    {
+      mark: "lowest commitment",
+      document: null,
+      issue: IssueStatus.Backlog,
+      phase: "backlog",
+    },
+  ] as const;
+
+  /** What an icon draws, with the accessible name and every svg attribute out. */
+  function markOf(container: HTMLElement): string {
+    return svgOf(container).innerHTML;
+  }
+
+  it.each(SHARED_MARKS)(
+    "draws the same $mark mark in every vocabulary that has it",
+    ({ document: documentStatus, issue, phase }) => {
+      const drawn: string[] = [];
+      if (documentStatus) {
+        drawn.push(
+          markOf(
+            render(<DocumentStatusIcon status={documentStatus} />).container
+          )
+        );
+      }
+      if (issue) {
+        drawn.push(
+          markOf(render(<IssueStatusIcon status={issue} />).container)
+        );
+      }
+      if (phase) {
+        drawn.push(markOf(render(<StatusIcon status={phase} />).container));
+      }
+
+      expect(drawn.length).toBeGreaterThan(1);
+      expect(new Set(drawn).size).toBe(1);
+    }
+  );
+
+  it("still names each shared mark in its own artifact's words", () => {
+    // The positive sibling to the identity assertions above: agreeing on the
+    // mark must not have collapsed the two vocabularies into one sentence.
+    const asDocument = svgOf(
+      render(<DocumentStatusIcon status={DocumentStatus.Executed} />).container
+    ).getAttribute("aria-label");
+    const asIssue = svgOf(
+      render(<IssueStatusIcon status={IssueStatus.Done} />).container
+    ).getAttribute("aria-label");
+
+    expect(asDocument).toBe(DOCUMENT_STATUS_LABELS[DocumentStatus.Executed]);
+    expect(asIssue).toBe(ISSUE_STATUS_LABELS[IssueStatus.Done]);
+    expect(asDocument).not.toBe(asIssue);
+  });
+
+  it("keeps In review a DIFFERENT mark for a Document than for an Issue", () => {
+    // The two vocabularies share this word and not this mark: a Document in
+    // review is halfway through authoring, an Issue in review is three quarters
+    // through delivery. A shared appearance name has to keep that expressible,
+    // so this is the assertion that stops the reconciliation flattening it.
+    const asDocument = markOf(
+      render(<DocumentStatusIcon status={DocumentStatus.InReview} />).container
+    );
+    const asIssue = markOf(
+      render(<IssueStatusIcon status={IssueStatus.InReview} />).container
+    );
+
+    expect(asDocument).not.toBe(asIssue);
+  });
+
+  it("draws a status string outside the enum as the blank ring, not a real mark", () => {
+    // Reachable from persisted or wire data only. Inequality against Draft is
+    // not enough on its own: repointing the fallback at a glyph would keep that
+    // green while an unknown status rendered as a failure bolt. So this pins
+    // WHICH mark it is — a bare solid track, which is what separates
+    // `blank-ring` from `empty-ring` (tinted track) and `dashed-ring` (dashes).
+    const unknown = render(
+      <DocumentStatusIcon status={"NOT_A_STATUS" as DocumentStatus} />
+    ).container;
+    const draft = render(
+      <DocumentStatusIcon status={DocumentStatus.Draft} />
+    ).container;
+
+    expect(markOf(unknown)).not.toBe(markOf(draft));
+    expect(unknown.querySelector("path")).toBeNull();
+    const track = unknown.querySelectorAll("circle");
+    expect(track).toHaveLength(1);
+    expect(track[0].getAttribute("stroke")).toBe("var(--progress)");
+    expect(track[0].getAttribute("stroke-dasharray")).toBeNull();
+
+    expect(svgOf(unknown).getAttribute("aria-label")).toBe("Status");
+    expect(svgOf(draft).getAttribute("aria-label")).toBe(
+      DOCUMENT_STATUS_LABELS[DocumentStatus.Draft]
+    );
   });
 });

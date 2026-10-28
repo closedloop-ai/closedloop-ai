@@ -9,6 +9,7 @@
 
 import type { AgentComponentDetail } from "@repo/api/src/types/agent-component";
 import { resolveLocPerDollar } from "@repo/api/src/utils/loc-per-dollar";
+import { packInstallersFromNames } from "./pack-installers";
 import type { PackPerformance, PackTeamUsage } from "./pack-view";
 
 /**
@@ -29,16 +30,33 @@ export function agentComponentToPackAnalytics(
   // pack — NOT the version AUTHORS in `collaborators` (discoverer + editors).
   // Mapping authors → installers corrupts the adoption model: it would show
   // authors as users, omit real users who never edited the definition, and
-  // inflate `installedCount`, popular sorting, and teammate recommendations. The
-  // per-user usage roster is a separate source not computed here yet (FEA-4098
-  // Slice 4), so the roster stays unavailable rather than lying. Device adoption
-  // breadth (`deviceCount`) is honest and still surfaced.
+  // inflate `installedCount`, popular sorting, and teammate recommendations.
+  //
+  // ISS-6768: the roster itself now travels on the detail contract
+  // (`installers`), folded by the cloud from the identity's live inventory rows
+  // by the SAME producer that fills the desktop overlay's
+  // `PackAnalyticsResponse.owners`. Before this the mapper hardcoded an empty
+  // roster, so one pack reported a populated "Used by" stack on desktop and
+  // "Used by (0)" on web.
+  //
+  // `installers` is optional on the wire, and its ABSENCE means the producer
+  // could not compute a roster — a rolling deploy, or a producer that does not
+  // carry one. Coercing that to `[]` would re-tell the same lie in the other
+  // direction: `Used by (0)` on a pack whose device adoption is nonzero. So the
+  // unavailable case omits both fields and `PackTeamUsage` carries it through to
+  // the render; only an explicit `[]` from the producer is a measured zero.
+  // `deviceCount` remains device-level adoption breadth, not a headcount.
   const trend = [...component.trend];
+  const installers =
+    component.installers === undefined
+      ? undefined
+      : packInstallersFromNames(component.installers);
 
   return {
     teamUsage: {
-      installers: [],
-      installedCount: 0,
+      ...(installers === undefined
+        ? {}
+        : { installedCount: installers.length, installers }),
       deviceCount: component.computeTargetIds.length,
       installTrend: trend,
     },
@@ -68,6 +86,10 @@ export function agentComponentToPackAnalytics(
       // print a capped scan as an exact count; folding an omission to `false`
       // would make it assert full-cohort coverage under version skew instead.
       mergedPrsTruncated: component.mergedPrsTruncated,
+      // ISS-9853: carried, NOT defaulted — same reason as the flag above. A
+      // producer that omits it did not measure its comparator's coverage, and
+      // folding that to `null` would assert a whole-window comparison.
+      baselineSampleSize: component.baselineSampleSize,
       qualityScore: component.qualityScore,
       qualityDelta: component.qualityDelta,
       usageTrend: trend,

@@ -1,4 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  SessionPrLinkAudience,
+  sessionPrLinkKindWhere,
+} from "@/lib/session-pr-links";
 
 vi.mock("@repo/database", async () => {
   const { createDatabaseMockModule } = await import(
@@ -9,72 +13,15 @@ vi.mock("@repo/database", async () => {
   });
 });
 
-vi.mock("@repo/github", async () => {
-  const actual =
-    await vi.importActual<typeof import("@repo/github")>("@repo/github");
-  return {
-    ...actual,
-    getSinglePullRequestWithProviderResult: vi.fn(),
-  };
-});
-
-const installationAuthMocks = vi.hoisted(() => ({
-  getInstallationOctokit: vi.fn(),
+const sessionDetailReadMocks = vi.hoisted(() => ({
+  readAgentSessionDetailInputs: vi.fn(),
+  projectAgentSessionDetail: vi.fn(),
 }));
 
-vi.mock("@repo/github/installation-auth", () => ({
-  getInstallationOctokit: installationAuthMocks.getInstallationOctokit,
-}));
-
-// Marker client returned by the mocked resolver: provider-read mocks must
-// receive this exact object as their first argument (PLN-1525).
-const INSTALLATION_OCTOKIT = { marker: "installation-octokit" };
-
-const syncServiceMocks = vi.hoisted(() => ({
-  refreshTombstonedBranchPullRequest: vi.fn(),
-}));
-
-vi.mock("@/app/integrations/github/sync-service", () => ({
-  GitHubServerSyncReason: {
-    AlreadyRefreshing: "already_refreshing",
-    CredentialDecryptionFailed: "credential_decryption_failed",
-    CredentialExpired: "credential_expired",
-    CredentialInsufficientScope: "credential_insufficient_scope",
-    CredentialRevoked: "credential_revoked",
-    CrossUserDenied: "cross_user_denied",
-    GuardedWriteFailed: "guarded_write_failed",
-    InvalidRepositoryFullName: "invalid_repository_full_name",
-    NoActiveRepository: "no_active_repository",
-    NoCredential: "no_credential",
-    NoCurrentPullRequest: "no_current_pull_request",
-    NoEligibleSessionReference: "no_eligible_session_reference",
-    NoTombstonedRepository: "no_tombstoned_repository",
-    ProviderRateLimited: "provider_rate_limited",
-    ProviderUnavailable: "provider_unavailable",
-    Success: "success",
-    Unsupported: "unsupported",
-    Unknown: "unknown",
-  },
-  GitHubServerSyncStatus: {
-    Failed: "failed",
-    NotApplicable: "not_applicable",
-    Refreshed: "refreshed",
-    Retryable: "retryable",
-  },
-  githubServerSyncService: {
-    refreshTombstonedBranchPullRequest:
-      syncServiceMocks.refreshTombstonedBranchPullRequest,
-  },
-}));
-
-const agentSessionsServiceMocks = vi.hoisted(() => ({
-  findSessionDetail: vi.fn(),
-}));
-
-vi.mock("@/app/agent-sessions/service", () => ({
-  agentSessionsService: {
-    findSessionDetail: agentSessionsServiceMocks.findSessionDetail,
-  },
+vi.mock("@/app/agent-sessions/service/session-detail-read", () => ({
+  readAgentSessionDetailInputs:
+    sessionDetailReadMocks.readAgentSessionDetailInputs,
+  projectAgentSessionDetail: sessionDetailReadMocks.projectAgentSessionDetail,
 }));
 
 import { BranchHeadShaSource } from "@repo/api/src/types/artifact";
@@ -86,8 +33,6 @@ import {
   BranchLifecyclePhase,
   BranchLinkedArtifactEvidenceKind,
   BranchParticipationKind,
-  BranchRefreshReason,
-  BranchRefreshStatus,
   BranchStatus,
   BranchViewerScope,
 } from "@repo/api/src/types/branch";
@@ -99,17 +44,12 @@ import {
   BranchVisibleLifecyclePhase,
 } from "@repo/api/src/types/branch-phase-attribution";
 import { GitHubPRState } from "@repo/api/src/types/github";
-import { GitHubFetchTrigger } from "@repo/api/src/types/github-read-model";
 import {
   ArtifactRefRelation,
   SessionArtifactLinkKind,
   SessionPrRelationType,
 } from "@repo/api/src/types/session-artifact-link";
-import { ArtifactType, GitHubInstallationStatus } from "@repo/database";
-import {
-  GitHubProviderResultStatus,
-  getSinglePullRequestWithProviderResult,
-} from "@repo/github";
+import { ArtifactType } from "@repo/database";
 import { rollupBranchActivity } from "@repo/lib/branches/activity-rollup";
 import {
   branchCandidateSql,
@@ -122,45 +62,33 @@ import {
   makeCurrentPullRequestDetail,
   makeReview,
   makeSessionLink,
-  makeTokenEvent,
+  makeSuccessfulReviewSessionLink,
   mockBranchCandidateIds,
   mockBranchCandidatePage,
-  mockTokenEvents,
+  mockCandidateSnapshotRow,
+  mockDetailCandidateSnapshots,
   now,
   organizationId,
+  renderSql,
 } from "@/__tests__/support/branches/branch-read-service.test-helpers";
-import {
-  getMockWithDb,
-  mockWithDbCall,
-  mockWithDbTx,
-} from "../../__tests__/utils/db-helpers";
-import {
-  branchListQuerySchema,
-  branchReadService,
-  branchTraceQuerySchema,
-} from "./branch-read-service";
+import { mockWithDbCall, mockWithDbTx } from "../../__tests__/utils/db-helpers";
+import { branchListQuerySchema } from "./branch-list-query";
+import { branchReadService } from "./branch-read-service";
 
 const ROLE_ATTRIBUTION_PATTERN = /role|author|reviewer/i;
+const OLD_BRANCH_CANDIDATE_PAGE_LIMIT_PATTERN = /\bLIMIT\s+500\b/;
 
 describe("branchReadService", () => {
-  const mockWithDb = getMockWithDb();
   let mockDb: ReturnType<typeof createMockDb>;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.useFakeTimers();
-    vi.setSystemTime(now);
+    vi.useFakeTimers({ now });
     mockDb = createMockDb();
     mockWithDbCall(mockDb);
     mockWithDbTx(mockDb);
     mockDb.commitDetail.findMany.mockResolvedValue([]);
-    installationAuthMocks.getInstallationOctokit.mockResolvedValue(
-      INSTALLATION_OCTOKIT
-    );
-    syncServiceMocks.refreshTombstonedBranchPullRequest.mockResolvedValue({
-      status: "failed",
-      reason: "no_eligible_session_reference",
-    });
+    return () => vi.useRealTimers();
   });
 
   it("lists org-scoped branches and double-scopes session links", async () => {
@@ -190,17 +118,17 @@ describe("branchReadService", () => {
     const response = await branchReadService.listBranches(organizationId, {
       limit: 50,
       offset: 0,
-      repository: ["closedloop-ai/example-repo"],
+      repository: ["closedloop-ai/closedloop-ai"],
       status: ["open"],
     });
 
     expect(branchCandidateSql(mockDb)).toContain(
-      "candidate.branch_artifact_id = a.id"
+      "prd.branch_artifact_id = a.id"
     );
     expect(mockDb.artifact.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
-          branch: { deletedAt: null },
+          branch: { isNot: null },
           id: { in: [branchId] },
           organizationId,
           type: ArtifactType.BRANCH,
@@ -215,12 +143,7 @@ describe("branchReadService", () => {
           AND: expect.arrayContaining([
             {
               OR: expect.arrayContaining([
-                {
-                  metadata: {
-                    path: ["linkKind"],
-                    equals: SessionArtifactLinkKind.SessionPr,
-                  },
-                },
+                sessionPrLinkKindWhere(SessionPrLinkAudience.Metric),
                 {
                   metadata: {
                     path: ["linkKind"],
@@ -271,7 +194,7 @@ describe("branchReadService", () => {
     const response = await branchReadService.listBranches(organizationId, {
       limit: 50,
       offset: 0,
-      repository: ["closedloop-ai/example-repo"],
+      repository: ["closedloop-ai/closedloop-ai"],
       status: ["open"],
     });
 
@@ -310,7 +233,7 @@ describe("branchReadService", () => {
     const response = await branchReadService.listBranches(organizationId, {
       limit: 50,
       offset: 0,
-      repository: ["closedloop-ai/example-repo"],
+      repository: ["closedloop-ai/closedloop-ai"],
       status: ["open"],
     });
 
@@ -384,12 +307,7 @@ describe("branchReadService", () => {
       AND: expect.arrayContaining([
         {
           OR: expect.arrayContaining([
-            {
-              metadata: {
-                path: ["linkKind"],
-                equals: SessionArtifactLinkKind.SessionPr,
-              },
-            },
+            sessionPrLinkKindWhere(SessionPrLinkAudience.Metric),
             {
               metadata: {
                 path: ["linkKind"],
@@ -414,7 +332,7 @@ describe("branchReadService", () => {
       branchListQuerySchema.parse({
         endDate: "2026-07-03T23:59:59.000Z",
         projectId: "project-1",
-        repo: "closedloop-ai/example-repo",
+        repo: "closedloop-ai/closedloop-ai",
         search: "feature",
         startDate: "2026-07-03T00:00:00.000Z",
         status: BranchStatus.Open,
@@ -424,7 +342,7 @@ describe("branchReadService", () => {
       contributorUserId,
       endDate: new Date("2026-07-03T23:59:59.000Z"),
       projectId: ["project-1"],
-      repo: ["closedloop-ai/example-repo"],
+      repo: ["closedloop-ai/closedloop-ai"],
       search: "feature",
       startDate: new Date("2026-07-03T00:00:00.000Z"),
       status: [BranchStatus.Open],
@@ -451,208 +369,6 @@ describe("branchReadService", () => {
     );
   });
 
-  it("defaults trace expansion to fifty rows and caps at one hundred rows", () => {
-    expect(branchTraceQuerySchema.parse({}).limit).toBe(50);
-    expect(branchTraceQuerySchema.parse({ limit: 100 }).limit).toBe(100);
-    expect(branchTraceQuerySchema.safeParse({ limit: 101 }).success).toBe(
-      false
-    );
-    expect(branchTraceQuerySchema.safeParse({ complete: "true" }).success).toBe(
-      false
-    );
-  });
-
-  describe("getBranchTrace", () => {
-    function mockLinkedSessions(ids: string[]) {
-      mockDb.artifact.findFirst.mockResolvedValue(
-        makeBranchRow({ firstPushedAt: now })
-      );
-      mockDb.artifactLink.findMany.mockResolvedValue(
-        ids.map((id, index) => ({
-          id: `link-${id}`,
-          sourceId: id,
-          createdAt: new Date(now.getTime() - index),
-          source: {
-            id,
-            name: `session ${id}`,
-            slug: `SES-${index}`,
-            session: { artifactId: id, externalSessionId: id },
-          },
-        }))
-      );
-      const byId = new Map(
-        ids.map((id, index) => [
-          id,
-          {
-            id,
-            name: `session ${id}`,
-            primaryModel: null,
-            model: null,
-            harness: "claude",
-            startedAt: new Date(now.getTime() + index * 60_000),
-            turnItems: [],
-          },
-        ])
-      );
-      agentSessionsServiceMocks.findSessionDetail.mockImplementation(
-        ({ id }: { id: string }) => Promise.resolve(byId.get(id) ?? null)
-      );
-    }
-
-    it("interleaves one sessionstart per linked session, chronologically", async () => {
-      mockLinkedSessions(["sess-a", "sess-b", "sess-c"]);
-
-      const response = await branchReadService.getBranchTrace(
-        organizationId,
-        branchId,
-        { limit: 50, offset: 0 }
-      );
-
-      expect(response?.viewerScope).toBe(BranchViewerScope.Organization);
-      expect(
-        response?.items.map((item) => [item.type, item.sessionId])
-      ).toEqual([
-        ["sessionstart", "sess-a"],
-        ["sessionstart", "sess-b"],
-        ["sessionstart", "sess-c"],
-      ]);
-      expect(response?.hasMore).toBe(false);
-      // FEA-3568: the merged trace opts out of the activity-segment tiling it
-      // never reads, so it hydrates with includeActivitySegments: false.
-      expect(agentSessionsServiceMocks.findSessionDetail).toHaveBeenCalledWith(
-        { id: "sess-a", organizationId },
-        { includeActivitySegments: false }
-      );
-    });
-
-    it("includes reviewed participation links in the merged trace session lookup", async () => {
-      mockLinkedSessions(["review-session"]);
-
-      const response = await branchReadService.getBranchTrace(
-        organizationId,
-        branchId,
-        { limit: 50, offset: 0 }
-      );
-
-      const linkWhere = mockDb.artifactLink.findMany.mock.calls[0]?.[0]?.where;
-      expect(linkWhere).toMatchObject({
-        AND: expect.arrayContaining([
-          {
-            OR: expect.arrayContaining([
-              { branchParticipation: BranchParticipationKind.Reviewed },
-            ]),
-          },
-        ]),
-      });
-      expect(response?.items.map((item) => item.sessionId)).toEqual([
-        "review-session",
-      ]);
-    });
-
-    it("preserves item pagination for an uncapped Session population", async () => {
-      mockLinkedSessions(["sess-a", "sess-b", "sess-c"]);
-
-      const response = await branchReadService.getBranchTrace(
-        organizationId,
-        branchId,
-        { limit: 1, offset: 1 }
-      );
-
-      expect(response?.items).toHaveLength(1);
-      expect(response?.items[0]?.sessionId).toBe("sess-b");
-      expect(response?.hasMore).toBe(true);
-      expect(agentSessionsServiceMocks.findSessionDetail).toHaveBeenCalledTimes(
-        3
-      );
-    });
-
-    it("returns null without hydrating sessions when the branch is not visible", async () => {
-      mockDb.artifact.findFirst.mockResolvedValue(null);
-
-      const response = await branchReadService.getBranchTrace(
-        organizationId,
-        branchId,
-        { limit: 50, offset: 0 }
-      );
-
-      expect(response).toBeNull();
-      expect(
-        agentSessionsServiceMocks.findSessionDetail
-      ).not.toHaveBeenCalled();
-    });
-
-    it("filters orphaned links at the query boundary so only valid sessions qualify", async () => {
-      mockLinkedSessions(["sess-a"]);
-
-      await branchReadService.getBranchTrace(organizationId, branchId, {
-        limit: 50,
-        offset: 0,
-      });
-
-      const linkWhere = mockDb.artifactLink.findMany.mock.calls[0]?.[0]?.where;
-      expect(linkWhere?.source).toMatchObject({ session: { isNot: null } });
-    });
-
-    it("skips a link whose source session failed to hydrate rather than tracing a raw sourceId", async () => {
-      mockDb.artifact.findFirst.mockResolvedValue(
-        makeBranchRow({ firstPushedAt: now })
-      );
-      mockDb.artifactLink.findMany.mockResolvedValue([
-        {
-          id: "link-valid",
-          sourceId: "valid-sess",
-          createdAt: now,
-          source: {
-            id: "valid-sess",
-            name: "valid",
-            slug: "SES-valid",
-            session: {
-              artifactId: "valid-sess",
-              externalSessionId: "valid-sess",
-            },
-          },
-        },
-        {
-          id: "link-orphan",
-          sourceId: "orphan",
-          createdAt: now,
-          source: {
-            id: "orphan",
-            name: "orphan",
-            slug: "SES-orphan",
-            session: null,
-          },
-        },
-      ]);
-      agentSessionsServiceMocks.findSessionDetail.mockImplementation(
-        ({ id }: { id: string }) =>
-          Promise.resolve(
-            id === "valid-sess"
-              ? {
-                  id,
-                  name: "valid",
-                  primaryModel: null,
-                  model: null,
-                  harness: "claude",
-                  startedAt: now,
-                  turnItems: [],
-                }
-              : null
-          )
-      );
-
-      const response = await branchReadService.getBranchTrace(
-        organizationId,
-        branchId,
-        { limit: 50, offset: 0 }
-      );
-
-      expect(response?.items.map((item) => item.sessionId)).toEqual([
-        "valid-sess",
-      ]);
-    });
-  });
-
   it("filters search and date windows through supported scoped branch predicates", async () => {
     mockDb.artifact.findMany.mockResolvedValue([]);
     mockDb.artifactLink.findMany.mockResolvedValue([]);
@@ -666,16 +382,16 @@ describe("branchReadService", () => {
     });
 
     const sql = branchCandidateSql(mockDb);
-    expect(sql).toContain("latest_activity_atom.occurred_at IS NULL");
-    expect(sql).toContain("latest_activity_atom.occurred_at >=");
-    expect(sql).toContain("latest_activity_atom.occurred_at <=");
+    expect(sql).toContain("session_activity.last_activity_at\n  ) IS NULL");
+    expect(sql).toContain("session_activity.last_activity_at\n  ) >=");
+    expect(sql).toContain("session_activity.last_activity_at\n  ) <=");
     expect(sql).not.toContain("b.last_activity_at");
     expect(sql).not.toContain("COALESCE(b.last_activity_at, a.created_at)");
     expect(sql).toContain("DESC NULLS LAST");
     expect(sql).toContain("pr.title ILIKE");
     expect(sql).toContain("pr.id =");
-    expect(sql).toContain("candidate.branch_artifact_id = a.id");
-    expect(sql).not.toContain("candidate.is_current");
+    expect(sql).toContain("prd.branch_artifact_id = a.id");
+    expect(sql).not.toContain("is_current");
   });
 
   it("applies project filters to branch list predicates", async () => {
@@ -735,7 +451,7 @@ describe("branchReadService", () => {
     const sql = branchCandidateSql(mockDb);
     expect(sql).toContain("pr.is_draft = TRUE");
     expect(sql).toContain("pr.id =");
-    expect(sql).not.toContain("candidate.is_current");
+    expect(sql).not.toContain("is_current");
   });
 
   it("unions repeated status filters using emitted BranchRow status semantics", async () => {
@@ -947,7 +663,7 @@ describe("branchReadService", () => {
           deletions: 7,
           changedFiles: 4,
         }),
-        // No branch file-cache rows → sumFileChanges yields null LOC (the repro).
+        // No branch file-cache rows → the fold yields null LOC (the repro).
         fileChanges: [],
       })
     );
@@ -996,6 +712,7 @@ describe("branchReadService", () => {
   // sessions' GLOBAL branch counts (the even-split divisor) — sequenced here.
   it("even-splits the detail cost by the session's global branch count", async () => {
     const otherBranchId = "22222222-2222-4222-8222-222222222222";
+    mockDetailCandidateSnapshots(mockDb, [branchId, otherBranchId]);
     mockDb.artifact.findFirst.mockResolvedValue(makeBranchRow());
     mockDb.artifactLink.findMany
       // (1) usage: session s1 links to THIS branch, full captured cost $1.00.
@@ -1024,12 +741,7 @@ describe("branchReadService", () => {
       AND: expect.arrayContaining([
         {
           OR: expect.arrayContaining([
-            {
-              metadata: {
-                path: ["linkKind"],
-                equals: SessionArtifactLinkKind.SessionPr,
-              },
-            },
+            sessionPrLinkKindWhere(SessionPrLinkAudience.Metric),
             {
               metadata: {
                 path: ["linkKind"],
@@ -1051,6 +763,7 @@ describe("branchReadService", () => {
 
   it("does not count metadata-reviewed legacy links in the even-split divisor", async () => {
     const reviewedBranchId = "22222222-2222-4222-8222-222222222222";
+    mockDetailCandidateSnapshots(mockDb, [branchId, reviewedBranchId]);
     mockDb.artifact.findFirst.mockResolvedValue(makeBranchRow());
     mockDb.artifactLink.findMany
       .mockResolvedValueOnce([makeSessionLink(branchId, "s1", "1.00")])
@@ -1080,6 +793,7 @@ describe("branchReadService", () => {
 
   it("even-splits cost across pure session_branch links when no PR link exists", async () => {
     const siblingBranchId = "22222222-2222-4222-8222-222222222222";
+    mockDetailCandidateSnapshots(mockDb, [branchId, siblingBranchId]);
     mockDb.artifact.findFirst.mockResolvedValue(makeBranchRow());
     mockDb.artifactLink.findMany
       .mockResolvedValueOnce([
@@ -1124,21 +838,17 @@ describe("branchReadService", () => {
     expect(detail?.attributedCostUsd).toBeCloseTo(1, 10);
   });
 
-  // FEA-4311 (codex P1 — cost divisor): once a session-only branch (linked but
-  // never pushed / no PR) is a corpus member, it must contribute to the
-  // even-split divisor. The divisor query must NOT re-impose the old push /
-  // current-PR gate on its target branch, or a priced session touching two
-  // session-only branches would divide by 1 and attribute the FULL cost to each
-  // visible branch instead of the intended 1/N split.
-  it("counts session-only (unpushed) sibling branches in the even-split divisor", async () => {
+  // ISS-8148 (PRD-683 D7): candidates are publication-gated; every
+  // candidate-fed sibling joins the 1/N split. Candidate eligibility itself is
+  // pinned by `branch-candidate-read.test.ts`; this pins the arithmetic.
+  it("counts every denominator-candidate sibling in the even-split divisor", async () => {
     const sessionOnlySiblingId = "22222222-2222-4222-8222-222222222222";
+    mockDetailCandidateSnapshots(mockDb, [branchId, sessionOnlySiblingId]);
     mockDb.artifact.findFirst.mockResolvedValue(makeBranchRow());
     mockDb.artifactLink.findMany
       // (1) usage: s1 links to THIS branch, full captured cost $1.00.
       .mockResolvedValueOnce([makeSessionLink(branchId, "s1", "1.00")])
-      // (2) divisor: s1 wrote to THIS branch AND one session-only sibling that
-      // has no push/PR evidence. Both are corpus members post-FEA-4311, so the
-      // divisor is 2.
+      // (2) divisor: s1 wrote to this Product Branch and one unpublished sibling.
       .mockResolvedValueOnce([
         { sourceId: "s1", targetId: branchId },
         { sourceId: "s1", targetId: sessionOnlySiblingId },
@@ -1159,7 +869,7 @@ describe("branchReadService", () => {
     expect(countWhere?.target).toEqual({
       organizationId,
       type: ArtifactType.BRANCH,
-      branch: { deletedAt: null },
+      branch: { isNot: null },
     });
   });
 
@@ -1256,33 +966,6 @@ describe("branchReadService", () => {
     });
   });
 
-  it("degrades malformed lifecycle evidence without emitting an unknown phase", async () => {
-    mockDb.artifact.findFirst.mockResolvedValue(makeBranchRow());
-    mockDb.artifactLink.findMany
-      .mockResolvedValueOnce([
-        makeSessionLink(branchId, "s1", "1.00", null, {
-          linkKind: SessionArtifactLinkKind.SessionBranch,
-          branchLifecycleEvents: [
-            {
-              kind: "future_lifecycle_kind",
-            },
-          ],
-        }),
-      ])
-      .mockResolvedValueOnce([{ sourceId: "s1", targetId: branchId }]);
-
-    const detail = await branchReadService.getBranchDetail(
-      organizationId,
-      branchId
-    );
-
-    expect(detail?.lifecyclePhaseStacks).toBeUndefined();
-    expect(detail?.phaseAttribution?.coverage).toEqual({
-      completeness: BranchPhaseAttributionCompleteness.Unavailable,
-      reason: BranchPhaseAttributionCompletenessReason.MalformedEvidence,
-    });
-  });
-
   it("projects phaseSegments from pure session_branch lifecycle metadata", async () => {
     mockDb.artifact.findFirst.mockResolvedValue(makeBranchRow());
     mockDb.artifactLink.findMany
@@ -1310,7 +993,9 @@ describe("branchReadService", () => {
     ).toEqual([BranchLifecyclePhase.Build]);
   });
 
-  it("reconciles successful reviewed participation with branch spend", async () => {
+  it("keeps successful reviewed participation out of Branch spend", async () => {
+    mockDetailCandidateSnapshots(mockDb, [branchId]);
+    const reviewedLink = makeSuccessfulReviewSessionLink(branchId);
     mockDb.artifact.findFirst.mockResolvedValue(
       makeBranchRow({
         currentPullRequestDetail: makeCurrentPullRequestDetail({
@@ -1319,27 +1004,8 @@ describe("branchReadService", () => {
       })
     );
     mockDb.artifactLink.findMany
-      .mockResolvedValueOnce([
-        makeSessionLink(
-          branchId,
-          "review-session",
-          "1.00",
-          "reviewer-user",
-          {
-            linkKind: SessionArtifactLinkKind.SessionBranch,
-            branchParticipation: BranchParticipationKind.Reviewed,
-            branchLifecycleEvents: [
-              {
-                kind: BranchLifecycleBoundaryKind.ReviewFeedback,
-                observedAt: new Date(50).toISOString(),
-                evidenceId: "review-success",
-              },
-            ],
-          },
-          BranchParticipationKind.Reviewed
-        ),
-      ])
-      .mockResolvedValueOnce([]);
+      .mockResolvedValueOnce([reviewedLink])
+      .mockResolvedValueOnce([reviewedLink]);
     mockDb.agentSessionActivitySegment.findMany.mockResolvedValue([
       {
         agentSessionId: "review-session",
@@ -1367,30 +1033,20 @@ describe("branchReadService", () => {
       branchId
     );
 
-    expect(detail?.sessions).toHaveLength(1);
-    expect(detail?.sessions[0]?.participation).toBe(
-      BranchParticipationKind.Reviewed
-    );
-    expect(detail?.sessions[0]?.estimatedCostUsd).toBe(1);
-    expect(detail?.estimatedCostUsd).toBe(1);
-    expect(detail?.attributedCostUsd).toBe(1);
+    expect(detail?.sessions).toEqual([]);
+    expect(detail?.estimatedCostUsd).toBeNull();
+    expect(detail?.attributedCostUsd).toBeNull();
     expect(detail?.owner).toBeNull();
     expect(detail?.associatedPullRequests).toMatchObject({
-      selectedId: "closedloop-ai/example-repo#7",
+      selectedId: "closedloop-ai/closedloop-ai#7",
       completeness: {
         state: BranchAssociatedPullRequestCompletenessState.Complete,
       },
     });
-    expect(detail?.lifecyclePhaseStacks).toEqual([
-      expect.objectContaining({
-        phase: BranchVisibleLifecyclePhase.Review,
-        estimatedCostUsd: 1,
-      }),
-    ]);
-    expect(detail?.phaseAttribution?.coverage).toEqual({
-      completeness: BranchPhaseAttributionCompleteness.Complete,
-      subtotalUsd: 1,
-    });
+    expect(detail?.lifecyclePhaseStacks ?? []).toEqual([]);
+    expect(detail?.phaseAttribution).toBeUndefined();
+    expect(mockDb.agentSessionActivitySegment.findMany).not.toHaveBeenCalled();
+    expect(mockDb.agentSessionTokenEvent.findMany).not.toHaveBeenCalled();
   });
 
   it("projects current PR review authors as reviewed-only participants", async () => {
@@ -1402,7 +1058,7 @@ describe("branchReadService", () => {
           authorLogin: "reviewer-one",
           authorAvatarUrl: "https://avatars.example/reviewer-one.png",
           htmlUrl:
-            "https://github.com/closedloop-ai/example-repo/pull/42#pullrequestreview-1",
+            "https://github.com/closedloop-ai/closedloop-ai/pull/42#pullrequestreview-1",
           submittedAt: new Date("2026-07-03T06:00:00.000Z"),
         }),
         makeReview({
@@ -1435,7 +1091,7 @@ describe("branchReadService", () => {
         submittedAt: "2026-07-03T06:00:00.000Z",
         providerReviewId: "review-1",
         providerUrl:
-          "https://github.com/closedloop-ai/example-repo/pull/42#pullrequestreview-1",
+          "https://github.com/closedloop-ai/closedloop-ai/pull/42#pullrequestreview-1",
         prNumber: 42,
       },
     ]);
@@ -1454,7 +1110,7 @@ describe("branchReadService", () => {
           authorLogin: "historical-reviewer",
           state: ReviewDecision.Commented,
           htmlUrl:
-            "https://github.com/closedloop-ai/example-repo/pull/7#pullrequestreview-2",
+            "https://github.com/closedloop-ai/closedloop-ai/pull/7#pullrequestreview-2",
           submittedAt: new Date("2026-07-03T07:00:00.000Z"),
         }),
       ],
@@ -1488,12 +1144,12 @@ describe("branchReadService", () => {
     expect(detail?.owner).toBeNull();
   });
 
-  it("preserves canonical attributed zero while retaining raw compatibility", async () => {
+  it("preserves canonical attributed zero with raw priced-zero parity", async () => {
     mockDb.artifact.findFirst.mockResolvedValue(makeBranchRow());
     mockDb.artifactLink.findMany
-      // (1) usage: session s1 links to THIS branch with real tokens but $0 cost.
-      .mockResolvedValueOnce([makeSessionLink(branchId, "s1", "0")])
-      // (2) branch counts: s1 wrote to this branch only → divisor 1.
+      .mockResolvedValueOnce([
+        makeSessionLink(branchId, "s1", "0", null, null, null, {}, "max_20x"),
+      ])
       .mockResolvedValueOnce([{ sourceId: "s1", targetId: branchId }]);
 
     const detail = await branchReadService.getBranchDetail(
@@ -1501,7 +1157,7 @@ describe("branchReadService", () => {
       branchId
     );
 
-    expect(detail?.estimatedCostUsd).toBeNull();
+    expect(detail?.estimatedCostUsd).toBe(0);
     expect(detail?.attributedCostUsd).toBe(0);
     expect(detail?.lifecyclePhaseStacks).toBeUndefined();
     expect(detail?.phaseAttribution?.coverage).toMatchObject({
@@ -1514,6 +1170,7 @@ describe("branchReadService", () => {
   // spend counted whole would exceed the even-split total and clamp the residual.
   it("stamps each session's branch count so the activity rollup even-splits attributed cost", async () => {
     const otherBranchId = "22222222-2222-4222-8222-222222222222";
+    mockDetailCandidateSnapshots(mockDb, [branchId, otherBranchId]);
     mockDb.artifact.findFirst.mockResolvedValue(makeBranchRow());
     mockDb.artifactLink.findMany
       // (1) usage: session s1 links to THIS branch, full captured cost $1.00.
@@ -1817,7 +1474,7 @@ describe("branchReadService", () => {
     });
   });
 
-  it("composes the session-membership gate with status and search filters (FEA-4311)", async () => {
+  it("composes dual-evidence Product membership with status and search filters", async () => {
     mockDb.artifact.findMany.mockResolvedValue([]);
     mockDb.artifactLink.findMany.mockResolvedValue([]);
 
@@ -1829,22 +1486,22 @@ describe("branchReadService", () => {
     });
 
     const sql = branchCandidateSql(mockDb);
-    // FEA-4311: corpus membership is the linked-session gate, not remote evidence.
     expect(sql).toContain("session_detail sd");
-    expect(sql).not.toContain("b.first_pushed_at IS NOT NULL");
+    expect(sql).toContain("al.branch_participation = wrote");
+    expect(sql).toContain("b.first_pushed_at IS NOT NULL");
+    expect(sql).toContain("FROM pull_request_detail published_pr");
     // The status/search predicates still compose on top via the owned-current-PR
     // EXISTS (status filter) and the ILIKE columns (search).
     expect(sql).toContain("pr.pr_state NOT IN");
     expect(sql).toContain("a.name ILIKE");
     expect(sql).toContain("pr.id =");
-    expect(sql).not.toContain("candidate.is_current");
+    expect(sql).not.toContain("is_current");
   });
 
-  it("uses the same session-membership candidate gate for usage and analytics reads (FEA-4311)", async () => {
+  it("uses the same dual-evidence candidate gate for usage and analytics reads", async () => {
     // Both reads aggregate over the full filtered corpus via
     // getBranchCandidateIds, so each issues a single candidate-id query. They must
-    // inherit the SAME membership gate the list uses — a valid linked session, not
-    // remote evidence — so usage/analytics count exactly the corpus the list shows.
+    // inherit the same strict Wrote + publication gate the list uses.
     mockBranchCandidateIds(mockDb, []);
     mockBranchCandidateIds(mockDb, []);
     mockDb.artifactLink.findMany.mockResolvedValue([]);
@@ -1860,8 +1517,9 @@ describe("branchReadService", () => {
 
     const sql = branchCandidateSql(mockDb);
     expect(sql).toContain("session_detail sd");
-    expect(sql).toContain("al.branch_participation");
-    expect(sql).not.toContain("b.first_pushed_at IS NOT NULL");
+    expect(sql).toContain("al.branch_participation = wrote");
+    expect(sql).toContain("b.first_pushed_at IS NOT NULL");
+    expect(sql).toContain("FROM pull_request_detail published_pr");
   });
 
   it("applies the contributor predicate to usage and analytics candidate reads", async () => {
@@ -1907,20 +1565,12 @@ describe("branchReadService", () => {
     });
 
     const sql = branchCandidateSql(mockDb);
-    expect(sql).not.toContain("OFFSET");
+    expect(sql).not.toMatch(OLD_BRANCH_CANDIDATE_PAGE_LIMIT_PATTERN);
+    expect(sql).not.toContain("OFFSET 0");
     expect(branchCandidateValues(mockDb)).not.toEqual(
       expect.arrayContaining([7, 14])
     );
-    expect(mockDb.artifact.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {
-          branch: { deletedAt: null },
-          id: { in: [branchId, secondBranchId] },
-          organizationId,
-          type: ArtifactType.BRANCH,
-        },
-      })
-    );
+    expect(mockDb.artifact.findMany).not.toHaveBeenCalled();
     expect(mockDb.artifactLink.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
@@ -1932,6 +1582,7 @@ describe("branchReadService", () => {
   });
 
   it("returns zero usage totals for an empty corpus", async () => {
+    mockBranchCandidateIds(mockDb, []);
     mockDb.artifact.findMany.mockResolvedValue([]);
 
     const response = await branchReadService.getBranchUsage(organizationId, {
@@ -1996,7 +1647,7 @@ describe("branchReadService", () => {
     expect(mockDb.artifact.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
-          branch: { deletedAt: null },
+          branch: { isNot: null },
           id: { in: [branchId] },
           organizationId,
           type: ArtifactType.BRANCH,
@@ -2143,7 +1794,11 @@ describe("branchReadService", () => {
     );
 
     expect(response.medianPrSize.value).toBe(100);
-    expect(branchCandidateSql(mockDb)).not.toContain("OFFSET");
+    const initialCandidateSql = renderSql(mockDb.$queryRaw.mock.calls[0]?.[0]);
+    expect(initialCandidateSql).not.toMatch(
+      OLD_BRANCH_CANDIDATE_PAGE_LIMIT_PATTERN
+    );
+    expect(initialCandidateSql).not.toContain("OFFSET 0");
   });
 
   it("reports merge rate as merged over DECIDED PRs, excluding still-open PRs (FEA-2943)", async () => {
@@ -2230,9 +1885,8 @@ describe("branchReadService", () => {
         id: statusMergedNoPrBranchId,
         status: GitHubPRState.Merged,
         currentPullRequestDetail: null,
-        // Both branches are candidate ids (mocked above), so both enter the KPI
-        // fold — corpus membership is the candidate SQL's session gate (FEA-4311),
-        // and analytics row hydration keeps only the relation-present type guard.
+        // Both Branches are candidate ids (mocked above), so both enter the KPI
+        // fold; analytics row hydration keeps only the relation-present type guard.
         // This branch's prState is null, so it lands in the corpus yet is excluded
         // from the decided-denominator/mergedPrCount populations (both prState-based).
         firstPushedAt: now,
@@ -2260,7 +1914,7 @@ describe("branchReadService", () => {
   });
 
   it("counts a stale-open-but-merged PR ONLY as merged, never active (FEA-4333)", async () => {
-    // The double-classification bug: `deriveBranchRowStatus` treats a PR as merged
+    // The double-classification bug: `deriveBranchMergedState` treats a PR as merged
     // when `mergedAt` is present even if the connected `prState` is stale ("OPEN"),
     // but `activePrCount` used to count raw `prState === "OPEN"` INDEPENDENTLY — so
     // the SAME stale-open-but-merged PR incremented BOTH mutually-exclusive KPIs.
@@ -2329,62 +1983,63 @@ describe("branchReadService", () => {
       makeBranchRow({ status: GitHubPRState.Merged }),
     ]);
     mockDb.artifactLink.findMany.mockResolvedValue([]);
-
     await branchReadService.getBranchAnalytics(organizationId, {
       limit: 10,
       offset: 0,
     });
-
     const select = mockDb.artifact.findMany.mock.calls.at(-1)?.[0]?.select;
     // Only repository identity (needed by the shared selector) is retained;
     // installation/check/detail-heavy fields remain absent.
     expect(select?.branch?.select?.repository?.select).toEqual({
       fullName: true,
+      githubRepoId: true,
     });
     expect(select?.branch?.select?.checksStatus).toBeUndefined();
     expect(select?.pullRequestDetails?.select?.body).toBeUndefined();
     expect(select?.pullRequestDetails?.select?.repository?.select).toEqual({
       fullName: true,
+      githubRepoId: true,
     });
-    // The KPI inputs the narrowed select still needs must remain present.
+    // KPI inputs the narrowed select still needs, incl. the ISS-10298 fold gate's.
     expect(select?.status).toBe(true);
     expect(select?.pullRequestDetails?.select?.prState).toBe(true);
-    expect(select?.branch?.select?.fileChanges?.select?.additions).toBe(true);
+    expect(select?.branch?.select?.fileCacheHeadSha).toBe(true);
     expect(select?.branch?.select?.firstPushedAt).toBe(true);
   });
 
-  it("chunks the full-corpus session-link lookup instead of one unbounded IN", async () => {
-    // FEA-2538: the analytics read passes the entire filtered branch set to
-    // getSessionUsageByBranch. It must bound the `targetId IN (...)` list by
-    // querying in chunks (SESSION_USAGE_BRANCH_ID_CHUNK_SIZE = 1000) rather
-    // than a single unbounded findMany, while still aggregating over all ids.
+  it("routes full session-link chunks through raw SQL instead of one unbounded IN", async () => {
     const chunkSize = 1000;
-    const ids = Array.from(
-      { length: chunkSize + 1 },
-      (_, index) => `branch-${index}`
-    );
-    mockBranchCandidateIds(mockDb, ids);
+    const ids = Array.from({ length: 1001 }, (_, index) => `branch-${index}`);
+    mockDb.$queryRaw.mockImplementation((query) => {
+      const rows = renderSql(query).includes(
+        "INNER JOIN session_detail session"
+      )
+        ? []
+        : ids.map((id) => mockCandidateSnapshotRow(id, 0));
+      return Promise.resolve(rows);
+    });
     mockDb.artifact.findMany.mockResolvedValue(
       ids.map((id) => makeBranchRow({ id }))
     );
     mockDb.artifactLink.findMany.mockResolvedValue([]);
 
-    await branchReadService.getBranchAnalytics(organizationId, {
+    await branchReadService.getBranchUsage(organizationId, {
       limit: 10,
       offset: 0,
     });
 
-    expect(mockDb.artifactLink.findMany).toHaveBeenCalledTimes(2);
-    expect(mockDb.artifactLink.findMany).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({
-        where: expect.objectContaining({
-          targetId: { in: ids.slice(0, chunkSize) },
-        }),
-      })
-    );
-    expect(mockDb.artifactLink.findMany).toHaveBeenNthCalledWith(
-      2,
+    const rawSessionUsageQuery = mockDb.$queryRaw.mock.calls
+      .map((call) => call[0])
+      .find((query) =>
+        renderSql(query).includes("INNER JOIN session_detail session")
+      );
+    expect(rawSessionUsageQuery).toBeDefined();
+    const rawValues = collectSqlValues(rawSessionUsageQuery);
+    expect(rawValues).toContain(ids[0]);
+    expect(rawValues).toContain(ids[chunkSize - 1]);
+    expect(rawValues).not.toContain(ids[chunkSize]);
+    expect(mockDb.artifactLink.findMany).toHaveBeenCalledTimes(1);
+    expect(mockDb.artifactLink.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
           targetId: { in: ids.slice(chunkSize) },
@@ -2454,7 +2109,7 @@ describe("branchReadService", () => {
   // case and the per-branch attribution sum went unnoticed: `usageByBranch` maps
   // each branch to the FULL usage of every session that touched it, so folding
   // the map multiplied every shared session by its branch count.
-  it("counts a session spanning multiple branches once in AI spend and usage totals", async () => {
+  it("counts a session spanning multiple branches once in usage totals", async () => {
     const secondBranchId = "22222222-2222-4222-8222-222222222222";
     const branchIds = [branchId, secondBranchId];
     const rows = [
@@ -2469,17 +2124,6 @@ describe("branchReadService", () => {
     mockBranchCandidateIds(mockDb, branchIds);
     mockDb.artifact.findMany.mockResolvedValue(rows);
     mockDb.artifactLink.findMany.mockResolvedValue(links);
-
-    const analytics = await branchReadService.getBranchAnalytics(
-      organizationId,
-      { limit: 10, offset: 0 }
-    );
-
-    // $1.25 once — NOT $2.50 (once per branch).
-    expect(analytics.totalSpendUsd).toMatchObject({
-      value: 1.25,
-      state: BranchKpiState.Available,
-    });
 
     mockBranchCandidateIds(mockDb, branchIds);
     mockDb.artifact.findMany.mockResolvedValue(rows);
@@ -2497,79 +2141,6 @@ describe("branchReadService", () => {
     expect(usage.totalOutputTokens).toBe(20);
     expect(usage.totalCacheReadTokens).toBe(30);
     expect(usage.totalCacheWriteTokens).toBe(40);
-  });
-
-  it("computes Value per $ as total churn over even-split enriched spend", async () => {
-    mockBranchCandidateIds(mockDb, [branchId]);
-    mockDb.artifact.findMany.mockResolvedValue([
-      makeBranchRow({
-        fileChanges: [{ additions: 200, deletions: 50, path: "a.ts" }],
-      }),
-    ]);
-    mockDb.artifactLink.findMany.mockResolvedValue([
-      makeSessionLink(branchId, "session-1", "0.50"),
-    ]);
-
-    const response = await branchReadService.getBranchAnalytics(
-      organizationId,
-      { limit: 10, offset: 0 }
-    );
-
-    // Churn (200 + 50 = 250) over the session's $0.50 → 500. Deletions ADD to the
-    // numerator; netting them out would report 150 / 0.50 = 300.
-    expect(response.locPerDollar).toMatchObject({
-      value: 500,
-      state: BranchKpiState.Available,
-    });
-  });
-
-  it("Value per $ uses lifetime spend under a window so narrowing it does not inflate the ratio", async () => {
-    const priorBranchId = "22222222-2222-4222-8222-222222222222";
-    mockBranchCandidateIds(mockDb, [branchId]);
-    mockBranchCandidateIds(mockDb, [branchId, priorBranchId]);
-    const windowedRow = makeBranchRow({
-      fileChanges: [{ additions: 200, deletions: 50, path: "a.ts" }],
-    });
-    mockDb.artifact.findMany
-      .mockResolvedValueOnce([windowedRow])
-      .mockResolvedValueOnce([
-        windowedRow,
-        makeBranchRow({ id: priorBranchId }),
-      ]);
-    mockDb.artifactLink.findMany.mockResolvedValue([
-      makeSessionLink(branchId, "session-1", "1.00"),
-    ]);
-    mockTokenEvents(mockDb, [
-      makeTokenEvent("session-1", new Date("2026-07-30T12:00:00.000Z"), {
-        estimatedCost: "0.25",
-      }),
-    ]);
-
-    const response = await branchReadService.getBranchAnalytics(
-      organizationId,
-      {
-        limit: 10,
-        offset: 0,
-        startDate: new Date("2026-07-30T00:00:00.000Z"),
-      }
-    );
-
-    expect(response.totalSpendUsd).toMatchObject({
-      value: 0.25,
-      state: BranchKpiState.Available,
-    });
-    expect(response.locPerDollar).toMatchObject({
-      value: 250,
-      state: BranchKpiState.Available,
-    });
-    expect(response.canonicalMetrics?.cohortSize).toBe(2);
-    expect(mockDb.artifactLink.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          targetId: { in: [branchId, priorBranchId] },
-        }),
-      })
-    );
   });
 
   // ISS-4632 — a null/unavailable-spend case must render safely: no
@@ -2596,514 +2167,6 @@ describe("branchReadService", () => {
       state: BranchKpiState.Unavailable,
     });
     expect(Number.isFinite(response.locPerDollar.value ?? 0)).toBe(true);
-  });
-
-  it("keeps the un-enriched-branch share of a mixed session out of Value per $ (even-split)", async () => {
-    const unenrichedId = "branch-unenriched";
-    mockBranchCandidateIds(mockDb, [branchId, unenrichedId]);
-    mockDb.artifact.findMany.mockResolvedValue([
-      makeBranchRow({
-        fileChanges: [{ additions: 150, deletions: 50, path: "a.ts" }],
-      }),
-      // No file-change rows → UNKNOWN LOC, so this branch is un-enriched.
-      makeBranchRow({ id: unenrichedId, fileChanges: [] }),
-    ]);
-    // ONE session worked both branches: its $1.00 is even-split across them, so
-    // only the enriched half ($0.50) — the spend backed by known LOC — counts.
-    mockDb.artifactLink.findMany.mockResolvedValue([
-      makeSessionLink(branchId, "session-1", "1.00"),
-      makeSessionLink(unenrichedId, "session-1", "1.00"),
-    ]);
-
-    const response = await branchReadService.getBranchAnalytics(
-      organizationId,
-      { limit: 10, offset: 0 }
-    );
-
-    // Numerator = churn of the enriched branch only (150 + 50 = 200); the
-    // un-enriched branch contributes nothing. Denominator = $1.00 × 1/2 = $0.50.
-    // Counting the full $1.00 would halve this to 200. Matches the desktop
-    // producer's identical fixture exactly.
-    expect(response.locPerDollar).toMatchObject({
-      value: 400,
-      state: BranchKpiState.Available,
-    });
-  });
-
-  it("rejects encoded branch ids before database or provider work", async () => {
-    const response = await branchReadService.refreshBranch(
-      organizationId,
-      "closedloop-ai%2Fsymphony-alpha::feature",
-      { userId: "user-1", authMethod: "api_key" }
-    );
-
-    expect(response.reason).toBe(BranchRefreshReason.InvalidBranchId);
-    expect(mockWithDb).not.toHaveBeenCalled();
-    expect(getSinglePullRequestWithProviderResult).not.toHaveBeenCalled();
-  });
-
-  it("returns not applicable without budget or provider work when no current PR exists", async () => {
-    // Visible via push state (firstPushedAt) but carrying no current PR — the
-    // exact branch a refresh should short-circuit as NotApplicable.
-    mockDb.artifact.findFirst.mockResolvedValue(
-      makeBranchRow({ currentPullRequestDetail: null, firstPushedAt: now })
-    );
-
-    const response = await branchReadService.refreshBranch(
-      organizationId,
-      branchId,
-      { userId: "user-1", authMethod: "session" }
-    );
-
-    expect(response.reason).toBe(BranchRefreshReason.NoCurrentPullRequest);
-    expect(mockDb.oAuthRateLimit.findUnique).not.toHaveBeenCalled();
-    expect(getSinglePullRequestWithProviderResult).not.toHaveBeenCalled();
-  });
-
-  it("does not refresh tombstoned branch repositories", async () => {
-    mockDb.artifact.findFirst.mockResolvedValue(
-      makeBranchRow({ repositoryRemovedAt: new Date("2026-07-05T12:00:00Z") })
-    );
-    mockDb.artifactLink.findMany.mockResolvedValue([]);
-    mockDb.oAuthRateLimit.findUnique.mockResolvedValue(null);
-    mockDb.oAuthRateLimit.create.mockResolvedValue({});
-
-    const response = await branchReadService.refreshBranch(
-      organizationId,
-      branchId,
-      { userId: "user-1", authMethod: "session" }
-    );
-
-    expect(response).toMatchObject({
-      status: BranchRefreshStatus.Failed,
-      reason: BranchRefreshReason.NotFound,
-      branch: { id: branchId, prState: GitHubPRState.Open },
-    });
-    expect(mockDb.oAuthRateLimit.create).toHaveBeenCalledTimes(2);
-    expect(mockDb.pullRequestDetail.updateMany).not.toHaveBeenCalled();
-    expect(getSinglePullRequestWithProviderResult).not.toHaveBeenCalled();
-    expect(
-      syncServiceMocks.refreshTombstonedBranchPullRequest
-    ).toHaveBeenCalledWith({
-      actorUserId: "user-1",
-      branchArtifactId: branchId,
-      organizationId,
-      trigger: GitHubFetchTrigger.UserAction,
-    });
-  });
-
-  it("does not invoke tombstoned sync when refresh budget is exhausted", async () => {
-    mockDb.artifact.findFirst.mockResolvedValue(
-      makeBranchRow({ repositoryRemovedAt: new Date("2026-07-05T12:00:00Z") })
-    );
-    mockDb.oAuthRateLimit.findUnique.mockResolvedValue({
-      id: "actor-bucket",
-      windowExpiresAt: new Date(now.getTime() + 30_000),
-      requestCount: 5,
-    });
-    mockDb.oAuthRateLimit.updateMany.mockResolvedValue({ count: 0 });
-
-    const response = await branchReadService.refreshBranch(
-      organizationId,
-      branchId,
-      { userId: "user-1", authMethod: "session" }
-    );
-
-    expect(response).toMatchObject({
-      status: BranchRefreshStatus.Retryable,
-      reason: BranchRefreshReason.BudgetExhausted,
-      retryAfterSeconds: 30,
-    });
-    expect(
-      syncServiceMocks.refreshTombstonedBranchPullRequest
-    ).not.toHaveBeenCalled();
-    expect(getSinglePullRequestWithProviderResult).not.toHaveBeenCalled();
-  });
-
-  it("does not stamp API-key tombstoned refreshes as user actions", async () => {
-    mockDb.artifact.findFirst.mockResolvedValue(
-      makeBranchRow({ repositoryRemovedAt: new Date("2026-07-05T12:00:00Z") })
-    );
-    mockDb.oAuthRateLimit.findUnique.mockResolvedValue(null);
-    mockDb.oAuthRateLimit.create.mockResolvedValue({});
-
-    await branchReadService.refreshBranch(organizationId, branchId, {
-      userId: "user-1",
-      authMethod: "api_key",
-    });
-
-    expect(
-      syncServiceMocks.refreshTombstonedBranchPullRequest
-    ).toHaveBeenCalledWith({
-      actorUserId: "user-1",
-      branchArtifactId: branchId,
-      organizationId,
-      trigger: GitHubFetchTrigger.Unknown,
-    });
-  });
-
-  it("maps tombstoned owner-token rate limits to retryable refresh", async () => {
-    mockDb.artifact.findFirst.mockResolvedValue(
-      makeBranchRow({ repositoryRemovedAt: new Date("2026-07-05T12:00:00Z") })
-    );
-    mockDb.artifactLink.findMany.mockResolvedValue([]);
-    mockDb.oAuthRateLimit.findUnique.mockResolvedValue(null);
-    mockDb.oAuthRateLimit.create.mockResolvedValue({});
-    syncServiceMocks.refreshTombstonedBranchPullRequest.mockResolvedValueOnce({
-      status: "retryable",
-      reason: "provider_rate_limited",
-      retryAfterSeconds: 45,
-    });
-
-    const response = await branchReadService.refreshBranch(
-      organizationId,
-      branchId,
-      { userId: "user-1", authMethod: "session" }
-    );
-
-    expect(response).toMatchObject({
-      status: BranchRefreshStatus.Retryable,
-      reason: BranchRefreshReason.ProviderRateLimited,
-      retryAfterSeconds: 45,
-    });
-    expect(mockDb.oAuthRateLimit.create).toHaveBeenCalledTimes(2);
-    expect(getSinglePullRequestWithProviderResult).not.toHaveBeenCalled();
-  });
-
-  it("claims the current PR before provider work and settles only allowed fields", async () => {
-    mockDb.artifact.findFirst.mockResolvedValue(makeBranchRow());
-    mockDb.oAuthRateLimit.findUnique.mockResolvedValue(null);
-    mockDb.oAuthRateLimit.create.mockResolvedValue({});
-    mockDb.pullRequestDetail.updateMany
-      .mockResolvedValueOnce({ count: 1 })
-      .mockResolvedValueOnce({ count: 1 });
-    mockDb.artifactLink.findMany.mockResolvedValue([]);
-    vi.mocked(getSinglePullRequestWithProviderResult).mockResolvedValue({
-      status: GitHubProviderResultStatus.Success,
-      value: {
-        githubId: "pr-gh-1",
-        number: 7,
-        title: "Refresh me",
-        htmlUrl: "https://github.com/closedloop-ai/example-repo/pull/7",
-        headBranch: "feature",
-        baseBranch: "main",
-        state: GitHubPRState.Merged,
-        createdAt: "2026-07-03T04:00:00.000Z",
-        mergedAt: "2026-07-03T05:01:00.000Z",
-        closedAt: "2026-07-03T05:01:00.000Z",
-        authorLogin: "octocat",
-        isDraft: false,
-        headSha: "def",
-        baseSha: "abc",
-        mergeCommitSha: "merge-sha",
-        additions: 33,
-        deletions: 7,
-        changedFiles: 4,
-      },
-    });
-
-    const response = await branchReadService.refreshBranch(
-      organizationId,
-      branchId,
-      { userId: "user-1", authMethod: "session" }
-    );
-
-    expect(response.status).toBe("refreshed");
-    expect(mockDb.oAuthRateLimit.create).toHaveBeenCalledTimes(2);
-    expect(mockDb.pullRequestDetail.updateMany).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({
-        where: expect.objectContaining({
-          id: "pr-detail-1",
-          branchArtifactId: branchId,
-          repository: {
-            removedAt: null,
-            installation: {
-              organizationId,
-              status: GitHubInstallationStatus.ACTIVE,
-            },
-          },
-          OR: [
-            { lastRefreshAttemptAt: null },
-            { lastRefreshAttemptAt: { lt: new Date(now.getTime() - 30_000) } },
-          ],
-        }),
-        data: { lastRefreshAttemptAt: now },
-      })
-    );
-    // The refresh mints ONE installation client for the branch's installation
-    // and threads it into the provider read (PLN-1525).
-    expect(installationAuthMocks.getInstallationOctokit).toHaveBeenCalledWith(
-      "installation-1"
-    );
-    expect(getSinglePullRequestWithProviderResult).toHaveBeenCalledWith(
-      INSTALLATION_OCTOKIT,
-      "closedloop-ai",
-      "example-repo",
-      7,
-      expect.any(Object)
-    );
-    expect(mockDb.pullRequestDetail.updateMany).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        data: {
-          prState: GitHubPRState.Merged,
-          // FEA-3552: settle persists the GitHub PR createdAt for the opened dot.
-          githubCreatedAt: new Date("2026-07-03T04:00:00.000Z"),
-          mergedAt: new Date("2026-07-03T05:01:00.000Z"),
-          closedAt: new Date("2026-07-03T05:01:00.000Z"),
-          isDraft: false,
-          additions: 33,
-          deletions: 7,
-          changedFiles: 4,
-          lastVerifiedAt: now,
-        },
-      })
-    );
-    expect(mockDb.artifact.updateMany).not.toHaveBeenCalled();
-    expect(mockDb.branchDetail.updateMany).not.toHaveBeenCalled();
-    expect(mockDb.branchStatusCheck.deleteMany).not.toHaveBeenCalled();
-    expect(mockDb.$queryRaw).toHaveBeenCalledTimes(2);
-  });
-
-  it("folds an installation client mint rejection into retryable provider unavailable instead of rejecting (PLN-1525)", async () => {
-    // The token exchange behind getInstallationOctokit is a network call; a
-    // rejection must stay inside refreshBranch's errors-as-values contract and
-    // resolve to the same retryable stale DTO a failed provider read produces.
-    mockDb.artifact.findFirst.mockResolvedValue(makeBranchRow());
-    mockDb.oAuthRateLimit.findUnique.mockResolvedValue(null);
-    mockDb.oAuthRateLimit.create.mockResolvedValue({});
-    mockDb.pullRequestDetail.updateMany.mockResolvedValueOnce({ count: 1 });
-    installationAuthMocks.getInstallationOctokit.mockRejectedValue(
-      new Error("installation token exchange failed")
-    );
-
-    const response = await branchReadService.refreshBranch(
-      organizationId,
-      branchId,
-      { userId: "user-1", authMethod: "session" }
-    );
-
-    expect(response).toMatchObject({
-      status: BranchRefreshStatus.Retryable,
-      reason: BranchRefreshReason.ProviderUnavailable,
-      branch: { id: branchId, prState: GitHubPRState.Open },
-    });
-    // The mint failed before the provider read could receive a client, and no
-    // settlement writes fired.
-    expect(getSinglePullRequestWithProviderResult).not.toHaveBeenCalled();
-    expect(mockDb.pullRequestDetail.updateMany).toHaveBeenCalledTimes(1);
-    expect(mockDb.artifact.updateMany).not.toHaveBeenCalled();
-    expect(mockDb.branchDetail.updateMany).not.toHaveBeenCalled();
-  });
-
-  it("folds a rate-limited installation client mint rejection into retryable provider rate limit with its retry signal (PLN-1525)", async () => {
-    mockDb.artifact.findFirst.mockResolvedValue(makeBranchRow());
-    mockDb.oAuthRateLimit.findUnique.mockResolvedValue(null);
-    mockDb.oAuthRateLimit.create.mockResolvedValue({});
-    mockDb.pullRequestDetail.updateMany.mockResolvedValueOnce({ count: 1 });
-    installationAuthMocks.getInstallationOctokit.mockRejectedValue(
-      Object.assign(new Error("API rate limit exceeded"), {
-        status: 429,
-        headers: { "retry-after": "45" },
-      })
-    );
-
-    const response = await branchReadService.refreshBranch(
-      organizationId,
-      branchId,
-      { userId: "user-1", authMethod: "session" }
-    );
-
-    expect(response).toMatchObject({
-      status: BranchRefreshStatus.Retryable,
-      reason: BranchRefreshReason.ProviderRateLimited,
-      retryAfterSeconds: 45,
-      branch: { id: branchId, prState: GitHubPRState.Open },
-    });
-    expect(getSinglePullRequestWithProviderResult).not.toHaveBeenCalled();
-    expect(mockDb.pullRequestDetail.updateMany).toHaveBeenCalledTimes(1);
-    expect(mockDb.artifact.updateMany).not.toHaveBeenCalled();
-    expect(mockDb.branchDetail.updateMany).not.toHaveBeenCalled();
-  });
-
-  it("returns guarded write failure when provider settlement loses its scoped write", async () => {
-    mockDb.artifact.findFirst.mockResolvedValue(makeBranchRow());
-    mockDb.oAuthRateLimit.findUnique.mockResolvedValue(null);
-    mockDb.oAuthRateLimit.create.mockResolvedValue({});
-    mockDb.pullRequestDetail.updateMany
-      .mockResolvedValueOnce({ count: 1 })
-      .mockResolvedValueOnce({ count: 0 });
-    vi.mocked(getSinglePullRequestWithProviderResult).mockResolvedValue({
-      status: GitHubProviderResultStatus.Success,
-      value: {
-        githubId: "pr-gh-1",
-        number: 7,
-        title: "Refresh me",
-        htmlUrl: "https://github.com/closedloop-ai/example-repo/pull/7",
-        headBranch: "feature",
-        baseBranch: "main",
-        state: GitHubPRState.Merged,
-        createdAt: "2026-07-03T04:00:00.000Z",
-        mergedAt: "2026-07-03T05:01:00.000Z",
-        closedAt: "2026-07-03T05:01:00.000Z",
-        authorLogin: "octocat",
-        isDraft: false,
-        headSha: "def",
-        baseSha: "abc",
-        mergeCommitSha: "merge-sha",
-      },
-    });
-
-    const response = await branchReadService.refreshBranch(
-      organizationId,
-      branchId,
-      { userId: "user-1", authMethod: "session" }
-    );
-
-    expect(response).toMatchObject({
-      status: BranchRefreshStatus.Failed,
-      reason: BranchRefreshReason.GuardedWriteFailed,
-      branch: { id: branchId },
-    });
-    expect(mockDb.artifact.updateMany).not.toHaveBeenCalled();
-    expect(mockDb.branchDetail.updateMany).not.toHaveBeenCalled();
-  });
-
-  it("claims null and stale refresh windows but rejects fresh claims before provider work", async () => {
-    mockDb.artifact.findFirst.mockResolvedValueOnce(
-      makeBranchRow({
-        currentPullRequestDetail: makeCurrentPullRequestDetail({
-          lastRefreshAttemptAt: null,
-        }),
-      })
-    );
-    mockDb.oAuthRateLimit.findUnique.mockResolvedValue(null);
-    mockDb.oAuthRateLimit.create.mockResolvedValue({});
-    mockDb.pullRequestDetail.updateMany.mockResolvedValueOnce({ count: 1 });
-    vi.mocked(getSinglePullRequestWithProviderResult).mockResolvedValueOnce({
-      status: GitHubProviderResultStatus.ProviderUnavailable,
-    });
-
-    await branchReadService.refreshBranch(organizationId, branchId, {
-      userId: "user-1",
-      authMethod: "session",
-    });
-
-    mockDb.artifact.findFirst.mockResolvedValueOnce(
-      makeBranchRow({
-        currentPullRequestDetail: makeCurrentPullRequestDetail({
-          lastRefreshAttemptAt: new Date(now.getTime() - 30_001),
-        }),
-      })
-    );
-    mockDb.pullRequestDetail.updateMany.mockResolvedValueOnce({ count: 1 });
-    vi.mocked(getSinglePullRequestWithProviderResult).mockResolvedValueOnce({
-      status: GitHubProviderResultStatus.ProviderUnavailable,
-    });
-
-    await branchReadService.refreshBranch(organizationId, branchId, {
-      userId: "user-1",
-      authMethod: "session",
-    });
-
-    mockDb.artifact.findFirst.mockResolvedValueOnce(
-      makeBranchRow({
-        currentPullRequestDetail: makeCurrentPullRequestDetail({
-          lastRefreshAttemptAt: new Date(now.getTime() - 29_999),
-        }),
-      })
-    );
-    mockDb.pullRequestDetail.updateMany.mockResolvedValueOnce({ count: 0 });
-
-    const freshResponse = await branchReadService.refreshBranch(
-      organizationId,
-      branchId,
-      { userId: "user-1", authMethod: "session" }
-    );
-
-    expect(freshResponse).toMatchObject({
-      status: BranchRefreshStatus.Retryable,
-      reason: BranchRefreshReason.AlreadyRefreshing,
-      retryAfterSeconds: 30,
-    });
-    expect(getSinglePullRequestWithProviderResult).toHaveBeenCalledTimes(2);
-    expect(mockDb.pullRequestDetail.updateMany).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({
-        where: expect.objectContaining({
-          OR: [
-            { lastRefreshAttemptAt: null },
-            { lastRefreshAttemptAt: { lt: new Date(now.getTime() - 30_000) } },
-          ],
-        }),
-      })
-    );
-  });
-
-  it("does not consume org budget when actor budget is exhausted", async () => {
-    mockDb.artifact.findFirst.mockResolvedValue(makeBranchRow());
-    mockDb.oAuthRateLimit.findUnique.mockResolvedValue({
-      id: "actor-bucket",
-      windowExpiresAt: new Date(now.getTime() + 30_000),
-      requestCount: 5,
-    });
-    mockDb.oAuthRateLimit.updateMany.mockResolvedValue({ count: 0 });
-
-    const response = await branchReadService.refreshBranch(
-      organizationId,
-      branchId,
-      { userId: "user-1", authMethod: "session" }
-    );
-
-    expect(response).toMatchObject({
-      status: BranchRefreshStatus.Retryable,
-      reason: BranchRefreshReason.BudgetExhausted,
-      retryAfterSeconds: 30,
-    });
-    expect(mockDb.oAuthRateLimit.findUnique).toHaveBeenCalledTimes(1);
-    expect(mockDb.oAuthRateLimit.findUnique).toHaveBeenCalledWith({
-      where: {
-        bucket_subject: {
-          bucket: "branch_refresh:actor",
-          subject: "org-1:session:user-1",
-        },
-      },
-    });
-    expect(getSinglePullRequestWithProviderResult).not.toHaveBeenCalled();
-  });
-
-  it("recovers refresh budget creation races in a fresh transaction", async () => {
-    mockDb.artifact.findFirst.mockResolvedValue(makeBranchRow());
-    mockDb.oAuthRateLimit.findUnique
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({
-        id: "actor-bucket",
-        windowExpiresAt: new Date(now.getTime() + 30_000),
-        requestCount: 1,
-      })
-      .mockResolvedValueOnce(null);
-    mockDb.oAuthRateLimit.create
-      .mockRejectedValueOnce(
-        Object.assign(new Error("race"), { code: "P2002" })
-      )
-      .mockResolvedValueOnce({});
-    mockDb.oAuthRateLimit.updateMany.mockResolvedValue({ count: 1 });
-    mockDb.pullRequestDetail.updateMany.mockResolvedValue({ count: 0 });
-
-    const response = await branchReadService.refreshBranch(
-      organizationId,
-      branchId,
-      { userId: "user-1", authMethod: "session" }
-    );
-
-    expect(response).toMatchObject({
-      status: BranchRefreshStatus.Retryable,
-      reason: BranchRefreshReason.AlreadyRefreshing,
-    });
-    expect(mockWithDb.tx).toHaveBeenCalledTimes(3);
-    expect(mockDb.oAuthRateLimit.create).toHaveBeenCalledTimes(2);
-    expect(getSinglePullRequestWithProviderResult).not.toHaveBeenCalled();
   });
 });
 

@@ -1,31 +1,44 @@
-import { Prisma, withDb } from "@repo/database";
-import { normalizePreviewSchemaName } from "@repo/database/schema-utils";
 import type {
   CategoryCounters,
   CounterBucket,
   SchemaCategory,
 } from "@repo/database/scripts/cleanup-preview-schemas-lib";
 import {
-  buildSummary,
   categorizeSchema,
-  computeExitCode,
-  deriveBranchSchemaName,
   isMergeQueuePreview,
   isOrphanGraceElapsed,
   makeCounters,
 } from "@repo/database/scripts/cleanup-preview-schemas-lib";
+import { isRetainedEnvironmentSchema } from "@repo/database/scripts/vibe-environment-retention";
 import { listAllBranchNames } from "@repo/github";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
-import { getPrismaRawQuerySqlState } from "@/lib/db-utils";
 import { PreviewSchemaSourceRepo } from "./constants";
+import { dropSchemaForBranch } from "./service/drop-branch";
 import type { DropBudget } from "./service/drop-budget";
 import {
   createDropBudget,
   deferDropIfExhausted,
   getSweepBudgetMs,
 } from "./service/drop-budget";
+import { executeDrop, isDropContentionError } from "./service/drop-execution";
+import { buildDryRunSummary } from "./service/dry-run-summary";
+import {
+  cleanupStaleObservationsSafely,
+  readObservation,
+  readObservations,
+  upsertObservations,
+} from "./service/orphan-observations";
 import { getQueueTtlDays, getQueueTtlHours } from "./service/queue-ttl";
+import { listPreviewSchemas, readRegistryRow } from "./service/schema-registry";
+import { keepRetainedEnvironmentOutOfSweep } from "./service/vibe-environment-retention";
+import type { VibeObjectCleanupReport } from "./service/vibe-object-cleanup";
+import {
+  summarizeSweep,
+  sweepOrphanedVibeObjects,
+} from "./service/vibe-object-cleanup";
+
+export type { DropResult } from "./service/drop-branch";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -36,6 +49,7 @@ type SchemaDecision = {
   category: SchemaCategory;
   branch: string | null;
   isQueuePreview: boolean;
+  isRetainedEnvironment: boolean;
   /**
    * `last_seen_at` as classification saw it, or `null` when the schema had no
    * registry row. Carried to the DROP so it can re-verify nothing re-registered
@@ -44,37 +58,12 @@ type SchemaDecision = {
   lastSeenAt: Date | null;
 };
 
-/**
- * SQLSTATEs Postgres raises when it declines to wait for a lock or cancels a
- * statement that outran its timeout.
- */
-const DropContentionSqlState = {
-  LockNotAvailable: "55P03",
-  QueryCanceled: "57014",
-} as const;
-
-/**
- * How long a DROP may wait for its ACCESS EXCLUSIVE lock before Postgres gives
- * up. Comfortably shorter than the sweep's headroom under `maxDuration`, so a
- * schema pinned by a live build costs a bounded pause instead of the function.
- */
-const DROP_LOCK_TIMEOUT_MS = 5000;
-/** Ceiling on the DROP itself once it holds the lock. */
-const DROP_STATEMENT_TIMEOUT_MS = 30_000;
-/** Interactive-transaction ceiling, above both statement budgets. */
-const DROP_TX_TIMEOUT_MS = 40_000;
-
 export type SweepResult = {
   summary: string;
   counters: CategoryCounters;
+  /** ISS-12056: S3 objects of dropped vibe environments, deleted by prefix. */
+  vibeObjects: VibeObjectCleanupReport;
   exitCode: 0 | 1;
-};
-
-export type DropResult = {
-  schemaName: string;
-  dropped: boolean;
-  alreadyGone: boolean;
-  error: string | null;
 };
 
 export type DryRunResult = {
@@ -94,135 +83,8 @@ export type DryRunResult = {
 };
 
 // ---------------------------------------------------------------------------
-// Registry helpers
+// Drop revalidation and classification
 // ---------------------------------------------------------------------------
-
-/**
- * Reads `public.preview_schemas` for a given schema name.
- *
- * Returns `{ registryRow, registryTableMissing }` for use with
- * `categorizeSchema()`. SQLSTATE 42P01 (undefined_table) indicates the
- * registry table has never been created — all schemas are treated as orphaned
- * in that edge case. Any other error is rethrown so the caller can skip the
- * schema rather than misclassify it.
- *
- * The `branch` column is included so the branch-aware pass can cross-reference
- * against live GitHub branches without a second query.
- */
-async function readRegistryRow(schemaName: string): Promise<{
-  registryRow: { lastSeenAt: Date; branch: string | null } | null;
-  registryTableMissing: boolean;
-}> {
-  try {
-    const rows = await withDb((db) =>
-      db.$queryRaw<{ last_seen_at: string; branch: string | null }[]>(
-        Prisma.sql`
-          SELECT last_seen_at, branch
-          FROM public.preview_schemas
-          WHERE schema_name = ${schemaName}
-          ORDER BY last_seen_at DESC
-          LIMIT 1
-        `
-      )
-    );
-
-    if (rows.length === 0) {
-      return { registryRow: null, registryTableMissing: false };
-    }
-
-    return {
-      registryRow: {
-        lastSeenAt: new Date(rows[0].last_seen_at),
-        branch: rows[0].branch ?? null,
-      },
-      registryTableMissing: false,
-    };
-  } catch (err) {
-    // SQLSTATE 42P01 = undefined_table
-    if ((err as { code?: string }).code === "42P01") {
-      return { registryRow: null, registryTableMissing: true };
-    }
-    throw err;
-  }
-}
-
-/**
- * Lists all schemas in `pg_namespace` whose names start with `preview_`.
- */
-async function listPreviewSchemas(): Promise<string[]> {
-  const rows = await withDb((db) =>
-    db.$queryRaw<{ nspname: string }[]>(Prisma.sql`
-      SELECT nspname
-      FROM pg_namespace
-      WHERE nspname LIKE 'preview_%'
-      ORDER BY nspname
-    `)
-  );
-  return rows.map((r) => r.nspname);
-}
-
-/**
- * Executes `DROP SCHEMA IF EXISTS <name> CASCADE` for a single schema name.
- *
- * The schema name must start with `preview_` — this guard is enforced before
- * calling this helper by `dropSchemaForBranch` and the sweep loop.
- *
- * `$executeRawUnsafe` is required because the schema identifier is dynamic and
- * cannot be parameterized with `Prisma.sql` (identifiers are not values).
- * The `preview_` prefix guard provides the safety boundary.
- */
-async function executeDrop(schemaName: string): Promise<void> {
-  // Double-check: never drop a non-preview schema
-  if (!schemaName.startsWith("preview_")) {
-    throw new Error(
-      `Safety guard: refusing to drop non-preview schema "${schemaName}"`
-    );
-  }
-  // Run inside a transaction so `SET LOCAL` pins to the same connection as the
-  // DROP — `withDb` alone borrows a pooled connection per query, so a session
-  // GUC set there would not reliably apply. `DROP SCHEMA … CASCADE` takes an
-  // ACCESS EXCLUSIVE lock and would otherwise wait indefinitely behind a live
-  // preview build's connection, carrying the function past `maxDuration`
-  // regardless of the sweep's own budget (PR #4499 review).
-  await withDb.tx(
-    async (tx) => {
-      await tx.$executeRawUnsafe(
-        `SET LOCAL lock_timeout = '${DROP_LOCK_TIMEOUT_MS}ms'`
-      );
-      await tx.$executeRawUnsafe(
-        `SET LOCAL statement_timeout = '${DROP_STATEMENT_TIMEOUT_MS}ms'`
-      );
-      await tx.$executeRawUnsafe(
-        `DROP SCHEMA IF EXISTS "${schemaName.replace(/"/g, '""')}" CASCADE`
-      );
-    },
-    { timeout: DROP_TX_TIMEOUT_MS }
-  );
-}
-
-/**
- * Whether a drop failure is Postgres declining to wait, rather than a real
- * error: SQLSTATE 55P03 (`lock_not_available`, our `lock_timeout`) or 57014
- * (`query_canceled`, our `statement_timeout`).
- *
- * Both mean the schema was busy — almost certainly an in-flight preview build
- * holding a connection to it — which is precisely a schema we must not drop.
- * Skipping is the correct outcome, so these are counted as kept rather than
- * errored: routing them to `errored` would page on the sweep behaving exactly
- * as intended.
- *
- * The SQLSTATE is read via `getPrismaRawQuerySqlState`, not `error.code`: for a
- * raw query Prisma sets `code` to its own `P2010` and puts the driver SQLSTATE
- * in `meta.code`, so matching on `code` alone would never fire and quietly turn
- * this whole branch into dead code.
- */
-function isDropContentionError(err: unknown): boolean {
-  const sqlState = getPrismaRawQuerySqlState(err);
-  return (
-    sqlState === DropContentionSqlState.LockNotAvailable ||
-    sqlState === DropContentionSqlState.QueryCanceled
-  );
-}
 
 /**
  * Re-checks the registry immediately before a DROP and reports whether the
@@ -238,7 +100,8 @@ function isDropContentionError(err: unknown): boolean {
  * `observedLastSeenAt` is what classification saw — `null` for an orphan (no
  * registry row at all). The schema is still droppable only if that has not
  * changed: an orphan must still have no row, and a TTL-expired schema must not
- * have a newer `last_seen_at`.
+ * have a newer `last_seen_at`. Vibe and prototype retention is checked again
+ * against the current provenance before either condition can admit a drop.
  *
  * Fails CLOSED: a registry-read error returns `false`, so an unverifiable
  * schema is skipped rather than dropped.
@@ -249,6 +112,10 @@ async function isStillDroppable(
 ): Promise<boolean> {
   try {
     const { registryRow } = await readRegistryRow(schemaName);
+
+    if (isRetainedEnvironmentSchema(schemaName, registryRow?.branch ?? null)) {
+      return false;
+    }
 
     if (observedLastSeenAt === null) {
       // Classified as an orphan. A row appearing since means a deploy just
@@ -304,19 +171,24 @@ async function categorizeAllSchemas(
     const branch = registryRow?.branch ?? null;
     const isQueuePreview = isMergeQueuePreview({ schemaName, branch });
 
-    const category = categorizeSchema({
+    const category = keepRetainedEnvironmentOutOfSweep(
+      categorizeSchema({
+        schemaName,
+        registryRow,
+        registryTableMissing,
+        ttlDays: isQueuePreview ? queueTtlDays : ttlDays,
+        now,
+      }),
       schemaName,
-      registryRow,
-      registryTableMissing,
-      ttlDays: isQueuePreview ? queueTtlDays : ttlDays,
-      now,
-    });
+      branch
+    );
 
     decisions.push({
       schemaName,
       category,
       branch,
       isQueuePreview,
+      isRetainedEnvironment: isRetainedEnvironmentSchema(schemaName, branch),
       lastSeenAt: registryRow?.lastSeenAt ?? null,
     });
   }
@@ -367,7 +239,9 @@ function getDefaultGraceHours(): number {
 export const previewSchemaCleanupService = {
   /**
    * Sweeps all `preview_` schemas: drops stale (TTL-expired), orphaned, and
-   * orphan-branch schemas. Active schemas (seen within `ttlDays`) are preserved.
+   * orphan-branch schemas. Active schemas (seen within `ttlDays`, or on a
+   * `vibe/`, `prototype/` or `functional-prototype/` branch) are preserved, and
+   * those three prefixes' schemas also sit out the orphan-branch pass.
    *
    * The branch-aware pass fetches live GitHub branches once at sweep start and
    * demotes `active` schemas whose stored branch is no longer present to the
@@ -398,8 +272,12 @@ export const previewSchemaCleanupService = {
 
     if (schemaNames.length === 0) {
       await cleanupStaleObservationsSafely(counters);
-      const summary = buildSummary(counters);
-      return { summary, counters, exitCode: computeExitCode(counters) };
+      const vibeObjects = await sweepOrphanedVibeObjects(budget);
+      return {
+        counters,
+        vibeObjects,
+        ...summarizeSweep(counters, vibeObjects),
+      };
     }
 
     log.info("[preview-schema-cleanup] Starting daily sweep", {
@@ -478,68 +356,17 @@ export const previewSchemaCleanupService = {
 
     await cleanupStaleObservationsSafely(counters);
 
-    const summary = buildSummary(counters);
-    const exitCode = computeExitCode(counters);
+    // After every DROP, so this run's dropped vibe schemas are already absent
+    // from pg_namespace and their objects are deleted here.
+    const vibeObjects = await sweepOrphanedVibeObjects(budget);
+    const { summary, exitCode } = summarizeSweep(counters, vibeObjects);
 
     log.info(`[preview-schema-cleanup] ${summary}`, { exitCode });
 
-    return { summary, counters, exitCode };
+    return { summary, counters, vibeObjects, exitCode };
   },
 
-  /**
-   * Drops the preview schema for a specific git branch name.
-   *
-   * Derives the schema name via `normalizePreviewSchemaName`.
-   * `deriveBranchSchemaName` throws if the result does not start with
-   * `preview_`; `executeDrop` enforces the same prefix guard.
-   *
-   * `DROP SCHEMA IF EXISTS` is idempotent. We check `pg_namespace` before
-   * dropping so callers can distinguish a fresh drop from an already-absent
-   * schema.
-   */
-  async dropSchemaForBranch(branch: string): Promise<DropResult> {
-    const schemaName = deriveBranchSchemaName(
-      branch,
-      normalizePreviewSchemaName
-    );
-
-    try {
-      // Check existence before DROP to distinguish "dropped" from "already gone"
-      const existing = await withDb((db) =>
-        db.$queryRaw<{ nspname: string }[]>(Prisma.sql`
-          SELECT nspname
-          FROM pg_namespace
-          WHERE nspname = ${schemaName}
-        `)
-      );
-
-      if (existing.length === 0) {
-        log.info("[preview-schema-cleanup] Schema already absent", {
-          schemaName,
-          branch,
-        });
-        return { schemaName, dropped: false, alreadyGone: true, error: null };
-      }
-
-      await executeDrop(schemaName);
-      log.info("[preview-schema-cleanup] Dropped schema for branch", {
-        schemaName,
-        branch,
-      });
-      return { schemaName, dropped: true, alreadyGone: false, error: null };
-    } catch (err) {
-      // Catches both the existence-check query and the executeDrop call so a
-      // failure in either surfaces as a structured DropResult.error rather
-      // than a thrown exception that callers misinterpret as auth failure.
-      const message = parseError(err);
-      log.error("[preview-schema-cleanup] Failed to drop schema for branch", {
-        schemaName,
-        branch,
-        error: message,
-      });
-      return { schemaName, dropped: false, alreadyGone: false, error: message };
-    }
-  },
+  dropSchemaForBranch,
 
   /**
    * Dry-run mode: classifies all `preview_` schemas but executes zero DROPs.
@@ -664,164 +491,6 @@ export const previewSchemaCleanupService = {
   },
 };
 
-/**
- * Builds the dry-run summary string. Uses explicit `would-drop` / `kept-active`
- * language so operators reading the workflow log don't confuse a dry-run
- * preview with a real reap outcome.
- */
-function buildDryRunSummary(input: {
-  wouldDropStale: string[];
-  wouldDropOrphaned: string[];
-  wouldDropOrphanBranch: string[];
-  wouldKeepInGrace: string[];
-  withheldByMassDropCap: string[];
-  keptActive: string[];
-  counters: CategoryCounters;
-}): string {
-  const totalWouldDrop =
-    input.wouldDropStale.length +
-    input.wouldDropOrphaned.length +
-    input.wouldDropOrphanBranch.length;
-  return (
-    `[dry-run] summary: would-drop=${totalWouldDrop} ` +
-    `(ttl-expired=${input.wouldDropStale.length} orphan=${input.wouldDropOrphaned.length} orphan-branch=${input.wouldDropOrphanBranch.length}); ` +
-    `would-keep-in-grace=${input.wouldKeepInGrace.length}; ` +
-    `withheld-by-mass-drop-cap=${input.withheldByMassDropCap.length}; ` +
-    `kept-active=${input.keptActive.length}; ` +
-    `observation-read[errored=${input.counters.orphan.errored}] ` +
-    `registry-read[errored=${input.counters.registryReadErrored}]`
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Observation helpers (grace window)
-// ---------------------------------------------------------------------------
-
-/**
- * Reads the observation row for a given schema name from
- * `public.preview_schemas_observations`.
- *
- * Returns `{ firstObservedAt }` if a row exists, or `null` if not observed yet.
- * Follows the `readRegistryRow()` pattern.
- */
-async function readObservation(
-  schemaName: string
-): Promise<{ firstObservedAt: Date } | null> {
-  const rows = await withDb((db) =>
-    db.$queryRaw<{ first_observed_at: string }[]>(Prisma.sql`
-      SELECT first_observed_at
-      FROM public.preview_schemas_observations
-      WHERE schema_name = ${schemaName}
-      LIMIT 1
-    `)
-  );
-
-  if (rows.length === 0) {
-    return null;
-  }
-
-  return { firstObservedAt: new Date(rows[0].first_observed_at) };
-}
-
-/**
- * Reads every orphan's observation row in ONE query.
- *
- * Replaces a per-orphan `readObservation` round trip. The grace-window
- * bookkeeping deliberately runs even after the DROP budget is spent (so the
- * grace clock is never stranded), which made a per-orphan query an unbounded
- * amount of post-budget work on a large orphan backlog — able to carry the
- * function past `maxDuration` on its own (PR #4499 review). Two set-based
- * statements make the whole phase O(1) round trips.
- */
-async function readObservations(
-  schemaNames: string[]
-): Promise<Map<string, Date>> {
-  if (schemaNames.length === 0) {
-    return new Map();
-  }
-
-  const rows = await withDb((db) =>
-    db.$queryRaw<{ schema_name: string; first_observed_at: string }[]>(
-      Prisma.sql`
-        SELECT schema_name, first_observed_at
-        FROM public.preview_schemas_observations
-        WHERE schema_name = ANY(${schemaNames})
-      `
-    )
-  );
-
-  return new Map(
-    rows.map((r) => [r.schema_name, new Date(r.first_observed_at)])
-  );
-}
-
-/**
- * Records first-observation for every orphan in ONE statement. INSERT … ON
- * CONFLICT DO NOTHING keeps `first_observed_at` captured exactly once per
- * schema, so re-running is an idempotent no-op.
- */
-async function upsertObservations(schemaNames: string[]): Promise<void> {
-  if (schemaNames.length === 0) {
-    return;
-  }
-
-  await withDb((db) =>
-    db.$executeRaw(Prisma.sql`
-      INSERT INTO public.preview_schemas_observations (schema_name)
-      SELECT unnest(${schemaNames}::text[])
-      ON CONFLICT (schema_name) DO NOTHING
-    `)
-  );
-}
-
-/**
- * Deletes observation rows for schemas that now have a real registry row in
- * `public.preview_schemas`. This keeps the observation table tidy — once a
- * schema gains a registry entry (because a preview deploy registered it),
- * it's no longer an orphan candidate and the observation is stale.
- *
- * Also deletes observations for schemas that no longer exist in pg_namespace
- * (already dropped by a previous sweep).
- */
-async function cleanupStaleObservations(): Promise<void> {
-  await withDb((db) =>
-    db.$executeRaw(Prisma.sql`
-      DO $$
-      BEGIN
-        IF to_regclass('public.preview_schemas') IS NOT NULL THEN
-          DELETE FROM public.preview_schemas_observations AS observation
-          WHERE EXISTS (
-            SELECT 1
-            FROM public.preview_schemas AS registry
-            WHERE registry.schema_name = observation.schema_name
-          );
-        END IF;
-
-        DELETE FROM public.preview_schemas_observations AS observation
-        WHERE NOT EXISTS (
-          SELECT 1
-          FROM pg_namespace AS pg_ns
-          WHERE pg_ns.nspname = observation.schema_name
-            AND pg_ns.nspname LIKE 'preview_%'
-        );
-      END $$;
-    `)
-  );
-}
-
-async function cleanupStaleObservationsSafely(
-  counters: CategoryCounters
-): Promise<void> {
-  try {
-    await cleanupStaleObservations();
-  } catch (err) {
-    log.error("[preview-schema-cleanup] cleanupStaleObservations failed", {
-      error: parseError(err),
-    });
-    counters.registryReadErrored += 1;
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Private helpers (extracted for deduplication)
 // ---------------------------------------------------------------------------
@@ -876,6 +545,10 @@ async function fetchLiveBranches(): Promise<Set<string> | null> {
  * disabled the pass for everyone else. Their reaper is the much shorter
  * queue TTL applied during categorization, which also avoids trusting a
  * possibly-partial GitHub branch listing for a schema this short-lived.
+ *
+ * A vibe/, prototype/ or functional-prototype/ schema sits out the same way,
+ * with no reaper at all: its cleanup is manual (see
+ * `vibe-environment-retention.ts`).
  */
 function partitionDecisionsWithBranch(
   decisions: SchemaDecision[],
@@ -904,7 +577,7 @@ function partitionDecisionsWithBranch(
       activeDecisions.push({
         ...d,
         isOrphanBranch:
-          !d.isQueuePreview &&
+          !sitsOutBranchAwarePass(d) &&
           liveBranches !== null &&
           d.branch !== null &&
           !liveBranches.has(d.branch),
@@ -915,8 +588,9 @@ function partitionDecisionsWithBranch(
   const branchAwareCandidateCount =
     liveBranches === null
       ? 0
-      : activeDecisions.filter((d) => !d.isQueuePreview && d.branch !== null)
-          .length;
+      : activeDecisions.filter(
+          (d) => !sitsOutBranchAwarePass(d) && d.branch !== null
+        ).length;
   const orphanBranchCandidateCount = activeDecisions.filter(
     (d) => d.isOrphanBranch
   ).length;
@@ -998,7 +672,7 @@ async function dropSchemas(
       ))
     ) {
       log.info(
-        `[preview-schema-cleanup] Skipped ${label} schema: re-registered since classification`,
+        `[preview-schema-cleanup] Skipped ${label} schema: retention policy or registry changed since classification`,
         { schemaName }
       );
       counters[bucket].kept += 1;
@@ -1101,7 +775,7 @@ async function processOrphansWithGrace(
     // means a deploy just registered it, so it is live and must not be dropped.
     if (!(await isStillDroppable(schemaName, null))) {
       log.info(
-        "[preview-schema-cleanup] Skipped orphan schema: registered since classification",
+        "[preview-schema-cleanup] Skipped orphan schema: retention policy or registry changed since classification",
         { schemaName }
       );
       counters.orphan.kept += 1;
@@ -1131,4 +805,8 @@ async function processOrphansWithGrace(
       counters.orphan.errored += 1;
     }
   }
+}
+
+function sitsOutBranchAwarePass(decision: SchemaDecision): boolean {
+  return decision.isQueuePreview || decision.isRetainedEnvironment;
 }

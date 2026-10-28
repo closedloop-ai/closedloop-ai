@@ -235,6 +235,8 @@ function selectedDetail() {
       closedAt: null,
       mergedAt: null,
       body: "Description",
+      baseRefName: "main",
+      authorLogin: "octocat",
       headRefOid: HEAD_SHA,
       mergeCommitSha: null,
       changedFiles: 3,

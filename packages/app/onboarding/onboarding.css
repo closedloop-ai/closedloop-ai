@@ -1,0 +1,31 @@
+/*
+ * Onboarding keyframes owned by `@repo/app`, not by a shell.
+ *
+ * `ob-rise` is the callout/card entrance the shared dashboard tour sets inline
+ * (`onboarding/components/dashboard-tour/dashboard-tour.tsx`). It was declared
+ * only in the desktop renderer's `globals.css` while desktop was the tour's
+ * only mount site; ISS-8351 mounts the same component on web, so a shell-owned
+ * keyframe would mean a shared component animating on one surface and silently
+ * not on the other. It lives beside the component that names it and reaches
+ * both shells through `packages/app/styles.css`.
+ *
+ * Reached by both shells through `packages/app/styles.css`, which imports this
+ * file with no comment line of its own: that aggregate is grandfathered under
+ * `noExcessiveLinesPerFile` and shrink-only, so the explanation lives here
+ * rather than costing a line there.
+ *
+ * The same move for the sibling `ob-pulse` is already done — FEA-3179 promoted
+ * it to `branches/branch-timeline.css` for the agents-table live dot — but that
+ * one left the renderer's copy in place, so `ob-pulse` is still declared twice.
+ * `ob-rise` is declared once: this file, and nowhere else.
+ */
+@keyframes ob-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

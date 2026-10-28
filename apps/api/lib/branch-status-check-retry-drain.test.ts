@@ -163,6 +163,7 @@ describe("drainDueCheckRunRetries", () => {
       claimed: 1,
       deadLettered: 0,
       discarded: 0,
+      failures: [],
       missing: 0,
       rescheduled: 0,
       succeeded: 1,
@@ -239,6 +240,14 @@ describe("drainDueCheckRunRetries", () => {
       claimed: 2,
       deadLettered: 0,
       discarded: 0,
+      failures: [
+        {
+          branchArtifactId: "branch-1",
+          organizationId: "org-1",
+          reason: StatusCheckRollupFailureReason.GraphqlError,
+          deadLettered: false,
+        },
+      ],
       missing: 0,
       rescheduled: 1,
       succeeded: 1,
@@ -281,5 +290,13 @@ describe("drainDueCheckRunRetries", () => {
 
     expect(summary.deadLettered).toBe(1);
     expect(summary.rescheduled).toBe(0);
+    expect(summary.failures).toEqual([
+      {
+        branchArtifactId: "branch-1",
+        organizationId: "org-1",
+        reason: StatusCheckRollupFailureReason.RateLimited,
+        deadLettered: true,
+      },
+    ]);
   });
 });

@@ -1,12 +1,9 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
-import { vi } from "vitest";
+import { describe, test, vi } from "vitest";
 import type { ClaudeCodeAnalyticsService } from "../src/main/cost/claude-code-analytics-service.js";
 import type { CostReconciliationService } from "../src/main/cost/cost-reconciliation-service.js";
-import {
-  CostReconciliationIpcChannel,
-  registerCostReconciliationIpcHandlers,
-} from "../src/main/ipc/cost-reconciliation-ipc.js";
+import { registerCostReconciliationIpcHandlers } from "../src/main/ipc/cost-reconciliation-ipc.js";
+import { CostReconciliationIpcChannel } from "../src/shared/cost-reconciliation-ipc-channel.js";
 import {
   createIpcRegistrar,
   isTrustedSenderDouble,

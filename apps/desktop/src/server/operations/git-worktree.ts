@@ -4,11 +4,11 @@ import path from "node:path";
 import type { OperationDispatcher } from "../operation-dispatcher.js";
 import type { ProcessManager } from "../process-manager.js";
 import { assertPathAllowed, DirectoryNotAllowedError } from "../security.js";
+import { getResolvedGitPathAsync } from "./binary-path-overrides.js";
 import { GIT_GATEWAY_EXEC_TIMEOUT_MS } from "./git-gateway-constants.js";
 import { parseBody } from "./parse-body.js";
 import { loadReposConfig } from "./repos-config-utils.js";
 import { json } from "./response-utils.js";
-import { getResolvedGitPath } from "./symphony-loop.js";
 import { expandHome, SymphonyDirNotConfiguredError } from "./symphony-utils.js";
 
 export function registerGitWorktreeRoutes(
@@ -60,7 +60,7 @@ export function registerGitWorktreeRoutes(
       }
 
       const removeResult = await processManager.exec(
-        getResolvedGitPath(),
+        await getResolvedGitPathAsync(),
         ["worktree", "remove", ...(force ? ["--force"] : []), expandedPath],
         expandedPath,
         { timeoutMs: GIT_GATEWAY_EXEC_TIMEOUT_MS }
@@ -145,7 +145,7 @@ export function registerGitWorktreeRoutes(
         // undefined cwd would skip that execution-time revalidation and let a
         // dir swapped after the route check escape the allowed roots.
         const branchResult = await processManager.exec(
-          getResolvedGitPath(),
+          await getResolvedGitPathAsync(),
           ["rev-parse", "--abbrev-ref", "HEAD"],
           prDir,
           { timeoutMs: GIT_GATEWAY_EXEC_TIMEOUT_MS }
@@ -160,7 +160,7 @@ export function registerGitWorktreeRoutes(
 
         const branch = branchResult.stdout.trim();
         const remoteResult = await processManager.exec(
-          getResolvedGitPath(),
+          await getResolvedGitPathAsync(),
           ["ls-remote", "--heads", "origin", branch],
           prDir,
           { timeoutMs: GIT_GATEWAY_EXEC_TIMEOUT_MS }
@@ -172,7 +172,7 @@ export function registerGitWorktreeRoutes(
 
         if (remoteResult.stdout.trim() === "") {
           const removeResult = await processManager.exec(
-            getResolvedGitPath(),
+            await getResolvedGitPathAsync(),
             ["worktree", "remove", prDir],
             prDir,
             { timeoutMs: GIT_GATEWAY_EXEC_TIMEOUT_MS }
@@ -209,7 +209,7 @@ async function isRegisteredWorktree(
   targetPath: string
 ): Promise<boolean> {
   const listResult = await processManager.exec(
-    getResolvedGitPath(),
+    await getResolvedGitPathAsync(),
     ["worktree", "list", "--porcelain"],
     targetPath,
     { timeoutMs: GIT_GATEWAY_EXEC_TIMEOUT_MS }

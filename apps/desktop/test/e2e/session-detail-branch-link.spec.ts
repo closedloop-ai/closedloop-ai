@@ -48,7 +48,6 @@ import {
   gotoHash,
   launchDesktopApp,
 } from "./helpers/desktop-app";
-import { startFakeGitHubAuthorityServer } from "./helpers/fake-github-authority-server";
 import {
   seedNoPullRequestBranch,
   waitForBranchesSchema,
@@ -99,9 +98,6 @@ test.describe("Session detail Branch link (ISS-5567)", () => {
     const userDataDir = fs.mkdtempSync(
       path.join(os.tmpdir(), "desktop-session-branch-link-udd-")
     );
-    const authorityServer = await startFakeGitHubAuthorityServer([
-      SEED.repoFullName,
-    ]);
 
     try {
       // Launch 1 — create + migrate the SQLite schema, then close so the seed
@@ -128,7 +124,6 @@ test.describe("Session detail Branch link (ISS-5567)", () => {
         env: {
           CLAUDE_HOME: claudeHome,
           CODEX_HOME: codexHome,
-          ...authorityServer.env,
         },
         keepUserDataDir: true,
         userDataDir,
@@ -214,7 +209,6 @@ test.describe("Session detail Branch link (ISS-5567)", () => {
         await cleanup();
       }
     } finally {
-      await authorityServer.close();
       fs.rmSync(userDataDir, { force: true, recursive: true });
       fs.rmSync(claudeHome, { force: true, recursive: true });
       fs.rmSync(codexHome, { force: true, recursive: true });

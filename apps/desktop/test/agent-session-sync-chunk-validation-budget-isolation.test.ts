@@ -26,7 +26,7 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   DEAD_LETTER_RETRY_MAX_MS,
   MAX_CHUNK_ENVELOPE_DEAD_LETTERS,

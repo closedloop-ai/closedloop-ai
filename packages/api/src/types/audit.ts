@@ -1,9 +1,9 @@
 // Shared audit-ledger contract constants (FEA-3856 / FEA-3799 Phase 1 Slice 1a).
 //
-// Used by BOTH the backend (apps/api audit ledger service) and — in later
-// slices — frontend provenance UI, so it lives in packages/api rather than
-// co-located in apps/api. Slice 1a ships the actor-type enum and the genesis
-// prev-hash sentinel; emit-points and read surfaces arrive in later slices.
+// Used by the apps/api ledger and emit services and by the `verify-audit-ledger`
+// MCP tool, so it lives in packages/api rather than co-located in apps/api.
+// Slice 1a shipped the actor-type enum and the genesis prev-hash sentinel;
+// FEA-3862 added the emit points (`AuditAction`) and the verify endpoint.
 
 /**
  * The kind of principal that produced an audit entry.
@@ -43,6 +43,22 @@ export const AUDIT_GENESIS_PREV_HASH = "0".repeat(64);
 export const AuditObjectType = {
   Document: "document",
   ApiKey: "api_key",
+  Project: "project",
+  /**
+   * Any artifact row, whatever its subtype. `document` stays the type for a
+   * route whose own subject is a document; this one is for the routes that act
+   * on artifacts of any subtype — `POST /artifact-links/batch-move` walks a
+   * link graph that carries branches and deployments, and `POST
+   * /entity-tags/batch` tags whatever the id resolves to (ISS-9465).
+   */
+  Artifact: "artifact",
+  /**
+   * An agent session. The object type `bulk-assign` has recorded its owner
+   * assignments under since ISS-9465, when the owner lived on
+   * `session_detail`. ISS-12251 moved the owner onto the artifact assignee; the
+   * object type is kept so `agent_session.assigned` keeps one shape.
+   */
+  AgentSession: "agent_session",
 } as const;
 
 export type AuditObjectType =
@@ -54,11 +70,32 @@ export type AuditObjectType =
  * these constants so the vocabulary stays a single source of truth. Values are
  * `<object>.<verb>` and are stable — they are hashed into the chain, so
  * renaming one rewrites history. Add, never rename.
+ *
+ * The `<object>` half must match the entry's `AuditObjectType`, which is why a
+ * project move by `POST /documents/batch-move` and one by
+ * `POST /artifact-links/batch-move` share `artifact.project_changed`: one event
+ * kind, one member, and a document row is an artifact row.
  */
 export const AuditAction = {
   DocumentStatusChanged: "document.status_changed",
+  DocumentDeleted: "document.deleted",
   ApiKeyMinted: "api_key.minted",
   ApiKeyRevoked: "api_key.revoked",
+  // ISS-9688. A project's status and priority were audited nowhere: the ledger
+  // only ever described documents and api keys, so a user re-prioritizing a
+  // project left no entry at all. That ticket withheld the same member from an
+  // artifact's priority; ISS-9465 ruling 6 reversed it for the bulk path, so
+  // `DocumentPriorityChanged` below is the artifact counterpart.
+  ProjectStatusChanged: "project.status_changed",
+  ProjectPriorityChanged: "project.priority_changed",
+  // ISS-9465 introduced these actions for bulk routes. ISS-10681 and ISS-10686
+  // reuse the same members for equivalent single-artifact mutations so each
+  // action keeps one stable ledger vocabulary and detail shape.
+  DocumentPriorityChanged: "document.priority_changed",
+  ArtifactProjectChanged: "artifact.project_changed",
+  ArtifactTagApplied: "artifact.tag_applied",
+  ArtifactTagRemoved: "artifact.tag_removed",
+  AgentSessionAssigned: "agent_session.assigned",
 } as const;
 
 export type AuditAction = (typeof AuditAction)[keyof typeof AuditAction];

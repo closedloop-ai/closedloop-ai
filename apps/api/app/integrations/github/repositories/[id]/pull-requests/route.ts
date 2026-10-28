@@ -1,7 +1,9 @@
-import type { GetPullRequestsResponse } from "@repo/api/src/types/github";
+import {
+  type GetPullRequestsResponse,
+  GitHubPullRequestTrackingScope,
+} from "@repo/api/src/types/github";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { GitHubReadCostRoute } from "@/lib/github/github-read-cost-log";
-import { isGithubProjectionReadsEnabled } from "@/lib/github-projection-reads-feature";
 import {
   errorResponse,
   parseRepositoryRouteLimit,
@@ -22,7 +24,7 @@ import { githubService } from "../../../service";
 export const GET = withAnyAuth<
   GetPullRequestsResponse,
   "/integrations/github/repositories/[id]/pull-requests"
->(async ({ clerkUserId, user }, request, params) => {
+>(async ({ user }, request, params) => {
   try {
     const { id } = await params;
 
@@ -30,6 +32,11 @@ export const GET = withAnyAuth<
     const projectId = url.searchParams.get("projectId");
     const limitParam = url.searchParams.get("limit");
     const limit = parseRepositoryRouteLimit(limitParam, 30);
+    const trackingScope =
+      url.searchParams.get("trackingScope") ===
+      GitHubPullRequestTrackingScope.Organization
+        ? GitHubPullRequestTrackingScope.Organization
+        : undefined;
 
     if (Number.isNaN(limit) || limit <= 0) {
       return errorResponse(
@@ -39,18 +46,29 @@ export const GET = withAnyAuth<
       );
     }
 
-    // PLN-1535 M3.1: when the projection-reads flag is on for this principal,
-    // serve PRs from the Postgres projection (no GitHub GraphQL, so no cost line
-    // to flush). Default off — the live path below stays authoritative.
-    if (
-      await isGithubProjectionReadsEnabled({ clerkUserId, userId: user.id })
-    ) {
-      const projected = await serveRepositoryPullRequestsFromProjection(
-        id,
-        user.organizationId,
-        projectId,
-        limit
-      );
+    // PLN-1535 M3.1, ungated by ISS-8049 (Kerensa Whitlock's call, 2026-08-25): the
+    // projection lane is the default read — no GitHub GraphQL, no cost line to
+    // flush. The `github-projection-reads` flag was fail-closed PostHog, so a
+    // keyless environment (and every non-enrolled org) always paid the live
+    // paging path below, which can run past the desktop's 10s hydration budget.
+    //
+    // A null means the projection lane cannot resolve this id — unknown,
+    // cross-org, removed, suspended installation, or an unverified observation
+    // — and the live lane below still owns the not-found verdict.
+    const projected = await serveRepositoryPullRequestsFromProjection(
+      id,
+      user.organizationId,
+      projectId,
+      limit,
+      trackingScope
+    );
+    // A resolvable repo with ZERO projected rows is indistinguishable from a
+    // repo whose projection coverage has not caught up yet (a fresh
+    // installation, a repo the reconciler has not swept), so only a non-empty
+    // projection short-circuits the live read. The empty case pays the
+    // pre-ISS-8049 live page, which is bounded (one page) for a genuinely
+    // PR-less repo (PR #6037 review).
+    if (projected && projected.pullRequests.length > 0) {
       return successResponse(projected);
     }
 
@@ -58,8 +76,9 @@ export const GET = withAnyAuth<
       id,
       user.organizationId,
       projectId,
-      { limit },
-      GitHubReadCostRoute.RepositoryPullRequests
+      { limit, ...(trackingScope ? { trackingScope } : {}) },
+      GitHubReadCostRoute.RepositoryPullRequests,
+      user.id
     );
 
     // PLN-1535 M0: flush the per-request GraphQL-cost log line the service

@@ -6,11 +6,12 @@
  * `branch.ts` needs these two types, and `branch.ts` is imported by the desktop
  * main process, which type-checks `@repo/api` source under `nodenext`. `nodenext`
  * requires explicit `.js` extensions on relative imports — but `branch-view.ts`
- * has a relative VALUE import (`./comment`) that the `apps/app`/`apps/api`
- * Turbopack bundler can only resolve EXTENSIONLESS (no `extensionAlias`/
- * `transpilePackages` is configured). Those two requirements are mutually
- * exclusive for `branch-view.ts`, so it must NOT enter the desktop nodenext
- * program. Keeping these enums here — a module with NO relative imports — lets
+ * has relative VALUE re-exports (`./branch-checks`,
+ * `./branch-check-projection`) that the `apps/app`/`apps/api` Turbopack bundler
+ * can only resolve EXTENSIONLESS (no `extensionAlias`/`transpilePackages` is
+ * configured). Those two requirements are mutually exclusive for
+ * `branch-view.ts`, so it must NOT enter the desktop nodenext program. Keeping
+ * these enums here — a module with NO relative imports — lets
  * `branch.ts` reference them without dragging `branch-view.ts` (and its
  * bundler-only-resolvable import) into the desktop compilation. `branch-view.ts`
  * re-exports both names, so its existing consumers are unaffected.

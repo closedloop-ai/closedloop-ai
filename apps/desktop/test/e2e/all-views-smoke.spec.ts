@@ -21,6 +21,7 @@
  */
 
 import { expect, type Page, test } from "@playwright/test";
+import { DASHBOARD_HEADING } from "./helpers/dashboard-header-copy";
 import { gotoHash, gotoNav, launchDesktopApp } from "./helpers/desktop-app";
 
 type ViewCase = {
@@ -129,7 +130,7 @@ const VIEWS: ViewCase[] = [
     navId: "dashboard",
     label: "Dashboard",
     // The first-launch dashboard renders its PageShell title as an <h1>.
-    heading: { name: "Welcome to Closedloop", level: 1 },
+    heading: { name: DASHBOARD_HEADING, level: 1 },
   },
   // Sessions and Branches are full-width, table-led views whose title shows
   // only in the Topbar breadcrumb (no in-body <h1>) — the label assertion
@@ -180,11 +181,12 @@ const VIEWS: ViewCase[] = [
     label: "Diagnostics",
     heading: { name: "Diagnostics", level: 1 },
   },
-  {
-    navId: "settings",
-    label: "Settings",
-    heading: { name: "Settings", level: 1 },
-  },
+  // ISS-10195: `settings` is deliberately NOT a row here. Retiring the
+  // workspace-experience gate made Settings the modal `DesktopSettingsModalHost`
+  // presents over the last nav page rather than a nav view, so it has no Topbar
+  // breadcrumb, no body <h1>, and `resolveKeepAliveNavIds` never mounts a panel
+  // for it — the three things every row above asserts. Its mount, its landing
+  // panel and its dismissal are `settings-v2-modal.spec.ts`.
 ];
 
 // Detail surfaces — the class of route where the reported chunk-load crash hit.

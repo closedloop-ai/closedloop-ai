@@ -3,29 +3,37 @@ import { getInitials } from "@repo/app/shared/lib/user-utils";
 import {
   Avatar,
   AvatarFallback,
+  AvatarImage,
 } from "@repo/design-system/components/ui/avatar";
-import type { BranchActorColorDomain } from "../lib/branch-actor-domain";
+import { UNATTRIBUTED_ACTOR_LABEL } from "../lib/branch-actor-domain";
 
 type BranchTraceActorAvatarProps = {
   actor: TurnActor;
-  actorDomain: BranchActorColorDomain;
+  /**
+   * The actor's photo, when the host resolved a real person (ISS-12666). The
+   * initials stay mounted underneath, so a missing or failed image shows them.
+   */
+  imageUrl?: string | null;
 };
 
-/** Branch-only actor identity for the shared Session trace gutter. */
+/**
+ * Actor identity for the shared Session trace gutter, on the Branch combined
+ * trace and (ISS-12666) the standalone Session trace. `role="img"` lets the
+ * actor's name reach assistive technology; a bare span cannot carry one.
+ * It draws one initial on the shared avatar colours (Nerys, 2026-10-22);
+ * the actor's colour stays on the timeline and its legend.
+ */
 export function BranchTraceActorAvatar({
   actor,
-  actorDomain,
+  imageUrl,
 }: BranchTraceActorAvatarProps) {
   const name =
-    actor.name ?? actor.human ?? actor.harness ?? actorDomain.labelFor(null);
-  const colors = actorDomain.colorPairFor(name);
+    actor.name ?? actor.human ?? actor.harness ?? UNATTRIBUTED_ACTOR_LABEL;
 
   return (
-    <Avatar aria-label={name} className="size-6" title={name}>
-      <AvatarFallback
-        className="font-medium text-[0.625rem]"
-        style={{ background: colors.soft, color: colors.strong }}
-      >
+    <Avatar aria-label={name} className="size-6" role="img" title={name}>
+      <AvatarImage alt="" src={imageUrl || undefined} />
+      <AvatarFallback className="text-[0.625rem]">
         {getInitials(name)}
       </AvatarFallback>
     </Avatar>

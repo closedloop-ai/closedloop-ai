@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({
     clerkUserId: "clerk-user-1",
     user: { id: "user-1", organizationId: "org-1" },
   },
-  getOrgAdminStatus: vi.fn(),
+  getOrganizationMembershipRole: vi.fn(),
   frustrationSettingService: {
     isFrustrationEnabled: vi.fn(),
     setFrustrationEnabled: vi.fn(),
@@ -29,8 +29,10 @@ vi.mock("@/lib/auth/with-auth", () => ({
       handler(mocks.authContext, request, context?.params),
 }));
 
-vi.mock("@/lib/auth/org-admin", () => ({
-  getOrgAdminStatus: mocks.getOrgAdminStatus,
+vi.mock("@/lib/auth/clerk-service", () => ({
+  clerkService: {
+    getOrganizationMembershipRole: mocks.getOrganizationMembershipRole,
+  },
 }));
 
 vi.mock("@repo/observability/log", () => ({
@@ -38,7 +40,7 @@ vi.mock("@repo/observability/log", () => ({
     warn: mocks.logWarn,
     error: vi.fn(),
     info: vi.fn(),
-    flush: vi.fn().mockResolvedValue(undefined),
+    flush: vi.fn(async () => undefined),
   },
 }));
 
@@ -46,6 +48,7 @@ vi.mock("../frustration-setting-service", () => ({
   frustrationSettingService: mocks.frustrationSettingService,
 }));
 
+import { ClerkOrgRoleFixture } from "@/__tests__/utils/auth-helpers";
 import { GET, PUT } from "./route";
 
 function putRequest(body: unknown): NextRequest {
@@ -58,7 +61,7 @@ function putRequest(body: unknown): NextRequest {
 
 describe("GET /settings/frustration", () => {
   beforeEach(() => {
-    mocks.getOrgAdminStatus.mockReset();
+    mocks.getOrganizationMembershipRole.mockReset();
     mocks.frustrationSettingService.isFrustrationEnabled.mockReset();
     mocks.frustrationSettingService.setFrustrationEnabled.mockReset();
   });
@@ -80,19 +83,33 @@ describe("GET /settings/frustration", () => {
       mocks.frustrationSettingService.isFrustrationEnabled
     ).toHaveBeenCalledWith("org-1");
   });
+
+  it("returns false when the org has the toggle off", async () => {
+    mocks.frustrationSettingService.isFrustrationEnabled.mockResolvedValue(
+      false
+    );
+
+    const response = await GET(
+      new NextRequest("http://localhost/settings/frustration"),
+      { params: Promise.resolve({}) }
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.data.calculateSessionFrustration).toBe(false);
+  });
 });
 
 describe("PUT /settings/frustration", () => {
   beforeEach(() => {
-    mocks.getOrgAdminStatus.mockReset();
+    mocks.getOrganizationMembershipRole.mockReset();
     mocks.frustrationSettingService.setFrustrationEnabled.mockReset();
   });
 
   it("returns 403 and never writes the setting for a non-admin", async () => {
-    mocks.getOrgAdminStatus.mockResolvedValue({
-      isAdmin: false,
-      reason: "not_admin",
-    });
+    mocks.getOrganizationMembershipRole.mockResolvedValue(
+      ClerkOrgRoleFixture.Member
+    );
 
     const response = await PUT(
       putRequest({ calculateSessionFrustration: true }),
@@ -108,7 +125,9 @@ describe("PUT /settings/frustration", () => {
   });
 
   it("persists the toggle for an admin", async () => {
-    mocks.getOrgAdminStatus.mockResolvedValue({ isAdmin: true });
+    mocks.getOrganizationMembershipRole.mockResolvedValue(
+      ClerkOrgRoleFixture.Admin
+    );
     mocks.frustrationSettingService.setFrustrationEnabled.mockResolvedValue(
       undefined
     );
@@ -126,8 +145,61 @@ describe("PUT /settings/frustration", () => {
     expect(json.data.calculateSessionFrustration).toBe(true);
   });
 
+  it("persists a disable for an admin", async () => {
+    mocks.getOrganizationMembershipRole.mockResolvedValue(
+      ClerkOrgRoleFixture.Admin
+    );
+    mocks.frustrationSettingService.setFrustrationEnabled.mockResolvedValue(
+      undefined
+    );
+
+    const response = await PUT(
+      putRequest({ calculateSessionFrustration: false }),
+      { params: Promise.resolve({}) }
+    );
+
+    expect(response.status).toBe(200);
+    expect(
+      mocks.frustrationSettingService.setFrustrationEnabled
+    ).toHaveBeenCalledWith("org-1", false);
+    const json = await response.json();
+    expect(json.data.calculateSessionFrustration).toBe(false);
+  });
+
+  it("answers 500 rather than a success body when the write is refused", async () => {
+    // ISS-7142 made this service throw for the first time: before it, a write
+    // that matched no organization row resolved as success and the route
+    // answered 200 for an organization that does not exist, and a write matching
+    // MORE than one row (a widened predicate) was not detected at all. Both now
+    // reject, so this pins that the new throw becomes a sane HTTP response at
+    // the route boundary instead of an unhandled rejection — and, critically,
+    // that the response does NOT carry the `calculateSessionFrustration: true`
+    // the caller asked for, which would be the UI lying about a persisted value.
+    // The rejection value is deliberately a bare Error: the route maps ANY
+    // throw from the service through one `errorResponse`, so asserting the
+    // guard's exact wording here would pin a string this route never reads.
+    // The service-level suites own that message.
+    mocks.getOrganizationMembershipRole.mockResolvedValue(
+      ClerkOrgRoleFixture.Admin
+    );
+    mocks.frustrationSettingService.setFrustrationEnabled.mockRejectedValue(
+      new Error("settings write was refused")
+    );
+
+    const response = await PUT(
+      putRequest({ calculateSessionFrustration: true }),
+      { params: Promise.resolve({}) }
+    );
+
+    expect(response.status).toBe(500);
+    const json = await response.json();
+    expect(json.data?.calculateSessionFrustration).toBeUndefined();
+  });
+
   it("rejects a non-boolean body with 400 without writing", async () => {
-    mocks.getOrgAdminStatus.mockResolvedValue({ isAdmin: true });
+    mocks.getOrganizationMembershipRole.mockResolvedValue(
+      ClerkOrgRoleFixture.Admin
+    );
 
     const response = await PUT(
       putRequest({ calculateSessionFrustration: "yes" }),

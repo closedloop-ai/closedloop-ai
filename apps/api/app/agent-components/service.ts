@@ -1,3 +1,4 @@
+import type { AgentComponentDetailReadOptions } from "./service/detail-read-options";
 import "server-only";
 
 import type {
@@ -9,8 +10,10 @@ import type {
 } from "@repo/api/src/types/agent-component";
 import { shortFingerprint } from "@repo/api/src/types/agent-component-analytics";
 import type { SourceOccurrenceListResponse } from "@repo/api/src/types/component-resolution";
+import type { LocPerDollarFold } from "@repo/api/src/utils/agent-component-summary-aggregate";
 import { emitLocPerDollarWithLegacy } from "@repo/api/src/utils/loc-per-dollar";
 import { withDb } from "@repo/database";
+import type { FeatureFlagIdentity } from "@/lib/feature-flag-identity";
 import {
   getSourceOccurrences as registryGetSourceOccurrences,
   getSourceOccurrencesPage as registryGetSourceOccurrencesPage,
@@ -33,7 +36,12 @@ import {
   resolveMergedSourceType,
 } from "./identity";
 import { sortAndPaginate } from "./list-sort";
-import { loadLocCostForMerged, locPerDollarForKind } from "./loc-per-dollar";
+import {
+  foldPopulationLocPerDollar,
+  loadLocCostForMerged,
+  locPerDollarForKind,
+  locPerDollarUncoveredOperand,
+} from "./loc-per-dollar";
 import { buildOrgComponentPopulation } from "./org-population";
 import { emitPackIdentity, type UsageWindow } from "./plugin-child-usage";
 import { getDetailForOrg as getDetailForOrgRead } from "./service/detail-read";
@@ -51,11 +59,11 @@ import type { AgentComponentListQuery } from "./validators";
 // than a local copy — otherwise the two drift silently (FEA-3039 / FEA-3117).
 //
 // ISS-4635: the inventory read, the version-bucket seeding, the FK-linked usage
-// fold, the ORPHAN (null-FK) usage fold, the plugin child-usage rollup, the
-// windowed zero-usage drop, and the `MAX_ORG_INVENTORY_ROWS` cap all live in
-// `buildOrgComponentPopulation` (`./org-population`) — the ONE shared org
-// population both this catalog list and the usage ranking leaderboard consume,
-// so the two endpoints can never count a different population for the same org.
+// fold, the ORPHAN (null-FK) usage fold, the plugin child-usage rollup, and the
+// windowed zero-usage drop all live in `buildOrgComponentPopulation`
+// (`./org-population`) — the ONE shared org population both this catalog list and
+// the usage ranking leaderboard consume, so the two endpoints can never count a
+// different population for the same org.
 
 // ---------------------------------------------------------------------------
 // Service
@@ -81,10 +89,21 @@ export const agentComponentsService = {
    * count. If the product later materializes hook/config usage, it must be
    * written into `AgentComponentSessionUsage` like every other kind.
    */
-  listForOrg(
+  /**
+   * ISS-6409: the inventory read PLUS the population LOC/$ fold.
+   *
+   * The fold needs session identities, which exist only inside this read — the
+   * wire rows carry a per-component ratio and no session ids. Returning it from
+   * the same read is what lets the page-data reduction fold the union without a
+   * second query. {@link listForOrg} is the thin wrapper for callers that only
+   * want the response.
+   */
+  listForOrgWithLocPerDollarFold(
     organizationId: string,
     query: AgentComponentListQuery
-  ): Promise<AgentComponentListResponse> {
+  ): Promise<
+    AgentComponentListResponse & { foldLocPerDollar: LocPerDollarFold }
+  > {
     const {
       kinds,
       search,
@@ -147,11 +166,13 @@ export const agentComponentsService = {
       // `owner`/`collaborators` (compute-target user).
       //
       // whitlockk (N+1 / working-set): the lineage read is only resolved over the
-      // WHOLE ~5k working set when a `?collaborator=` filter is active (the filter
+      // WHOLE working set when a `?collaborator=` filter is active (the filter
       // must see every entry's authors to include/exclude it). With no such
       // filter, the read is deferred until AFTER sort+paginate and scoped to just
       // the requested page's fingerprints (see step 4b), so a limit-50 request
-      // reads lineage for 50 rows, not 5000.
+      // reads lineage for 50 rows, not the whole population. ISS-6891: that
+      // working set is no longer bounded at ~5k — it is whatever the facets
+      // select — so the `?collaborator=` path's cost now scales with the org.
       let collaboratorsByHash = new Map<string, Collaborator[]>();
       // whitlockk (FEA-4247): the `?collaborator=` filter must match the SAME
       // people-set the row DISPLAYS — lineage authors, else the owner fallback.
@@ -309,7 +330,8 @@ export const agentComponentsService = {
           invocations: e.totalInvocations,
           sessions: e.sessionIds.size,
           ...emitLocPerDollarWithLegacy(
-            locPerDollarForKind(e.kind, e.sessionIds, locCostBySession)
+            locPerDollarForKind(e.kind, e.sessionIds, locCostBySession),
+            locPerDollarUncoveredOperand(e.kind, e.sessionIds, locCostBySession)
           ),
           trend: [],
           // FEA-4098 (Slice 3) + FEA-4247: the authors people-set — the version's
@@ -364,12 +386,37 @@ export const agentComponentsService = {
         };
       });
 
+      // Keyed on `routableKey`, the same value emitted as each row's `slug`,
+      // so the fold can rejoin the filtered rows to their sessions.
+      const sessionIdsBySlug = new Map<string, Iterable<string>>(
+        entries.map((e) => [e.routableKey, e.sessionIds])
+      );
+
       return {
         items,
         total,
         hasMore: offset + limit < total,
+        foldLocPerDollar: (components) =>
+          foldPopulationLocPerDollar(
+            components,
+            sessionIdsBySlug,
+            locCostBySession
+          ),
       };
     });
+  },
+
+  /** The inventory read alone, for callers with no use for the LOC/$ fold. */
+  async listForOrg(
+    organizationId: string,
+    query: AgentComponentListQuery
+  ): Promise<AgentComponentListResponse> {
+    const { foldLocPerDollar: _fold, ...response } =
+      await agentComponentsService.listForOrgWithLocPerDollarFold(
+        organizationId,
+        query
+      );
+    return response;
   },
 
   /**
@@ -380,9 +427,11 @@ export const agentComponentsService = {
    */
   getDetailForOrg(
     organizationId: string,
-    slug: string
+    slug: string,
+    flagIdentity?: FeatureFlagIdentity,
+    readOptions?: AgentComponentDetailReadOptions
   ): Promise<AgentComponentDetail | null> {
-    return getDetailForOrgRead(organizationId, slug);
+    return getDetailForOrgRead(organizationId, slug, flagIdentity, readOptions);
   },
 
   /**

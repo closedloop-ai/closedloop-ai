@@ -1,27 +1,4 @@
-/**
- * ISS-4677: real-surface coverage for the session-detail transcript file
- * switcher's collapsed-by-default subagent disclosure, through the DESKTOP
- * (Electron) adapter.
- *
- * The web twin lives at `e2e/session-transcript-switcher.spec.ts`. The
- * disclosure is shared UI (`packages/app/.../transcript-file-switcher.tsx`)
- * mounted by both surfaces, so it is covered through both rather than only in
- * isolation.
- *
- * This also pins the desktop half of the fix. Before ISS-4677 the desktop IPC
- * detail probed for the `main` transcript ALONE, so a desktop-local session
- * could never report more than one file and the switcher (which needs `> 1`)
- * never rendered at all — a local session's subagent sidechains were unreachable
- * on desktop even with the files on disk. This spec seeds those files and drives
- * the real disclosure.
- *
- * ISS-5366 retired the `sessions-subagent-transcript-disclosure` Labs flag, so
- * the disclosure is the switcher's only rendering and no flag is seeded here.
- *
- * Prerequisites:
- *   - The app must be built first: `pnpm -C apps/desktop build`
- *   - Run via: CODEX_HOME="$(mktemp -d)" pnpm -C apps/desktop test:e2e
- */
+/** Local transcript discovery enumerates the main file and four sidechains, then exposes Desktop deep links to those files. */
 
 import fs from "node:fs";
 import os from "node:os";

@@ -1,3 +1,4 @@
+import { BranchesListRolloutDecisionReason } from "@repo/api/src/types/branches-list-rollout";
 import type { JsonValue } from "@repo/api/src/types/common";
 import type {
   DesktopAnalyticsEventName as ParsedDesktopAnalyticsEventName,
@@ -6,10 +7,21 @@ import type {
 import {
   DESKTOP_ANALYTICS_SOCKET_EVENT as API_DESKTOP_ANALYTICS_SOCKET_EVENT,
   DESKTOP_ANALYTICS_STRING_MAX_LENGTH as API_DESKTOP_ANALYTICS_STRING_MAX_LENGTH,
-  DESKTOP_SERVER_ANALYTICS_RELAY_FLAG as API_DESKTOP_SERVER_ANALYTICS_RELAY_FLAG,
   DesktopAnalyticsAckReason as ApiDesktopAnalyticsAckReason,
   DesktopAnalyticsEventName as ApiDesktopAnalyticsEventName,
+  DesktopAnalyticsPropertyKey as ApiDesktopAnalyticsPropertyKey,
+  DESKTOP_ANALYTICS_ARRAY_ELEMENT_MAX_LENGTH,
+  DESKTOP_ANALYTICS_ARRAY_MAX_ITEMS,
+  DESKTOP_ANALYTICS_ARRAY_PROPERTY_KEYS,
 } from "@repo/api/src/types/desktop-analytics";
+import { FeatureAssignmentDelivery } from "@repo/api/src/types/feature-assignment-delivery";
+import { UUID_V4_PATTERN } from "@repo/api/src/types/onboarding-analytics";
+import {
+  GridviewRolloutDecisionOutcome,
+  GridviewRolloutDecisionReason,
+  SharedAnalyticsComponent,
+  Surface,
+} from "@repo/api/src/types/surface-analytics";
 import { z } from "zod";
 import { jsonObjectSchema } from "./json-schema";
 
@@ -20,8 +32,6 @@ export type {
 
 export const DESKTOP_ANALYTICS_SOCKET_EVENT =
   API_DESKTOP_ANALYTICS_SOCKET_EVENT;
-export const DESKTOP_SERVER_ANALYTICS_RELAY_FLAG =
-  API_DESKTOP_SERVER_ANALYTICS_RELAY_FLAG;
 export const DesktopAnalyticsAckReason = ApiDesktopAnalyticsAckReason;
 
 export const DESKTOP_ANALYTICS_PROPERTY_MAX_BYTES = 8 * 1024;
@@ -35,34 +45,7 @@ const desktopAnalyticsEventNameSchema = z.enum(
   DESKTOP_ANALYTICS_EVENT_NAME_VALUES
 );
 
-const ALLOWED_PROPERTY_KEY_VALUES = [
-  "check_id",
-  "command_id",
-  "desktop_client_version",
-  "duration_ms",
-  "environment",
-  "error",
-  "error_class",
-  "error_code",
-  "failure_reason",
-  "found_elsewhere",
-  "latency_ms",
-  "operation_class",
-  "operation_type",
-  "outcome",
-  "payload_bytes",
-  "platform",
-  "plugin_count",
-  "reason",
-  "replay_command_count",
-  "session_count",
-  "shell",
-  "surface",
-  "sync_mode",
-  "time_to_resolve_ms",
-  "version",
-] as const;
-const allowedPropertyKeySchema = z.enum(ALLOWED_PROPERTY_KEY_VALUES);
+const allowedPropertyKeySchema = z.enum(ApiDesktopAnalyticsPropertyKey);
 
 export const FORBIDDEN_IDENTITY_PROPERTY_KEY_VALUES = [
   "distinctId",
@@ -94,6 +77,21 @@ const desktopAnalyticsPropertyValueSchema = z.union([
   z.string().max(DESKTOP_ANALYTICS_STRING_MAX_LENGTH),
 ]);
 
+/**
+ * ISS-10502 (PRD-736 D3), + `account_mode` (ISS-10913): the array-valued
+ * properties (`steps_skipped`, `harnesses_detected`, `account_mode`) accept
+ * bounded string arrays — and ONLY those keys do;
+ * every other key stays primitive-valued. Elements are bounded strings, not
+ * enum members: the vocabularies are closed at the emitters, and server-side
+ * membership would reject the WHOLE event from a newer desktop whose
+ * vocabulary this API predates (version skew + whole-payload `z.NEVER`).
+ * The element cap is the tighter ARRAY one, so a fully-clamped payload
+ * composes with DESKTOP_ANALYTICS_PROPERTY_MAX_BYTES (see the const's doc).
+ */
+const desktopAnalyticsArrayPropertyValueSchema = z
+  .array(z.string().max(DESKTOP_ANALYTICS_ARRAY_ELEMENT_MAX_LENGTH))
+  .max(DESKTOP_ANALYTICS_ARRAY_MAX_ITEMS);
+
 const desktopAnalyticsPropertiesSchema = z
   .unknown()
   .pipe(jsonObjectSchema)
@@ -113,7 +111,9 @@ const desktopAnalyticsPropertiesSchema = z
         return z.NEVER;
       }
 
-      const parsedValue = desktopAnalyticsPropertyValueSchema.safeParse(value);
+      const parsedValue = DESKTOP_ANALYTICS_ARRAY_PROPERTY_KEYS.has(key)
+        ? desktopAnalyticsArrayPropertyValueSchema.safeParse(value)
+        : desktopAnalyticsPropertyValueSchema.safeParse(value);
       if (!parsedValue.success) {
         ctx.addIssue({
           code: "custom",
@@ -155,8 +155,47 @@ const desktopAnalyticsPayloadSchema = z
     properties: desktopAnalyticsPropertiesSchema
       .optional()
       .default(emptyPayloadProperties),
+    // ISS-10503 (PRD-736 D5, decision #12): the envelope-level client-supplied
+    // distinct id. The v4-UUID shape check is the load-bearing injection
+    // control — no client can put an arbitrary distinct id into PostHog.
+    // Optional: authenticated calls omit it except the one alias-triggering
+    // call after account establishment.
+    distinctId: z
+      .string()
+      .regex(UUID_V4_PATTERN, { message: "distinct_id_invalid" })
+      .optional(),
   })
-  .passthrough();
+  .passthrough()
+  .superRefine((payload, ctx) => {
+    if (
+      payload.event !== ApiDesktopAnalyticsEventName.GridviewRolloutDecision
+    ) {
+      return;
+    }
+    const rolloutDecisionReason = validateGridviewRolloutDecisionProperties(
+      payload.properties
+    );
+    if (rolloutDecisionReason) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["properties"],
+        message: rolloutDecisionReason,
+      });
+    }
+  })
+  .transform((payload) => {
+    if (
+      payload.event !== ApiDesktopAnalyticsEventName.GridviewRolloutDecision
+    ) {
+      return payload;
+    }
+    return {
+      ...payload,
+      properties: normalizeGridviewRolloutDecisionProperties(
+        payload.properties
+      ),
+    };
+  });
 
 export type DesktopAnalyticsParseResult =
   | { ok: true; payload: ParsedDesktopAnalyticsPayload }
@@ -184,6 +223,10 @@ export function parseDesktopAnalyticsPayload(
       event: parsed.data.event,
       properties: parsed.data.properties,
       occurredAt: parsed.data.occurredAt,
+      // Preserve omission (Cross-Repo rule): absent stays absent, never null.
+      ...(parsed.data.distinctId === undefined
+        ? {}
+        : { distinctId: parsed.data.distinctId }),
     },
   };
 }
@@ -195,11 +238,74 @@ function desktopAnalyticsPropertyValueReason(value: unknown): string {
   if (typeof value === "number") {
     return "property_number_invalid";
   }
+  if (Array.isArray(value)) {
+    return "property_array_invalid";
+  }
   return "property_value_invalid";
 }
 
 function emptyPayloadProperties(): Record<string, JsonValue> {
   return {};
+}
+
+const GRIDVIEW_ROLLOUT_DECISION_OUTCOMES: ReadonlySet<JsonValue> = new Set(
+  Object.values(GridviewRolloutDecisionOutcome)
+);
+
+const GRIDVIEW_ROLLOUT_DECISION_COMPONENTS: ReadonlySet<JsonValue> = new Set([
+  SharedAnalyticsComponent.BranchesListSurfaceV2,
+  SharedAnalyticsComponent.SessionsListSurfaceV2,
+]);
+
+const GRIDVIEW_ROLLOUT_DECISION_REASONS: ReadonlySet<JsonValue> = new Set([
+  ...Object.values(BranchesListRolloutDecisionReason),
+  ...Object.values(GridviewRolloutDecisionReason),
+  ...Object.values(FeatureAssignmentDelivery),
+]);
+
+function validateGridviewRolloutDecisionProperties(
+  properties: Record<string, JsonValue>
+):
+  | "gridview_rollout_decision_component_invalid"
+  | "gridview_rollout_decision_outcome_invalid"
+  | "gridview_rollout_decision_reason_invalid"
+  | null {
+  if (!GRIDVIEW_ROLLOUT_DECISION_COMPONENTS.has(properties.component)) {
+    return "gridview_rollout_decision_component_invalid";
+  }
+  if (!GRIDVIEW_ROLLOUT_DECISION_OUTCOMES.has(properties.outcome)) {
+    return "gridview_rollout_decision_outcome_invalid";
+  }
+  if (typeof properties.reason !== "string") {
+    return "gridview_rollout_decision_reason_invalid";
+  }
+  return null;
+}
+
+function normalizeGridviewRolloutDecisionProperties(
+  properties: Record<string, JsonValue>
+): Record<string, JsonValue> {
+  return {
+    ...properties,
+    reason: normalizeGridviewRolloutDecisionReason(properties.reason),
+    surface: Surface.Desktop,
+  };
+}
+
+function normalizeGridviewRolloutDecisionReason(reason: JsonValue): JsonValue {
+  if (reason === GridviewRolloutDecisionReason.AssignmentUnresolved) {
+    return FeatureAssignmentDelivery.Pending;
+  }
+  if (
+    reason === GridviewRolloutDecisionReason.FlagEnabled ||
+    reason === GridviewRolloutDecisionReason.FlagDisabled
+  ) {
+    return FeatureAssignmentDelivery.Assigned;
+  }
+  if (GRIDVIEW_ROLLOUT_DECISION_REASONS.has(reason)) {
+    return reason;
+  }
+  return FeatureAssignmentDelivery.Unavailable;
 }
 
 function desktopAnalyticsParseFailureReason(
@@ -216,6 +322,9 @@ function desktopAnalyticsParseFailureReason(
   if (path === "occurredAt") {
     return "occurred_at_invalid";
   }
+  if (path === "distinctId") {
+    return "distinct_id_invalid";
+  }
   if (path === "properties") {
     return desktopAnalyticsPropertiesFailureReason(issue.message);
   }
@@ -225,10 +334,14 @@ function desktopAnalyticsParseFailureReason(
 function desktopAnalyticsPropertiesFailureReason(message: string): string {
   switch (message) {
     case "property_not_allowed":
+    case "property_array_invalid":
     case "property_number_invalid":
     case "property_string_too_long":
     case "property_value_invalid":
     case "properties_too_large":
+    case "gridview_rollout_decision_component_invalid":
+    case "gridview_rollout_decision_outcome_invalid":
+    case "gridview_rollout_decision_reason_invalid":
       return message;
     default:
       return "properties_not_object";

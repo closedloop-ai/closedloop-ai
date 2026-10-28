@@ -38,9 +38,9 @@ const updatedSections = makeDeliverySections([
 ]);
 
 const meta = {
-  title: "App Core/Insights/Tile Content",
+  title: "Composites v1.0/Insights/Tile Content",
   component: InsightsChartContent,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "centered" },
   args: {
     sections: initialSections,

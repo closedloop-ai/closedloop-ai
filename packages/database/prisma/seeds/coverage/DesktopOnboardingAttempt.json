@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "In-flight Desktop onboarding handshake state; read only by the onboarding-attempt service."
+}

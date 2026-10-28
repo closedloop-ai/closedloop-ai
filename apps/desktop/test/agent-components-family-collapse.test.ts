@@ -8,13 +8,13 @@
  */
 
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
 import {
   type AgentComponent,
   AgentComponentKind,
   Harness,
   SourceType,
 } from "@repo/api/src/types/agent-component";
+import { describe, it } from "vitest";
 import { collapseLocalFamilies } from "../src/main/dashboard/agent-components-family-collapse.js";
 
 // Build the `identityKeyByRow` + `sessionIdsByIdentityKey` inputs the collapse

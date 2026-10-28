@@ -2,12 +2,15 @@
 import { spawnSync } from "node:child_process";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { hermeticGitEnv } from "./hermetic-git-env.mjs";
+import { withoutTracerPreload } from "../../../scripts/tracer-preload-tokens.mjs";
+import {
+  DESKTOP_TEST_STRICT_ENV,
+  hermeticGitEnv,
+} from "./hermetic-git-env.mjs";
 import { censusTestFiles } from "./node-test-census.mjs";
 import {
   resolveLaneConcurrency,
   resolveTestTimeoutMs,
-  withoutTracerPreload,
 } from "./node-test-lane-settings.mjs";
 import {
   appendStepSummary,
@@ -23,25 +26,23 @@ const desktopDir = dirname(
 // ISS-4933. The desktop main-process suite now runs on Vitest, so it reports to
 // Datadog Test Optimization instead of being ~900 files of dark, required gate.
 // `node-test-census.mjs` owns which lane each file goes to and why. The legacy
-// lane SHRINKS but does not disappear: ISS-4934 converts the `mock`/TestContext
-// files, and what is left after it are files that need `tsx --test`'s runtime
-// rather than node:test's API (Node loader hooks, real-V8-stack assertions), so
-// this is a two-pool runner for the foreseeable future, not a temporary one.
+// lane is down to the files that need `tsx --test`'s runtime rather than
+// node:test's API (a child process that inherits tsx's loader, a real-V8-stack
+// assertion), so this is a permanent two-pool runner, not a temporary one.
 const census = censusTestFiles();
 
 // ISS-4638. `NODE_TEST_SHARD=<index>/<total>` takes every Nth file of a sorted
 // list; unset runs everything. The pre-merge `desktop-node` job in pr-test.yml
 // sets it from its matrix (with the total read from `strategy.job-total`, so the
-// two cannot drift); desktop-release.yml, the post-merge validation/auto-revert
-// lanes and a local `pnpm test` all leave it unset and still run the whole
-// suite. The partition property is asserted in test/run-node-tests-shard.test.ts
+// two cannot drift), as do the macOS nightly and desktop-release.yml's
+// `test_linux`; the release workflow's macOS `release` job, the post-merge
+// validation/auto-revert lanes and a local `pnpm test` leave it unset and still
+// run the whole suite. The partition property is asserted in test/run-node-tests-shard.test.ts
 // — a shard that dropped files would otherwise go green while simply not
 // running them.
 //
-// BOTH lanes are sharded by the same partition. Pinning the legacy lane to shard
-// 1 would have been simpler, but it is over a hundred files including some of
-// the slowest suites in the tree, so it would make shard 1 the whole job's
-// critical path while shards 2 and 3 idled.
+// BOTH lanes are sharded by the same partition, so each file runs in exactly one
+// shard whichever lane owns it.
 const shard = parseShardSpec(process.env.NODE_TEST_SHARD);
 const vitestFiles = selectShard(census.vitest, shard);
 const legacyFiles = selectShard(census.nodeTest, shard);
@@ -63,7 +64,7 @@ if (shard) {
   );
 }
 console.log(
-  `[run-node-tests] ${vitestFiles.length} file(s) on Vitest, ${legacyFiles.length} still on node:test (ISS-4934)`
+  `[run-node-tests] ${vitestFiles.length} file(s) on Vitest, ${legacyFiles.length} on node:test (VITEST_INCOMPATIBLE_FILES)`
 );
 
 // Both knobs come from node-test-lane-settings.mjs, which vitest.node.config.ts
@@ -90,8 +91,8 @@ const testTimeoutMs = resolveTestTimeoutMs();
 //
 // CALIBRATION (ISS-5969, superseding ISS-5256). This cap wraps `test:node`
 // ONLY. It does NOT bound the `Test desktop` / `Test Desktop` workflow STEP,
-// which also runs prebuild, db:generate, the dependency-cruiser boundary check,
-// test:prisma-baseline and test:renderer. Deriving this number from a step
+// which also runs prebuild, db:generate, the dependency-cruiser boundary check
+// and test:renderer. Deriving this number from a step
 // duration overstates the suite by minutes; measure the runner's own
 // `[run-node-tests] test:node used …` line instead.
 //
@@ -105,10 +106,115 @@ const testTimeoutMs = resolveTestTimeoutMs();
 //     median 285.2s, max 314.2s. Stable — max/median is 1.10x. The split cut
 //     this lane ~15%: the four runs immediately before the merge were 326.2s,
 //     330.9s, 340.3s and 346.3s, median 335.6s. ISS-4933 gained headroom here.
-//   macos-latest — `release` in desktop-release.yml. NOT YET MEASURABLE on this
-//     runner: the last release ran four hours before the split merged. Its five
-//     pre-split greens, 2026-08-06..08-11, were 325.9s, 391.3s, 392.9s, 444.5s
-//     and 510.4s — median 392.9s, max 510.4s — plus the killed run below.
+//   macos-latest — `release` in desktop-release.yml, and since FEA-4224 the
+//     nightly `test-node-macos` in desktop-testnode-macos-nightly.yml. NOT YET
+//     MEASURABLE on this runner when this was written: the last release ran four
+//     hours before the split merged. Its five pre-split greens, 2026-08-06..08-11,
+//     were 325.9s, 391.3s, 392.9s, 444.5s and 510.4s — median 392.9s, max 510.4s
+//     — plus the killed run below. The nightly lane now produces a macOS
+//     `test:node used …` line every day on the post-split runner; ISS-9937 below
+//     is that measurement.
+//
+// RE-MEASURED 2026-08-28 (ISS-8326), because the drift warning fired and this
+// is the response that comment asks for. The cap is UNCHANGED; what follows
+// replaces the runtimes above as the current figures, not the reasoning.
+//
+//   linux_4_core_arm — `validate-tests`, 6 consecutive greens
+//     2026-08-28T05:45..07:37Z: 448.4s, 455.4s, 457.2s, 475.5s, 487.4s, 489.9s.
+//     Median 466.4s, max 489.9s = 54% of the cap. Still stable (max/median
+//     1.05x), and 1.63x the 285.2s median measured on 08-12: the suite grew,
+//     the host did not.
+//   macos-latest — `release`, the three most recent greens: 482.6s (08-25,
+//     run 32911785220), 671.3s (08-26, run 32974379535), 493.1s (08-27,
+//     run 33082274702). Max 671.3s = 74%, one point under DRIFT_WARN_PERCENT.
+//     The nightly macOS lane FEA-4224 built to produce a daily figure landed on
+//     main at 02:47Z that morning and had not yet ticked, so `release` was still
+//     the only macOS source AT THAT TIME. It is not any more — see ISS-9937.
+//
+// RE-MEASURED 2026-09-10 (ISS-9937), on the NIGHTLY, which is the source the
+// note above was waiting for. Every scheduled run 08-28..09-10, read off each
+// job's own `test:node used …` line rather than a step duration:
+//
+//   468.5s (08-28)  791.4s (08-29)  501.1s (08-30)  769.2s (08-31)
+//   679.9s (09-01)  723.2s (09-02)  825.8s (09-03)  800.1s (09-04)
+//   755.0s (09-05)  717.9s (09-06)  835.0s (09-07)  842.2s (09-08)
+//   760.3s (09-09)  900.3s (09-10, KILLED at the cap, zero failing tests)
+//
+// Min 468.5s = 52%, median 764.8s = 84%, max 900.3s = 100%. ELEVEN of the
+// fourteen are past DRIFT_WARN_PERCENT; ten of those emitted its annotation and
+// the eleventh is the 09-10 kill, which suppresses one by design. The kill
+// refused the Desktop release for the rest of the day (run 34455600707), and a
+// 19:37Z re-dispatch the same evening read 856.4s = 95% — so it was not one
+// unlucky host.
+//
+// WHAT THAT DISTRIBUTION SAYS, and it is not "the suite grew". min to max is
+// 1.92x across fourteen nights of essentially one suite on one host class —
+// ISS-5969's ~2x macOS variance, now measured on the lane that gates releases
+// instead of inferred from test-free steps. A ~2x band cannot fit under a fixed
+// cap when the median is at 85%: the kill needed no regression, only an
+// ordinarily slow morning. That is a MARGIN problem, so the answer is to make
+// each run smaller, not to move the line it crosses.
+//
+// ISS-9937 SHARDED THE NIGHTLY 3-wide for that reason, reusing `NODE_TEST_SHARD`
+// exactly as pr-test.yml's `desktop-node` does. The figures above are therefore
+// the last WHOLE-SUITE macOS population this lane will produce; do not re-derive
+// the cap or the warn threshold from them, because they describe a lane shape
+// that no longer exists. `release` remains unsharded and is still calibrated by
+// the whole-suite numbers.
+//
+// WHAT THE 93% REPORT WAS. ISS-8326 opened on a local run that used 837.8s.
+// That is not a lane this cap is calibrated against and not a measurement of the
+// suite: it was a developer Mac carrying a 10-core load average between 20 and
+// 180. Both CI lanes read 49-74% the same day. The rule the drift warning states
+// — do not re-derive from a single run, and a macOS annotation reports the host
+// at least as much as the suite — is exactly what that number needed.
+//
+// WHERE THE GROWTH IS: CONCENTRATED, NOT UNIFORM. Per-file durations from the
+// 448.4s Linux run above (1338 files, 14,638 tests) sum to 1019.4s across 4
+// workers. The median file is 42ms and 830 files are under 100ms; the top 10 are
+// 25.7% of that total and the top 50 are 48.9%. Six of the twenty slowest are
+// the suites that test THIS runner and its census — run-node-tests-shard 63.5s,
+// node-test-census 45.5s, node-test-lane-settings 20.9s,
+// node-vitest-coverage-attribution 19.8s, stress-node-tests-lib 11.3s,
+// run-node-tests-headroom 9.0s — 170s, 17% of the suite. So the file COUNT is
+// not what moves this number, and the lever, when one is needed, is those files
+// rather than the 830 that cost nothing.
+//
+// CORRECTED 2026-09-05 (ISS-9275). That paragraph read the cost as "all of it
+// subprocess spawns"; it was not. It was `censusTestFiles()`, which those
+// suites call directly and which every runner they spawn calls again on import.
+// A spawn is ~0.2s of node startup wrapped around seconds of census. The census
+// parsed each of ~1,500 files TWICE — `installsLoaderHook` built one
+// `ts.SourceFile`, `isVitestEligible` built another with `setParentNodes: true`
+// that nothing reads — and memoised nothing, so all ~15 call sites in a lane run
+// re-derived the whole tree, and every test file anyone added was paid for by
+// each of them. That is why the lane grew 48% (778.0s -> 1151.5s) on 3% more
+// files (1437 -> 1481) between 2026-09-04 and 09-05 and took the coverage-main
+// measurement red: seven census suites were +453s of the +768s.
+//
+// Parse-once, no parent pointers, and a memo on the default TEST_DIR fixed it,
+// with byte-identical census output and byte-identical shard partitions. Same
+// tree, same host, unsharded, only that change (so NOT comparable to the CI
+// figures above — read the ratios, not the seconds): those seven suites went
+// 198.2s -> 73.7s of test time, 2.7x.
+//
+//     run-node-tests-shard 68.9 -> 19.4    node-test-census 48.8 -> 4.9
+//     node-test-lane-settings 26.4 -> 17.8 node-vitest-coverage-attribution 21.7 -> 15.3
+//     stress-node-tests-lib 11.7 -> 4.9    git-fixture-hermeticity 10.2 -> 5.3
+//     run-node-tests-headroom 10.4 -> 6.1
+//
+// The lever ISS-8326 pointed at has now been pulled once. It does not remove
+// these suites from the top of the list — they still spawn real runners, which
+// is the point of them — so re-measure here rather than assuming the shape
+// above still holds.
+//
+// THE SHARD COUNT STILL FITS, and it is not a function of the file count.
+// `selectShard` takes every Nth file, so 3 shards split that 1019.4s of file
+// time as 275s/298s/446s (max/min 1.62x — the partition balances files, not
+// cost). The heaviest shard is ~446s over 4 workers against the same 900s cap
+// each shard process gets, and `desktop-node` is observed at ~2.9m inside a
+// 30-minute job cap. 4-wide would be 1.52x and 5-wide 1.33x; neither is worth a
+// matrix change at this margin.
 //
 // macOS IS NOW THE SLOWER LANE. Like for like on the pre-split runner its
 // median is 392.9s against Linux's 335.6s (1.17x), and on sha 7cf67b482 —
@@ -146,14 +252,23 @@ const testTimeoutMs = resolveTestTimeoutMs();
 // It still fails inside every enclosing job cap, so a leaked handle is reported
 // BY THIS RUNNER — named and attributable — rather than as a GitHub wall-clock
 // cancellation. test/run-node-tests-job-cap.test.ts pins that relationship:
-// it reads the three unsharded lanes' `timeout-minutes` and goes red if this cap
+// it reads the unsharded lanes' `timeout-minutes` and goes red if this cap
 // plus the worst measured pre-suite work stops fitting inside any of them.
 //
 // Override the cap for a single run with NODE_TEST_RUNNER_TIMEOUT_MS. Do not
 // re-derive it from a single run. DRIFT_WARN_PERCENT in
 // run-node-tests-outcome.mjs warns while there is still margin; a SUSTAINED
 // annotation ON LINUX is the signal to re-measure, because that lane's host is
-// steady. A macOS annotation reports the host at least as much as the suite.
+// steady.
+//
+// A macOS annotation still reports the host as much as the suite — but ISS-9937
+// is what that sentence used to be missing. It was written as a reason to
+// DISCOUNT the macOS lane, and on a host with a ~2x band it is the opposite: a
+// sustained annotation there says the lane has no p100 margin left, which is a
+// true and actionable finding even when the suite did not grow. Eleven nights
+// of it preceded the 09-10 cap kill. Read a sustained macOS annotation as "this
+// lane can no longer absorb a slow host", and answer it by making each run
+// smaller — shard it, or shorten its slowest files — never by raising the cap.
 const parsedRunnerTimeout = Number.parseInt(
   process.env.NODE_TEST_RUNNER_TIMEOUT_MS ?? "",
   10
@@ -172,7 +287,12 @@ const startedAtMs = Date.now();
 // helper can reach. Without it the suite executes whatever hooks the operator's
 // `~/.gitconfig` points `core.hooksPath` at, so its result depends on machine
 // state it never meant to read. See hermetic-git-env.mjs.
-const childEnv = hermeticGitEnv();
+//
+// ISS-10194 adds the other half of the same idea: `GIT_ALLOW_PROTOCOL=file`
+// inside `hermeticGitEnv()` so a git that escaped its fake cannot reach
+// github.com, and `DESKTOP_TEST_STRICT_ENV` so an override that failed to
+// install fails here rather than degrading to the real binary.
+const childEnv = { ...hermeticGitEnv(), ...DESKTOP_TEST_STRICT_ENV };
 
 /** @type {{ error?: { code?: string, message?: string }, signal?: string | null, status?: number | null }[]} */
 const results = [];
@@ -263,8 +383,8 @@ for (const annotation of outcome.annotations) {
 }
 // The summary row reports THIS runner, not the enclosing step. On the lanes that
 // still run the whole `test` chain (desktop-release.yml, the post-merge
-// validation/auto-revert lanes) that step also covers prebuild, prisma-baseline
-// and test:renderer, none of which the cap bounds, and the step's own duration is
+// validation/auto-revert lanes) that step also covers prebuild and
+// test:renderer, neither of which the cap bounds, and the step's own duration is
 // already on the job page.
 //
 // Not reached on a turbo cache hit: `desktop#test` is cacheable and the release

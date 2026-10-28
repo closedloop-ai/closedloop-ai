@@ -50,14 +50,18 @@ function toSyncJsonValue(value: unknown): SyncJsonValue | null {
   }
   if (value && typeof value === "object") {
     const record = value as Record<string, unknown>;
-    const normalized: SyncJsonObject = {};
+    // ISS-8565: null-prototype container so a key literally named `__proto__`
+    // (which `JSON.parse` DOES create as a real own key) becomes an own
+    // property instead of hitting the inherited `__proto__` setter. The spread
+    // restores a normal prototype, and defines rather than assigns.
+    const normalized: SyncJsonObject = Object.create(null);
     for (const [key, entry] of Object.entries(record)) {
       const parsed = toSyncJsonValue(entry);
       if (parsed !== null) {
         normalized[key] = parsed;
       }
     }
-    return normalized;
+    return { ...normalized };
   }
   return null;
 }

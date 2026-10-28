@@ -1,0 +1,12 @@
+-- ISS-12169: the project root whose `.mcp.json` declared an MCP presence row,
+-- so MCP discovery can hold exactly a TCC-protected project's own servers
+-- instead of every project-scoped server (the ISS-11914 coarse hold).
+--
+-- Desktop-local only. `project_path` stays unset on presence rows because the
+-- component sync lane uploads it; this column is never selected by that lane.
+--
+-- One nullable TEXT column with no default. NULL is every row written before
+-- this migration, read as "project unknown".
+--
+-- Plain `ADD COLUMN` (SQLite has no `IF NOT EXISTS` for it).
+ALTER TABLE "agent_components" ADD COLUMN "local_project_path" TEXT;

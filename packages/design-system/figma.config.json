@@ -1,9 +1,0 @@
-{
-  "codeConnect": {
-    "parser": "react",
-    "include": ["figma/**/*.figma.tsx"],
-    "paths": {
-      "@closedloop-ai/design-system/*": "./*"
-    }
-  }
-}

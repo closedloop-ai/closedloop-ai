@@ -4,6 +4,7 @@
     "ignoreDeprecations": "6.0",
     "paths": {
       "@repo/*": ["../*"],
+      "@repo/design-system/*": ["./*"],
       "@closedloop-ai/design-system/*": ["./*"]
     }
   },

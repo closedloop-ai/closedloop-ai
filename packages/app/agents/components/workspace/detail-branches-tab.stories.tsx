@@ -15,9 +15,9 @@ import { DetailBranchesTab } from "./detail-branches-tab";
  * real logic worth pinning visually:
  *
  *   - the notice's total is ALWAYS a floor (`N of M+ branches`). `branches.length`
- *     is a capped array length — the wire `branchesTab` is bounded upstream by the
- *     `MAX_DETAIL_SESSION_IN_IDS` session fan-out plus the `seenBranchIds` dedupe
- *     — and the detail carries no uncapped branch count to state instead. Before
+ *     is a capped array length — the wire `branchesTab` is deduped upstream by
+ *     `seenBranchIds`, and bounded by a session fan-out on any producer older
+ *     than ISS-9855 — and the detail carries no uncapped branch count instead. Before
  *     ISS-5464 this printed as an exact total, so the same page read
  *     "Showing 50 of 1,218 sessions" on one tab and "Showing 50 of 50 branches"
  *     on the next;
@@ -38,7 +38,7 @@ function makeBranches(count: number): BranchRow[] {
     id: `owner%2Frepo::story-branch-${index}`,
     branchName: `feat/story-branch-${index}`,
     baseBranch: "main",
-    repoFullName: "closedloop-ai/example-repo",
+    repoFullName: "closedloop-ai/closedloop-ai",
     status: BranchStatus.Open,
     prNumber: null,
     prTitle: null,
@@ -84,7 +84,8 @@ const storyDecorator: Decorator = (Story) => (
 );
 
 const meta = {
-  title: "App Core/Agents/Detail Branches Tab",
+  title: "Composites v1.0/Agents/Workspace/Detail Branches Tab",
+  tags: ["deprecated"],
   component: DetailBranchesTab,
   parameters: { layout: "fullscreen" },
   args: {

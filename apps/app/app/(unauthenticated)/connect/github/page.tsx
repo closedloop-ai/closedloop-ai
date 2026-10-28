@@ -1,10 +1,20 @@
+import {
+  DesktopSignInFraming,
+  providerForSignInMethod,
+} from "@repo/api/src/types/desktop-authorize-url";
+import { SignIn } from "@repo/auth/components/sign-in";
+import { SignUp } from "@repo/auth/components/sign-up";
 import { createMetadata } from "@repo/seo/metadata";
 import { env } from "@/env";
+import { resolveDesktopBootstrapBrowserRun } from "@/lib/desktop-bootstrap-run";
 import {
   buildSignInFallbackHref,
-  resolveDesktopSignInProviderFromSearchParams,
+  resolveDesktopEmailHintFromSearchParams,
+  resolveDesktopSignInFramingFromSearchParams,
+  resolveDesktopSignInMethodFromSearchParams,
   resolveGitHubConnectRedirectFromSearchParams,
 } from "@/lib/github-connect-redirect";
+import { DesktopBootstrapSignUpGate } from "../../sign-up/desktop-bootstrap-sign-up-gate";
 import { GitHubConnectRedirectClient } from "./github-connect-redirect-client";
 
 /**
@@ -45,11 +55,58 @@ export default async function ConnectGitHubPage({
     resolved,
     env.NEXT_PUBLIC_APP_URL
   );
+  const method = resolveDesktopSignInMethodFromSearchParams(resolved);
+  const provider = providerForSignInMethod(method);
+
+  // ISS-5954 M3 — the email landing branch. An SSO auto-fire is right for a
+  // social pick and wrong for email, which has no consent screen to skip: the
+  // person lands on the Clerk sign-up/sign-in form instead, with the validated
+  // `redirect_url` preserved on BOTH directions of the embed so completing
+  // either flow returns to the desktop authorize page and the loopback
+  // listener finishes normally. Hash routing keeps the multi-step form
+  // (verification code) on this URL rather than requiring the /sign-up route.
+  if (!provider) {
+    // M5: the typed address prefills the form when the desktop sent one —
+    // narrowed by the resolver, absent otherwise.
+    const emailHint = resolveDesktopEmailHintFromSearchParams(resolved);
+    const initialValues = emailHint ? { emailAddress: emailHint } : undefined;
+    // A returning-user door (the guided onboarding Account step's "Already
+    // have an account? Sign in", Settings → Account) declares the sign-in
+    // framing, and answering it with an account-creation form is the
+    // wrong-door class this route exists to close — that framing renders the
+    // sign-IN embed. Both embeds keep the validated `redirect_url` on BOTH
+    // directions, so either cross-link still returns to the desktop authorize
+    // page.
+    if (
+      resolveDesktopSignInFramingFromSearchParams(resolved) ===
+      DesktopSignInFraming.SignIn
+    ) {
+      return (
+        <SignIn
+          forceRedirectUrl={target}
+          initialValues={initialValues}
+          routing="hash"
+          signUpForceRedirectUrl={target}
+        />
+      );
+    }
+    const browserRun = await resolveDesktopBootstrapBrowserRun();
+    return (
+      <DesktopBootstrapSignUpGate browserRun={browserRun}>
+        <SignUp
+          forceRedirectUrl={target}
+          initialValues={initialValues}
+          routing="hash"
+          signInForceRedirectUrl={target}
+        />
+      </DesktopBootstrapSignUpGate>
+    );
+  }
 
   return (
     <GitHubConnectRedirectClient
       fallbackSignInHref={buildSignInFallbackHref(target)}
-      provider={resolveDesktopSignInProviderFromSearchParams(resolved)}
+      provider={provider}
       redirectUrlComplete={target}
     />
   );

@@ -9,18 +9,14 @@
  * checkOptionLimit limit enforcement is tested in utils.test.ts where the real
  * implementation can be exercised without interference from other mocks.
  */
-import {
-  afterEach,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  type Mock,
-  vi,
-} from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({
+  withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
+}));
 
 vi.mock("@repo/database", () => ({
-  withDb: vi.fn(),
+  withDb: mocks.withDb,
   Prisma: {
     // Capture tagged-template parts so the batched reorder query is assertable.
     sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
@@ -41,11 +37,13 @@ vi.mock("../utils", async (importOriginal) => ({
 }));
 
 import { CustomFieldType } from "@repo/api/src/types/custom-field";
-import { withDb } from "@repo/database";
-import { enumOptionsService } from "../enum-options-service";
+import {
+  ENUM_OPTION_UPDATE_TX_OPTIONS,
+  enumOptionsService,
+} from "../enum-options-service";
 import { MULTI_ENUM_DISPLAY_SEPARATOR } from "../utils";
 
-const mockWithDb = withDb as unknown as Mock;
+const mockWithDb = mocks.withDb;
 
 // ---------------------------------------------------------------------------
 // Shared test fixtures
@@ -105,10 +103,10 @@ function mockUpdateEnumOptionDb(field: MockCustomField) {
   };
   const executeRaw = vi.fn().mockResolvedValue(0);
 
-  mockWithDb.mockImplementation((callback: any) =>
+  mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
     callback({ customField: { findFirst: vi.fn().mockResolvedValue(field) } })
   );
-  (withDb as any).tx = vi.fn().mockImplementation((callback: any) =>
+  mockWithDb.tx.mockImplementation((callback: (tx: unknown) => unknown) =>
     callback({
       customFieldEnumOption: { update: optionUpdate },
       customFieldValue: txValueDelegate,
@@ -144,12 +142,10 @@ describe("enumOptionsService.createEnumOption", () => {
       sortOrder: 2,
     });
 
-    mockWithDb.mockImplementation((callback: any) =>
-      callback({
-        customField: { findFirst: mockFindFirst },
-        customFieldEnumOption: { count: mockCount, create: mockCreate },
-      })
-    );
+    routeCreateOptionDb({
+      customField: { findFirst: mockFindFirst },
+      customFieldEnumOption: { count: mockCount, create: mockCreate },
+    });
 
     // Act
     const result = await enumOptionsService.createEnumOption(
@@ -189,12 +185,10 @@ describe("enumOptionsService.createEnumOption", () => {
       sortOrder: 5,
     });
 
-    mockWithDb.mockImplementation((callback: any) =>
-      callback({
-        customField: { findFirst: mockFindFirst },
-        customFieldEnumOption: { count: mockCount, create: mockCreate },
-      })
-    );
+    routeCreateOptionDb({
+      customField: { findFirst: mockFindFirst },
+      customFieldEnumOption: { count: mockCount, create: mockCreate },
+    });
 
     // Act
     await enumOptionsService.createEnumOption(TEST_FIELD_ID, TEST_ORG_ID, {
@@ -211,7 +205,7 @@ describe("enumOptionsService.createEnumOption", () => {
 
   it("throws when the field does not belong to the organization", async () => {
     // Arrange — findFirst returns null (org mismatch)
-    mockWithDb.mockImplementation((callback: any) =>
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
       callback({
         customField: { findFirst: vi.fn().mockResolvedValue(null) },
       })
@@ -267,6 +261,30 @@ describe("enumOptionsService.updateEnumOption", () => {
     expect(txValueDelegate.update).not.toHaveBeenCalled();
     expect(txValueDelegate.findMany).not.toHaveBeenCalled();
     expect(executeRaw).not.toHaveBeenCalled();
+  });
+
+  it("runs the rename under the raised transaction bounds, not Prisma's defaults", async () => {
+    // Arrange
+    mockUpdateEnumOptionDb(MOCK_FIELD);
+
+    // Act
+    await enumOptionsService.updateEnumOption(
+      TEST_OPTION_ID,
+      TEST_FIELD_ID,
+      TEST_ORG_ID,
+      { name: "Urgent" }
+    );
+
+    // Assert — the rewrite spans every value row for the field, so under the
+    // 5s default a large tenant's rename aborts with P2028 and rolls back,
+    // making the rename unachievable there however often it is retried; and a
+    // contended caller needs more than the 2s default just to start.
+    expect(mockWithDb.tx).toHaveBeenCalledWith(
+      expect.any(Function),
+      ENUM_OPTION_UPDATE_TX_OPTIONS
+    );
+    expect(ENUM_OPTION_UPDATE_TX_OPTIONS.timeout).toBeGreaterThan(5000);
+    expect(ENUM_OPTION_UPDATE_TX_OPTIONS.maxWait).toBeGreaterThan(2000);
   });
 
   it("leaves value rows untouched when the name is not being changed", async () => {
@@ -351,13 +369,13 @@ describe("enumOptionsService.reorderEnumOptions", () => {
     const mockFindFirst = vi.fn().mockResolvedValue(fieldWith3Options);
     const mockExecuteRaw = vi.fn().mockResolvedValue(3);
 
-    (withDb as any).tx = vi.fn().mockImplementation((callback: any) =>
+    mockWithDb.tx.mockImplementation((callback: (tx: unknown) => unknown) =>
       callback({
         $executeRaw: mockExecuteRaw,
       })
     );
 
-    mockWithDb.mockImplementation((callback: any) =>
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
       callback({
         customField: { findFirst: mockFindFirst },
       })
@@ -397,10 +415,10 @@ describe("enumOptionsService.reorderEnumOptions", () => {
     const fieldWithNoOptions = { ...MOCK_FIELD, enumOptions: [] };
     const mockFindFirst = vi.fn().mockResolvedValue(fieldWithNoOptions);
     const mockExecuteRaw = vi.fn().mockResolvedValue(0);
-    const mockTx = vi.fn();
+    mockWithDb.tx.mockReset();
+    const mockTx = mockWithDb.tx;
 
-    (withDb as any).tx = mockTx;
-    mockWithDb.mockImplementation((callback: any) =>
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
       callback({ customField: { findFirst: mockFindFirst } })
     );
 
@@ -412,3 +430,16 @@ describe("enumOptionsService.reorderEnumOptions", () => {
     expect(mockExecuteRaw).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * The option insert runs in a transaction (ISS-12552) while the ownership
+ * read stays pooled, so both paths see the same mock client.
+ */
+function routeCreateOptionDb(db: Record<string, unknown>) {
+  mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
+    callback(db)
+  );
+  mockWithDb.tx.mockImplementation((callback: (tx: unknown) => unknown) =>
+    callback(db)
+  );
+}

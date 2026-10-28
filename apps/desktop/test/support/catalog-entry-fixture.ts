@@ -37,7 +37,6 @@ export function makeCatalogEntry(
     placeholderReason: null,
     postInstall: null,
     projectScoped: false,
-    readmeExcerpt: null,
     seedVersion: 1,
     singleInstall: false,
     skillCount: 0,

@@ -32,6 +32,8 @@ export function createTestAuthContext(
     clerkOrgId: overrides?.clerkOrgId ?? "org_test",
     authMethod: overrides?.authMethod ?? "session",
     apiKeyScopes: overrides?.apiKeyScopes,
+    orgRole: overrides?.orgRole,
+    ...(overrides?.apiKeyId ? { apiKeyId: overrides.apiKeyId } : {}),
   };
 }
 
@@ -100,3 +102,28 @@ export function createAuthContextWithRole(
     },
   });
 }
+
+/**
+ * Clerk organization role slugs, hand-written here as the suites' oracle for
+ * Clerk's external wire values.
+ *
+ * Deliberately independent of `ADMIN_ROLES` (`lib/auth/org-admin.ts`), which is
+ * the set under test: deriving these from it would make every admin-gate suite
+ * unfalsifiable, because removing a role would silently remove its case instead
+ * of failing one, and a mis-spelled slug would change expectation and policy
+ * together. Independent means test-side — do not make production import this.
+ */
+export const ClerkOrgRoleFixture = {
+  Admin: "org:admin",
+  Owner: "org:owner",
+  Member: "org:member",
+} as const;
+
+export type ClerkOrgRoleFixture =
+  (typeof ClerkOrgRoleFixture)[keyof typeof ClerkOrgRoleFixture];
+
+/** The roles `ADMIN_ROLES` must admit, as separate cases. */
+export const PRIVILEGED_CLERK_ORG_ROLES = [
+  ClerkOrgRoleFixture.Admin,
+  ClerkOrgRoleFixture.Owner,
+] as const;

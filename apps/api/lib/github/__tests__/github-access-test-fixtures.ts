@@ -7,17 +7,17 @@ import {
   GitHubSyncHealthState,
 } from "@/lib/github/github-access";
 import type { GitHubSyncClient } from "@/lib/github/github-sync-client-pool";
-import { decryptIntegrationToken } from "@/lib/integration-encryption";
 
 /**
  * Shared harness for the PLN-1525 github-access test suites (resolver,
  * sync pool, observations). Every consumer MUST `vi.mock` the modules these
- * fixtures touch (`@repo/database`, `@/lib/integration-encryption`,
- * `@repo/github/installation-auth`, `@repo/observability/log`) before
- * importing — the mock casts below are only real at runtime under those
- * mocks. The `withDb` mock itself is cast in each test file (`*.test.ts` is
- * exempt from the no-double-cast gate; this helper module is not) and passed
- * into `wireDb`.
+ * fixtures touch (`@repo/database`, `@repo/github/installation-auth`,
+ * `@repo/observability/log`) before importing — plus `@repo/auth/server`,
+ * because PLN-1742's Clerk lane is the only user-credential source and calls
+ * Clerk for real otherwise. The mock casts below are only real at runtime
+ * under those mocks. The `withDb` mock itself is cast in each test file
+ * (`*.test.ts` is exempt from the no-double-cast gate; this helper module is
+ * not) and passed into `wireDb`.
  */
 
 type MockFn = ReturnType<typeof vi.fn>;
@@ -35,9 +35,10 @@ export type GitHubAccessDbStub = {
     deleteMany: MockFn;
   };
   gitHubInstallation: { findUnique: MockFn };
+  /** PLN-1742: the Clerk lane reads `clerkId` off the user row. */
+  user: { findUnique: MockFn };
 };
 
-export const mockDecrypt = decryptIntegrationToken as ReturnType<typeof vi.fn>;
 export const mockGetInstallationOctokit = getInstallationOctokit as ReturnType<
   typeof vi.fn
 >;
@@ -77,9 +78,7 @@ export type ResolverConnectionFixture = {
   userId: string;
   githubUserId: string;
   login: string;
-  accessTokenEncrypted: string;
   revokedAt: Date | null;
-  tokenExpiresAt: Date | null;
   scopes: string[];
   rateLimitTier: number | null;
   lastUsedAt: Date | null;
@@ -98,9 +97,7 @@ export const APP_USER_CONNECTION: ResolverConnectionFixture = {
   userId: "user-1",
   githubUserId: "9001",
   login: "octocat",
-  accessTokenEncrypted: "encrypted-token",
   revokedAt: null,
-  tokenExpiresAt: null,
   // GitHub App user-to-server tokens report no OAuth scopes.
   scopes: [],
   rateLimitTier: 15_000,
@@ -131,6 +128,9 @@ export function makeResolverDb(
     gitHubInstallation: {
       findUnique: vi.fn().mockResolvedValue(null),
     },
+    user: {
+      findUnique: vi.fn().mockResolvedValue({ clerkId: "clerk_user_1" }),
+    },
   };
 }
 
@@ -145,7 +145,6 @@ export type PoolConnectionFixture = {
   userId: string;
   githubUserId: string;
   login: string;
-  accessTokenEncrypted: string;
   scopes: string[];
   rateLimitTier: number | null;
   observedLimit: number | null;
@@ -155,7 +154,6 @@ export type PoolConnectionFixture = {
   backoffUntil: Date | null;
   healthState: string;
   lastUsedAt: Date | null;
-  tokenExpiresAt: Date | null;
   revokedAt: Date | null;
   capabilities: Array<{ credentialKind: string; denialReason: string | null }>;
 };
@@ -172,7 +170,6 @@ export function poolConnectionFixture(
     organizationId: "org-1",
     userId: `user-${overrides.id}`,
     githubUserId: `gh-${overrides.id}`,
-    accessTokenEncrypted: `encrypted-${overrides.id}`,
     scopes: [],
     rateLimitTier: null,
     observedLimit: 10_000,
@@ -182,7 +179,6 @@ export function poolConnectionFixture(
     backoffUntil: null,
     healthState: GitHubSyncHealthState.Healthy,
     lastUsedAt: null,
-    tokenExpiresAt: null,
     revokedAt: null,
     capabilities: [],
     ...overrides,
@@ -205,6 +201,9 @@ export function makePoolDb(
     gitHubInstallation: {
       findUnique: vi.fn().mockResolvedValue(null),
     },
+    user: {
+      findUnique: vi.fn().mockResolvedValue({ clerkId: "clerk_user_1" }),
+    },
   };
 }
 
@@ -219,4 +218,36 @@ export function drawnLogin(
     return actingAs.login;
   }
   throw new Error("expected a user-lane client");
+}
+
+/**
+ * Answer the Clerk credential lane with "this user has no linked GitHub
+ * account". Since the M5 tail Clerk is the ONLY user-credential source, so
+ * this is how a case states "no usable user credential" — and without any
+ * wiring `clerkClient()` resolves to `undefined` and the lane denies on a
+ * swallowed TypeError instead of a stated reason.
+ */
+export function wireClerkNoLinkedAccount(clerkClientMock: MockFn): MockFn {
+  const getUserOauthAccessToken = vi.fn().mockResolvedValue({ data: [] });
+  clerkClientMock.mockResolvedValue({ users: { getUserOauthAccessToken } });
+  return getUserOauthAccessToken;
+}
+
+/**
+ * Answer the Clerk credential lane with a usable `repo`-scoped token, for a
+ * case whose subject is what happens AFTER a credential resolves (selection,
+ * draw, observation) rather than the resolution itself.
+ */
+export function wireClerkServedToken(clerkClientMock: MockFn): MockFn {
+  const getUserOauthAccessToken = vi.fn().mockResolvedValue({
+    data: [
+      {
+        token: "clerk-token",
+        scopes: ["repo"],
+        externalAccountId: "ea-1",
+      },
+    ],
+  });
+  clerkClientMock.mockResolvedValue({ users: { getUserOauthAccessToken } });
+  return getUserOauthAccessToken;
 }

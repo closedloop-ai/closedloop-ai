@@ -1,5 +1,6 @@
 import { ApiKeySource } from "@repo/database/generated/enums";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { DESKTOP_GATEWAY_MAX_PAYLOAD_BYTES } from "../desktop-gateway-wire";
 
 /**
  * ISS-5291: the Socket.IO CONNECT-time auth boundary for the Desktop gateway.
@@ -45,12 +46,14 @@ const captured: {
   middlewareByNamespace: Map<string, Middleware>;
   connectionByNamespace: Map<string, ConnectionHandler>;
   serverOptions: Record<string, unknown> | null;
+  closeError: Error | undefined;
   constructed: number;
 } = {
   namespaces: [],
   middlewareByNamespace: new Map(),
   connectionByNamespace: new Map(),
   serverOptions: null,
+  closeError: undefined,
   constructed: 0,
 };
 
@@ -59,6 +62,7 @@ function resetCaptured() {
   captured.middlewareByNamespace = new Map();
   captured.connectionByNamespace = new Map();
   captured.serverOptions = null;
+  captured.closeError = undefined;
   captured.constructed = 0;
 }
 
@@ -85,13 +89,9 @@ vi.mock("socket.io", () => ({
       };
     }
     close(cb: (error?: Error) => void) {
-      cb();
+      cb(captured.closeError);
     }
   },
-}));
-
-vi.mock("@repo/analytics/node", () => ({
-  nodeAnalytics: { capture: vi.fn() },
 }));
 
 vi.mock("@repo/observability/log", () => ({
@@ -143,28 +143,8 @@ vi.mock("../desktop-command-store", () => ({
   },
 }));
 
-vi.mock("../desktop-agent-sessions-handler", () => ({
-  handleDesktopAgentSessionsEvent: vi.fn(),
-}));
-
-vi.mock("../desktop-analytics-handler", () => ({
-  handleDesktopAnalyticsEvent: vi.fn(),
-}));
-
 vi.mock("../desktop-command-ack-handler", () => ({
   acknowledgeDesktopCommand: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock("../desktop-relay-event-bridge", () => ({
-  publishLegacyRelayEvent: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock("../desktop-telemetry-handler", () => ({
-  handleTelemetryEvent: vi.fn().mockReturnValue({ ok: true, emits: [] }),
-}));
-
-vi.mock("../agent-session-sync-feature", () => ({
-  isAgentSessionSyncSupportedForUser: vi.fn(),
 }));
 
 import { initDesktopGatewaySocketServer } from "../desktop-gateway-socket-server";
@@ -385,18 +365,21 @@ describe("desktop gateway socket auth — where the key may come from", () => {
     ],
     ["a token that is not a live secret key", { auth: { token: "sk_test_x" } }],
     ["an empty Bearer token", { headers: { authorization: "Bearer " } }],
-  ])("rejects %s without calling the key service", async (_label, handshake) => {
-    const socket = makeHandshakeSocket(handshake);
+  ])(
+    "rejects %s without calling the key service",
+    async (_label, handshake) => {
+      const socket = makeHandshakeSocket(handshake);
 
-    const error = await runMiddleware(freshMiddleware(), socket);
+      const error = await runMiddleware(freshMiddleware(), socket);
 
-    expect(error).toBeInstanceOf(Error);
-    expect(error?.message).toBe(UNAUTHORIZED_MESSAGE);
-    // The `sk_live_` prefix test is the cheap gate in front of a database
-    // lookup; letting a malformed token through would turn every unauthenticated
-    // connect attempt into a query.
-    expect(mockVerifyKeyWithMetadata).not.toHaveBeenCalled();
-  });
+      expect(error).toBeInstanceOf(Error);
+      expect(error?.message).toBe(UNAUTHORIZED_MESSAGE);
+      // The `sk_live_` prefix test is the cheap gate in front of a database
+      // lookup; letting a malformed token through would turn every unauthenticated
+      // connect attempt into a query.
+      expect(mockVerifyKeyWithMetadata).not.toHaveBeenCalled();
+    }
+  );
 });
 
 describe("desktop gateway socket auth — each rejection reason on its own", () => {
@@ -622,5 +605,47 @@ describe("initDesktopGatewaySocketServer", () => {
     // The CORS comment above depends on this: re-adding HTTP long-polling would
     // expose the credentialed namespace to browsers differently.
     expect(captured.serverOptions?.transports).toEqual(["websocket"]);
+  });
+
+  it("uses the canonical desktop gateway payload ceiling", () => {
+    initDesktopGatewaySocketServer({ id: "payload-ceiling" } as never);
+
+    expect(captured.serverOptions?.maxHttpBufferSize).toBe(
+      DESKTOP_GATEWAY_MAX_PAYLOAD_BYTES
+    );
+  });
+
+  it("force-disconnects when connection handler registration throws", () => {
+    initDesktopGatewaySocketServer({ id: "connection-throw" } as never);
+    const connection = captured.connectionByNamespace.get(
+      DESKTOP_GATEWAY_NAMESPACE
+    );
+    const socket = {
+      id: "connection-throw-socket",
+      data: {
+        authContext: {
+          organizationId: ORGANIZATION_ID,
+          userId: USER_ID,
+          clerkUserId: "clerk-1",
+        },
+      },
+      disconnect: vi.fn(),
+      on: vi.fn(() => {
+        throw new Error("registration failed");
+      }),
+    };
+
+    connection?.(socket);
+
+    expect(socket.disconnect).toHaveBeenCalledWith(true);
+  });
+
+  it("rejects close when Socket.IO reports an error", async () => {
+    const server = initDesktopGatewaySocketServer({
+      id: "close-error",
+    } as never);
+    captured.closeError = new Error("close failed");
+
+    await expect(server.close()).rejects.toThrow("close failed");
   });
 });

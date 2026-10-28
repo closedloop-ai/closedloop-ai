@@ -8,6 +8,7 @@ import type {
 import {
   BranchAssociatedPullRequestCompletenessState,
   BranchAssociatedPullRequestSelectionReason,
+  isUnobservedPullRequest,
 } from "@repo/api/src/types/branch-associated-pull-request";
 import { GitHubPRState } from "@repo/api/src/types/github-status";
 import {
@@ -17,6 +18,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@repo/design-system/components/ui/select";
+import {
+  BRANCH_PULL_REQUEST_DRAFT_LABEL,
+  BRANCH_PULL_REQUEST_HISTORY_UNAVAILABLE,
+  BRANCH_PULL_REQUEST_UNCONFIRMED_LABEL,
+  BRANCH_PULL_REQUEST_UNCONFIRMED_SELECTED,
+} from "../lib/branch-outcome-copy";
 
 const SELECTOR_DESCRIPTION_ID = "branch-pull-request-selector-description";
 
@@ -35,7 +42,8 @@ export function BranchPullRequestSelector({
   selectedId,
 }: BranchPullRequestSelectorProps) {
   const items = collection?.items ?? [];
-  const description = collectionDescription(collection);
+  const selected = items.find((item) => item.id === selectedId) ?? null;
+  const description = collectionDescription(collection, selected);
 
   return (
     <section
@@ -105,8 +113,14 @@ function identityFor(
 }
 
 function lifecycleLabel(pullRequest: BranchAssociatedPullRequest): string {
+  // ISS-8422: an unobserved row still reports the `OPEN` it read off its column
+  // default, so this label would confidently say "Open" about a pull request
+  // nobody has looked at. The flag is the only signal that separates them.
+  if (isUnobservedPullRequest(pullRequest)) {
+    return BRANCH_PULL_REQUEST_UNCONFIRMED_LABEL;
+  }
   if (pullRequest.state === GitHubPRState.Open && pullRequest.isDraft) {
-    return "Draft";
+    return BRANCH_PULL_REQUEST_DRAFT_LABEL;
   }
   if (pullRequest.state === GitHubPRState.Open) {
     return "Open";
@@ -118,10 +132,35 @@ function lifecycleLabel(pullRequest: BranchAssociatedPullRequest): string {
 }
 
 function collectionDescription(
-  collection?: BranchAssociatedPullRequestCollection
+  collection: BranchAssociatedPullRequestCollection | undefined,
+  selected: BranchAssociatedPullRequest | null
 ): string | null {
   if (!collection) {
-    return "Pull request history isn't available yet.";
+    return BRANCH_PULL_REQUEST_HISTORY_UNAVAILABLE;
+  }
+  // ISS-8422 — the SELECTED ITEM's own flag, not the collection's reason, and
+  // BEFORE the Complete early-return. Two things make the reason alone wrong.
+  // `selectionReason` describes why the CONTRACT chose a default, so it answers
+  // `Explicit` the moment a reader picks a pull request themselves
+  // (`branch-detail-selected-pull-request.ts` sets exactly that) — which hides
+  // this sentence precisely when the reader has selected the unobserved one. And
+  // in a multi-PR collection whose default is observed, `Unobserved` is never the
+  // reason at all, so selecting an unobserved sibling said nothing either.
+  // Early, because an unobserved selection adds no completeness reason (adding
+  // one degraded an org-wide KPI through `pullRequestCoverageComplete`), so this
+  // collection reports Complete and would return null with the caveat unsaid.
+  if (isUnobservedPullRequest(selected)) {
+    return BRANCH_PULL_REQUEST_UNCONFIRMED_SELECTED;
+  }
+  // The collection-level reason still answers for a contract that reports an
+  // unobserved default whose item this client cannot resolve — `selectedId`
+  // naming a row absent from `items`, which no producer should emit and none of
+  // them is prevented from emitting.
+  if (
+    collection.selectionReason ===
+    BranchAssociatedPullRequestSelectionReason.Unobserved
+  ) {
+    return BRANCH_PULL_REQUEST_UNCONFIRMED_SELECTED;
   }
   if (
     collection.completeness.state ===
@@ -133,7 +172,7 @@ function collectionDescription(
     collection.completeness.state ===
     BranchAssociatedPullRequestCompletenessState.Unavailable
   ) {
-    return "Pull request history isn't available yet.";
+    return BRANCH_PULL_REQUEST_HISTORY_UNAVAILABLE;
   }
   if (
     collection.selectionReason ===

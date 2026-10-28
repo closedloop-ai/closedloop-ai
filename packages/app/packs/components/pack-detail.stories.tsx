@@ -9,7 +9,8 @@ import { memberInstallCellKey } from "./member-targets-block";
 import { PackDetail } from "./pack-detail";
 
 const meta = {
-  title: "App Core/Packs/Pack Detail",
+  title: "Surfaces v1.0/Packs/Pack Detail",
+  tags: ["deprecated"],
   component: PackDetail,
   args: {
     pack: mockPackViews[0],

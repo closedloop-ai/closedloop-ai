@@ -15,7 +15,7 @@
  * table-scoped; do NOT relax this test.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { MIGRATIONS } from "../src/main/database/migration/migrations-manifest.js";
 
 /** `ALTER TABLE "t" DROP COLUMN "c"` → the (table, column) pair it targets. */

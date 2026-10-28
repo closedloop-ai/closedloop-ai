@@ -1,12 +1,16 @@
 import {
-  DISPLAYED_SESSION_STATUS,
+  LEGACY_WAITING_WIRE_STATUS,
   SESSION_STATUS,
 } from "@repo/api/src/types/session-status";
+import { WEB_SEARCH_COST_PER_REQUEST_USD } from "@repo/cost/harness-cost-parity";
 import { describe, expect, it } from "vitest";
 import {
+  didDropContradictorySessionEnd,
   MAX_SESSION_UPDATED_AT_FUTURE_SKEW_MS,
   resolveGuardedStatus,
   resolveGuardedTimestampPatch,
+  resolveNameOverridePatch,
+  resolveSessionEndForStatus,
   resolveSessionFreshnessGates,
   resolveTokenRollupColumns,
 } from "./field-regression-guards";
@@ -117,10 +121,7 @@ describe("resolveGuardedStatus (FEA-3477 D4)", () => {
       resolveGuardedStatus(SESSION_STATUS.INACTIVE, SESSION_STATUS.ACTIVE)
     ).toBe(SESSION_STATUS.INACTIVE);
     expect(
-      resolveGuardedStatus(
-        SESSION_STATUS.ERROR,
-        DISPLAYED_SESSION_STATUS.WAITING
-      )
+      resolveGuardedStatus(SESSION_STATUS.ERROR, LEGACY_WAITING_WIRE_STATUS)
     ).toBe(SESSION_STATUS.ERROR);
     // NO INPUT CAN DISCRIMINATE THE FOLD ANY MORE, and that is worth stating
     // rather than papering over. This case used `failed`, the one spelling that
@@ -146,11 +147,8 @@ describe("resolveGuardedStatus (FEA-3477 D4)", () => {
       resolveGuardedStatus(SESSION_STATUS.ACTIVE, SESSION_STATUS.INACTIVE)
     ).toBe(SESSION_STATUS.INACTIVE);
     expect(
-      resolveGuardedStatus(
-        SESSION_STATUS.ACTIVE,
-        DISPLAYED_SESSION_STATUS.WAITING
-      )
-    ).toBe(DISPLAYED_SESSION_STATUS.WAITING);
+      resolveGuardedStatus(SESSION_STATUS.ACTIVE, LEGACY_WAITING_WIRE_STATUS)
+    ).toBe(LEGACY_WAITING_WIRE_STATUS);
   });
 
   it("writes the incoming status when there is no persisted status", () => {
@@ -165,26 +163,29 @@ describe("resolveGuardedStatus (FEA-3477 D4)", () => {
 
 describe("resolveTokenRollupColumns (FEA-3477 D5)", () => {
   it("omits the rollup columns when there is no token usage", () => {
-    const columns = resolveTokenRollupColumns(
-      false,
-      ZERO_TOTALS,
-      identityRound
-    );
+    const columns = resolveTokenRollupColumns({
+      hasTokenUsage: false,
+      totals: ZERO_TOTALS,
+      roundCost: identityRound,
+      anyRowPriced: false,
+    });
     expect(columns).toEqual({});
   });
 
   it("writes the rollup columns when token usage is present", () => {
-    const columns = resolveTokenRollupColumns(
-      true,
-      {
+    const columns = resolveTokenRollupColumns({
+      hasTokenUsage: true,
+      totals: {
         inputTokens: 10,
         outputTokens: 20,
         cacheReadTokens: 30,
         cacheWriteTokens: 40,
         estimatedCost: 1.234_567_89,
       },
-      (value) => Number(value.toFixed(6))
-    );
+      roundCost: (value) => Number(value.toFixed(6)),
+      // ISS-8515: a priced payload — the arm that sums tokens + web search.
+      anyRowPriced: true,
+    });
     expect(columns).toEqual({
       inputTokens: 10,
       outputTokens: 20,
@@ -192,6 +193,136 @@ describe("resolveTokenRollupColumns (FEA-3477 D5)", () => {
       cacheWriteTokens: 40,
       estimatedCost: 1.234_568,
     });
+  });
+});
+
+describe("resolveTokenRollupColumns — the web-search-only session (ISS-7821)", () => {
+  const WEB_SEARCH_METADATA = { usageExtras: { web_search_requests: 3 } };
+  const THREE_REQUESTS_USD = 3 * WEB_SEARCH_COST_PER_REQUEST_USD;
+  const NO_STORED_TOKENS = {
+    inputTokens: 0n,
+    outputTokens: 0n,
+    cacheReadTokens: 0n,
+    cacheWriteTokens: 0n,
+  };
+
+  it("prices a session whose only cost is web search, with no token rows", () => {
+    // The create arm: no token usage in the payload and none stored, but a
+    // billable count in metadata. This used to return `{}` and let the column's
+    // `@default(0)` report $0 for a session the desktop prices at the line item.
+    const columns = resolveTokenRollupColumns({
+      hasTokenUsage: false,
+      totals: ZERO_TOTALS,
+      roundCost: identityRound,
+      metadata: WEB_SEARCH_METADATA,
+      existingTokenRollup: null,
+      anyRowPriced: false,
+    });
+    expect(columns).toEqual({ estimatedCost: THREE_REQUESTS_USD });
+  });
+
+  it("writes ONLY the cost column, never zeroed token columns", () => {
+    // The reason the early return exists: `persistSessionChildren` skips the
+    // token delete+recreate on an empty payload, so emitting `inputTokens: 0`
+    // here would desync the rollup from a per-model table that still has rows.
+    const columns = resolveTokenRollupColumns({
+      hasTokenUsage: false,
+      totals: ZERO_TOTALS,
+      roundCost: identityRound,
+      metadata: WEB_SEARCH_METADATA,
+      existingTokenRollup: null,
+      anyRowPriced: false,
+    });
+    expect(columns).not.toHaveProperty("inputTokens");
+    expect(columns).not.toHaveProperty("outputTokens");
+    expect(columns).not.toHaveProperty("cacheReadTokens");
+    expect(columns).not.toHaveProperty("cacheWriteTokens");
+  });
+
+  it("keeps updating a stored web-search-only session as its count grows", () => {
+    // A Desktop build predating the ISS-7813 cost writer sends metadata with no
+    // token rollup on EVERY sync, so all but the first are updates. A fix that
+    // only covered the create arm would freeze this session at its first count.
+    const columns = resolveTokenRollupColumns({
+      hasTokenUsage: false,
+      totals: ZERO_TOTALS,
+      roundCost: identityRound,
+      metadata: { usageExtras: { web_search_requests: 9 } },
+      existingTokenRollup: NO_STORED_TOKENS,
+      anyRowPriced: false,
+    });
+    expect(columns).toEqual({
+      estimatedCost: 9 * WEB_SEARCH_COST_PER_REQUEST_USD,
+    });
+  });
+
+  it("never overwrites a stored cost that already carries token spend", () => {
+    // The clobber this patch is gated to prevent. `estimatedCost` is one column
+    // holding `tokens + web search`, and on a payload with no token rows this
+    // fold cannot recompute the token half — writing the line item alone would
+    // delete a real token cost, trading a small under-report for a large one.
+    const columns = resolveTokenRollupColumns({
+      hasTokenUsage: false,
+      totals: ZERO_TOTALS,
+      roundCost: identityRound,
+      metadata: WEB_SEARCH_METADATA,
+      existingTokenRollup: { ...NO_STORED_TOKENS, inputTokens: 1000n },
+      anyRowPriced: false,
+    });
+    expect(columns).toEqual({});
+  });
+
+  // ISS-8515 (Phase 6.5 mutation lock, written BEFORE the behaviour change):
+  // `hasStoredTokenCost` ORs four columns, and only `inputTokens` was pinned —
+  // Stryker leaves the `outputTokens` / `cacheReadTokens` / `cacheWriteTokens`
+  // arms alive (survivors at the two `hasStoredTokenCost` OR arms, on a 95.31%
+  // baseline). ISS-8515 makes this helper more load-bearing, so each arm gets a
+  // case whose ONLY non-zero column is that one. Each asserts the web-search
+  // patch STAYS SUPPRESSED, which is the behaviour the arm exists to produce.
+  it.each([
+    ["outputTokens", { ...NO_STORED_TOKENS, outputTokens: 1000n }],
+    ["cacheReadTokens", { ...NO_STORED_TOKENS, cacheReadTokens: 1000n }],
+    ["cacheWriteTokens", { ...NO_STORED_TOKENS, cacheWriteTokens: 1000n }],
+  ])(
+    "suppresses the web-search patch when only %s is stored",
+    (_column, storedRollup) => {
+      expect(
+        resolveTokenRollupColumns({
+          hasTokenUsage: false,
+          totals: ZERO_TOTALS,
+          roundCost: identityRound,
+          metadata: WEB_SEARCH_METADATA,
+          existingTokenRollup: storedRollup,
+          anyRowPriced: false,
+        })
+      ).toEqual({});
+    }
+  );
+
+  it("stays out of the way of a session that never used web search", () => {
+    // The negative sibling: without it, "returns a cost patch" is satisfied by a
+    // build that emits one for every token-less session, including the ordinary
+    // omission this early return has always been for.
+    expect(
+      resolveTokenRollupColumns({
+        hasTokenUsage: false,
+        totals: ZERO_TOTALS,
+        roundCost: identityRound,
+        metadata: {},
+        existingTokenRollup: null,
+        anyRowPriced: false,
+      })
+    ).toEqual({});
+    expect(
+      resolveTokenRollupColumns({
+        hasTokenUsage: false,
+        totals: ZERO_TOTALS,
+        roundCost: identityRound,
+        metadata: { usageExtras: { web_search_requests: 0 } },
+        existingTokenRollup: null,
+        anyRowPriced: false,
+      })
+    ).toEqual({});
   });
 });
 
@@ -485,5 +616,136 @@ describe("resolveSessionFreshnessGates — poisoned-clock repair (ISS-4946)", ()
     });
     expect(result.didRepairPoisonedWatermark).toBe(false);
     expect(result.shouldUpdateGuardedColumns).toBe(false);
+  });
+});
+
+describe("resolveSessionEndForStatus (ISS-8552)", () => {
+  const END = new Date("2026-06-10T12:00:00.000Z");
+
+  // The whole defect in one assertion: max-wins had already resolved an end,
+  // and the status this write resolves says the run is live. The row must not
+  // be allowed to assert both.
+  it("drops an end when the resolved status is active", () => {
+    expect(resolveSessionEndForStatus(END, SESSION_STATUS.ACTIVE)).toBeNull();
+  });
+
+  // AC 2 — the regression resistance max-wins exists for is untouched, because
+  // this gate only ever fires on a NON-terminal resolution. Both terminal
+  // members are covered: `error` is a terminal state whose end is as real as
+  // `inactive`'s, and folding it into the active branch would clear the end of
+  // every failed run.
+  it("preserves the end for each terminal status", () => {
+    expect(resolveSessionEndForStatus(END, SESSION_STATUS.INACTIVE)).toBe(END);
+    expect(resolveSessionEndForStatus(END, SESSION_STATUS.ERROR)).toBe(END);
+  });
+
+  // A live row with no end is the ordinary case and must stay a plain null
+  // rather than acquiring one.
+  it("leaves an absent end absent on either side of the gate", () => {
+    expect(resolveSessionEndForStatus(null, SESSION_STATUS.ACTIVE)).toBeNull();
+    expect(
+      resolveSessionEndForStatus(null, SESSION_STATUS.INACTIVE)
+    ).toBeNull();
+  });
+
+  // NO `waiting` CASE HERE, deliberately. The parameter is typed
+  // `SessionStatus`, and both call sites hand it `normalizeSessionStatus(...)`
+  // output, so the display term cannot reach this function — `tsc` rejects the
+  // test that tries. An incoming `waiting` payload is covered where it IS
+  // reachable, at the ingest boundary, by the fold: it normalizes to `active`
+  // and takes the branch above.
+});
+
+describe("didDropContradictorySessionEnd (ISS-8552, PR #6284 review)", () => {
+  const END = new Date("2026-06-10T12:00:00.000Z");
+
+  // The metric's whole claim: THIS delivery sent an end, and the row this write
+  // committed does not carry it.
+  it("reports a drop when the payload's end did not survive the write", () => {
+    expect(didDropContradictorySessionEnd(END, null)).toBe(true);
+  });
+
+  // whitlockk / chatgpt-codex-connector, PR #6284. The repair case, which is the
+  // ordinary shape a stranded row is fixed by: the payload carries NO end, and
+  // max-wins hands the write the stored one, which the gate then drops. The
+  // producer sent nothing contradictory, so nothing may be counted against it —
+  // reading the max-wins resolution here reported every repair as a bad payload.
+  it("stays silent when the payload carried no end at all", () => {
+    expect(didDropContradictorySessionEnd(null, null)).toBe(false);
+  });
+
+  // The end was sent and kept. Not a refusal. Distinguishes the predicate from
+  // "the payload carried an end", which would count every terminal sync.
+  it("stays silent when the committed row kept the end", () => {
+    expect(didDropContradictorySessionEnd(END, END)).toBe(false);
+  });
+
+  // NO CREATE-ARM-RACE CASE HERE, and deliberately not a simulated one. whitlockk's
+  // second point (PR #6284) is that the arm is the DATABASE's decision, so it
+  // cannot be read off the slice's pre-upsert `existing`. The answer is
+  // structural rather than conditional: this predicate has no arm parameter and
+  // no pre-upsert input, so a create that landed because a sweep deleted the row
+  // after that read reaches these same two arguments and is counted identically.
+  // A test passing a third argument that no longer exists would assert nothing;
+  // the guarantee is the parameter's absence, which `tsc` holds.
+});
+
+describe("resolveNameOverridePatch (ISS-8733, review: davetho)", () => {
+  const OWNER_RENAME = "Q3 billing spike";
+  const COLLECTED_OVERRIDE = "auth refactor";
+
+  // THE CONFLICT REGRESSION. The desktop's at-least-once retry redelivers the
+  // batch the rename raced, and the rename does not move `sessionUpdatedAt`, so
+  // that replay arrives at an EQUAL watermark — which the freshness gate admits.
+  // Only seeding-only keeps the owner's choice.
+  it("refuses a replayed override on a row the owner has renamed", () => {
+    expect(resolveNameOverridePatch(COLLECTED_OVERRIDE, OWNER_RENAME)).toEqual(
+      {}
+    );
+  });
+
+  it("seeds an override onto a row that holds none", () => {
+    expect(resolveNameOverridePatch(COLLECTED_OVERRIDE, null)).toEqual({
+      nameOverride: COLLECTED_OVERRIDE,
+    });
+  });
+
+  // The create arm: no stored row at all, so `existing?.nameOverride` is
+  // `undefined` rather than `null`. Both must seed, or a first delivery loses a
+  // desktop-declared override.
+  it("seeds on create, where there is no stored row to read", () => {
+    expect(resolveNameOverridePatch(COLLECTED_OVERRIDE, undefined)).toEqual({
+      nameOverride: COLLECTED_OVERRIDE,
+    });
+  });
+
+  // ISS-8717's original refusal, still standing: an omitted override states no
+  // opinion, and the key must stay ABSENT rather than carry an explicit null
+  // into the spread — the update arm would otherwise clear the column.
+  it("omits the key entirely when the payload claims no override", () => {
+    const patch = resolveNameOverridePatch(undefined, OWNER_RENAME);
+    expect(patch).toEqual({});
+    expect("nameOverride" in patch).toBe(false);
+    expect("nameOverride" in resolveNameOverridePatch(undefined, null)).toBe(
+      false
+    );
+  });
+
+  // An empty override is not a rename request. It must not seed, and it must not
+  // be read as a clear either.
+  it("treats an empty override as no claim, not as a clear", () => {
+    expect(resolveNameOverridePatch("", OWNER_RENAME)).toEqual({});
+    expect(resolveNameOverridePatch("", null)).toEqual({});
+  });
+
+  // The wire field is nullable, so an EXPLICIT null is reachable — and it is
+  // still "no claim", never a clear. A producer that wants the collector's name
+  // back does not get there by nulling this column, because nothing reads the
+  // override as a delete instruction.
+  it("reads an explicit wire null as no claim, on a renamed row and a bare one", () => {
+    expect("nameOverride" in resolveNameOverridePatch(null, OWNER_RENAME)).toBe(
+      false
+    );
+    expect("nameOverride" in resolveNameOverridePatch(null, null)).toBe(false);
   });
 });

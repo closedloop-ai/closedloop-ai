@@ -12,8 +12,8 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { Harness } from "@repo/api/src/types/agent-component";
+import { test } from "vitest";
 import {
   type DefinitionWire,
   definitionBudgetOmissionReason,

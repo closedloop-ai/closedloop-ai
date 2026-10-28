@@ -32,16 +32,7 @@ type TemplateVariables = {
   repoPath?: string;
 };
 
-/**
- * Exact desktop fail-fast message that should receive first-class visible loop
- * error copy instead of being hidden only in technical details.
- */
-export const DESKTOP_SIGNED_LAUNCH_MANAGED_KEY_ERROR_MESSAGE =
-  "Signed loop launch requires a desktop-managed key with request signing; the active config uses a manually configured key or cannot load its signing key. Re-run managed onboarding." as const;
-
 export const GitGatewayErrorCategory = {
-  ComputeTargetOffline: "compute_target_offline",
-  ComputeTargetUnavailable: "compute_target_unavailable",
   GitCommandFailed: "git_command_failed",
   GitPushAuth: "git_push_auth",
   PreCommitHook: "pre_commit_hook",
@@ -62,24 +53,6 @@ export const GitHookType = {
 } as const;
 
 export type GitHookType = (typeof GitHookType)[keyof typeof GitHookType];
-
-const ExternalRunnerErrorSubcode = {
-  MaxIterationsNoProgress: "MAX_ITERATIONS_NO_PROGRESS",
-} as const;
-
-const RunnerErrorSubcode = {
-  BadPlanState: "BAD_PLAN_STATE",
-  ClaudeAuthChallenge: "CLAUDE_AUTH_CHALLENGE",
-  ClaudeContextLimit: "CLAUDE_CONTEXT_LIMIT",
-  ClaudeUnknownSkill: "CLAUDE_UNKNOWN_SKILL",
-  ClaudeRateLimit: "CLAUDE_RATE_LIMIT",
-  PendingTasksAtCompletion: "PENDING_TASKS_AT_COMPLETION",
-  PendingTasksBlockedByQuestions: "PENDING_TASKS_BLOCKED_BY_QUESTIONS",
-  ...ExternalRunnerErrorSubcode,
-} as const;
-
-type RunnerErrorSubcode =
-  (typeof RunnerErrorSubcode)[keyof typeof RunnerErrorSubcode];
 
 const loopErrorMessages = {
   [LoopErrorCode.RunnerError]: {
@@ -330,99 +303,7 @@ const loopErrorMessages = {
   },
 } satisfies Record<LoopErrorCode, FriendlyErrorTemplate>;
 
-const runnerSubcodeMessages = {
-  [RunnerErrorSubcode.BadPlanState]: {
-    title: "Plan state is unavailable",
-    description:
-      "The runner could not read the local plan state needed to continue.",
-    remediation: [
-      "Check that the plan files exist in the worktree.",
-      "Restart the loop after the plan state is restored.",
-    ],
-  },
-  [RunnerErrorSubcode.ClaudeAuthChallenge]: {
-    title: "Claude authentication is required",
-    description:
-      "Claude stopped because it needs an interactive authentication step.",
-    remediation: [
-      "Run Claude locally and complete the authentication prompt.",
-      "Restart the loop after authentication succeeds.",
-    ],
-  },
-  [RunnerErrorSubcode.ClaudeContextLimit]: {
-    title: "Claude context limit exceeded",
-    description:
-      "Claude could not continue because the context window was exhausted.",
-    remediation: [
-      "Restart with a narrower prompt or fewer attached files.",
-      "Split the task into smaller loops.",
-    ],
-  },
-  [RunnerErrorSubcode.ClaudeUnknownSkill]: {
-    title: "Closedloop plugin command unavailable",
-    description:
-      "Claude could not find the required Closedloop plugin command for this loop.",
-    remediation: [
-      "Run System Check and use Re-check to retry plugin repair.",
-      "If the issue persists, reinstall or enable the required closedloop-ai plugins.",
-    ],
-  },
-  [RunnerErrorSubcode.ClaudeRateLimit]: {
-    title: "Claude rate limit reached",
-    description: "Claude was rate limited before the runner completed.",
-    remediation: [
-      "Wait for the rate limit to reset.",
-      "Restart the loop after Claude is accepting requests again.",
-    ],
-  },
-  [RunnerErrorSubcode.PendingTasksAtCompletion]: {
-    title: "Tasks were still pending",
-    description:
-      "The runner reached completion with unfinished tasks still recorded.",
-    remediation: [
-      "Review the remaining tasks in the loop output.",
-      "Restart or follow up with a narrower continuation prompt.",
-    ],
-  },
-  [RunnerErrorSubcode.PendingTasksBlockedByQuestions]: {
-    title: "Tasks are blocked by unanswered questions",
-    description:
-      "The runner could not finish because it needed answers to continue.",
-    remediation: [
-      "Answer the pending questions in the loop context.",
-      "Restart the loop after the required information is available.",
-    ],
-  },
-  [RunnerErrorSubcode.MaxIterationsNoProgress]: {
-    title: "Loop stopped after no progress",
-    description:
-      "The runner reached the maximum iteration limit without making progress.",
-    remediation: [
-      "Restart with a more specific goal and smaller scope.",
-      "Review the audit log for the step where progress stalled.",
-    ],
-  },
-} satisfies Record<RunnerErrorSubcode, FriendlyErrorTemplate>;
-
 const gitCategoryMessages = {
-  [GitGatewayErrorCategory.ComputeTargetOffline]: {
-    title: "Compute target is offline",
-    description:
-      "The loop was not restarted because the selected compute target is not online.",
-    remediation: [
-      "Start the Closedloop Desktop app on the selected target.",
-      "Retry after the target shows online.",
-    ],
-  },
-  [GitGatewayErrorCategory.ComputeTargetUnavailable]: {
-    title: "No compute target is online",
-    description:
-      "The loop was not restarted because no local compute target is online.",
-    remediation: [
-      "Start the Closedloop Desktop app on the target you want to use.",
-      "Retry after a compute target shows online.",
-    ],
-  },
   [GitGatewayErrorCategory.PreCommitHook]: {
     title: "Pre-commit hook failed",
     description:
@@ -484,15 +365,6 @@ const fallbackMessage: FriendlyErrorTemplate = {
   ],
 };
 
-const desktopSignedLaunchManagedKeyMessage: FriendlyErrorTemplate = {
-  title: "Desktop managed signing is not ready",
-  description: DESKTOP_SIGNED_LAUNCH_MANAGED_KEY_ERROR_MESSAGE,
-  remediation: [
-    "Re-run managed onboarding on the selected desktop target.",
-    "Reconnect the compute target after the desktop-managed key is ready.",
-  ],
-};
-
 export function resolveFriendlyError(
   input: FriendlyErrorInput
 ): FriendlyErrorOutput {
@@ -504,16 +376,7 @@ export function resolveFriendlyError(
     knownCode.success ? knownCode.data : null,
     input.details
   );
-  const runnerMessage =
-    knownCode.success && knownCode.data === LoopErrorCode.RunnerError
-      ? getRunnerSubcodeMessage(input.result)
-      : null;
-  const exactMessage =
-    knownCode.success && knownCode.data === LoopErrorCode.ProcessFailed
-      ? getExactMessageTemplate(input.message)
-      : null;
-  const template =
-    runnerMessage ?? exactMessage ?? categorizedMessage ?? baseMessage;
+  const template = categorizedMessage ?? baseMessage;
   const variables = getTemplateVariables(input);
   const timestamp = input.timestamp ?? undefined;
 
@@ -529,43 +392,6 @@ export function resolveFriendlyError(
   };
 }
 
-function getExactMessageTemplate(
-  message: string | null | undefined
-): FriendlyErrorTemplate | null {
-  if (message === DESKTOP_SIGNED_LAUNCH_MANAGED_KEY_ERROR_MESSAGE) {
-    return desktopSignedLaunchManagedKeyMessage;
-  }
-  return null;
-}
-
-export function humanizeErrorCode(code: string): string {
-  return code
-    .toLowerCase()
-    .split("_")
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
-}
-
-function getRunnerSubcodeMessage(
-  result: JsonObject | null | undefined
-): FriendlyErrorTemplate | null {
-  const subcode = getString(result, "subcode");
-  if (!subcode) {
-    return null;
-  }
-  return (
-    runnerSubcodeMessages[subcode as RunnerErrorSubcode] ?? {
-      title: humanizeErrorCode(subcode),
-      description: "The runner reported an unrecognized failure reason.",
-      remediation: [
-        "Review the technical details for the runner output.",
-        "Retry after addressing the reported reason.",
-      ],
-    }
-  );
-}
-
 function getScopedCategoryMessage(
   code: LoopErrorCode | null,
   details: JsonObject | null | undefined
@@ -574,22 +400,10 @@ function getScopedCategoryMessage(
   if (!category) {
     return null;
   }
-  if (
-    code === null ||
-    code === LoopErrorCode.ProcessFailed ||
-    (code === LoopErrorCode.PreRunValidationFailed &&
-      isComputeTargetCategory(category))
-  ) {
+  if (code === null || code === LoopErrorCode.ProcessFailed) {
     return gitCategoryMessages[category as GitGatewayErrorCategory] ?? null;
   }
   return null;
-}
-
-function isComputeTargetCategory(category: string): boolean {
-  return (
-    category === GitGatewayErrorCategory.ComputeTargetOffline ||
-    category === GitGatewayErrorCategory.ComputeTargetUnavailable
-  );
 }
 
 function getRemediation(

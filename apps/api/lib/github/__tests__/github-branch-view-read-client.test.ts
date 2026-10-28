@@ -79,17 +79,20 @@ describe("resolveBranchViewReadClient", () => {
     GitHubAccessDenialReason.Revoked,
     GitHubAccessDenialReason.NoInstallation,
     GitHubAccessDenialReason.InsufficientScope,
-  ])("surfaces a %s denial instead of reading through the installation credential", async (reason) => {
-    resolverDenies(reason);
+  ])(
+    "surfaces a %s denial instead of reading through the installation credential",
+    async (reason) => {
+      resolverDenies(reason);
 
-    const client = await resolveBranchViewReadClient(INPUT);
+      const client = await resolveBranchViewReadClient(INPUT);
 
-    expect(client).toEqual({ ok: false, error: { reason } });
-    // The core of the strictness change: an org member the resolver denied
-    // must not be served by a credential that can see repositories their own
-    // GitHub account cannot.
-    expect(mockGetInstallationOctokit).not.toHaveBeenCalled();
-  });
+      expect(client).toEqual({ ok: false, error: { reason } });
+      // The core of the strictness change: an org member the resolver denied
+      // must not be served by a credential that can see repositories their own
+      // GitHub account cannot.
+      expect(mockGetInstallationOctokit).not.toHaveBeenCalled();
+    }
+  );
 });
 
 describe("runBranchViewRead", () => {

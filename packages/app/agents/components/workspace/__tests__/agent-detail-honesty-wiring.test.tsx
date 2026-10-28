@@ -92,6 +92,7 @@ function honestyFixture(): AgentComponentDetail {
 function detailSource(detail: AgentComponentDetail): AgentComponentsDataSource {
   return {
     scope: "test-honesty-wiring",
+    honorsDateWindow: false,
     list: () => Promise.reject(new Error("list unused in detail tests")),
     detail: () => Promise.resolve(detail),
   };

@@ -34,23 +34,37 @@ export type DesktopSessionTokens = {
   organizationId: string;
 };
 
-export type DesktopSessionRequestError =
+/**
+ * The typed failure set every PoP-signed desktop-session endpoint can return.
+ *
+ * A const object rather than a bare string union (ISS-6334): these values are
+ * now compared and mapped outside this module — the auth-failure telemetry
+ * reason map keys off them — and the repo rule is that a status set shared
+ * across modules and tests is referenced by const member, never re-typed as a
+ * literal at each site.
+ */
+export const DesktopSessionRequestError = {
   /** The local PoP signer could not produce headers (key/safeStorage issue). */
-  | "pop_unavailable"
+  PopUnavailable: "pop_unavailable",
   /** Server rejected the PoP signature (403). */
-  | "pop_rejected"
+  PopRejected: "pop_rejected",
   /** Approved device session was already exchanged/consumed (409). */
-  | "already_used"
+  AlreadyUsed: "already_used",
   /** Approved device session has no resolved org yet (400 ORG_REQUIRED). */
-  | "org_required"
+  OrgRequired: "org_required",
   /** Auth-level rejection — invalid/expired/forged (401). */
-  | "invalid"
+  Invalid: "invalid",
   /** Malformed request body (400). */
-  | "bad_request"
+  BadRequest: "bad_request",
   /** Server-side transient failure (503). */
-  | "unavailable"
+  Unavailable: "unavailable",
   /** Network/transport failure before a response. */
-  | "network";
+  Network: "network",
+} as const;
+
+/** Literal union of desktop session-endpoint failures. */
+export type DesktopSessionRequestError =
+  (typeof DesktopSessionRequestError)[keyof typeof DesktopSessionRequestError];
 
 export type DesktopSessionResult<T> =
   | { ok: true; value: T }

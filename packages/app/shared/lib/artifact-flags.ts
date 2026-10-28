@@ -4,11 +4,6 @@
  * same canonical key set without duplicating string literals.
  */
 export const ArtifactFlag = {
-  /**
-   * Removed "Documents" primary nav item (FEA-3964). No nav surface consumes it;
-   * retained only as the canonical key the mobile-nav regression test enables to
-   * prove the item never resurfaces (and for a future real surface to re-adopt).
-   */
   Documents: "documents-nav",
   Issues: "issues-nav",
   /**

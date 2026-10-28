@@ -2,8 +2,8 @@
  * @file sync-source-commit-refs.test.ts
  * @description FEA-2731 / PRD-510 D7 — the desktop sync source must emit a
  * `commit`-kind ref (into `artifactRefs`) for each local `artifacts(kind='commit')`
- * link, carrying the ABBREVIATED sha, observing branch, subject, timestamp, and
- * desktop-parsed LOC so the cloud CommitDetail SSOT can render branch commit
+ * link, carrying the ABBREVIATED sha, observing branch, subject, and
+ * timestamp so the cloud CommitDetail SSOT can render branch commit
  * history with no GitHub App installed.
  *
  * It also proves commit refs are the LOWEST priority under the per-session
@@ -18,11 +18,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
-import {
-  MAX_SYNCED_ARTIFACT_REFS_PRODUCER,
-  PR_INT_MAX,
-} from "@repo/api/src/types/session-artifact-link";
+import { MAX_SYNCED_ARTIFACT_REFS_PRODUCER } from "@repo/api/src/types/session-artifact-link";
+import { test } from "vitest";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 
 // A session cwd of NULL short-circuits attribution resolution.
@@ -45,9 +42,6 @@ async function seedCommitLink(
     branchName?: string;
     title?: string | null;
     committedAt?: string | null;
-    linesAdded?: number | null;
-    linesRemoved?: number | null;
-    filesChanged?: number | null;
     createdAt?: string;
   } = {}
 ): Promise<void> {
@@ -60,24 +54,18 @@ async function seedCommitLink(
     branchName = "feat/x",
     title = `commit subject ${index}`,
     committedAt = "2026-07-10T00:00:00.000Z",
-    linesAdded = null,
-    linesRemoved = null,
-    filesChanged = null,
     createdAt = `t-c-${String(index).padStart(4, "0")}`,
   } = overrides;
   await db.run(
     `INSERT INTO artifacts
-       (id, identity_key, kind, repo_full_name, sha, branch_name, title, committed_at, lines_added, lines_removed, files_changed, created_at, last_seen_at)
-     VALUES (?, ?, 'commit', 'acme/repo', ?, ?, ?, ?, ?, ?, ?, 't1', 't1')`,
+       (id, identity_key, kind, repo_full_name, sha, branch_name, title, committed_at, created_at, last_seen_at)
+     VALUES (?, ?, 'commit', 'acme/repo', ?, ?, ?, ?, 't1', 't1')`,
     `art-c-${index}`,
     `commit:${index}`,
     sha,
     branchName,
     title,
-    committedAt,
-    linesAdded,
-    linesRemoved,
-    filesChanged
+    committedAt
   );
   await db.run(
     `INSERT INTO session_artifact_links
@@ -90,7 +78,7 @@ async function seedCommitLink(
   );
 }
 
-test("FEA-2731: a commit-kind link emits a commit ref with sha/branch/message/committedAt/LOC", async () => {
+test("FEA-2731: a commit-kind link emits a commit ref with sha/branch/message/committedAt and no LOC", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "fea2731-commit-refs-"));
   const dataDir = path.join(dir, "agent-dashboard.pgdata");
   try {
@@ -108,9 +96,6 @@ test("FEA-2731: a commit-kind link emits a commit ref with sha/branch/message/co
         branchName: "feat/x",
         title: "feat: add thing",
         committedAt: "2026-07-10T12:34:56.000Z",
-        linesAdded: 10,
-        linesRemoved: 2,
-        filesChanged: 3,
       });
 
       const [session] = await db.syncSource.loadSyncedSessions(
@@ -129,67 +114,12 @@ test("FEA-2731: a commit-kind link emits a commit ref with sha/branch/message/co
       assert.equal(commitRef.sha, "1a2b3c4");
       assert.equal(commitRef.message, "feat: add thing");
       assert.equal(commitRef.committedAt, "2026-07-10T12:34:56.000Z");
-      assert.equal(commitRef.linesAdded, 10);
-      assert.equal(commitRef.linesRemoved, 2);
-      assert.equal(commitRef.filesChanged, 3);
+      // The desktop store keeps no commit LOC (ISS-12709): the keys are omitted,
+      // not sent as null.
+      assert.equal("linesAdded" in commitRef, false);
+      assert.equal("linesRemoved" in commitRef, false);
+      assert.equal("filesChanged" in commitRef, false);
       assert.equal(commitRef.relation, "created");
-    } finally {
-      await db.close();
-    }
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("FEA-3206: an out-of-int4 LOC count is dropped (would overflow commit_detail and abort the batch), while in-range counts survive", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "fea3206-commit-loc-"));
-  const dataDir = path.join(dir, "agent-dashboard.pgdata");
-  try {
-    const db = await openSqliteAgentDatabase({
-      dataDir,
-      detectBillingMode: () => "metered_api",
-      now: () => "2026-07-10T00:00:00.000Z",
-    });
-    try {
-      await db.run(
-        "INSERT INTO sessions (id, status) VALUES ('s5','completed')"
-      );
-      // linesAdded overflows int4 (a 64-bit SQLite value). Without the
-      // nonNegativeInt() guard the desktop would pass it straight through and the
-      // cloud `commit_detail` INTEGER write would 22003-overflow, aborting the
-      // whole multi-session sync transaction. linesRemoved/filesChanged stay in
-      // range and must still be emitted.
-      await seedCommitLink(db, "s5", 1, {
-        linesAdded: PR_INT_MAX + 1,
-        linesRemoved: 7,
-        filesChanged: 2,
-      });
-
-      const [session] = await db.syncSource.loadSyncedSessions(
-        ["s5"],
-        emptyAttributionCache()
-      );
-      assert.ok(session, "session hydrated");
-      const commitRef = session.artifactRefs?.find((r) => r.kind === "commit");
-      assert.ok(commitRef, "a commit ref was still emitted");
-      if (commitRef.kind !== "commit") {
-        assert.fail("expected a commit ref");
-      }
-      assert.equal(
-        commitRef.linesAdded,
-        undefined,
-        "the out-of-int4 linesAdded is dropped before the wire"
-      );
-      assert.equal(
-        commitRef.linesRemoved,
-        7,
-        "an in-range linesRemoved is preserved"
-      );
-      assert.equal(
-        commitRef.filesChanged,
-        2,
-        "an in-range filesChanged is preserved"
-      );
     } finally {
       await db.close();
     }

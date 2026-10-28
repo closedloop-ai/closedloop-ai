@@ -1,0 +1,38 @@
+{
+  "name": "@repo/realtime-contract",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./protocol": "./src/protocol.ts",
+    "./error-codes": "./src/error-codes.ts",
+    "./channels": "./src/channels.ts",
+    "./desktop-renderer-origin": "./src/desktop-renderer-origin.ts",
+    "./document-room": "./src/document-room.ts",
+    "./grants": "./src/grants.ts",
+    "./token": "./src/token.ts",
+    "./token-public-keys": "./src/token-public-keys.ts",
+    "./signal": "./src/signal.ts",
+    "./signals": "./src/signals.ts",
+    "./internal": "./src/internal.ts",
+    "./revocations": "./src/revocations.ts",
+    "./doc-sync-internal": "./src/doc-sync-internal.ts"
+  },
+  "scripts": {
+    "clean": "git clean -xdf .cache .turbo dist *.tsbuildinfo node_modules",
+    "typecheck": "tsc --noEmit --emitDeclarationOnly false --incremental --tsBuildInfoFile ./tsconfig.tsbuildinfo",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage --coverage.reporter=json --coverage.reporter=json-summary --coverage.reportOnFailure '--coverage.include=src/**/*.{ts,tsx}'"
+  },
+  "dependencies": {
+    "jose": "^6.2.12",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@repo/vitest-config": "workspace:*",
+    "@types/node": "^25.3.5",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.2"
+  }
+}

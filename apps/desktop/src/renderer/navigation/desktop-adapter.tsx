@@ -12,6 +12,7 @@ import {
   hashToHrefEntries,
   hrefForNavId,
   matchRoute,
+  normalizeRouteHref,
 } from "./route-table";
 
 /**
@@ -29,12 +30,16 @@ export type DesktopHashHost = {
   getHash: () => string;
   /** Persist an href as the hash; implementations skip no-op writes. */
   setHash: (href: string) => void;
-  /** Subscribe to external hash changes; returns the detach function. */
-  onHashChange: (listener: () => void) => () => void;
+  /** Subscribe to hash changes; returns the detach function. */
+  onHashChange: (listener: (rawHash?: string) => void) => () => void;
 };
 
 export type DesktopNavigation = {
   adapter: NavigationAdapter;
+  /** Whether startup came from shell entry instead of an explicit hash route. */
+  initialHashWasEmpty: boolean;
+  /** Whether any post-start navigation/hash intent has claimed the shell entry. */
+  hasPostStartupNavigationIntent: () => boolean;
   /** Current full href (path + query) — App-level back-fallback + tests. */
   getHref: () => string;
   canGoBack: () => boolean;
@@ -47,15 +52,46 @@ export type DesktopNavigation = {
 export function createDesktopNavigation(
   host: DesktopHashHost = createWindowHashHost()
 ): DesktopNavigation {
+  const initialHash = host.getHash();
+  const initialHashWasEmpty = isEmptyHash(initialHash);
+  const expectedInternalHashes: string[] = [];
+  let postStartupNavigationIntent = false;
+  const persistHref = (href: string) => {
+    const rawHash = normalizeDesktopHash(toDesktopHashHref(href));
+    if (normalizeDesktopHash(host.getHash()) !== rawHash) {
+      expectedInternalHashes.push(rawHash);
+    }
+    host.setHash(href);
+  };
   // A persisted hash can carry a path the table no longer (or never) mapped;
   // unmapped entries are dropped so the store only ever holds renderable
   // locations, falling back to the default view.
-  const entries = hashToHrefEntries(host.getHash()).filter((href) =>
+  const entries = hashToHrefEntries(initialHash).filter((href) =>
     matchRoute(parsePath(href))
   );
   const store = createHrefStore({
     initialHref: entries[0] ?? hrefForNavId(DEFAULT_NAV_ID),
-    onHrefChange: (href) => host.setHash(href),
+    onHrefChange: persistHref,
+  });
+  const dispose = host.onHashChange((changedRawHash = host.getHash()) => {
+    const rawHash = normalizeDesktopHash(changedRawHash);
+    const currentRawHash = normalizeDesktopHash(host.getHash());
+    if (consumeExpectedInternalHash(expectedInternalHashes, rawHash)) {
+      return;
+    }
+    if (rawHash !== currentRawHash) {
+      return;
+    }
+    postStartupNavigationIntent = true;
+    const href = hashToHrefEntries(rawHash).at(-1);
+    // Same unmapped policy as the actions guard: an external hash pointing
+    // nowhere renderable is ignored rather than stranding the view.
+    if (href !== undefined && matchRoute(parsePath(href))) {
+      store.syncExternalHref(href);
+      // An adopted legacy-scheme hash is rewritten in place so the persisted
+      // hash always carries the canonical path form.
+      persistHref(href);
+    }
   });
   // A legacy tab+sessionId hash migrates to a two-entry stack (tab, then
   // detail) so back() from the detail returns to the originating tab. The
@@ -63,19 +99,7 @@ export function createDesktopNavigation(
   for (const href of entries.slice(1)) {
     store.actions.navigate(href);
   }
-  host.setHash(store.getHref());
-
-  const dispose = host.onHashChange(() => {
-    const href = hashToHrefEntries(host.getHash()).at(-1);
-    // Same unmapped policy as the actions guard: an external hash pointing
-    // nowhere renderable is ignored rather than stranding the view.
-    if (href !== undefined && matchRoute(parsePath(href))) {
-      store.syncExternalHref(href);
-      // An adopted legacy-scheme hash is rewritten in place so the persisted
-      // hash always carries the canonical path form.
-      host.setHash(href);
-    }
-  });
+  persistHref(store.getHref());
 
   // Unmapped-href guard (AC-021.6): an href with no route-table entry would
   // strand the renderer on an unrenderable location, so navigation to it is
@@ -83,21 +107,38 @@ export function createDesktopNavigation(
   // the same policy.
   const guardedActions: NavigationActions = {
     navigate: (href, options) => {
-      if (matchRoute(parsePath(href))) {
-        store.actions.navigate(href, options);
+      postStartupNavigationIntent = true;
+      const normalizedHref = normalizeRouteHref(href);
+      if (matchRoute(parsePath(normalizedHref))) {
+        store.actions.navigate(normalizedHref, options);
       } else {
         handleUnmappedHref(href);
       }
     },
     replace: (href, options) => {
-      if (matchRoute(parsePath(href))) {
-        store.actions.replace(href, options);
+      postStartupNavigationIntent = true;
+      const normalizedHref = normalizeRouteHref(href);
+      if (matchRoute(parsePath(normalizedHref))) {
+        store.actions.replace(normalizedHref, options);
       } else {
         handleUnmappedHref(href);
       }
     },
-    back: store.actions.back,
-    refresh: store.actions.refresh,
+    back: () => {
+      if (store.canGoBack()) {
+        postStartupNavigationIntent = true;
+      }
+      store.actions.back();
+    },
+    forward: () => {
+      if (store.canGoForward()) {
+        postStartupNavigationIntent = true;
+      }
+      store.actions.forward();
+    },
+    refresh: () => {
+      store.actions.refresh();
+    },
   };
 
   // Cache keyed by href so useSyncExternalStore's getSnapshot returns a
@@ -133,6 +174,8 @@ export function createDesktopNavigation(
         store.getSearchSnapshot,
         store.getSearchSnapshot
       ),
+    useNavigationEpoch: () =>
+      useSyncExternalStore(store.subscribe, store.getEpoch, store.getEpoch),
     useOrgPathBuilder: () => identityOrgPath,
     // Render the anchor's href hash-prefixed so modifier/middle/right-click —
     // which bypass the click handler and defer to the browser — resolve as a
@@ -144,6 +187,8 @@ export function createDesktopNavigation(
 
   return {
     adapter,
+    initialHashWasEmpty,
+    hasPostStartupNavigationIntent: () => postStartupNavigationIntent,
     getHref: store.getHref,
     canGoBack: store.canGoBack,
     getHistory: store.getHistory,
@@ -179,6 +224,30 @@ function toDesktopHashHref(href: string): string {
   return href.startsWith("#") ? href : `#${href}`;
 }
 
+function isEmptyHash(rawHash: string): boolean {
+  return rawHash === "" || rawHash === "#";
+}
+
+function consumeExpectedInternalHash(
+  expectedHashes: string[],
+  rawHash: string
+): boolean {
+  const matchIndex = expectedHashes.indexOf(rawHash);
+  if (matchIndex === -1) {
+    return false;
+  }
+  expectedHashes.splice(0, matchIndex + 1);
+  return true;
+}
+
+function normalizeDesktopHash(rawHash: string): string {
+  try {
+    return new URL(rawHash, "https://desktop.local").hash;
+  } catch {
+    return rawHash;
+  }
+}
+
 function createWindowHashHost(): DesktopHashHost {
   return {
     getHash: () => globalThis.location.hash,
@@ -188,8 +257,16 @@ function createWindowHashHost(): DesktopHashHost {
       }
     },
     onHashChange: (listener) => {
-      globalThis.addEventListener("hashchange", listener);
-      return () => globalThis.removeEventListener("hashchange", listener);
+      const handleHashChange = (event: HashChangeEvent) => {
+        const rawHash =
+          typeof event.newURL === "string" && event.newURL !== ""
+            ? event.newURL
+            : globalThis.location.hash;
+        listener(normalizeDesktopHash(rawHash));
+      };
+      globalThis.addEventListener("hashchange", handleHashChange);
+      return () =>
+        globalThis.removeEventListener("hashchange", handleHashChange);
     },
   };
 }

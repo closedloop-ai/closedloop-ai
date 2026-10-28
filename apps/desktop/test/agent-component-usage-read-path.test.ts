@@ -8,14 +8,7 @@
  * a corpus that writes cleanly but is dropped by a read predicate produces the
  * same green "the page rendered" as a corpus that works, and the alignment
  * assertions the seeder unblocks would then be measuring a table of identical
- * zeroes. Two predicates in particular are invisible from the usage table and
- * were the reason the desktop adapter could not express ISS-5333's cases at all
- * (see the seeder's module docstring):
- *
- *   - LOC/$ is null for every kind outside `isLocPerDollarVerifiableKind`.
- *   - The LOC numerator (`gitDiffStats`) only populates for a session that owns
- *     a `relation='created'` link to a `kind='commit'` artifact — a gate the
- *     existing branch-only LOC seeders never satisfy.
+ * zeroes.
  *
  * So this executes the seeder's OWN statement list against an ephemeral migrated
  * store, then reads it back through `listAgentComponentsLocal` wired to the real
@@ -24,7 +17,6 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { AgentComponentKind } from "@repo/api/src/types/agent-component";
 import {
   AgentComponentInvocationAnchorKind,
@@ -32,7 +24,8 @@ import {
   AgentComponentInvocationEvidenceClass,
   AgentComponentInvocationRelationship,
 } from "@repo/api/src/types/agent-component-invocation";
-import { DATA_REVISION } from "../src/main/collectors/engine/data-revision.js";
+import { test } from "vitest";
+import { effectiveDataRevision } from "../src/main/collectors/engine/effective-data-revision.js";
 import {
   getAgentComponentDetailLocal,
   listAgentComponentsLocal,
@@ -56,34 +49,25 @@ const UNPRICED_SESSION_ID = "iss-5364-unpriced-session";
 const VALUE_COMPONENT_NAME = "acme/iss-5364-value";
 const UNAVAILABLE_COMPONENT_NAME = "acme/iss-5364-unavailable";
 
-const PRICED_LINES_ADDED = 900;
-const PRICED_LINES_REMOVED = 100;
 const PRICED_COST_USD = 4;
-// 900 + 100 authored commit lines divided by $4 of priced spend.
-const EXPECTED_LOC_PER_DOLLAR = 250;
 
 const VALUE_INVOCATIONS = 12;
 const UNAVAILABLE_INVOCATIONS = 3;
 
 /**
- * The exact corpus shape the desktop ISS-5333 alignment spec seeds: one row with
- * a real metric and real counts, one row whose counts are real but whose metric
- * is genuinely unavailable (its invoking session carries no priced spend, so the
- * ratio has no denominator and stays null rather than becoming a fabricated 0).
+ * The corpus shape the desktop ISS-5333 alignment spec seeds: one row whose
+ * invoking session is priced, one whose session carries no priced spend, both
+ * with real counts.
  */
 function corpus(): AgentComponentUsageCorpus {
   return {
     sessions: [
       {
         costUsd: PRICED_COST_USD,
-        linesAdded: PRICED_LINES_ADDED,
-        linesRemoved: PRICED_LINES_REMOVED,
         sessionId: PRICED_SESSION_ID,
       },
       {
         // No `costUsd` — the unavailable-metric control.
-        linesAdded: 40,
-        linesRemoved: 10,
         sessionId: UNPRICED_SESSION_ID,
       },
     ],
@@ -153,110 +137,10 @@ test("ISS-5364: the seeded usage corpus survives listAgentComponentsLocal", asyn
     assert.equal(unavailable.sessions, 1);
     assert.equal(value.kind, AgentComponentKind.Subagent);
 
-    // The metric the alignment spec measures. A real ratio here is the whole
-    // point: it proves the authored-commit LOC reached `gitDiffStats` through
-    // the real `gitLocRows` gate and divided the real priced spend.
-    assert.equal(value.locPerDollar, EXPECTED_LOC_PER_DOLLAR);
-
-    // …and the row that must render the Metric em-dash. Null, never 0 — a
-    // fabricated zero would claim the component produced no lines per dollar
-    // when the truth is that its spend is unknown.
+    // ISS-12709: the LOC numerator came from `artifacts.lines_added`, which no
+    // longer exists, so the ratio reads as absent for every row.
+    assert.equal(value.locPerDollar, null);
     assert.equal(unavailable.locPerDollar, null);
-  } finally {
-    await close();
-  }
-});
-
-test("ISS-5364: an unpriced session yields no metric even with authored LOC", async () => {
-  // The control for the assertion above: it is the SPEND that is missing on the
-  // unavailable row, not the churn. Without this, `locPerDollar === null` above
-  // would also pass if the corpus never produced any LOC at all — which is
-  // precisely the silent-failure mode this file exists to rule out.
-  const { prisma, close } = await openTestPrisma();
-  try {
-    await applyCorpus(prisma, {
-      sessions: [
-        {
-          linesAdded: PRICED_LINES_ADDED,
-          linesRemoved: PRICED_LINES_REMOVED,
-          sessionId: UNPRICED_SESSION_ID,
-        },
-      ],
-      components: [
-        {
-          id: "iss-5364-unpriced",
-          key: "iss-5364-unpriced",
-          name: UNAVAILABLE_COMPONENT_NAME,
-          usage: [
-            {
-              invocations: UNAVAILABLE_INVOCATIONS,
-              sessionId: UNPRICED_SESSION_ID,
-            },
-          ],
-        },
-      ],
-    });
-
-    const response = await listAgentComponentsLocal(
-      prisma,
-      {},
-      null,
-      createSqliteSessionSyncSource(prisma)
-    );
-    const row = response.items.find(
-      (item) => item.name === UNAVAILABLE_COMPONENT_NAME
-    );
-    assert.ok(row);
-    assert.equal(row.invocations, UNAVAILABLE_INVOCATIONS);
-    assert.equal(row.locPerDollar, null);
-  } finally {
-    await close();
-  }
-});
-
-test("ISS-5364: a non-verifiable kind carries counts but no metric", async () => {
-  // FEA-4052: `locPerDollarForKind` gates the metric on the KIND, so a corpus
-  // that is otherwise identical to the priced one still renders an em-dash when
-  // the component is a skill. This is the predicate a seeder that only wrote
-  // usage rows would silently trip, and it is why the corpus defaults to
-  // `subagent`.
-  const { prisma, close } = await openTestPrisma();
-  try {
-    await applyCorpus(prisma, {
-      sessions: [
-        {
-          costUsd: PRICED_COST_USD,
-          linesAdded: PRICED_LINES_ADDED,
-          linesRemoved: PRICED_LINES_REMOVED,
-          sessionId: PRICED_SESSION_ID,
-        },
-      ],
-      components: [
-        {
-          id: "iss-5364-skill",
-          key: "iss-5364-skill",
-          kind: AgentComponentKind.Skill,
-          name: VALUE_COMPONENT_NAME,
-          usage: [
-            { invocations: VALUE_INVOCATIONS, sessionId: PRICED_SESSION_ID },
-          ],
-        },
-      ],
-    });
-
-    const response = await listAgentComponentsLocal(
-      prisma,
-      {},
-      null,
-      createSqliteSessionSyncSource(prisma)
-    );
-    const row = response.items.find(
-      (item) => item.name === VALUE_COMPONENT_NAME
-    );
-    assert.ok(row);
-    assert.equal(row.kind, AgentComponentKind.Skill);
-    assert.equal(row.invocations, VALUE_INVOCATIONS);
-    assert.equal(row.locPerDollar, null);
   } finally {
     await close();
   }
@@ -279,11 +163,11 @@ test("ISS-5364: a non-verifiable kind carries counts but no metric", async () =>
  * Fix by updating `SEEDED_DATA_REVISION` in
  * `test/e2e/helpers/seed-agent-component-usage-db.ts` to the new value.
  */
-test("the E2E seeder's pinned data revision tracks DATA_REVISION", () => {
+test("the E2E seeder's pinned data revision tracks effectiveDataRevision()", () => {
   assert.equal(
     SEEDED_DATA_REVISION,
-    DATA_REVISION,
-    `seed-agent-component-usage-db.ts pins SEEDED_DATA_REVISION=${SEEDED_DATA_REVISION}, but DATA_REVISION is now ${DATA_REVISION}. Update the pin, or the seeded E2E sessions go stale and boot maintenance wipes their agent_component_session_usage rows.`
+    effectiveDataRevision(),
+    `seed-agent-component-usage-db.ts pins SEEDED_DATA_REVISION=${SEEDED_DATA_REVISION}, but effectiveDataRevision() is now ${effectiveDataRevision()}. Update the pin, or the seeded E2E sessions go stale and boot maintenance wipes their agent_component_session_usage rows.`
   );
 });
 

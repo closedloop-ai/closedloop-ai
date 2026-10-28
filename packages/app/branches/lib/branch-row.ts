@@ -7,7 +7,19 @@ import {
   type BranchTagPermissions,
 } from "@repo/api/src/types/branch";
 import type { ChecksStatus } from "@repo/api/src/types/branch-checks";
-import type { BranchPerson } from "@repo/api/src/types/branch-identity";
+import {
+  BranchListFilterFacet,
+  BranchListLastActiveRange,
+  BranchListPullRequestPresence,
+} from "@repo/api/src/types/branch-list-contract";
+import type { Priority } from "@repo/api/src/types/common";
+import type { CustomFieldValueDetail } from "@repo/api/src/types/custom-field";
+import {
+  matchesPriorityFilter,
+  PRIORITY_FILTER_VALUES,
+  type PriorityFilterValue,
+} from "@repo/api/src/types/priority-filter";
+import type { DisplayedSessionStatus } from "@repo/api/src/types/session-status";
 import type { TagSummary } from "@repo/api/src/types/tag";
 import type { TableFilterOption } from "@repo/design-system/components/ui/table-filters";
 
@@ -41,13 +53,33 @@ export type BranchRow = {
   owner: string;
   /** Stable owner identity for filtering/deduplication; display name is separate. */
   ownerKey?: string;
+  /** Existing Owner photo projected for both web and Desktop cells. */
+  ownerAvatarUrl?: string;
   collaborators?: BranchRowPerson[];
   tags?: TagSummary[];
   tagAvailability?: BranchTagAvailability;
   tagPermissions?: BranchTagPermissions;
   /** Canonical cloud Artifact UUID required by generic tag mutations. */
   artifactId?: string;
+  /** Owning project id; omitted producer-wide when the producer has no project concept. */
+  projectId?: string | null;
+  /** Owning project's display name; omitted alongside `projectId` (ISS-12453). */
+  projectName?: string | null;
+  /**
+   * ISS-12663: the Branch artifact's org custom-field values, carried from the
+   * wire row unchanged. Omitted when the producer did not load them (local and
+   * older producers); `[]` is a loaded row with no values.
+   */
+  customFields?: readonly CustomFieldValueDetail[];
+  /**
+   * ISS-10332: the branch artifact's priority. `null` is "no priority"; ABSENT
+   * is "this producer does not know" (an older API or Desktop build) and
+   * renders as unavailable, never as unset.
+   */
+  priority?: Priority | null;
   status: BranchRowStatus;
+  /** Raw producer evidence retained for the universal status fold. */
+  rawStatus?: string | null;
   prNumber: number | null;
   prTitle: string | null;
   prUrl: string | null;
@@ -55,7 +87,11 @@ export type BranchRow = {
   hasPullRequest?: boolean;
   /** Full repository identity used with `prNumber` for deterministic PR sort. */
   prRepo?: string | null;
-  /** PR lifecycle for the badge color; NULL when there is no linked PR. */
+  /**
+   * PR lifecycle for the badge color. NULL when there is no linked PR, and
+   * (ISS-8422) also when there IS one whose state nobody observed — `prNumber`
+   * separates the two, and `BranchPRBadge` renders them differently.
+   */
   prState: BranchPrState | null;
   checksPassed: number | null;
   checksTotal: number | null;
@@ -69,6 +105,8 @@ export type BranchRow = {
   deletions: number | null;
   /** Count of sessions linked to the branch (0 → empty-value affordance). */
   sessionCount: number;
+  /** Canonical Wrote-membership identities, omitted by legacy/local producers. */
+  sessions?: readonly BranchRowSession[];
   /** PR comment count (soft Epic F3 consumer); NULL until that lands. */
   commentCount: number | null;
   /**
@@ -92,11 +130,49 @@ export type BranchRow = {
   canonicalIdentity?: string;
 };
 
+/** Prefer preserved producer evidence without making legacy fixtures provide it. */
+export function branchStatusEvidence(
+  row: Pick<BranchRow, "rawStatus" | "status">
+): string | null {
+  return row.rawStatus === undefined ? row.status : row.rawStatus;
+}
+
 export type BranchRowPerson = {
   key: string;
   name: string;
   avatarUrl?: string;
   profileUrl?: string;
+};
+
+/**
+ * ISS-8972 / ISS-10816 — one canonical linked Session as the Branch list chip
+ * renders it, adapted from `canonicalProjection.common.membership.sessions`.
+ *
+ * Every field is REQUIRED so a row that reaches this type can always be
+ * rendered without inventing a value. `ownerName` is nullable for a genuinely
+ * ownerless Session; `ownerUnavailable` distinguishes an owner whose identity
+ * could not be resolved.
+ */
+export type BranchRowSession = {
+  /** Session artifact id — the chip's stable React key and reference id. */
+  id: string;
+  /** Display identity (slug when the Session has one, else its name or the untitled label). */
+  slug: string;
+  /** Surface-neutral route reference; each shell builds its own href from it. */
+  navigableRef: string;
+  /** Resolved owner display name, or null when no display identity is available. */
+  ownerName: string | null;
+  /** An owner exists but its display identity could not be resolved. */
+  ownerUnavailable?: boolean;
+  ownerAvatarUrl?: string;
+  /** Presentation-only fold — `stale`/`waiting` can appear here, never in a column. */
+  status: DisplayedSessionStatus;
+  /** Producer-owned lifecycle evidence retained beside the display fold. */
+  rawStatus?: string | null;
+  /** How this Session participates in the Branch membership population. */
+  relationshipLabel: string;
+  /** ISO-8601 instant of the session's most recent contributing interaction on this branch. */
+  occurredAt: string;
 };
 
 type BranchStatusVariant =
@@ -130,6 +206,15 @@ export type BranchFilters = {
   pullRequests: string[];
   lastActiveRanges: string[];
   tags: string[];
+  /**
+   * ISS-10332: priority members plus the unset token, the vocabulary
+   * `PRIORITY_FILTER_VALUES` declares. Held as strings like every other facet
+   * here (a URL and a saved view hand back strings) and narrowed through
+   * {@link selectedPriorityFilterValues} at the two places that read it. A row
+   * whose priority this producer never served satisfies no arm of an active
+   * selection (`matchesPriorityFilter`).
+   */
+  priorities: string[];
   /** Legacy-only compatibility state; approved List controls never expose it. */
   sessionPresence: string[];
   /**
@@ -140,6 +225,11 @@ export type BranchFilters = {
    */
   locMin?: number;
   locMax?: number;
+  /**
+   * PRD-721: the toolbar's free-text term over branch name and repository, the
+   * fields the server page and Desktop both match. Absent and `""` mean none.
+   */
+  search?: string;
 };
 
 export const DEFAULT_BRANCH_FILTERS: BranchFilters = {
@@ -151,6 +241,7 @@ export const DEFAULT_BRANCH_FILTERS: BranchFilters = {
   pullRequests: [],
   lastActiveRanges: [],
   tags: [],
+  priorities: [],
   sessionPresence: [],
 };
 
@@ -233,7 +324,7 @@ export function branchOwnerFilterOptions(
  * A row's total LOC change (`additions + deletions`), or `null` when the LOC
  * enrichment is unavailable (BOTH counts null) — the null-exclusion signal the
  * range filter uses. A single available count is treated as present (the other
- * contributes 0), matching the server's `sumFileChanges` fold.
+ * contributes 0), matching the server's `getBranchFileChangeTotals` fold.
  */
 export function rowLocChange(row: BranchRow): number | null {
   if (row.additions === null && row.deletions === null) {
@@ -316,38 +407,47 @@ export function filterBranchRows(
   );
 }
 
-export const BranchFilterFacet = {
-  Name: "name",
-  Owner: "owner",
-  Collaborators: "collaborators",
-  Changes: "changes",
-  Status: "status",
-  PullRequest: "pullRequest",
-  LastActive: "lastActive",
-  Repository: "repository",
-  Tags: "tags",
-} as const;
+export const BranchFilterFacet = BranchListFilterFacet;
 export type BranchFilterFacet =
   (typeof BranchFilterFacet)[keyof typeof BranchFilterFacet];
 
-export const BranchPullRequestPresence = {
-  Linked: "linked",
-  None: "none",
-} as const;
-
-export const BranchLastActiveRange = {
-  WithinLastHour: "within-last-hour",
-  OneToSixHours: "one-to-six-hours",
-  SevenToTwentyFourHours: "seven-to-twenty-four-hours",
-  OneDayOrMore: "one-day-or-more",
-} as const;
-
-/** Stable provider-qualified identity for a projected person. */
-export function branchPersonKey(person: BranchPerson): string {
-  return person.userId
-    ? `closedloop:${person.userId}`
-    : `${person.provider}:${person.id}`;
+/**
+ * ISS-10332: the priority arm of {@link matchesBranchFilters}. An omitted row
+ * priority satisfies no arm of an active selection (`matchesPriorityFilter`).
+ */
+function matchesPriorityFacet(
+  row: BranchRow,
+  filters: BranchFilters,
+  omitFacet: BranchFilterFacet | undefined
+): boolean {
+  return (
+    omitFacet === BranchFilterFacet.Priority ||
+    matchesPriorityFilter(
+      row.priority,
+      selectedPriorityFilterValues(filters.priorities)
+    )
+  );
 }
+
+/**
+ * ISS-10332: the priority facet's selection narrowed to the vocabulary the
+ * producer accepts. A value outside it — a hand-edited URL, a saved view from a
+ * build with a wider vocabulary — is dropped here rather than sent, because the
+ * server page schema is a closed enum that would refuse the whole page for it.
+ */
+export function selectedPriorityFilterValues(
+  values: readonly string[]
+): PriorityFilterValue[] {
+  return values.filter(isPriorityFilterValue);
+}
+
+function isPriorityFilterValue(value: string): value is PriorityFilterValue {
+  return (PRIORITY_FILTER_VALUES as readonly string[]).includes(value);
+}
+
+export const BranchPullRequestPresence = BranchListPullRequestPresence;
+
+export const BranchLastActiveRange = BranchListLastActiveRange;
 
 function matchesBranchFilters(
   row: BranchRow,
@@ -391,6 +491,7 @@ function matchesBranchFilters(
     (omitFacet === BranchFilterFacet.Tags ||
       filters.tags.length === 0 ||
       (row.tags ?? []).some((tag) => filters.tags.includes(tag.id))) &&
+    matchesPriorityFacet(row, filters, omitFacet) &&
     (approved ||
       filters.sessionPresence.length === 0 ||
       filters.sessionPresence.includes(
@@ -399,7 +500,19 @@ function matchesBranchFilters(
           : BranchSessionPresence.None
       )) &&
     (omitFacet === BranchFilterFacet.Changes ||
-      matchesLocRange(row, filters.locMin, filters.locMax))
+      matchesLocRange(row, filters.locMin, filters.locMax)) &&
+    matchesBranchSearch(row, filters.search)
+  );
+}
+
+function matchesBranchSearch(row: BranchRow, search: string | undefined) {
+  const term = search?.trim().toLocaleLowerCase();
+  if (!term) {
+    return true;
+  }
+  return (
+    row.branchName.toLocaleLowerCase().includes(term) ||
+    row.repo.toLocaleLowerCase().includes(term)
   );
 }
 

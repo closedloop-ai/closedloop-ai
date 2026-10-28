@@ -93,3 +93,16 @@ function isJsonValue(value: unknown): value is JsonValue {
   }
   return isJsonObject(value);
 }
+
+/**
+ * The `error` message the server itself sent with a failed response, or
+ * `undefined` when it sent none. Unlike `ApiError.message`, this never returns
+ * a message the client wrote in its place ("API request failed", "Request
+ * failed with status 500.", a timeout, a network failure).
+ */
+export function serverErrorMessage(error: unknown): string | undefined {
+  if (!(error instanceof ApiError)) {
+    return;
+  }
+  return parseRawErrorBody(error.data)?.error;
+}

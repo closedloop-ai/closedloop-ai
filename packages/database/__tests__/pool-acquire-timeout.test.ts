@@ -8,6 +8,8 @@ import {
 import {
   __resetPoolTelemetryForTests,
   instrumentPool,
+  type PoolWarning,
+  setPoolWarningWriter,
 } from "../pool-telemetry";
 
 /**
@@ -43,6 +45,15 @@ class StubClient extends EventEmitter {
 
 const ACQUIRE_TIMEOUT_MESSAGE = "timeout exceeded when trying to connect";
 const EPOCH = new Date("2026-08-10T00:00:00.000Z");
+
+/** The acquire-timeout warning lines this module wrote to stderr, in order. */
+function timeoutLinesOnStderr(warn: {
+  mock: { calls: unknown[][] };
+}): string[] {
+  return warn.mock.calls
+    .map(([first]) => (typeof first === "string" ? first : ""))
+    .filter((line) => line.includes('"db_pool.acquire_timeout"'));
+}
 
 /** Build a saturated pool of `max: 1` and return the queued second acquisition. */
 async function saturate(
@@ -115,9 +126,10 @@ describe("pg pool acquire timeout", () => {
 
 describe("pool acquire timeout reporting", () => {
   it("reports every timeout on stderr with the monitored phrase, even with no telemetry sink", async () => {
-    // apps/mcp registers no sink, so the sample path emits nothing there. The
-    // failure must still reach the log stream the `cl-api — pg pool-acquire
-    // timeouts` monitor pattern reads.
+    // With no sink the sample path emits nothing, so the failure must still
+    // leave a line carrying the phrase the `cl-api / cl-mcp — pg pool-acquire
+    // timeouts` monitor matches. stderr is the default when no warning writer
+    // is registered; apps/mcp routes it through its logger instead (ISS-5853).
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     const { pool, queued } = await saturate({
@@ -130,9 +142,7 @@ describe("pool acquire timeout reporting", () => {
     await vi.advanceTimersByTimeAsync(DB_POOL_ACQUIRE_TIMEOUT_MS);
     await assertions;
 
-    const reports = warn.mock.calls
-      .map(([first]) => (typeof first === "string" ? first : ""))
-      .filter((line) => line.includes('"db_pool.acquire_timeout"'));
+    const reports = timeoutLinesOnStderr(warn);
 
     expect(reports).toHaveLength(1);
     const report = JSON.parse(reports[0]) as {
@@ -154,6 +164,54 @@ describe("pool acquire timeout reporting", () => {
   });
 });
 
+describe("pool warning writer (ISS-5853)", () => {
+  /** Saturate a pool, time the queued caller out, and settle both acquisitions. */
+  async function timeOutOneCaller(): Promise<void> {
+    const { pool, queued } = await saturate({
+      connectionTimeoutMillis: DB_POOL_ACQUIRE_TIMEOUT_MS,
+    });
+    instrumentPool(pool);
+    const settled = Promise.allSettled([queued, pool.connect()]);
+    await vi.advanceTimersByTimeAsync(DB_POOL_ACQUIRE_TIMEOUT_MS);
+    await settled;
+  }
+
+  it("hands the timeout warning to a registered writer instead of stderr", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const written: PoolWarning[] = [];
+    setPoolWarningWriter((warning) => written.push(warning));
+
+    await timeOutOneCaller();
+
+    const timeout = written.find(
+      (warning) => warning.event === "db_pool.acquire_timeout"
+    );
+    expect(timeout).toMatchObject({
+      level: "warn",
+      status: "warn",
+      poolMax: 1,
+    });
+    expect(timeout?.message).toContain(ACQUIRE_TIMEOUT_MESSAGE);
+    expect(timeout?.waitedMs).toBeGreaterThanOrEqual(
+      DB_POOL_ACQUIRE_TIMEOUT_MS
+    );
+    expect(timeoutLinesOnStderr(warn)).toHaveLength(0);
+  });
+
+  it("falls back to stderr when the writer throws, keeping the stderr copy", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    setPoolWarningWriter(() => {
+      throw new Error("logger down");
+    });
+
+    await timeOutOneCaller();
+
+    const lines = timeoutLinesOnStderr(warn);
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0]).message).toContain(ACQUIRE_TIMEOUT_MESSAGE);
+  });
+});
+
 describe("pool-config contract", () => {
   it("keeps the DATABASE_URL ceiling at pg's default rather than raising it", () => {
     // Raising `max` is the tempting non-fix: task count x pool size marches
@@ -165,7 +223,8 @@ describe("pool-config contract", () => {
   it("keeps the acquire bound at the 30s the monitor runbook documents", () => {
     // Every other timeout assertion in this suite derives from the constant, so
     // without this the value could move to 1ms or 5m and leave the suite green.
-    // 30s is the number the `cl-api — pg pool-acquire timeouts` runbook states.
+    // 30s is the number the `cl-api / cl-mcp — pg pool-acquire timeouts` runbook
+    // states.
     expect(DB_POOL_ACQUIRE_TIMEOUT_MS).toBe(30_000);
   });
 });

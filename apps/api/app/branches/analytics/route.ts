@@ -1,9 +1,9 @@
 import type { BranchAnalytics } from "@repo/api/src/types/branch";
-import {
-  branchListQuerySchema,
-  branchReadService,
-} from "@/app/branches/branch-read-service";
+import { branchAnalyticsQuerySchema } from "@/app/branches/branch-list-query";
+import { cohortPenseroReaderForRequest } from "@/app/branches/branch-pensero-window";
+import { branchReadService } from "@/app/branches/branch-read-service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { listQueryRefusalMetadata } from "@/lib/list-query-param";
 import {
   errorResponse,
   parseQueryParams,
@@ -11,10 +11,11 @@ import {
 } from "@/lib/route-utils";
 
 export const GET = withAnyAuth<BranchAnalytics, "/branches/analytics">(
-  async ({ user }, request) => {
+  async ({ clerkUserId, user }, request) => {
     const { params, errorResponse: parseErrorResponse } = parseQueryParams(
       request,
-      branchListQuerySchema
+      branchAnalyticsQuerySchema,
+      { errorMetadata: listQueryRefusalMetadata }
     );
     if (parseErrorResponse) {
       return parseErrorResponse;
@@ -22,7 +23,19 @@ export const GET = withAnyAuth<BranchAnalytics, "/branches/analytics">(
     try {
       const response = await branchReadService.getBranchAnalytics(
         user.organizationId,
-        params
+        params,
+        // ISS-11117: the cohort's Pensero points, read AFTER the branch read
+        // snapshot closes — that read must be the outermost transaction. Gated
+        // on the server display half of `pensero-points-per-dollar` inside the
+        // reader, so a principal who will render LOC/$ pays for no query.
+        //
+        // Bound to the request's own date window, so the points numerator and
+        // the windowed cost denominator span one period on every view.
+        cohortPenseroReaderForRequest(
+          { userId: user.id, clerkUserId },
+          user.organizationId,
+          params
+        )
       );
       return successResponse(response);
     } catch (error) {

@@ -9,6 +9,8 @@ import {
 
 const checkApiReachableMock = vi.fn();
 const dbQueryRawMock = vi.fn();
+const logErrorMock = vi.fn();
+const logWarnMock = vi.fn();
 const READY_DB_TIMEOUT_ENV_KEY = "MCP_READY_DB_TIMEOUT_MS";
 const MCP_SETUP_ENV_KEYS = [
   "INTERNAL_API_SECRET",
@@ -36,6 +38,10 @@ let dispatchHttpRequestFn: (
   req: IncomingMessage,
   res: ServerResponse
 ) => Promise<boolean>;
+let requestListenerFn: (
+  req: IncomingMessage,
+  res: ServerResponse
+) => Promise<void>;
 
 vi.mock("../api-client.js", () => ({
   checkApiReachable: checkApiReachableMock,
@@ -47,8 +53,8 @@ vi.mock("@repo/observability/log", () => ({
   log: {
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
+    warn: logWarnMock,
+    error: logErrorMock,
     flush: vi.fn(),
   },
 }));
@@ -93,12 +99,18 @@ beforeEach(async () => {
   dbQueryRawMock.mockResolvedValue([{ "?column?": 1 }]);
   checkApiReachableMock.mockReset();
   checkApiReachableMock.mockResolvedValue(true);
+  logErrorMock.mockReset();
+  logWarnMock.mockReset();
   vi.resetModules();
   const mod = await import("../index.js");
   dispatchHttpRequestFn = mod.__testables.dispatchHttpRequest as (
     req: IncomingMessage,
     res: ServerResponse
   ) => Promise<boolean>;
+  requestListenerFn = mod.createHttpServer().listeners("request")[0] as (
+    req: IncomingMessage,
+    res: ServerResponse
+  ) => Promise<void>;
 });
 
 afterEach(() => {
@@ -222,23 +234,56 @@ describe("HTTP routes", () => {
       dbReachable: false,
       checks: { api: "unreachable", db: "unreachable" },
     },
-  ] as const)("keeps readiness separate from health when api=$apiReachable db=$dbReachable", async ({
-    apiReachable,
-    dbReachable,
-    checks,
-  }) => {
-    checkApiReachableMock.mockResolvedValueOnce(apiReachable);
-    if (!dbReachable) {
-      dbQueryRawMock.mockRejectedValueOnce(new Error("db unavailable"));
+  ] as const)(
+    "keeps readiness separate from health when api=$apiReachable db=$dbReachable",
+    async ({ apiReachable, dbReachable, checks }) => {
+      checkApiReachableMock.mockResolvedValueOnce(apiReachable);
+      if (!dbReachable) {
+        dbQueryRawMock.mockRejectedValueOnce(new Error("db unavailable"));
+      }
+
+      const { body, statusCode } = await dispatch("GET", "/ready");
+
+      expect(statusCode).toBe(503);
+      expect(JSON.parse(body)).toMatchObject({
+        status: "not_ready",
+        checks,
+      });
     }
+  );
 
-    const { body, statusCode } = await dispatch("GET", "/ready");
+  it.each(["//", "///"])(
+    "answers 400 for an unparseable request target %s",
+    async (url) => {
+      const { body, handled, statusCode } = await dispatch("GET", url);
 
-    expect(statusCode).toBe(503);
-    expect(JSON.parse(body)).toMatchObject({
-      status: "not_ready",
-      checks,
-    });
+      expect(statusCode).toBe(400);
+      expect(handled).toBe(true);
+      expect(JSON.parse(body)).toEqual({ error: "invalid_request" });
+    }
+  );
+
+  // Through the server listener: the "MCP server error" log lives in its catch.
+  it.each(["//", "///"])(
+    "answers 400 without an error log through the server for %s",
+    async (url) => {
+      const { body, statusCode } = await serve("GET", url);
+
+      expect(logErrorMock).not.toHaveBeenCalled();
+      expect(logWarnMock).toHaveBeenCalledWith(
+        "[mcp] unparseable-request-target",
+        { path: url }
+      );
+      expect(statusCode).toBe(400);
+      expect(JSON.parse(body)).toEqual({ error: "invalid_request" });
+    }
+  );
+
+  it("routes a parseable double-slash target past the request-target guard", async () => {
+    const { handled, statusCode } = await dispatch("GET", "//a");
+
+    expect(statusCode).not.toBe(400);
+    expect(handled).toBe(false);
   });
 
   it("returns not ready when db readiness times out at transaction boundary", async () => {
@@ -261,6 +306,13 @@ async function dispatch(method: string, url: string) {
   const res = createMockResponse();
   const handled = await dispatchHttpRequestFn(req, asServerResponse(res));
   return { ...res, handled };
+}
+
+async function serve(method: string, url: string) {
+  const req = createMockRequest({ method, url });
+  const res = createMockResponse();
+  await requestListenerFn(req, asServerResponse(res));
+  return res;
 }
 
 async function readReadyDbTimeout(value: string | undefined): Promise<{

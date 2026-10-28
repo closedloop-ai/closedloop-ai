@@ -16,8 +16,25 @@ import { describe, expect, it } from "vitest";
 import { renderSql } from "@/__tests__/support/branches/branch-read-service.test-helpers";
 import {
   branchHasCloudEligibility,
+  cloudBranchMetricDenominatorEligibilitySql,
   isCloudBranchEligible,
 } from "./cloud-branch-eligibility";
+
+// ISS-8016 — the Branches analytics read resolves the visible and denominator
+// cohorts from ONE scan of the denominator predicate, treating every row it
+// returns as Product-eligible too. That is sound only because ISS-8148 folded
+// verified publication INTO the denominator gate. Asserting the two renders
+// are equal would be vacuous (the denominator delegates to Product, so it
+// compares a value to itself); what can actually break is the publication
+// test going missing from the shared gate, which would let the single scan
+// report unpublished branches as Product rows.
+describe("cloudBranchMetricDenominatorEligibilitySql", () => {
+  it("carries the publication test the collapsed cohort scan relies on", () => {
+    const denominator = renderSql(cloudBranchMetricDenominatorEligibilitySql());
+
+    expect(denominator).toContain("b.first_pushed_at IS NOT NULL");
+  });
+});
 
 describe("isCloudBranchEligible", () => {
   it("admits only a non-default branch with complete exact authority", () => {
@@ -194,6 +211,14 @@ describe("isCloudBranchEligible", () => {
       "LOWER(public_repository.full_name) = b.repository_full_name"
     );
     expect(sql).toContain("branch_participation");
+    expect(sql).toContain("al.branch_participation = wrote");
+    expect(sql).toContain("b.first_pushed_at IS NOT NULL");
+    expect(sql).toContain("b.push_source IN");
+    expect(sql).toContain("FROM pull_request_detail published_pr");
+    expect(sql).toContain("published_pr.head_ref_oid");
+    expect(sql).toContain("published_pr.head_ref_name");
+    expect(sql).toContain("published_pr.branch_artifact_id = a.id");
+    expect(sql).toContain("published_pr.organization_id = a.organization_id");
     expect(sql).toContain("pr.id = b.current_pull_request_detail_id");
     expect(sql).toContain(
       "AND LOWER(pr.head_repository_full_name) = b.repository_full_name"
@@ -210,6 +235,37 @@ describe("isCloudBranchEligible", () => {
     );
     expect(sql).toContain("repository.id = b.repository_id");
     expect(sql).toContain("COALESCE(BOOL_AND");
+  });
+
+  it("renders the current-PR arm as presence, identity and pointer integrity", async () => {
+    let captured: unknown;
+    await branchHasCloudEligibility(
+      {
+        $queryRaw: <T>(query: unknown) => {
+          captured = query;
+          return Promise.resolve([] as T);
+        },
+      },
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222"
+    );
+
+    const sql = renderSql(captured);
+    // ISS-8422: three separate tests, and the HAVING must consult all three.
+    // Deleting a CTE while leaving its arm (or the reverse) fails here; the
+    // causal proof that each one changes a verdict is the real-Postgres suite
+    // in __tests__/integration/branch-cloud-eligibility-realdb.test.ts.
+    expect(sql).toContain("current_pull_request_observed_authority AS (");
+    expect(sql).toContain("current_pull_request_pointer AS (");
+    expect(sql).toContain(
+      "(SELECT COUNT(*) FROM current_pull_request_observed_authority) = 0"
+    );
+    expect(sql).toContain(
+      "(SELECT COUNT(*) FROM current_pull_request_authority) = 1"
+    );
+    expect(sql).toContain(
+      "(SELECT COUNT(*) FROM current_pull_request_pointer) = 1"
+    );
   });
 });
 

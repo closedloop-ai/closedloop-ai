@@ -3,13 +3,19 @@
  * @description ISS-4771: the agent-component channels — the three optimization
  * analytics reads (model trend, subagent frequency, skill-loaded) and the two
  * local component inventory reads that back the desktop
- * `AgentComponentsDataSource`. Extracted verbatim out of the shrink-only
- * grandfathered `agent-dashboard-design-system-runtime.ts`; the ISS-4403
+ * `AgentComponentsDataSource`. Extracted verbatim out of
+ * `agent-dashboard-design-system-runtime.ts`; the ISS-4403
  * content-scope fingerprint semantics are unchanged.
  */
+
+import { MAX_VERSION_USAGE_ENTRIES } from "@repo/api/src/types/agent-component-version-usage";
 import { ipcMain } from "electron";
+import { AgentDashboardDbIpcChannel } from "../../shared/agent-dashboard-db-ipc-channel.js";
 import { SHARED_AGENT_COMPONENTS_IPC_CHANNELS } from "../../shared/shared-agent-components-contract.js";
-import type { BranchDefaultEligibilitySource } from "../branch/shared-branches-default-eligibility.js";
+import {
+  agentComponentsPageDataLocal,
+  parseAgentComponentPageDataRequest,
+} from "./agent-components-page-data-local.js";
 import {
   coerceFingerprint,
   coerceWindowDays,
@@ -19,6 +25,8 @@ import type {
   WithPrisma,
 } from "./agent-dashboard-ipc-handler-wrappers.js";
 import type { AgentDashboardDesignSystemRuntimeOptions } from "./agent-dashboard-runtime-options.js";
+import { queryAgentComponentFrequencyLocal } from "./component-session-scope.js";
+import { readAgentComponentVersionUsageLocal } from "./local-version-usage-read.js";
 import {
   queryComponentModelTrend,
   queryIsSkillLoaded,
@@ -35,9 +43,21 @@ export function registerComponentAnalyticsIpcHandlers(deps: {
   withDb: WithDb;
   withPrisma: WithPrisma;
   options: AgentDashboardDesignSystemRuntimeOptions;
-  branchEligibilitySource: BranchDefaultEligibilitySource;
 }): void {
-  const { withDb, withPrisma, options, branchEligibilitySource } = deps;
+  const { withDb, withPrisma, options } = deps;
+  ipcMain.handle(
+    SHARED_AGENT_COMPONENTS_IPC_CHANNELS.frequency,
+    withPrisma((prisma, slug: unknown, days?: unknown) => {
+      if (typeof slug !== "string" || !slug || slug.length > 4096) {
+        throw new Error("Invalid component identity");
+      }
+      return queryAgentComponentFrequencyLocal(
+        prisma,
+        slug,
+        coerceWindowDays(days)
+      );
+    })
+  );
   // --- Optimization analytics (FEA-2923 / AC-022 / T-16.11) ---
   // All three handlers read from local SQLite only (agent_component_session_usage
   // + token_events/token_usage + claude_code_api_request) via withPrisma. The
@@ -54,7 +74,7 @@ export function registerComponentAnalyticsIpcHandlers(deps: {
   // name-level, byte-identical to the pre-ISS-4403 behavior.
 
   ipcMain.handle(
-    "desktop:db:get-component-model-trend",
+    AgentDashboardDbIpcChannel.GetComponentModelTrend,
     withPrisma(
       (
         prisma,
@@ -93,7 +113,7 @@ export function registerComponentAnalyticsIpcHandlers(deps: {
   );
 
   ipcMain.handle(
-    "desktop:db:get-subagent-frequency",
+    AgentDashboardDbIpcChannel.GetSubagentFrequency,
     withPrisma(
       (prisma, subagentKey: unknown, days?: unknown, fingerprint?: unknown) => {
         if (typeof subagentKey !== "string") {
@@ -110,7 +130,7 @@ export function registerComponentAnalyticsIpcHandlers(deps: {
   );
 
   ipcMain.handle(
-    "desktop:db:is-skill-loaded",
+    AgentDashboardDbIpcChannel.IsSkillLoaded,
     withPrisma((prisma, skillKey: unknown, fingerprint?: unknown) => {
       if (typeof skillKey !== "string") {
         return {
@@ -148,6 +168,62 @@ export function registerComponentAnalyticsIpcHandlers(deps: {
       )
     )
   );
+  // ISS-6822: the bounded page-data read. Same `withDb` wiring as `list`, but the
+  // reduction runs here instead of in the renderer, so what crosses IPC is the
+  // page plus compact facet and aggregate results rather than the inventory.
+  // ISS-6409: it reads through `listAgentComponentsLocalWithLocPerDollarFold`
+  // (via `agentComponentsPageDataLocal`) because the LOC/$ union fold needs the
+  // session identities. That fold is consumed HERE and never returned — `list`
+  // keeps using the stripping `listAgentComponentsLocal`, because a function on
+  // an IPC payload throws `DataCloneError`.
+  ipcMain.handle(
+    SHARED_AGENT_COMPONENTS_IPC_CHANNELS.pageData,
+    withDb((agentDatabase, request: unknown) =>
+      agentComponentsPageDataLocal(
+        agentDatabase.prisma,
+        parseAgentComponentPageDataRequest(request),
+        options.getComputeTargetId?.() ?? null,
+        agentDatabase.syncSource
+      )
+    )
+  );
+  // ISS-10467/ISS-10468: the per-content-version usage drill-down. `withDb`
+  // (not `withPrisma`) for the same reason the detail read uses it — the
+  // per-version LOC/$ fold needs the local sessions sync source.
+  ipcMain.handle(
+    SHARED_AGENT_COMPONENTS_IPC_CHANNELS.versionUsage,
+    withDb((agentDatabase, slug: unknown, versionHashes: unknown) => {
+      if (typeof slug !== "string" || slug.length === 0) {
+        return Promise.resolve(null);
+      }
+      // An IPC payload is a trust boundary, not an in-process value: keep only
+      // the string members and bound the list here rather than forwarding
+      // whatever the renderer sent into a SQL builder.
+      const hashes = Array.isArray(versionHashes)
+        ? versionHashes.filter(
+            (value): value is string =>
+              typeof value === "string" && value.length > 0
+          )
+        : [];
+      // The cap is REJECTED, never clamped: silently answering fewer versions
+      // than the renderer asked for drops a compare column with no signal. A
+      // throw here is sanitized by the local data source into a clean error,
+      // which is what the HTTP route's 400 is on the other surface.
+      if (hashes.length > MAX_VERSION_USAGE_ENTRIES) {
+        return Promise.reject(
+          new Error(
+            `At most ${MAX_VERSION_USAGE_ENTRIES} versions may be read at once.`
+          )
+        );
+      }
+      return readAgentComponentVersionUsageLocal({
+        prisma: agentDatabase.prisma,
+        slug,
+        versionHashes: hashes,
+        sessionSource: agentDatabase.syncSource,
+      });
+    })
+  );
   ipcMain.handle(
     SHARED_AGENT_COMPONENTS_IPC_CHANNELS.detail,
     // `withDb` (not `withPrisma`) so the reader also receives the local sessions
@@ -161,8 +237,7 @@ export function registerComponentAnalyticsIpcHandlers(deps: {
         agentDatabase.prisma,
         slug,
         options.getComputeTargetId?.() ?? null,
-        agentDatabase.syncSource,
-        branchEligibilitySource
+        agentDatabase.syncSource
       );
     })
   );

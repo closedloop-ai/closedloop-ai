@@ -1,6 +1,7 @@
 import {
   AGENT_SESSION_SYNC_SCHEMA_VERSION,
   AgentSessionSyncMode,
+  DesktopAgentSessionsAckReason,
 } from "@repo/api/src/types/agent-session";
 import { type Mock, vi } from "vitest";
 
@@ -9,7 +10,6 @@ export const desktopAgentSessionsHandlerContext = {
   userId: "user-1",
   clerkUserId: "clerk-user-1",
   targetId: "target-1",
-  gatewaySessionId: "session-1",
 };
 
 export const validDesktopAgentSessionsPayload = {
@@ -29,7 +29,7 @@ export const validDesktopAgentSessionsPayload = {
       updatedAt: "2026-05-20T17:05:00.000Z",
       metadata: { source: "desktop" },
       attribution: {
-        repositoryFullName: "closedloop-ai/example-repo",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
         worktreePath: null,
         sourceArtifactId: "artifact-1",
         sourceLoopId: null,
@@ -60,4 +60,18 @@ export const validDesktopAgentSessionsPayload = {
  */
 export function upsertBatchMock(persistedSessionIds: string[] = []): Mock {
   return vi.fn().mockResolvedValue({ persistedSessionIds });
+}
+
+/**
+ * ISS-5090: the ingest ack carries an optional, value-free field/path `detail`
+ * so the desktop can log WHY a payload was rejected. Built here so the expected
+ * shape — including its ABSENCE for a detail-less rejection — is stated once
+ * instead of re-spelled at every assertion, in either suite that asserts it.
+ */
+export function validationFailedAck(detail?: string) {
+  return {
+    accepted: false,
+    reason: DesktopAgentSessionsAckReason.ValidationFailed,
+    ...(detail ? { detail } : {}),
+  };
 }

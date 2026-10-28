@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
-import { vi } from "vitest";
-import {
-  CloudControlIpcChannel,
-  registerCloudControlIpcHandlers,
-} from "../src/main/ipc/cloud-control-ipc.js";
+import { describe, test, vi } from "vitest";
+import { registerCloudControlIpcHandlers } from "../src/main/ipc/cloud-control-ipc.js";
+import { CloudControlIpcChannel } from "../src/shared/cloud-control-ipc-channel.js";
 import {
   createIpcRegistrar,
   isTrustedSenderDouble,

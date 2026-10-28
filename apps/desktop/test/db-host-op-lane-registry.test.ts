@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import {
   BOUNDED_READ_OPS,
   DB_HOST_EXCLUSIVE_OP,

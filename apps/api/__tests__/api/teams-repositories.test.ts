@@ -1,6 +1,7 @@
 import { TeamRole } from "@repo/api/src/types/teams";
 import { v7 as uuidv7 } from "uuid";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { buildTeamRepository } from "@/__tests__/support/teams/team.test-fixtures";
 import { GET, POST } from "@/app/teams/[teamId]/repositories/route";
 import { AddRepositoryError, teamsService } from "@/app/teams/service";
 import type { AuthContext } from "@/lib/auth/with-auth";
@@ -13,46 +14,31 @@ import {
 let mockAuthContext: AuthContext;
 
 vi.mock("@/lib/auth/with-auth", () => ({
-  withAuth: (handler: any) => async (request: any, context: any) =>
-    handler(mockAuthContext, request, context.params),
+  withAuth:
+    (handler: (...args: unknown[]) => Promise<Response>) =>
+    async (request: unknown, context: { params: Promise<unknown> }) =>
+      handler(mockAuthContext, request, context.params),
 }));
 vi.mock("@/app/teams/service");
-
-const buildMockTeamRepo = (overrides: Record<string, unknown> = {}) => ({
-  id: uuidv7(),
-  teamId: "team-1",
-  installationRepositoryId: uuidv7(),
-  isDefaultSelected: false,
-  isPrimary: false,
-  createdAt: new Date(),
-  updatedAt: new Date(),
-  repository: {
-    id: uuidv7(),
-    installationId: uuidv7(),
-    githubRepoId: "12345",
-    fullName: "acme/repo",
-    name: "repo",
-    owner: "acme",
-    private: false,
-  },
-  ...overrides,
-});
 
 describe("GET /teams/:teamId/repositories", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAuthContext = createTestAuthContext({
-      user: { id: "user-1", organizationId: "org-1" } as any,
+      user: {
+        ...createTestAuthContext().user,
+        id: "user-1",
+        organizationId: "org-1",
+      },
     });
+    // `clearAllMocks` does not reset implementations, so this default must be
+    // set per-block rather than inherited from a sibling describe.
+    vi.mocked(teamsService.existsInOrganization).mockResolvedValue(true);
   });
 
   it("returns repositories for a team member", async () => {
-    const repos = [buildMockTeamRepo({ isPrimary: true })];
-    vi.mocked(teamsService.findById).mockResolvedValue({
-      id: "team-1",
-      organizationId: "org-1",
-    } as any);
-    vi.mocked(teamsService.getRepositories).mockResolvedValue(repos as any);
+    const repos = [buildTeamRepository({ isPrimary: true })];
+    vi.mocked(teamsService.getRepositories).mockResolvedValue(repos);
 
     const request = createMockRequest({
       url: "http://localhost:3002/teams/team-1/repositories",
@@ -74,13 +60,9 @@ describe("GET /teams/:teamId/repositories", () => {
   // succeeds — this is the exact persona (org member, not on this team) whose
   // 403 blanked the workspace with a false "Your session expired".
   it("returns repositories for an org member who is NOT a team member", async () => {
-    const repos = [buildMockTeamRepo({ isPrimary: true })];
-    vi.mocked(teamsService.findById).mockResolvedValue({
-      id: "team-1",
-      organizationId: "org-1",
-    } as any);
+    const repos = [buildTeamRepository({ isPrimary: true })];
     vi.mocked(teamsService.isMember).mockResolvedValue(false);
-    vi.mocked(teamsService.getRepositories).mockResolvedValue(repos as any);
+    vi.mocked(teamsService.getRepositories).mockResolvedValue(repos);
 
     const response = await GET(
       createMockRequest(),
@@ -97,11 +79,7 @@ describe("GET /teams/:teamId/repositories", () => {
   // The membership check must be gone, not merely satisfied: a lingering call
   // would mean the gate is still wired and one refactor away from returning.
   it("does not consult team membership at all", async () => {
-    vi.mocked(teamsService.findById).mockResolvedValue({
-      id: "team-1",
-      organizationId: "org-1",
-    } as any);
-    vi.mocked(teamsService.getRepositories).mockResolvedValue([] as any);
+    vi.mocked(teamsService.getRepositories).mockResolvedValue([]);
 
     const response = await GET(
       createMockRequest(),
@@ -112,8 +90,8 @@ describe("GET /teams/:teamId/repositories", () => {
     expect(teamsService.isMember).not.toHaveBeenCalled();
   });
 
-  it("returns 404 when team not found", async () => {
-    vi.mocked(teamsService.findById).mockResolvedValue(null);
+  it("maps a team the caller cannot see to 404", async () => {
+    vi.mocked(teamsService.existsInOrganization).mockResolvedValue(false);
 
     const response = await GET(
       createMockRequest(),
@@ -129,9 +107,12 @@ describe("GET /teams/:teamId/repositories", () => {
   // belongs to another organization is not found for this caller — the lookup is
   // scoped by the caller's own `organizationId`, never a client-supplied one —
   // and no repository row is read.
-  it("returns 404 for a team in another organization and never reads its repos", async () => {
-    // `findById` is org-scoped, so an out-of-org team resolves to null.
-    vi.mocked(teamsService.findById).mockResolvedValue(null);
+  it("maps an unseeable team to 404 and never reads its repos", async () => {
+    // The probe is org-scoped, so an out-of-org team resolves to false. The
+    // cross-org guarantee itself is proven in
+    // `app/teams/__tests__/service-org-scoping.test.ts` — this asserts only the
+    // route's mapping (`apps/api/AGENTS.md`).
+    vi.mocked(teamsService.existsInOrganization).mockResolvedValue(false);
 
     const response = await GET(
       createMockRequest(),
@@ -139,7 +120,7 @@ describe("GET /teams/:teamId/repositories", () => {
     );
 
     expect(response.status).toBe(404);
-    expect(teamsService.findById).toHaveBeenCalledWith(
+    expect(teamsService.existsInOrganization).toHaveBeenCalledWith(
       "team-in-org-2",
       "org-1"
     );
@@ -147,10 +128,6 @@ describe("GET /teams/:teamId/repositories", () => {
   });
 
   it("returns 500 on service failure", async () => {
-    vi.mocked(teamsService.findById).mockResolvedValue({
-      id: "team-1",
-      organizationId: "org-1",
-    } as any);
     vi.mocked(teamsService.getRepositories).mockRejectedValue(
       new Error("Database error")
     );
@@ -170,20 +147,23 @@ describe("POST /teams/:teamId/repositories", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAuthContext = createTestAuthContext({
-      user: { id: "user-1", organizationId: "org-1" } as any,
+      user: {
+        ...createTestAuthContext().user,
+        id: "user-1",
+        organizationId: "org-1",
+      },
     });
+    // `clearAllMocks` does not reset implementations, so this default must be
+    // set per-block rather than inherited from a sibling describe.
+    vi.mocked(teamsService.existsInOrganization).mockResolvedValue(true);
   });
 
   it("adds a repository with valid data", async () => {
-    const created = buildMockTeamRepo({ installationRepositoryId });
-    vi.mocked(teamsService.findById).mockResolvedValue({
-      id: "team-1",
-      organizationId: "org-1",
-    } as any);
+    const created = buildTeamRepository({ installationRepositoryId });
     vi.mocked(teamsService.hasRole).mockResolvedValue(true);
     vi.mocked(teamsService.addRepository).mockResolvedValue({
       ok: true,
-      value: created as any,
+      value: created,
     });
 
     const response = await POST(
@@ -195,11 +175,12 @@ describe("POST /teams/:teamId/repositories", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(teamsService.hasRole).toHaveBeenCalledWith(
-      "team-1",
-      "user-1",
-      TeamRole.Admin
-    );
+    expect(teamsService.hasRole).toHaveBeenCalledWith({
+      teamId: "team-1",
+      organizationId: "org-1",
+      userId: "user-1",
+      requiredRole: TeamRole.Admin,
+    });
     expect(teamsService.addRepository).toHaveBeenCalledWith("team-1", "org-1", {
       installationRepositoryId,
       isDefaultSelected: true,
@@ -207,10 +188,6 @@ describe("POST /teams/:teamId/repositories", () => {
   });
 
   it("returns 403 when caller is not admin", async () => {
-    vi.mocked(teamsService.findById).mockResolvedValue({
-      id: "team-1",
-      organizationId: "org-1",
-    } as any);
     vi.mocked(teamsService.hasRole).mockResolvedValue(false);
 
     const response = await POST(
@@ -225,8 +202,8 @@ describe("POST /teams/:teamId/repositories", () => {
     expect(teamsService.addRepository).not.toHaveBeenCalled();
   });
 
-  it("returns 404 when team not found", async () => {
-    vi.mocked(teamsService.findById).mockResolvedValue(null);
+  it("maps a team the caller cannot see to 404", async () => {
+    vi.mocked(teamsService.existsInOrganization).mockResolvedValue(false);
 
     const response = await POST(
       createMockRequest({
@@ -241,10 +218,6 @@ describe("POST /teams/:teamId/repositories", () => {
   });
 
   it("returns 400 on validation error", async () => {
-    vi.mocked(teamsService.findById).mockResolvedValue({
-      id: "team-1",
-      organizationId: "org-1",
-    } as any);
     vi.mocked(teamsService.hasRole).mockResolvedValue(true);
 
     const response = await POST(
@@ -260,10 +233,6 @@ describe("POST /teams/:teamId/repositories", () => {
   });
 
   it("returns 400 when repo is not in org installations", async () => {
-    vi.mocked(teamsService.findById).mockResolvedValue({
-      id: "team-1",
-      organizationId: "org-1",
-    } as any);
     vi.mocked(teamsService.hasRole).mockResolvedValue(true);
     vi.mocked(teamsService.addRepository).mockResolvedValue({
       ok: false,
@@ -279,13 +248,13 @@ describe("POST /teams/:teamId/repositories", () => {
     );
 
     expect(response.status).toBe(400);
+    const json = await response.json();
+    expect(json.error).toBe(
+      "Repository is not available for this organization"
+    );
   });
 
   it("returns 409 when repo is already added", async () => {
-    vi.mocked(teamsService.findById).mockResolvedValue({
-      id: "team-1",
-      organizationId: "org-1",
-    } as any);
     vi.mocked(teamsService.hasRole).mockResolvedValue(true);
     vi.mocked(teamsService.addRepository).mockResolvedValue({
       ok: false,
@@ -301,5 +270,7 @@ describe("POST /teams/:teamId/repositories", () => {
     );
 
     expect(response.status).toBe(409);
+    const json = await response.json();
+    expect(json.error).toBe("Repository is already added to this team");
   });
 });

@@ -457,33 +457,38 @@ describe("getSelectedPullRequestChecksEvidence", () => {
       {},
       SelectedPullRequestEvidenceUnavailableReason.MalformedResponse,
     ],
-  ])("preserves typed provenance for a later %s page", async (_name, malformedPage, reason) => {
-    mockStableMetadata();
-    mockGraphql
-      .mockResolvedValueOnce(
-        makePage({
-          totalCount: 2,
-          hasNextPage: true,
-          endCursor: "next",
-          nodes: [makeCheckRun()],
-        })
-      )
-      .mockResolvedValueOnce(malformedPage);
+  ])(
+    "preserves typed provenance for a later %s page",
+    async (_name, malformedPage, reason) => {
+      mockStableMetadata();
+      mockGraphql
+        .mockResolvedValueOnce(
+          makePage({
+            totalCount: 2,
+            hasNextPage: true,
+            endCursor: "next",
+            nodes: [makeCheckRun()],
+          })
+        )
+        .mockResolvedValueOnce(malformedPage);
 
-    const result = await acquire();
+      const result = await acquire();
 
-    expect(result).toMatchObject({
-      status: SelectedPullRequestEvidenceAvailability.Available,
-      value: {
-        checks: [{ providerId: "check-node-1" }],
-        coverage: {
-          completeness: SelectedPullRequestChecksCompleteness.Partial,
-          reasons: [SelectedPullRequestChecksPartialReason.ProviderPageFailure],
-          interruption: { reason },
+      expect(result).toMatchObject({
+        status: SelectedPullRequestEvidenceAvailability.Available,
+        value: {
+          checks: [{ providerId: "check-node-1" }],
+          coverage: {
+            completeness: SelectedPullRequestChecksCompleteness.Partial,
+            reasons: [
+              SelectedPullRequestChecksPartialReason.ProviderPageFailure,
+            ],
+            interruption: { reason },
+          },
         },
-      },
-    });
-  });
+      });
+    }
+  );
 
   it("recovers partial GraphQL data without claiming completeness", async () => {
     mockStableMetadata();
@@ -564,19 +569,22 @@ describe("getSelectedPullRequestChecksEvidence", () => {
       { status: 503 },
       SelectedPullRequestEvidenceUnavailableReason.ProviderUnavailable,
     ],
-  ])("classifies %s by failing operation", async (_name, phase, error, reason) => {
-    if (phase === "metadata") {
-      mockGet.mockRejectedValueOnce(error);
-    } else {
-      mockStableMetadata();
-      mockGraphql.mockRejectedValueOnce(error);
-    }
+  ])(
+    "classifies %s by failing operation",
+    async (_name, phase, error, reason) => {
+      if (phase === "metadata") {
+        mockGet.mockRejectedValueOnce(error);
+      } else {
+        mockStableMetadata();
+        mockGraphql.mockRejectedValueOnce(error);
+      }
 
-    await expect(acquire()).resolves.toEqual({
-      status: SelectedPullRequestEvidenceAvailability.Unavailable,
-      reason,
-    });
-  });
+      await expect(acquire()).resolves.toEqual({
+        status: SelectedPullRequestEvidenceAvailability.Unavailable,
+        reason,
+      });
+    }
+  );
 
   it("gives rate-limit evidence precedence over a generic GraphQL 403", async () => {
     mockStableMetadata();

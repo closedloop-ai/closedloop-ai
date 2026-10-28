@@ -19,8 +19,9 @@ import { LimitBar } from "./limit-bar";
  * without either one looking wrong on its own.
  */
 const meta = {
-  title: "App Core/Session Limits/Limit Bar",
+  title: "Composites v1.0/Session Limits/Limit Bar",
   component: LimitBar,
+  tags: ["deprecated", "autodocs"],
   parameters: {
     layout: "centered",
   },
@@ -66,6 +67,9 @@ function drawerFrame(children: ReactNode) {
  * than merely untested.
  */
 export const UrgencyScale = {
+  // Every urgency band in one canvas, not one concept per story — kept out of
+  // the AI manifest for that reason.
+  tags: ["!manifest"],
   render: () =>
     sidebarFrame(
       <div className="flex flex-col gap-3">

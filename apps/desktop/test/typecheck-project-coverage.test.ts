@@ -16,9 +16,9 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import ts from "typescript6";
+import { describe, test } from "vitest";
 import { TYPECHECK_PROJECTS } from "../scripts/typecheck-projects.mjs";
 
 const desktopDir = path.dirname(
@@ -41,25 +41,24 @@ const desktopDir = path.dirname(
  * `tsconfig.tests.json`. Leave this baseline alone: it is the historical high
  * water mark, and shrinking it too would erase the evidence of what was paid
  * down. Never add to it.
+ *
+ * The one removal that is not a paydown: a suite whose file was DELETED
+ * (ISS-12435 removed the Loops suites, PRD-797 the scheduler and audit suites)
+ * leaves the baseline, since it names
+ * nothing that can be deferred again.
  */
 const DEFERRED_SUITE_BASELINE: readonly string[] = [
-  "test/app-menu-labs.test.ts",
+  "test/app-menu.test.ts",
   "test/artifact-ref-extractor.test.ts",
   "test/attribution-importer.test.ts",
-  "test/audit-service.test.ts",
-  "test/authorized-command-key-store.test.ts",
   "test/batch-event-inserts.test.ts",
   "test/billing-mode-read-path-parity.test.ts",
-  "test/boot-recovery.test.ts",
   "test/bootstrap-crash-handlers.test.ts",
   "test/branch-cost-evidence.test.ts",
   "test/branch-reads-contract.test.ts",
-  "test/chat-session.test.ts",
   "test/claude-subagent-row-dedup.test.ts",
   "test/cloud-command-executor.test.ts",
   "test/collection-mode.test.ts",
-  "test/command-key-notification-boundary.test.ts",
-  "test/command-key-reconciler.test.ts",
   "test/component-invocations-command-key-identity.test.ts",
   "test/component-invocations-idempotent-insert.test.ts",
   "test/component-invocations-materialization.test.ts",
@@ -83,17 +82,12 @@ const DEFERRED_SUITE_BASELINE: readonly string[] = [
   "test/keyboard-activation.test.ts",
   "test/local-session-pull-requests.test.ts",
   "test/local-transcript-path-resolver.test.ts",
-  "test/loop-http.test.ts",
   "test/maintenance-write-txs.test.ts",
   "test/model-pricing-sqlite.test.ts",
-  "test/org-sync-policy.test.ts",
   "test/owner-facet-session-population.test.ts",
   "test/reconciliation-cause-hint.test.ts",
   "test/required-plugin-installer-runtime-ready.test.ts",
   "test/required-plugin-installer.test.ts",
-  "test/scheduled-review-dispatch.test.ts",
-  "test/scheduled-tasks-ipc.test.ts",
-  "test/scheduler-service.test.ts",
   "test/session-trace-branch-resolution.test.ts",
   "test/shared-agent-sessions-api.test.ts",
   "test/shared-agent-sessions-sort.test.ts",
@@ -101,19 +95,9 @@ const DEFERRED_SUITE_BASELINE: readonly string[] = [
   "test/shared-branches-api.test.ts",
   "test/shared-branches-associated-pr.test.ts",
   "test/shared-trace-comments-store.test.ts",
-  "test/spawn-hardening.test.ts",
-  "test/spawn-retry.test.ts",
   "test/sqlite-conversion-golden.test.ts",
   "test/store-integrity-probe.test.ts",
-  "test/symphony-loop-evaluate-plan.test.ts",
-  "test/symphony-loop-evaluate-prd.test.ts",
-  "test/symphony-loop-execute.test.ts",
-  "test/symphony-loop-finalize-additional-repos.test.ts",
-  "test/symphony-loop-handle-process-completion.test.ts",
-  "test/symphony-loop-shared-contract.test.ts",
-  "test/terminal-chat.test.ts",
   "test/tool-call-detail-import.test.ts",
-  "test/trace-comment-parent-session-cloud-post.test.ts",
   "test/wal-probe-health-monitored.test.ts",
   "test/work-item-occurrences.test.ts",
 ];
@@ -124,6 +108,11 @@ const E2E_EXCLUDE_ENTRY = "test/e2e";
 
 const TESTS_PROJECT_CONFIG = "tsconfig.tests.json";
 const E2E_PROJECT_CONFIG = "tsconfig.e2e.json";
+const SCRIPTS_PROJECT_CONFIG = "tsconfig.scripts.json";
+const SCRIPTS_PROJECT_INCLUDE: readonly string[] = [
+  "scripts/**/*.ts",
+  "scripts/**/*.mts",
+];
 const RUNS_PROJECT_RUNNER_RE = /\brun-typecheck-passes\.mjs\b/;
 
 function readJsonc(relativePath: string): Record<string, unknown> {
@@ -175,7 +164,7 @@ describe("ISS-5142 desktop typecheck coverage", () => {
   // and still silent by construction, so the guard is re-shaped, not dropped:
   // `run-typecheck-passes.mjs` executes exactly `TYPECHECK_PROJECTS`, so a
   // project missing from this array is a project the gate stops checking.
-  test("the gate's project inventory still covers the tests and e2e projects", () => {
+  test("the gate's project inventory still covers the tests, e2e and scripts projects", () => {
     const projects = new Map(
       TYPECHECK_PROJECTS.map((entry) => [entry.project, entry])
     );
@@ -188,6 +177,10 @@ describe("ISS-5142 desktop typecheck coverage", () => {
     assert.ok(
       projects.has(E2E_PROJECT_CONFIG),
       `the typecheck runner must cover ${E2E_PROJECT_CONFIG} or apps/desktop/test/e2e/** goes unchecked again`
+    );
+    assert.ok(
+      projects.has(SCRIPTS_PROJECT_CONFIG),
+      `the typecheck runner must cover ${SCRIPTS_PROJECT_CONFIG} or apps/desktop/scripts/** goes unchecked again (ISS-12115)`
     );
 
     // Two projects writing one .tsbuildinfo would make each invalidate the
@@ -329,6 +322,25 @@ describe("ISS-5142 desktop typecheck coverage", () => {
       config.exclude,
       undefined,
       "tsconfig.e2e.json must not defer any spec — it was landed fully green"
+    );
+  });
+
+  // ISS-12115: the release-cut harness passes fakes into the sync lanes' typed
+  // ports, and a fake that drifted from its port broke a Desktop candidate cut
+  // while every tsc project was green, because none of them included scripts/.
+  test("the scripts project covers the whole scripts tree with no deferrals", () => {
+    const config = readJsonc(SCRIPTS_PROJECT_CONFIG);
+    const include = readStringArray(config, "include", SCRIPTS_PROJECT_CONFIG);
+
+    assert.deepEqual(
+      include,
+      SCRIPTS_PROJECT_INCLUDE,
+      `${SCRIPTS_PROJECT_CONFIG} must include exactly ${JSON.stringify(SCRIPTS_PROJECT_INCLUDE)} so a new script is covered the day it is written`
+    );
+    assert.equal(
+      config.exclude,
+      undefined,
+      `${SCRIPTS_PROJECT_CONFIG} must not defer any script — it was landed fully green`
     );
   });
 });

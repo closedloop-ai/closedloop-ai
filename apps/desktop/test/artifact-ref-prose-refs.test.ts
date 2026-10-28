@@ -13,19 +13,19 @@
  * column header — the case every "within N characters" window fails.
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import {
   ArtifactRefConfidence,
   ArtifactRefMethod,
   ArtifactRefRelation,
   ArtifactRefTargetKind,
 } from "@repo/api/src/types/session-artifact-link";
+import { describe, test } from "vitest";
 import { extractArtifactRefs } from "../src/main/collectors/parsing/artifact-ref-extractor.js";
 import type { ArtifactRefRecord } from "../src/main/collectors/parsing/artifact-ref-record.js";
 import type { NormalizedSession } from "../src/main/collectors/types.js";
 import { makeSession as baseSession } from "./normalized-session-test-utils.js";
 
-const REPO = "closedloop-ai/example-repo";
+const REPO = "closedloop-ai/closedloop-ai";
 const NOW = "2026-01-01T12:00:00.000Z";
 
 function makeSession(
@@ -223,7 +223,7 @@ describe("PR mentions in prose — precision", () => {
 
   test("no full owner/repo session repo → a bare `#N` mints no PR identity", () => {
     const session = makeSession({
-      artifacts: { prs: [], issues: [], repo: "example-repo" },
+      artifacts: { prs: [], issues: [], repo: "closedloop-ai" },
       messages: [
         { role: "assistant", timestamp: null, text: "PR #4710 is enqueued." },
       ],
@@ -638,7 +638,7 @@ describe("session repo resolution for bare `#N`", () => {
   ): NormalizedSession {
     return baseSession({
       sessionId: "bare-repo-session",
-      artifacts: { prs: [], issues: [], repo: "example-repo" },
+      artifacts: { prs: [], issues: [], repo: "closedloop-ai" },
       ...overrides,
     });
   }
@@ -924,5 +924,87 @@ describe("prose and command evidence coexist as distinct records", () => {
       `${ArtifactRefRelation.Referenced}|${ArtifactRefConfidence.BranchMentionInProse}`,
       `${ArtifactRefRelation.Workspace}|${ArtifactRefConfidence.UrlMatch}`,
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Shell-through-MCP suppression — ISS-8268
+// ---------------------------------------------------------------------------
+
+describe("ISS-8268: shell-through-MCP inputs are not prose", () => {
+  test("an MCP-shell command input is never scanned as prose", () => {
+    // Before ISS-8268 this exact shape minted branch_mention_in_prose — the
+    // orphaned-branch regression: command content read as prose because the
+    // suppression gate only knew the builtin shell-tool names.
+    const session = makeSession({
+      toolUses: [
+        {
+          name: "mcp__lc__bash",
+          timestamp: null,
+          input: {
+            command: 'echo "pushed the branch fix/iss-8268-suppressed"',
+          },
+        },
+      ],
+    });
+    assert.deepEqual(branchNamesOf(extractArtifactRefs(session, NOW)), []);
+  });
+
+  test("a non-shell MCP tool's input is still prose-scanned", () => {
+    const session = makeSession({
+      toolUses: [
+        {
+          name: "mcp__acme__notes",
+          timestamp: null,
+          input: {
+            text: "I pushed `fix/iss-8268-still-prose` and opened PR #6123.",
+          },
+        },
+      ],
+    });
+    const refs = extractArtifactRefs(session, NOW);
+    assert.deepEqual(branchNamesOf(refs), ["fix/iss-8268-still-prose"]);
+    assert.deepEqual(prNumbersOf(refs), [6123]);
+  });
+});
+
+describe("ISS-8529: trailing-punctuation trim output identity", () => {
+  test("each punctuation char individually is trimmed the same as the old regex", () => {
+    for (const ch of [
+      ".",
+      "/",
+      ",",
+      ";",
+      ":",
+      "!",
+      "?",
+      ")",
+      "]",
+      "}",
+      "'",
+      '"',
+      "`",
+    ]) {
+      const session = sessionSaying(
+        `Pushed the branch feat/iss-8529${ch} today.`
+      );
+      const refs = extractArtifactRefs(session, NOW);
+      assert.deepEqual(branchNamesOf(refs), ["feat/iss-8529"]);
+    }
+  });
+
+  test("mixed trailing punctuation run is trimmed", () => {
+    const session = sessionSaying(
+      "Pushed the branch feat/iss-8529.,;:! today."
+    );
+    const refs = extractArtifactRefs(session, NOW);
+    assert.deepEqual(branchNamesOf(refs), ["feat/iss-8529"]);
+  });
+
+  test("80KB dot run does not hang and produces no branch refs", () => {
+    const text = `Pushed the branch feat/${".".repeat(80_000)}a today.`;
+    const session = sessionSaying(text);
+    const refs = extractArtifactRefs(session, NOW);
+    assert.deepEqual(branchNamesOf(refs), []);
   });
 });

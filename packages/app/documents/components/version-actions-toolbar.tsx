@@ -1,8 +1,6 @@
 "use client";
 
 import { Button } from "@repo/design-system/components/ui/button";
-import { Toggle } from "@repo/design-system/components/ui/toggle";
-import { MessageSquareDotIcon } from "lucide-react";
 
 type VersionActionsToolbarProps = {
   canRestoreVersion?: boolean;
@@ -12,10 +10,6 @@ type VersionActionsToolbarProps = {
   hasUnsavedChanges?: boolean;
   onSaveVersion: () => void;
   isSaving?: boolean;
-  onToggleComments: (pressed: boolean) => void;
-  openThreadCount: number;
-  showComments: boolean;
-  showCommentToggle?: boolean;
 };
 
 export function VersionActionsToolbar({
@@ -26,25 +20,9 @@ export function VersionActionsToolbar({
   hasUnsavedChanges = true,
   onSaveVersion,
   isSaving = false,
-  onToggleComments,
-  openThreadCount,
-  showComments,
-  showCommentToggle = true,
 }: Readonly<VersionActionsToolbarProps>) {
   return (
     <>
-      {showCommentToggle && openThreadCount > 0 ? (
-        <Toggle
-          className="px-3"
-          onPressedChange={onToggleComments}
-          pressed={showComments}
-          size="sm"
-          variant="outline"
-        >
-          <MessageSquareDotIcon className="h-4 w-4" />
-          {openThreadCount}
-        </Toggle>
-      ) : null}
       <Button
         disabled={!canRestoreVersion || isRestoring}
         onClick={onRestoreVersion}

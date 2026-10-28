@@ -1,6 +1,6 @@
 import { SpendOutcome } from "@closedloop-ai/loops-api/insights";
-import { AgentSessionState } from "@repo/api/src/types/agent-session";
 import { LossClass } from "@repo/api/src/types/session-analytics";
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import { describe, expect, it } from "vitest";
 import {
   type AnalyticsSessionSignals,
@@ -8,7 +8,7 @@ import {
   isRecoverableWasteBasis,
   lossClassOf,
   outcomeOf,
-  TERMINAL_AGENT_SESSION_STATES,
+  TERMINAL_ANALYTICS_SESSION_STATUSES,
 } from "./session-analytics-classify";
 
 /**
@@ -24,14 +24,18 @@ import {
  * fixture happened to emit.
  */
 
-const STATES: readonly (string | null)[] = [
-  AgentSessionState.Completed,
-  AgentSessionState.Error,
+const STATUSES: readonly (string | null)[] = [
+  SESSION_STATUS.INACTIVE,
+  SESSION_STATUS.ERROR,
   // Non-terminal. A run still in flight carries `ends_with_error: false` on the
   // desktop write path for the reaper's benefit, so the grid must include these
-  // or the classifier's terminal gate is never exercised.
-  AgentSessionState.Running,
-  AgentSessionState.Blocked,
+  // or the classifier's terminal gate is never exercised. ISS-7019: `stale` is
+  // here too — it is deliberately NOT terminal ("it has gone quiet" is not an
+  // outcome), and it is reachable in a way the old `Blocked` never was.
+  SESSION_STATUS.ACTIVE,
+  // Plain literal: ISS-10364 retired this as a `DISPLAYED_SESSION_STATUS`
+  // member, but it is still a reachable stored spelling and still non-terminal.
+  "stale",
   null,
 ];
 const ENDS_WITH_ERROR: readonly (boolean | null)[] = [true, false, null];
@@ -44,13 +48,13 @@ function buildExhaustivePopulation(): AnalyticsSessionSignals[] {
   for (const endsWithError of ENDS_WITH_ERROR) {
     for (const hasFailureThrottle of BOOLEANS) {
       for (const producedArtifact of BOOLEANS) {
-        for (const state of STATES) {
+        for (const status of STATUSES) {
           for (const wallClockMinutes of WALL_CLOCK_MINUTES) {
             population.push({
               endsWithError,
               hasFailureThrottle,
               producedArtifact,
-              state,
+              status,
               wallClockMinutes,
             });
           }
@@ -69,7 +73,7 @@ function idOf(signals: AnalyticsSessionSignals): string {
     String(signals.endsWithError),
     String(signals.hasFailureThrottle),
     String(signals.producedArtifact),
-    String(signals.state),
+    String(signals.status),
     String(signals.wallClockMinutes),
   ].join("|");
 }
@@ -81,13 +85,13 @@ function idsWhere(
 }
 
 /**
- * Mirrors the classifier's own gate: a null state is "never recorded", which
+ * Mirrors the classifier's own gate: a null status is "never recorded", which
  * defers to `endsWithError` rather than being treated as a live run.
  */
 function isTerminal(signals: AnalyticsSessionSignals): boolean {
   return (
-    signals.state === null ||
-    TERMINAL_AGENT_SESSION_STATES.includes(signals.state)
+    signals.status === null ||
+    TERMINAL_ANALYTICS_SESSION_STATUSES.includes(signals.status)
   );
 }
 
@@ -129,7 +133,7 @@ describe("one definition of failure across both analytics surfaces", () => {
       outcomeOf({
         endsWithError: false,
         producedArtifact: false,
-        state: AgentSessionState.Running,
+        status: SESSION_STATUS.ACTIVE,
         wallClockMinutes: 180,
       })
     ).toBe(SpendOutcome.Unknown);

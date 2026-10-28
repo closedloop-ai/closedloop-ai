@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Marker that a session with backfilled cost was re-queued for sync (ISS-7229); read only by the boot heal."
+}

@@ -28,10 +28,11 @@
  *  - web (`apps/app`) reads it as a PostHog flag via
  *    `MEMBER_SELF_SERVICE_INSTALL_FEATURE_FLAG_KEY`
  *    (`packages/app/shared/lib/feature-flags.ts`).
- *  - the desktop renderer resolves the byte-for-byte-equal key from its Labs
- *    registry via `DESKTOP_MEMBER_SELF_SERVICE_INSTALL_FEATURE_FLAG_KEY`
- *    (`apps/desktop/src/shared/feature-flags.ts`), since the packaged renderer
- *    has no PostHog wiring.
+ *  - the desktop renderer resolves the byte-for-byte-equal key from the
+ *    signed-in account's PostHog assignment, delivered over the IPC bridge,
+ *    under the alias `DESKTOP_MEMBER_SELF_SERVICE_INSTALL_FEATURE_FLAG_KEY`
+ *    (`apps/desktop/src/shared/feature-flags.ts`); the renderer runs no
+ *    PostHog SDK of its own.
  *
  * Both shells mount the block, so both are gated — one literal, one rename.
  */

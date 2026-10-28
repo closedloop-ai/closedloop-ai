@@ -16,9 +16,10 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach } from "node:test";
+import { afterEach, beforeEach } from "vitest";
 import type { RedeemDesktopAuthorizationCodeInput } from "../../src/main/auth/desktop-authorize-client.js";
 import type { DesktopPkce } from "../../src/main/auth/desktop-authorize-pkce.js";
+import type { RedeemDesktopBootstrapInput } from "../../src/main/auth/desktop-bootstrap-client.js";
 import type {
   DesktopLoopbackListener,
   LoopbackCallback,
@@ -28,11 +29,12 @@ import type {
   DesktopSessionResult,
   DesktopSessionTokens,
 } from "../../src/main/session/desktop-session-client.js";
-import {
-  type DesktopBrowserSignInDeps,
-  type DesktopExistingUserDeps,
-  DesktopSessionManager,
-} from "../../src/main/session/desktop-session-manager.js";
+import { DesktopSessionManager } from "../../src/main/session/desktop-session-manager.js";
+import type {
+  DesktopBrowserSignInDeps,
+  DesktopExistingUserDeps,
+  DesktopSessionManagerDeps,
+} from "../../src/main/session/desktop-session-manager-types.js";
 import {
   type DesktopSessionRecord,
   DesktopSessionStore,
@@ -159,22 +161,39 @@ export function createManager(options?: {
   storeName?: string;
   browserSignIn?: DesktopBrowserSignInDeps;
   existingUser?: DesktopExistingUserDeps;
+  reportAuthFailure?: DesktopSessionManagerDeps["reportAuthFailure"];
+  beginSignInAnalytics?: DesktopSessionManagerDeps["beginSignInAnalytics"];
+  /**
+   * Override the keystore. The default one always succeeds; a suite covering an
+   * install that holds a session it CANNOT read back supplies one that fails.
+   */
+  safeStorage?: SafeStorageLike;
+  /**
+   * Override the API-origin resolver. The default always answers; a suite
+   * covering an install whose persisted `apiOrigin` fails validation supplies
+   * one that throws, exactly as `normalizeAndValidateOrigin` does in production.
+   */
+  resolveApiOrigin?: () => string;
+  logDiagnostic?: (message: string) => void;
 }): { manager: DesktopSessionManager; store: DesktopSessionStore } {
   const store = new DesktopSessionStore({
     cwd: tempRoot,
     name: options?.storeName ?? "dsm",
-    safeStorage: mockSafeStorage(),
+    safeStorage: options?.safeStorage ?? mockSafeStorage(),
   });
   const stub = options?.stub ?? createStubClient();
   const manager = new DesktopSessionManager({
     store,
     popSigner,
-    resolveApiOrigin: () => API_ORIGIN,
+    resolveApiOrigin: options?.resolveApiOrigin ?? (() => API_ORIGIN),
     resolveGatewayId: () => "gateway-1",
     now: options?.now ?? (() => T0),
     client: stub.client as never,
     browserSignIn: options?.browserSignIn,
     existingUser: options?.existingUser,
+    reportAuthFailure: options?.reportAuthFailure,
+    beginSignInAnalytics: options?.beginSignInAnalytics,
+    logDiagnostic: options?.logDiagnostic,
   });
   return { manager, store };
 }
@@ -236,12 +255,18 @@ export type LoopbackStubState = {
   /** When set, startLoopbackListener resolves only once this gate resolves. */
   listenerStartGate?: Deferred<void>;
   openShouldThrow: boolean;
+  /** When set, openExternal resolves only once this gate resolves. */
+  openGate?: Deferred<void>;
   openCalls: string[];
   redeemResult: DesktopSessionResult<DesktopSessionTokens>;
   /** When true, the redeem port rejects (models a thrown, not a typed failure). */
   redeemThrows: boolean;
   redeemCalls: number;
   redeemInputs: RedeemDesktopAuthorizationCodeInput[];
+  bootstrapRedeemResult: Awaited<
+    ReturnType<NonNullable<DesktopBrowserSignInDeps["redeemBootstrap"]>>
+  >;
+  bootstrapRedeemInputs: RedeemDesktopBootstrapInput[];
   onRedeem?: () => void;
   closeCalls: number;
   waitCalls: number;
@@ -254,6 +279,8 @@ export type LoopbackStubState = {
   /** When true, the injected callback-timeout timer fires (the callback loses). */
   timeoutFires: boolean;
   oauthState: string;
+  /** The `ms` ceilings handed to delayMs, in call order (ISS-5954 M3). */
+  delayMsCalls: number[];
   /** Race signal captured from the last delayMs call (timeout side). */
   timeoutSignal?: AbortSignal;
   /** Race signal captured from the last waitForCallback call (callback side). */
@@ -278,11 +305,26 @@ export function createLoopbackStub(): {
     redeemThrows: false,
     redeemCalls: 0,
     redeemInputs: [],
+    bootstrapRedeemResult: {
+      ok: true,
+      value: {
+        bootstrapToken: "bootstrap-token",
+        expiresAt: new Date(T0 + ACCESS_TTL_MS).toISOString(),
+        pendingUserId: "clerk-user-1",
+      },
+    },
+    bootstrapRedeemInputs: [],
     closeCalls: 0,
     waitCalls: 0,
-    callbackValue: { code: "auth-code", state: "state-1", error: null },
+    callbackValue: {
+      code: "auth-code",
+      state: "state-1",
+      error: null,
+      accountCreated: false,
+    },
     timeoutFires: false,
     oauthState: "state-1",
+    delayMsCalls: [],
     diagnostics: [],
   };
 
@@ -320,11 +362,14 @@ export function createLoopbackStub(): {
         desktopVersion: "1.0.0",
       };
     },
-    openExternal: (url: string) => {
+    openExternal: async (url: string) => {
       state.openCalls.push(url);
-      return state.openShouldThrow
-        ? Promise.reject(new Error("blocked"))
-        : Promise.resolve();
+      if (state.openGate) {
+        await state.openGate.promise;
+      }
+      if (state.openShouldThrow) {
+        throw new Error("blocked");
+      }
     },
     logDiagnostic: (message: string) => {
       state.diagnostics.push(message);
@@ -348,8 +393,14 @@ export function createLoopbackStub(): {
         ? Promise.reject(new Error("redeem crashed"))
         : Promise.resolve(state.redeemResult);
     },
+    redeemBootstrap: (input) => {
+      state.bootstrapRedeemInputs.push(input);
+      return Promise.resolve(state.bootstrapRedeemResult);
+    },
     callbackTimeoutMs: 1000,
-    delayMs: (_ms, signal) => {
+    emailCallbackTimeoutMs: 3000,
+    delayMs: (ms, signal) => {
+      state.delayMsCalls.push(ms);
       state.timeoutSignal = signal;
       return state.timeoutFires
         ? Promise.resolve()

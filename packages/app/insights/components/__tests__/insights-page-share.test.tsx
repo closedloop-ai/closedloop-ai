@@ -22,14 +22,19 @@ import {
   SHARE_DASHBOARD_FEATURE_FLAG_KEY,
 } from "../insights-page";
 
+type CapturedPins = {
+  tiles: string[];
+  layout: Record<string, { x: number; y: number; w: number; h: number }>;
+};
+
 const { dashboardGridProps } = vi.hoisted(() => ({
   dashboardGridProps: {
-    current: null as { pins?: { tiles: string[] } } | null,
+    current: null as { pins?: CapturedPins } | null,
   },
 }));
 
 vi.mock("../dashboard-grid", () => ({
-  DashboardGrid: (props: { pins?: { tiles: string[] } }) => {
+  DashboardGrid: (props: { pins?: CapturedPins }) => {
     dashboardGridProps.current = props;
     return <div data-testid="dashboard-grid" />;
   },
@@ -133,6 +138,35 @@ describe("InsightsPage dashboard share", () => {
         "chart:prTrend",
       ])
     );
+  });
+
+  it("keeps the sibling positions when an inbound ?dash= link carries one corrupt entry", async () => {
+    // ISS-8738: the real URL → decode → useDashboardPins → DashboardGrid path.
+    const token = encodeSharedDashboard({
+      tiles: ["kpi:merged", "chart:prTrend"],
+      layout: {
+        "kpi:merged": { x: 0, y: 0, w: 12, h: 0 },
+        "chart:prTrend": { x: 3, y: 0, w: 6, h: 4 },
+      },
+      settings: {},
+    });
+    window.history.replaceState(
+      {},
+      "",
+      `/insights?${SHARE_DASHBOARD_PARAM}=${token}`
+    );
+
+    renderPage({ shareDashboardEnabled: true });
+
+    await waitFor(() =>
+      expect(dashboardGridProps.current?.pins?.tiles).toEqual([
+        "kpi:merged",
+        "chart:prTrend",
+      ])
+    );
+    expect(dashboardGridProps.current?.pins?.layout).toEqual({
+      "chart:prTrend": { x: 3, y: 0, w: 6, h: 4 },
+    });
   });
 
   it("clears the shared dashboard when same-route navigation drops the ?dash= param", async () => {

@@ -28,8 +28,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
-import { describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { describe, test } from "vitest";
 import {
   inputFingerprint,
   isGeneratedClientFresh,

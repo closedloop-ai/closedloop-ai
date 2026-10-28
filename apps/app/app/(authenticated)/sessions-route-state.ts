@@ -1,6 +1,23 @@
 "use client";
 
+import {
+  parseSessionDateRangeParam,
+  SESSION_DATE_RANGE_PARAM,
+} from "@repo/app/agents/lib/session-date-range-param";
+import {
+  parseSessionsPageIndex,
+  SESSIONS_PAGE_PARAM,
+} from "@repo/app/agents/lib/session-pagination";
+import { rumPeriodForRange } from "@repo/app/insights/lib/dashboard-range";
 import { useIsMounted } from "@repo/app/shared/hooks/use-is-mounted";
+import { browserSearchParams } from "@repo/app/shared/lib/facet-filter-params";
+import type { DateRange } from "@repo/app/shared/lib/format-utils";
+import {
+  clampScrollRestoreTarget,
+  computeMaxScrollTop,
+  SESSIONS_SCROLL_RESTORE_MAX_ATTEMPTS,
+  type SessionsScrollKey,
+} from "@repo/app/shared/lib/sessions-scroll-contract";
 import type { ReadonlySearchParams } from "@repo/navigation/navigation-adapter";
 import {
   type MutableRefObject,
@@ -9,27 +26,12 @@ import {
   useRef,
   useState,
 } from "react";
+import { useRumViewRange } from "@/lib/datadog-rum/view-range";
 
-const PAGE_PARAM = "page";
 const SESSIONS_SCROLL_STATE_KEY = "__symphonySessionsScroll";
-const MAX_SCROLL_RESTORE_ATTEMPTS = 30;
-
-/**
- * Parses the sessions route's one-based `page` URL parameter into the
- * zero-based page index used by pagination controls and API offsets.
- */
-export function parseSessionsPageIndex(value: string | null): number {
-  if (value === null) {
-    return 0;
-  }
-
-  const page = Number(value);
-  if (!(Number.isFinite(page) && Number.isInteger(page) && page > 0)) {
-    return 0;
-  }
-
-  return page - 1;
-}
+// Declared once in the shared contract module (PLN-1950 slice 5) -- this
+// alias keeps every existing reference in this file unchanged.
+export const MAX_SCROLL_RESTORE_ATTEMPTS = SESSIONS_SCROLL_RESTORE_MAX_ATTEMPTS;
 
 /**
  * Reads the current sessions page from the navigation snapshot.
@@ -49,14 +51,15 @@ export function parseSessionsPageIndex(value: string | null): number {
  */
 export function readSessionsPageIndex(
   searchParams: Pick<ReadonlySearchParams, "get">,
+  routePath: string,
   options?: { allowBrowserFallback?: boolean }
 ): number {
-  const fromSnapshot = searchParams.get(PAGE_PARAM);
+  const fromSnapshot = searchParams.get(SESSIONS_PAGE_PARAM);
   if (fromSnapshot !== null) {
     return parseSessionsPageIndex(fromSnapshot);
   }
   if (options?.allowBrowserFallback ?? true) {
-    return parseSessionsPageIndex(readBrowserPageParam());
+    return parseSessionsPageIndex(readBrowserPageParam(routePath));
   }
   return 0;
 }
@@ -68,48 +71,13 @@ export function readSessionsPageIndex(
  * `page` param resolves to page 1 (FEA-3664).
  */
 export function useSessionsUrlPageIndex(
-  searchParams: Pick<ReadonlySearchParams, "get">
+  searchParams: Pick<ReadonlySearchParams, "get">,
+  routePath: string
 ): number {
   const mounted = useIsMounted();
-  return readSessionsPageIndex(searchParams, {
+  return readSessionsPageIndex(searchParams, routePath, {
     allowBrowserFallback: !mounted,
   });
-}
-
-/**
- * Writes the sessions route's canonical one-based `page` URL parameter.
- * Page index 0 is represented by omitting the parameter.
- */
-export function writeSessionsPageParam(
-  params: URLSearchParams,
-  pageIndex: number
-) {
-  if (pageIndex <= 0) {
-    params.delete(PAGE_PARAM);
-    return;
-  }
-
-  params.set(PAGE_PARAM, String(pageIndex + 1));
-}
-
-/**
- * Clamps a requested page index to the last page currently proven by a list
- * response total.
- */
-export function clampSessionsPageIndex({
-  pageIndex,
-  pageSize,
-  total,
-}: {
-  pageIndex: number;
-  pageSize: number;
-  total: number;
-}): number {
-  if (!(Number.isFinite(total) && total > 0 && pageSize > 0)) {
-    return 0;
-  }
-
-  return Math.min(pageIndex, Math.ceil(total / pageSize) - 1);
 }
 
 /**
@@ -180,7 +148,7 @@ export function useSessionsHistoryScroll({
   container,
   restoreWhen,
 }: {
-  scrollKey: string;
+  scrollKey: SessionsScrollKey;
   container: HTMLElement | null;
   restoreWhen: boolean;
 }) {
@@ -225,7 +193,7 @@ export function useSessionsHistoryScroll({
     }
 
     const savedPosition = readHistoryScrollPosition(scrollKey);
-    if (savedPosition === null || savedPosition <= 0) {
+    if (!hasWebStoredScrollPosition(savedPosition)) {
       restoredKeyRef.current = scrollKey;
       return;
     }
@@ -240,12 +208,15 @@ export function useSessionsHistoryScroll({
       }
 
       attempts++;
-      const maxScrollTop = Math.max(
-        0,
-        target.scrollHeight - target.clientHeight
+      const maxScrollTop = computeMaxScrollTop(
+        target.scrollHeight,
+        target.clientHeight
       );
       if (maxScrollTop > 0) {
-        target.scrollTop = Math.min(targetPosition, maxScrollTop);
+        target.scrollTop = clampScrollRestoreTarget(
+          targetPosition,
+          maxScrollTop
+        );
         restoredKeyRef.current = scrollKey;
         return;
       }
@@ -268,40 +239,115 @@ export function useSessionsHistoryScroll({
   }, [container, restoreWhen, scrollKey]);
 }
 
+/**
+ * Resolves the date window the sessions view is actually reading over, and tags
+ * the RUM view with it.
+ *
+ * ISS-5355: an inbound link may name the window it was counted over (`?range=`),
+ * which the viewer's saved range must not silently override — that is what let
+ * the project-detail strip's count and the listing it opens disagree. Derived
+ * during render (no Effect, no state mirror): the param wins while it is in the
+ * URL, and the range picker strips it, so touching the control hands control
+ * straight back to the saved preference.
+ *
+ * ISS-7250: the RUM tag is resolved HERE rather than at the call site, so the
+ * window in effect and the window reported to Datadog cannot come to name two
+ * different ranges. The saved half waits for `isViewReady` (whitlockk review): until
+ * the persisted view restores, `savedRange` is still the default, and tagging a
+ * saved-90d viewer's load `7` buckets it under a window they never selected. The
+ * `?range=` half does NOT wait — that window is known during the first render
+ * and overrides the saved one anyway, so gating it would withhold a tag that was
+ * already correct.
+ */
+export function useSessionsEffectiveDateRange({
+  isViewReady,
+  savedRange,
+  searchParams,
+}: {
+  isViewReady: boolean;
+  savedRange: DateRange;
+  searchParams: Pick<ReadonlySearchParams, "get">;
+}): DateRange {
+  const urlRange = parseSessionDateRangeParam(
+    searchParams.get(SESSION_DATE_RANGE_PARAM)
+  );
+  const rumRange = urlRange ?? (isViewReady ? savedRange : null);
+  useRumViewRange(rumRange === null ? null : rumPeriodForRange(rumRange));
+  return urlRange ?? savedRange;
+}
+
+/**
+ * ISS-7493: scroll restoration only needs the position the user lands on, but
+ * this used to `replaceState` once per animation frame — ~60 writes/second
+ * while scrolling. Browsers rate-limit that API (Safari throws a SecurityError
+ * past 100 calls per 10s), so a couple of seconds of continuous scrolling in a
+ * long Sessions list became a production error.
+ *
+ * The leading edge writes immediately, so a position is still captured when the
+ * user scrolls once and navigates away; the trailing write settles the final
+ * position. Between them the write rate is bounded to one per interval.
+ */
+const HISTORY_SCROLL_SAVE_INTERVAL_MS = 250;
+
 type PendingHistoryScrollSave = {
-  frame: number | null;
-  scrollKey: string;
-  scrollTop: number;
+  timer: ReturnType<typeof setTimeout> | null;
+  lastWriteAt: number;
+  pending: { scrollKey: string; scrollTop: number } | null;
 };
 
 function queueHistoryScrollPosition(
   pendingScrollSaveRef: MutableRefObject<PendingHistoryScrollSave | null>,
-  nextScrollState: Omit<PendingHistoryScrollSave, "frame">
+  nextScrollState: { scrollKey: string; scrollTop: number }
 ) {
-  pendingScrollSaveRef.current = {
-    ...nextScrollState,
-    frame: pendingScrollSaveRef.current?.frame ?? null,
+  const state = pendingScrollSaveRef.current ?? {
+    timer: null,
+    lastWriteAt: 0,
+    pending: null,
   };
+  pendingScrollSaveRef.current = state;
 
-  if (pendingScrollSaveRef.current.frame !== null) {
+  const elapsed = Date.now() - state.lastWriteAt;
+  if (state.timer === null && elapsed >= HISTORY_SCROLL_SAVE_INTERVAL_MS) {
+    state.lastWriteAt = Date.now();
+    state.pending = null;
+    writeHistoryScrollPosition(
+      nextScrollState.scrollKey,
+      nextScrollState.scrollTop
+    );
     return;
   }
 
-  pendingScrollSaveRef.current.frame = requestAnimationFrame(() => {
-    const pending = pendingScrollSaveRef.current;
-    pendingScrollSaveRef.current = null;
-    if (pending) {
-      writeHistoryScrollPosition(pending.scrollKey, pending.scrollTop);
-    }
-  });
+  state.pending = nextScrollState;
+  if (state.timer !== null) {
+    return;
+  }
+
+  state.timer = setTimeout(
+    () => {
+      const current = pendingScrollSaveRef.current;
+      if (!current) {
+        return;
+      }
+      // Clear the sentinel where the timer actually fires, so a later scroll
+      // can reschedule instead of being suppressed by a stale marker.
+      current.timer = null;
+      const pending = current.pending;
+      current.pending = null;
+      if (pending) {
+        current.lastWriteAt = Date.now();
+        writeHistoryScrollPosition(pending.scrollKey, pending.scrollTop);
+      }
+    },
+    Math.max(0, HISTORY_SCROLL_SAVE_INTERVAL_MS - elapsed)
+  );
 }
 
 function cancelPendingHistoryScrollPosition(
   pendingScrollSaveRef: MutableRefObject<PendingHistoryScrollSave | null>
 ) {
-  const pending = pendingScrollSaveRef.current;
-  if (pending?.frame !== null && pending?.frame !== undefined) {
-    cancelAnimationFrame(pending.frame);
+  const state = pendingScrollSaveRef.current;
+  if (state?.timer != null) {
+    clearTimeout(state.timer);
   }
   pendingScrollSaveRef.current = null;
 }
@@ -316,12 +362,15 @@ function readHistoryScrollPosition(scrollKey: string): number | null {
   return value;
 }
 
-function readBrowserPageParam(): string | null {
-  if (globalThis.window === undefined) {
-    return null;
-  }
-
-  return new URLSearchParams(globalThis.location.search).get(PAGE_PARAM);
+/**
+ * ISS-8187: read through the shared path-scoped helper rather than a private
+ * `location.search` copy. Sessions and Branches both name this param `page`
+ * (`SESSIONS_PAGE_PARAM` / `BRANCH_PAGE_PARAM`), so an unscoped read let a
+ * client-side navigation from `/branches?page=5` seed the Sessions list's FIRST
+ * request with page 5 before the post-mount render corrected it.
+ */
+function readBrowserPageParam(routePath: string): string | null {
+  return browserSearchParams(routePath)?.get(SESSIONS_PAGE_PARAM) ?? null;
 }
 
 function writeHistoryScrollPosition(scrollKey: string, scrollTop: number) {
@@ -375,4 +424,17 @@ function isNumberRecord(value: unknown): value is Record<string, number> {
   return Object.values(value).every(
     (entry) => typeof entry === "number" && Number.isFinite(entry) && entry >= 0
   );
+}
+
+/**
+ * Web's own presence gate: unlike the shared `hasStoredScrollPosition`, a
+ * remembered position of exactly 0 also counts as nothing to restore (see
+ * `sessions-scroll-contract.ts`'s module header for why this narrowing stays
+ * web-specific). Exported so the sessions-scroll-contract conformance test
+ * exercises this exact gate rather than a hand-copied duplicate.
+ */
+export function hasWebStoredScrollPosition(
+  value: number | null | undefined
+): value is number {
+  return typeof value === "number" && value > 0;
 }

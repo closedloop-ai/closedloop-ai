@@ -7,9 +7,11 @@ import {
 import { EmptyState } from "@closedloop-ai/design-system/components/ui/empty-state";
 import { ListChecksIcon, ShieldCheckIcon } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { useCancelledRef } from "../../hooks/use-cancelled-ref";
 import { pageTitleForNav } from "../../navigation/nav-config";
 import { NavId } from "../../navigation/route-table";
 import { PageShell } from "../layout/page-shell";
+import { APPROVAL_RISK_TIER_FALLBACK_LABEL } from "./approvals-panel-copy";
 
 type Approval = {
   id: string;
@@ -45,17 +47,23 @@ export function ApprovalsPanel() {
   );
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  // Held for the component's lifetime rather than per effect run: `load` is the
+  // 3s poll AND every Approve/Deny/Refresh path, so a per-run flag would cancel
+  // a read the effect never started.
+  const cancelled = useCancelledRef();
 
   const loadRules = useCallback(async () => {
     try {
       const settings = (await window.desktopApi.getSettings()) as {
         alwaysAllowRules?: AlwaysAllowRule[];
       } | null;
-      setAlwaysAllowRules(settings?.alwaysAllowRules ?? []);
+      if (!cancelled.current) {
+        setAlwaysAllowRules(settings?.alwaysAllowRules ?? []);
+      }
     } catch {
       /* ignore */
     }
-  }, []);
+  }, [cancelled]);
 
   // The BACKGROUND read. Deliberately raises neither flag: `loading` starts true
   // and is only ever cleared here, so the treatment covers the first read and
@@ -67,13 +75,17 @@ export function ApprovalsPanel() {
   const load = useCallback(async () => {
     try {
       const data = await window.desktopApi.getPendingApprovals();
-      setApprovals(data as Approval[]);
+      if (!cancelled.current) {
+        setApprovals(data as Approval[]);
+      }
     } catch {
       /* ignore */
     }
     await loadRules();
-    setLoading(false);
-  }, [loadRules]);
+    if (!cancelled.current) {
+      setLoading(false);
+    }
+  }, [cancelled, loadRules]);
 
   // Every USER-INITIATED path runs through here, and the flag spans the whole
   // action — the mutation AND the reload behind it. An explicit action owes the
@@ -87,14 +99,19 @@ export function ApprovalsPanel() {
   // store. Between it and the redraw behind it every control still reads as idle
   // over a queue that no longer matches, so a mis-clicked Approve could be
   // "corrected" by a Deny that silently resolved an approval already gone.
-  const runUserAction = useCallback(async (action: () => Promise<void>) => {
-    setRefreshing(true);
-    try {
-      await action();
-    } finally {
-      setRefreshing(false);
-    }
-  }, []);
+  const runUserAction = useCallback(
+    async (action: () => Promise<void>) => {
+      setRefreshing(true);
+      try {
+        await action();
+      } finally {
+        if (!cancelled.current) {
+          setRefreshing(false);
+        }
+      }
+    },
+    [cancelled]
+  );
 
   const refresh = useCallback(() => runUserAction(load), [load, runUserAction]);
 
@@ -186,7 +203,9 @@ export function ApprovalsPanel() {
                         </p>
                       )}
                     </div>
-                    <Badge variant="outline">{a.riskTier ?? "unknown"}</Badge>
+                    <Badge variant="outline">
+                      {a.riskTier ?? APPROVAL_RISK_TIER_FALLBACK_LABEL}
+                    </Badge>
                   </div>
                   {/* Each decision releases or refuses a WAITING gateway
                       request, and the queue only redraws once the reload behind

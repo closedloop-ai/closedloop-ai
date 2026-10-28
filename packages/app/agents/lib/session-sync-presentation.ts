@@ -1,3 +1,10 @@
+import { AgentSessionCloudSyncState } from "@repo/api/src/types/agent-session-cloud-sync-state-constants";
+import type { TranscriptDisposition } from "@repo/api/src/types/transcript-disposition-constants";
+// ISS-12529 (PR #8877 review): the upload-state vocabulary and its tone map
+// live in shared/ so the upload queue view can read the same tones; a slice
+// may import shared/, never the reverse.
+import { SessionUploadState } from "@repo/app/shared/lib/upload-state";
+
 /**
  * ISS-5279: how a Sessions row's transport state is PRESENTED on its Status
  * pill — the dependency-free constants leaf.
@@ -32,7 +39,9 @@
  * does not claim a stopped pulse means the upload finished — it claims only that
  * the pulse is absent, which is what the Name cell is there to qualify.
  *
- * This module is deliberately a leaf with NO imports. `SessionStatusBadge` also
+ * This module is deliberately a leaf: its only imports are the two import-free
+ * constants leaves above (ISS-12532), never a module with a graph behind it.
+ * `SessionStatusBadge` also
  * renders `AgentStatusBadge`/`HarnessBadge` for the agent card, the event-group
  * row, and the session card; putting this const in the derivation module
  * (`session-status-fold.ts`) would have pulled the whole row-mapper graph into
@@ -64,3 +73,69 @@ export type SessionSyncPresentation =
  */
 export const SESSION_STATUS_SYNC_BADGE_TEST_ID =
   "session-status-badge-sync" as const;
+
+/**
+ * ISS-12532 (PR #8843 review): which upload state a session's shipped
+ * `cloudSyncState` stands for, written down once so a second host does not
+ * invent its own. Returns `null` (render no upload badge) only for an absent
+ * `cloudSyncState`.
+ *
+ * Mapped, because the shipped meaning already says it:
+ *
+ *  - `synced` -> `Shared`. The cloud has acked the session, or the row was read
+ *    from the cloud store (`agent-session-cloud-sync-state-constants.ts`).
+ *  - `pending` with NO `transcriptDisposition` -> `Uploading`. The whole
+ *    session is still in the desktop sync outbox and uploads on its own: the
+ *    producer stamps a transcript verdict only on a row that is already in the
+ *    cloud, and `CloudSyncStateBadge` gives this exact case its "still
+ *    uploading to the cloud" tooltip (`cloud-sync-state-badge.tsx`).
+ *
+ * Mapped per Marisol's product answer on ISS-12532 (2026-10-16, thread
+ * th_eRu7OSWbU_aZRlpOBd4rQ):
+ *
+ *  - `pending` WITH a `transcriptDisposition` -> `Uploading`. The session is in
+ *    the cloud and only its transcript is behind (ISS-4647): still uploading,
+ *    retrying after a failed attempt, or paused (ISS-9884). A paused upload
+ *    may show the pulsing in-flight dot.
+ *  - `dead_letter` -> `Failed`. The lane still retries it on its own schedule
+ *    (`apps/desktop/src/main/agent-sync/agent-session-dead-letter-sync-state.ts`).
+ *  - `abandoned` -> `Failed`. No path in the running lane reaches it today.
+ *
+ * Still open on that thread: what the `Failed` badge's retry action does for
+ * `dead_letter` and `abandoned`. No upload-retry endpoint exists yet, so this
+ * function returns a state only and the retry wiring (`onRetry`) stays the
+ * host's job.
+ *
+ * Nothing maps to `LocalOnly`: the outbox enqueues every session it sees, so
+ * "never shared" is a fact the share record will have to carry, not the sync
+ * state. An absent (version-skewed) `cloudSyncState` returns `null` too, the
+ * same "unknown, render nothing" reading `CloudSyncStateBadge` uses.
+ *
+ * The switch is exhaustive, so a new `AgentSessionCloudSyncState` member fails
+ * typecheck here until someone decides what it shows.
+ */
+export function resolveSessionUploadState(session: {
+  cloudSyncState?: AgentSessionCloudSyncState;
+  transcriptDisposition?: TranscriptDisposition;
+}): SessionUploadState | null {
+  const { cloudSyncState } = session;
+  if (cloudSyncState === undefined) {
+    return null;
+  }
+  switch (cloudSyncState) {
+    case AgentSessionCloudSyncState.Synced:
+      return SessionUploadState.Shared;
+    case AgentSessionCloudSyncState.Pending:
+      // Whole session in the outbox, or only its transcript behind (syncing,
+      // retrying, or paused): both read as Uploading (Marisol, ISS-12532).
+      return SessionUploadState.Uploading;
+    case AgentSessionCloudSyncState.DeadLetter:
+      return SessionUploadState.Failed;
+    case AgentSessionCloudSyncState.Abandoned:
+      return SessionUploadState.Failed;
+    default: {
+      const unmapped: never = cloudSyncState;
+      return unmapped;
+    }
+  }
+}

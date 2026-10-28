@@ -20,7 +20,7 @@ import { WidgetState } from "./widget-state";
 
 /**
  * The factual anchor of the screen, and the thing everything below is derived
- * from: period spend split by how the originating session ENDED.
+ * from: period cost split by how the originating session ENDED.
  *
  * It is keyed on the canonical `SpendOutcome` classifier and nothing else, the
  * same key the Lost-work screen uses, so the two can never disagree about which
@@ -28,14 +28,14 @@ import { WidgetState } from "./widget-state";
  *
  * "Outcome unknown" is its own bucket. A session with no recorded outcome
  * genuinely means none was ever observed. Folding it into "Ended clean" would
- * overstate healthy spend; folding it into "Ended with error" would invent
+ * overstate healthy cost; folding it into "Ended with error" would invent
  * waste that was never seen.
  */
 
 /**
  * Outcome -> bar color. "Outcome unknown" takes `--chart-3`, the same token the
  * Lost-work screen gives its Unattributed class, because they are the same
- * sessions seen as dollars instead of hours. Clean spend is achromatic: it is
+ * sessions seen as dollars instead of hours. Clean cost is achromatic: it is
  * the denominator the other two are read against, so it recedes.
  */
 // Keyed on `ClassifiedSpendOutcome`, not the full `SpendOutcome` union: this
@@ -51,7 +51,7 @@ const OUTCOME_BAR_CLASS: Record<ClassifiedSpendOutcome, string> = {
 };
 
 const UNAVAILABLE_REASON =
-  "The session-spend read did not return for this range, so the outcome split cannot be shown.";
+  "The session-cost read did not return for this range, so the outcome split cannot be shown.";
 
 type OutcomeDisplayRow = {
   readonly outcome: ClassifiedSpendOutcome;
@@ -77,10 +77,10 @@ export function SpendByOutcome({
       // fabricated zero.
       description={
         ready
-          ? `${formatUsd(totalSpendUsd)} of session spend in range, keyed on how each session ended. Measured, not estimated.`
-          : "Session spend in range, keyed on how each session ended. Measured, not estimated."
+          ? `${formatUsd(totalSpendUsd)} of session cost in range, keyed on how each session ended. Measured, not estimated.`
+          : "Session cost in range, keyed on how each session ended. Measured, not estimated."
       }
-      title="Spend by session outcome"
+      title="Cost by session outcome"
     >
       {renderSplit({ outcomes, ready, state })}
     </Section>

@@ -50,7 +50,8 @@ import {
  * its stem, not by this field.
  */
 const meta = {
-  title: "App Core/Agents/Session Timeline Cost Rail",
+  title: "Composites v1.0/Agents/Detail/Session Timeline Bar Labels",
+  tags: ["deprecated"],
   parameters: { layout: "padded" },
 } satisfies Meta<typeof SessionTimelineBarLabels>;
 

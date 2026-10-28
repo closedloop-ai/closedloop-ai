@@ -1,9 +1,12 @@
+import { AgentSessionListCapability } from "@repo/api/src/types/agent-session-list-contract";
+import { matchesPriorityFilter } from "@repo/api/src/types/priority-filter";
 import { STALE_SESSION_DISPLAY_THRESHOLD_HOURS } from "@repo/api/src/types/session-status";
 import type { SessionAttributionResolverCache } from "../src/main/agent-sync/agent-session-attribution.js";
 import type {
   AgentSessionUsageAggregate,
   RepositoryScopedSessionIdsOptions,
   SessionCursorRow,
+  SessionListCursorFacets,
   SessionListCursorPageRequest,
 } from "../src/main/agent-sync/agent-session-read-model.js";
 import type { SyncedAgentSession } from "../src/main/agent-sync/agent-session-sync-contract.js";
@@ -11,9 +14,10 @@ import type {
   AgentSessionSyncSource,
   SyncedSessionLoadOptions,
 } from "../src/main/agent-sync/agent-session-sync-source.js";
-import { isDisplayedStatusParityEnabled } from "../src/main/session/displayed-status-parity-gate.js";
 import { matchesStatusFilter as matchesSharedStatusFilter } from "../src/main/session/session-status-filter-match.js";
+import { DEFAULT_LIST_LIMIT } from "../src/main/session/shared-agent-sessions-list-bounds.js";
 import type { BillingMode } from "../src/shared/billing-mode.js";
+import type { SharedAgentSessionListResponse } from "../src/shared/shared-agent-sessions-contract.js";
 
 /**
  * Shared canned-session fixtures + fake `AgentSessionSyncSource` for the
@@ -124,7 +128,9 @@ export function createFakeSource(
       // applied. Its ordering model mirrors the real
       // `sessionDateWindowTsExpr`: `updated_at` IS the activity basis here, so a
       // last-activity sort is the cursor order the rows already carry, and only
-      // `sortDir` can reorder them.
+      // `sortDir` can reorder them. An ascending read flips the KEY only: a
+      // stable sort keeps tied rows in cursor order, so ties still close
+      // `id DESC` the way the real query does (ISS-9584).
       calls.push({
         kind: "listRepositoryScopedSessionIds",
         repositories: [...repositories],
@@ -139,7 +145,12 @@ export function createFakeSource(
         ...(scope?.endDate ? { endDate: scope.endDate } : {}),
       });
       const ordered =
-        scope?.sortDir === "asc" ? [...windowed].reverse() : windowed;
+        scope?.sortDir === "asc"
+          ? [...windowed].sort(
+              (a, b) =>
+                sessionDateMs(a.updated_at) - sessionDateMs(b.updated_at)
+            )
+          : windowed;
       return ordered.flatMap((row) => {
         const loaded = sessions[row.id];
         const repositoryFullName =
@@ -211,7 +222,15 @@ function filterCursorRowsForPageRequest(
   // this exact filter rather than restating the window comparison.
   request: Pick<
     SessionListCursorPageRequest,
-    "startDate" | "endDate" | "search" | "statuses"
+    | "startDate"
+    | "endDate"
+    | "search"
+    | "statuses"
+    | "userIds"
+    | "harness"
+    | "harnesses"
+    | "models"
+    | "priorities"
   >
 ): SessionCursorRow[] {
   return rows.filter((row) => {
@@ -221,7 +240,8 @@ function filterCursorRowsForPageRequest(
         request.startDate ||
         request.endDate ||
         request.search ||
-        (request.statuses && request.statuses.length > 0)
+        (request.statuses && request.statuses.length > 0) ||
+        hasFakeCursorFacet(request)
       );
     }
     const activityAt = sessionDateMs(row.updated_at);
@@ -243,17 +263,53 @@ function filterCursorRowsForPageRequest(
       request.statuses &&
       request.statuses.length > 0 &&
       !request.statuses.some((status) =>
-        matchesSharedStatusFilter(
-          loaded,
-          status,
-          isDisplayedStatusParityEnabled()
-        )
+        matchesSharedStatusFilter(loaded, status)
       )
     ) {
       return false;
     }
-    return true;
+    // ISS-12439: the Owner, Harness, Model and Priority facets, honored with
+    // the hydrated fold's own predicates, as the port contract requires.
+    return matchesFakeCursorFacets(loaded, request);
   });
+}
+
+function hasFakeCursorFacet(request: SessionListCursorFacets): boolean {
+  return Boolean(
+    request.userIds?.length ||
+      request.harness ||
+      request.harnesses?.length ||
+      request.models?.length ||
+      request.priorities?.length
+  );
+}
+
+function matchesFakeCursorFacets(
+  session: SyncedAgentSession,
+  request: SessionListCursorFacets
+): boolean {
+  if (
+    request.userIds?.length &&
+    !request.userIds.includes(session.userId ?? "")
+  ) {
+    return false;
+  }
+  if (request.harness && session.harness !== request.harness) {
+    return false;
+  }
+  if (
+    request.harnesses?.length &&
+    !request.harnesses.includes(session.harness ?? "unknown")
+  ) {
+    return false;
+  }
+  if (
+    request.models?.length &&
+    !request.models.includes(session.model ?? "unknown")
+  ) {
+    return false;
+  }
+  return matchesPriorityFilter(session.priority, request.priorities);
 }
 
 function fakeMatchesCursorSearch(
@@ -261,7 +317,7 @@ function fakeMatchesCursorSearch(
   search: string
 ): boolean {
   const needle = search.toLowerCase();
-  return [
+  const fields = [
     session.name,
     session.externalSessionId,
     session.harness,
@@ -269,11 +325,8 @@ function fakeMatchesCursorSearch(
     session.branch,
     session.attribution?.repositoryFullName,
     session.attribution?.baseBranch,
-  ]
-    .filter((value): value is string => Boolean(value))
-    .join(" ")
-    .toLowerCase()
-    .includes(needle);
+  ];
+  return fields.some((value) => value?.toLowerCase().includes(needle));
 }
 
 function sessionDateMs(value: string): number {
@@ -287,7 +340,7 @@ export function defaultSessions(): Record<string, SyncedAgentSession> {
       id: "session-a",
       harness: "claude",
       billingMode: "api",
-      repositoryFullName: "closedloop-ai/example-repo",
+      repositoryFullName: "closedloop-ai/closedloop-ai",
       status: "completed",
     }),
     "session-b": session({
@@ -327,6 +380,12 @@ export type SessionFixtureOptions = {
   lastActivityAt?: string;
   awaitingInputSince?: string | null;
   endedAt?: string | null;
+  /**
+   * ISS-4586: the durable ERROR-vs-INACTIVE verdict the desktop stale-session
+   * sweep reaps a row to (`session-maintenance.ts`). Absent means unset, which
+   * that sweep reads as Inactive.
+   */
+  endsWithError?: boolean | null;
   branch?: string | null;
   attribution?: SyncedAgentSession["attribution"];
   metadata?: SyncedAgentSession["metadata"];
@@ -367,6 +426,31 @@ export function staleActivityAt(): string {
     Date.now() - (STALE_SESSION_DISPLAY_THRESHOLD_HOURS + 1) * 60 * 60 * 1000
   ).toISOString();
 }
+
+/**
+ * The activity anchor a shared-oracle case describes, as the desktop fixtures
+ * store it. One helper rather than a `staleAnchor ? … : …` ternary per suite,
+ * so every consumer reads the staleness dimension the same way.
+ */
+export function parityCaseActivityAt(parityCase: {
+  readonly staleAnchor: boolean;
+}): string {
+  return parityCase.staleAnchor ? staleActivityAt() : recentActivityAt();
+}
+
+/**
+ * The `endedAt` a shared-oracle case describes: a fixed instant well before
+ * both activity anchors {@link parityCaseActivityAt} can produce. Mirrors
+ * `resolveShapeEndedAt` in the cloud harness.
+ */
+export function parityCaseEndedAt(parityCase: {
+  readonly ended: boolean;
+}): string | null {
+  return parityCase.ended ? PARITY_ENDED_AT : null;
+}
+
+/** The end instant every desktop parity fixture uses for an ended case. */
+const PARITY_ENDED_AT = "2026-01-01T02:00:00.000Z";
 
 export function session(options: SessionFixtureOptions): SyncedAgentSession {
   return {
@@ -430,6 +514,12 @@ function sessionOptionalFields(
       ? { activitySegmentRows: options.activitySegmentRows }
       : {}),
     ...(options.tokenEvents ? { tokenEvents: options.tokenEvents } : {}),
+    // PRESENCE, not truthiness. `false` and `null` are both meaningful stored
+    // values for this durable column, so a truthiness spread would silently
+    // omit exactly the case under test.
+    ...("endsWithError" in options
+      ? { endsWithError: options.endsWithError }
+      : {}),
   };
 }
 
@@ -490,6 +580,29 @@ function sessionEvents(id: string): SyncedAgentSession["events"] {
 
 export function cursor(id: string, updatedAt = "2026-01-01T00:00:00.000Z") {
   return { id, updated_at: updatedAt };
+}
+
+/**
+ * The response a local list read produces when it RAN and matched nothing.
+ *
+ * ISS-9555: distinct from `emptySharedAgentSessionsListResponse()`, which is the
+ * shape for a read that never happened and deliberately omits `pageInfo` — the
+ * omission is the wire signal a consumer uses to tell the two apart.
+ */
+export function emptyLocalSessionsPage(
+  limit: number = DEFAULT_LIST_LIMIT
+): SharedAgentSessionListResponse {
+  return {
+    items: [],
+    total: 0,
+    idleCount: 0,
+    viewerScope: "self",
+    pageInfo: {
+      capability: AgentSessionListCapability.ServerPaginationV1,
+      limit,
+      offset: 0,
+    },
+  };
 }
 
 /**

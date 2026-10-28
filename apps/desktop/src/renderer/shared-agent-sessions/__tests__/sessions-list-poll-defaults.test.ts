@@ -1,9 +1,13 @@
-import { agentSessionKeys } from "@repo/app/agents/hooks/use-agent-sessions";
-import { QueryClient } from "@tanstack/react-query";
-import { describe, expect, it } from "vitest";
+import {
+  agentSessionKeys,
+  SESSIONS_OUTSIDE_WINDOW_PROBE_FILTERS,
+} from "@repo/app/agents/hooks/agent-session-keys";
+import { QueryClient, type QueryKey } from "@tanstack/react-query";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   applyDesktopSessionsListPollDefaults,
   DESKTOP_SESSIONS_DETAIL_REFETCH_INTERVAL_MS,
+  DESKTOP_SESSIONS_HIDDEN_REFETCH_INTERVAL_MS,
   DESKTOP_SESSIONS_LIST_REFETCH_INTERVAL_MS,
 } from "../sessions-list-poll-defaults";
 
@@ -22,9 +26,9 @@ import {
  * a number. Resolve it the way React Query does — call it with the query — so
  * these assertions read the value the scheduler would actually use.
  */
-function resolveInterval(interval: unknown): unknown {
+function resolveInterval(interval: unknown, queryKey: QueryKey): unknown {
   return typeof interval === "function"
-    ? (interval as (query: unknown) => unknown)(undefined)
+    ? (interval as (query: { queryKey: QueryKey }) => unknown)({ queryKey })
     : interval;
 }
 
@@ -33,12 +37,11 @@ describe("applyDesktopSessionsListPollDefaults", () => {
     const client = new QueryClient();
     applyDesktopSessionsListPollDefaults(client);
 
-    const listDefaults = client.getQueryDefaults(
-      agentSessionKeys.list("local", {})
-    );
+    const listKey = agentSessionKeys.list("local", {});
+    const listDefaults = client.getQueryDefaults(listKey);
     // Service-aware: a FUNCTION, which with no observed read yet resolves to the
     // floor — byte-identical to the fixed cadence it replaced.
-    expect(resolveInterval(listDefaults.refetchInterval)).toBe(
+    expect(resolveInterval(listDefaults.refetchInterval, listKey)).toBe(
       DESKTOP_SESSIONS_LIST_REFETCH_INTERVAL_MS
     );
     // Load-bearing: must keep polling while the window is hidden.
@@ -55,10 +58,9 @@ describe("applyDesktopSessionsListPollDefaults", () => {
     // The org Sessions view reads its list + summary through `pageData`, so its
     // key must carry the same fast list-cadence fallback or a hidden renderer's
     // table + cards would stay stuck on the initial empty fetch.
-    const pageDataDefaults = client.getQueryDefaults(
-      agentSessionKeys.pageData("local", {})
-    );
-    expect(resolveInterval(pageDataDefaults.refetchInterval)).toBe(
+    const pageDataKey = agentSessionKeys.pageData("local", {});
+    const pageDataDefaults = client.getQueryDefaults(pageDataKey);
+    expect(resolveInterval(pageDataDefaults.refetchInterval, pageDataKey)).toBe(
       DESKTOP_SESSIONS_LIST_REFETCH_INTERVAL_MS
     );
     expect(pageDataDefaults.refetchIntervalInBackground).toBe(true);
@@ -68,10 +70,9 @@ describe("applyDesktopSessionsListPollDefaults", () => {
     const client = new QueryClient();
     applyDesktopSessionsListPollDefaults(client);
 
-    const detailDefaults = client.getQueryDefaults(
-      agentSessionKeys.detail("local", "session-1")
-    );
-    expect(detailDefaults.refetchInterval).toBe(
+    const detailKey = agentSessionKeys.detail("local", "session-1");
+    const detailDefaults = client.getQueryDefaults(detailKey);
+    expect(resolveInterval(detailDefaults.refetchInterval, detailKey)).toBe(
       DESKTOP_SESSIONS_DETAIL_REFETCH_INTERVAL_MS
     );
     // Load-bearing: an open detail on a permanently-hidden renderer never fires
@@ -99,4 +100,95 @@ describe("applyDesktopSessionsListPollDefaults", () => {
     expect(analyticsDefaults.refetchInterval).toBeUndefined();
     expect(analyticsDefaults.refetchIntervalInBackground).toBeUndefined();
   });
+
+  it("polls the outside-window probe on the slow clock while visible (ISS-11913)", () => {
+    const client = new QueryClient();
+    applyDesktopSessionsListPollDefaults(client);
+
+    const probeKey = agentSessionKeys.list(
+      "local",
+      SESSIONS_OUTSIDE_WINDOW_PROBE_FILTERS
+    );
+    const probeDefaults = client.getQueryDefaults(probeKey);
+    expect(resolveInterval(probeDefaults.refetchInterval, probeKey)).toBe(
+      DESKTOP_SESSIONS_HIDDEN_REFETCH_INTERVAL_MS
+    );
+    expect(probeDefaults.refetchIntervalInBackground).toBe(true);
+  });
+
+  describe("the list service-time estimate (ISS-11913)", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it.each([
+      ["a list read raises", {}, SLOW_READ_MS],
+      [
+        "the outside-window probe leaves",
+        SESSIONS_OUTSIDE_WINDOW_PROBE_FILTERS,
+        DESKTOP_SESSIONS_LIST_REFETCH_INTERVAL_MS,
+      ],
+    ])("%s the list cadence", async (_case, filters, expected) => {
+      vi.useFakeTimers();
+      const client = new QueryClient();
+      applyDesktopSessionsListPollDefaults(client);
+
+      const read = client.fetchQuery({
+        queryFn: () =>
+          new Promise((resolve) => {
+            setTimeout(() => resolve({}), SLOW_READ_MS);
+          }),
+        queryKey: agentSessionKeys.list("local", filters),
+      });
+      await vi.advanceTimersByTimeAsync(SLOW_READ_MS);
+      await read;
+
+      const listKey = agentSessionKeys.list("local", {});
+      expect(
+        resolveInterval(
+          client.getQueryDefaults(listKey).refetchInterval,
+          listKey
+        )
+      ).toBe(expected);
+    });
+  });
+
+  describe("while the renderer is hidden", () => {
+    const originalHidden = Object.getOwnPropertyDescriptor(document, "hidden");
+
+    afterEach(() => {
+      if (originalHidden) {
+        Object.defineProperty(document, "hidden", originalHidden);
+      } else {
+        Reflect.deleteProperty(document, "hidden");
+      }
+    });
+
+    it("drops the list, page-data and detail polls to the slow hidden cadence (operator ruling 2026-10-05)", () => {
+      Object.defineProperty(document, "hidden", {
+        configurable: true,
+        get: () => true,
+      });
+      const client = new QueryClient();
+      applyDesktopSessionsListPollDefaults(client);
+
+      for (const key of [
+        agentSessionKeys.list("local", {}),
+        agentSessionKeys.pageData("local", {}),
+        agentSessionKeys.detail("local", "session-1"),
+      ]) {
+        const defaults = client.getQueryDefaults(key);
+        expect(resolveInterval(defaults.refetchInterval, key)).toBe(
+          DESKTOP_SESSIONS_HIDDEN_REFETCH_INTERVAL_MS
+        );
+        // Still polling while hidden, so a permanently-hidden renderer heals.
+        expect(defaults.refetchIntervalInBackground).toBe(true);
+        // Re-show refetches, which re-arms the visible cadence.
+        expect(defaults.refetchOnWindowFocus).toBe("always");
+      }
+    });
+  });
 });
+
+/** Between the list floor and ceiling, so a tracked read moves the cadence. */
+const SLOW_READ_MS = 10_000;

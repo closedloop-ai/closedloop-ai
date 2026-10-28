@@ -1,3 +1,5 @@
+import { GitHubConnectErrorCode } from "@repo/api/src/types/github-clerk-link";
+import { GITHUB_ERROR_CODES } from "@repo/api/src/types/github-status";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createGitHubOAuthReturnToCookie,
@@ -56,11 +58,28 @@ describe("GET /api/integrations/github/callback", () => {
     mockAuth.mockResolvedValue({ userId: null, orgId: null });
 
     const response = await GET(
-      callbackRequest({ code: "code-1", state: "state-1" })
+      callbackRequest({ installation_id: "42", state: "state-1" })
     );
 
     expect(response.headers.get("location")).toContain(
       "code=not_authenticated"
+    );
+    expect(setCookieHeader(response)).toContain("github_oauth_state=");
+    expect(setCookieHeader(response)).toContain("github_oauth_return_to=");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("reports a user-cancelled install before checking required params", async () => {
+    const response = await GET(
+      callbackRequest({
+        error: "access_denied",
+        error_description: "The user denied the request",
+        state: "state-1",
+      })
+    );
+
+    expect(response.headers.get("location")).toBe(
+      `http://localhost:3000/settings?github=error&code=${GITHUB_ERROR_CODES.OAUTH_FAILED}`
     );
     expect(setCookieHeader(response)).toContain("github_oauth_state=");
     expect(setCookieHeader(response)).toContain("github_oauth_return_to=");
@@ -84,7 +103,13 @@ describe("GET /api/integrations/github/callback", () => {
     });
 
     const response = await GET(
-      callbackRequest({ code: "code-1", state: "state-1" })
+      // GitHub still appends `code` while OAuth-during-install stays enabled
+      // on the App; the callback must ignore it (PLN-1742 M5).
+      callbackRequest({
+        code: "code-1",
+        installation_id: "42",
+        state: "state-1",
+      })
     );
 
     expect(response.headers.get("location")).toBe(
@@ -95,9 +120,61 @@ describe("GET /api/integrations/github/callback", () => {
       "http://api.example.test/integrations/github/connect",
       expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({ code: "code-1" }),
+        body: JSON.stringify({ installationId: "42" }),
       })
     );
+  });
+
+  it("rejects a callback without an installation_id", async () => {
+    const response = await GET(callbackRequest({ state: "state-1" }));
+
+    expect(response.headers.get("location")).toContain("code=missing_params");
+    expect(setCookieHeader(response)).toContain("github_oauth_state=");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects a callback whose state does not match the OAuth cookie", async () => {
+    const response = await GET(
+      callbackRequest({
+        installation_id: "42",
+        state: "attacker-state",
+      })
+    );
+
+    expect(response.headers.get("location")).toBe(
+      `http://localhost:3000/settings?github=error&code=${GITHUB_ERROR_CODES.INVALID_STATE}`
+    );
+    expect(setCookieHeader(response)).toContain("github_oauth_state=");
+    expect(setCookieHeader(response)).toContain("github_oauth_return_to=");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects a replay after the OAuth state cookie has been cleared", async () => {
+    mockCookieGet.mockReturnValue(undefined);
+
+    const response = await GET(
+      callbackRequest({ installation_id: "42", state: "state-1" })
+    );
+
+    expect(response.headers.get("location")).toBe(
+      `http://localhost:3000/settings?github=error&code=${GITHUB_ERROR_CODES.INVALID_STATE}`
+    );
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("clears OAuth cookies and falls back to settings when the callback throws", async () => {
+    mockAuth.mockRejectedValueOnce(new Error("clerk down"));
+
+    const response = await GET(
+      callbackRequest({ installation_id: "42", state: "state-1" })
+    );
+
+    expect(response.headers.get("location")).toBe(
+      `http://localhost:3000/settings?github=error&code=${GITHUB_ERROR_CODES.OAUTH_FAILED}`
+    );
+    expect(setCookieHeader(response)).toContain("github_oauth_state=");
+    expect(setCookieHeader(response)).toContain("github_oauth_return_to=");
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("falls back to settings when the return cookie state does not match", async () => {
@@ -118,12 +195,57 @@ describe("GET /api/integrations/github/callback", () => {
     });
 
     const response = await GET(
-      callbackRequest({ code: "code-1", state: "state-1" })
+      callbackRequest({ installation_id: "42", state: "state-1" })
     );
 
     expect(response.headers.get("location")).toBe(
       "http://localhost:3000/settings?github=connected"
     );
+  });
+
+  it("redirects account changes to confirmation without carrying returnTo", async () => {
+    const returnCookie = createGitHubOAuthReturnToCookie({
+      issuedAt: Date.now(),
+      returnTo: "/acme/build/branch-1",
+      state: "state-1",
+    });
+    mockCookieGet.mockImplementation((name: string) => {
+      if (name === GITHUB_OAUTH_STATE_COOKIE) {
+        return { value: "state-1" };
+      }
+      if (name === GITHUB_OAUTH_RETURN_TO_COOKIE) {
+        return { value: returnCookie };
+      }
+      return undefined;
+    });
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          data: {
+            status: "requires_confirmation",
+            priorAccount: {
+              accountId: "account-old",
+              accountLogin: "old-org",
+            },
+            newAccount: {
+              accountId: "account-new",
+              accountLogin: "new-org",
+            },
+            newInstallationId: "99",
+          },
+        }),
+    } as Response);
+
+    const response = await GET(
+      callbackRequest({ installation_id: "42", state: "state-1" })
+    );
+
+    expect(response.headers.get("location")).toBe(
+      "http://localhost:3000/settings?github=requires_confirmation&priorAccountId=account-old&priorAccountLogin=old-org&newAccountId=account-new&newAccountLogin=new-org&newInstallationId=99"
+    );
+    expect(setCookieHeader(response)).toContain("github_oauth_state=");
+    expect(setCookieHeader(response)).toContain("github_oauth_return_to=");
   });
 
   it("returns connection failures to a verified Branch View path", async () => {
@@ -149,7 +271,7 @@ describe("GET /api/integrations/github/callback", () => {
     });
 
     const response = await GET(
-      callbackRequest({ code: "code-1", state: "state-1" })
+      callbackRequest({ installation_id: "42", state: "state-1" })
     );
 
     expect(response.headers.get("location")).toBe(
@@ -182,13 +304,62 @@ describe("GET /api/integrations/github/callback", () => {
     });
 
     const response = await GET(
-      callbackRequest({ code: "code-1", state: "state-1" })
+      callbackRequest({ installation_id: "42", state: "state-1" })
     );
 
     expect(response.headers.get("location")).toBe(
       "http://localhost:3000/settings?github=error&code=connection_failed"
     );
     expect(setCookieHeader(response)).toContain("github_oauth_return_to=");
+  });
+  it("routes a link-required refusal to the linking page with the pending installation", async () => {
+    // The App is installed by now, so a generic "try again" would be a dead
+    // end: linking is the one action that completes this claim.
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      text: () =>
+        Promise.resolve(
+          JSON.stringify({
+            success: false,
+            error:
+              "Connect your GitHub account before claiming this installation.",
+            code: GitHubConnectErrorCode.LinkRequired,
+          })
+        ),
+    } as Response);
+
+    const response = await GET(
+      callbackRequest({ installation_id: "42", state: "state-1" })
+    );
+
+    expect(response.headers.get("location")).toBe(
+      "http://localhost:3000/connect/github/link?resumeInstallationId=42"
+    );
+    expect(setCookieHeader(response)).toContain("github_oauth_state=");
+  });
+
+  it("keeps the generic error for refusals the caller cannot act on", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      text: () =>
+        Promise.resolve(
+          JSON.stringify({
+            success: false,
+            error:
+              "You must be an owner of the acme GitHub organization to claim this installation.",
+          })
+        ),
+    } as Response);
+
+    const response = await GET(
+      callbackRequest({ installation_id: "42", state: "state-1" })
+    );
+
+    expect(response.headers.get("location")).toBe(
+      "http://localhost:3000/settings?github=error&code=connection_failed"
+    );
   });
 });
 

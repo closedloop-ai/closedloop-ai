@@ -61,8 +61,9 @@ export function dossierNow(input: NormalizedSession): string {
  * Clone the frozen normalized.json into the import input. fileModifiedAt is a
  * capture-time mtime, not a semantic fact — nulled so the import can never take
  * the RECENT_ACTIVITY_MS reactivation branch (status is deterministically
- * "completed"). The cast is sound: Layer 1 deep-equals this exact JSON against
- * the typed parser output.
+ * "completed"). fileCreatedAt (ISS-12251) is a capture-time birth time, cleared
+ * for the same reason: it is not a semantic fact. The cast is sound: Layer 1
+ * deep-equals this exact JSON against the typed parser output.
  */
 export function loadLayer2Input(d: GoldenDossier): Layer2Input {
   if (!d.normalized) {
@@ -72,6 +73,7 @@ export function loadLayer2Input(d: GoldenDossier): Layer2Input {
     JSON.stringify(d.normalized)
   ) as unknown as NormalizedSession;
   input.fileModifiedAt = null;
+  input.fileCreatedAt = undefined;
   // FEA-3128: frozen normalized.json predates prLinks — supply the default so
   // the import Zod schema (.strict()) accepts it.
   if (!("prLinks" in input)) {

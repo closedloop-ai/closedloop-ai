@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Pre-image log for the one-shot ISS-8463 operator backfill, kept only so that backfill can be reversed."
+}

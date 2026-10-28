@@ -113,7 +113,41 @@ const otlpDescriptor: protobuf.INamespace = {
                 v1: {
                   nested: {
                     Gauge: { fields: {} },
-                    Sum: { fields: {} },
+                    // ISS-7352: `Sum` was declared field-less because the
+                    // receiver only ever read metric NAMES, which made every
+                    // counter's data points — the measurements themselves —
+                    // decode to `{}`. `claude_code.cost.usage` is a Sum, so
+                    // persisting it needs the points modeled. Only the fields
+                    // read downstream are declared; unknown wire fields are
+                    // skipped by protobufjs as usual.
+                    NumberDataPoint: {
+                      oneofs: { value: { oneof: ["asDouble", "asInt"] } },
+                      fields: {
+                        startTimeUnixNano: { type: "fixed64", id: 2 },
+                        timeUnixNano: { type: "fixed64", id: 3 },
+                        asDouble: { type: "double", id: 4 },
+                        asInt: { type: "sfixed64", id: 6 },
+                        attributes: {
+                          rule: "repeated",
+                          type: "opentelemetry.proto.common.v1.KeyValue",
+                          id: 7,
+                        },
+                      },
+                    },
+                    Sum: {
+                      fields: {
+                        dataPoints: {
+                          rule: "repeated",
+                          type: "opentelemetry.proto.metrics.v1.NumberDataPoint",
+                          id: 1,
+                        },
+                        // `AggregationTemporality` on the wire; kept as int32
+                        // so an unrecognized future member decodes to its
+                        // number rather than failing the whole export.
+                        aggregationTemporality: { type: "int32", id: 2 },
+                        isMonotonic: { type: "bool", id: 3 },
+                      },
+                    },
                     Histogram: { fields: {} },
                     ExponentialHistogram: { fields: {} },
                     Summary: { fields: {} },
@@ -188,6 +222,12 @@ const otlpDescriptor: protobuf.INamespace = {
                           type: "opentelemetry.proto.common.v1.AnyValue",
                           id: 5,
                         },
+                        // ISS-7352: the OTLP-native home for an event's name.
+                        // Claude Code stamps `event.name` as an attribute
+                        // today, but declaring the real field means a producer
+                        // that moves to it keeps being recognized instead of
+                        // silently going uncaptured.
+                        eventName: { type: "string", id: 12 },
                         attributes: {
                           rule: "repeated",
                           type: "opentelemetry.proto.common.v1.KeyValue",

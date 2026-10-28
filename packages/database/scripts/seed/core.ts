@@ -1,3 +1,7 @@
+import {
+  artifactRepositorySnapshotSchema,
+  SnapshotSource,
+} from "@repo/api/src/types/document";
 import { SlugPrefix } from "@repo/api/src/types/slug-prefix";
 import {
   ArtifactSubtype,
@@ -11,6 +15,7 @@ import {
 } from "../../generated/client";
 import type { TransactionClient } from "../../generated/internal/prismaNamespace";
 import { pickRequired } from "./allocations";
+import { seedBranchProductEvidence } from "./branch-product-evidence";
 import {
   createSeedBatchTransactionRunner,
   createUpsertCounts,
@@ -34,8 +39,17 @@ import { buildLongTailIndexSequence } from "./rng";
 const SLUG_TYPE_PREFIXES = Object.values(SlugPrefix);
 
 /**
+ * Valid empty repository snapshot for seeded documents. Validated at module load
+ * via the canonical schema so a schema drift is caught immediately.
+ */
+const SEED_REPOSITORY_SNAPSHOT = artifactRepositorySnapshotSchema.parse({
+  repositories: [],
+  source: SnapshotSource.None,
+});
+
+/**
  * Shape of the data returned by seedCoreEntities so downstream seed modules
- * (e.g. documents, loops, GitHub integrations) can reference stable IDs
+ * (e.g. documents, GitHub integrations) can reference stable IDs
  * without re-deriving or re-querying. Downstream modules MUST consume these
  * IDs rather than recompute via deterministicUuid() — that pattern previously
  * created two owners for the same rows and let payloads silently drift.
@@ -452,9 +466,12 @@ async function seedArtifacts(
     ...templateDefinitions,
   ];
   // Reserve slots for the fixed non-document artifacts seeded below — one
-  // BRANCH, one DEPLOYMENT, and one SESSION — so the total artifact count
-  // lands on the profile target rather than overshooting it.
-  const documentTarget = Math.max(0, plan.targets.artifacts - 3);
+  // DEPLOYMENT, two Branch/Session pairs, and the two PR-comment proof
+  // Branch/Session pairs — so the total artifact count lands on the profile
+  // target rather than overshooting it. Below 9 + baseDocumentDefinitions.length
+  // the cut falls on the base definitions themselves, templates first: the e2e
+  // profile keeps one Seed Template and the minimal profile keeps one Document.
+  const documentTarget = Math.max(0, plan.targets.artifacts - 9);
   const scaledDocumentCount = Math.max(
     0,
     documentTarget - baseDocumentDefinitions.length
@@ -504,6 +521,11 @@ async function seedArtifacts(
         "seedArtifacts.projectIds"
       );
 
+      const documentDetail = {
+        templateForType: def.templateForType ?? null,
+        repositorySnapshot: SEED_REPOSITORY_SNAPSHOT,
+      };
+
       await upsertRow({
         model: "Artifact",
         id: artifactId,
@@ -522,16 +544,23 @@ async function seedArtifacts(
               priority: Priority.MEDIUM,
               createdById: userId,
               assigneeId: userId,
-              document: {
-                create: {
-                  templateForType: def.templateForType ?? null,
-                  repositorySnapshot: {},
-                },
-              },
+              document: { create: documentDetail },
             },
             update: {
               name: def.name,
               status: def.status,
+              // Re-seeding a database an earlier seed already populated takes
+              // this branch, so the snapshot has to be repaired here too — the
+              // pre-ISS-7104 seed stored `{}`, and those rows keep failing the
+              // canonical parse on every read until they are rewritten. Nested
+              // upsert (not update) because the detail row is absent whenever
+              // the artifact outlived a partial seed.
+              document: {
+                upsert: {
+                  create: documentDetail,
+                  update: { repositorySnapshot: SEED_REPOSITORY_SNAPSHOT },
+                },
+              },
             },
             select: { id: true },
           }),
@@ -731,7 +760,6 @@ async function seedArtifacts(
           session: {
             create: {
               computeTargetId,
-              userId,
               externalSessionId: `seed-session-${organizationId}`,
               harness: "claude",
               model: "claude-opus",
@@ -739,6 +767,18 @@ async function seedArtifacts(
               repositoryFullName: "seed-org/seed-repo",
               sessionStartedAt,
               sessionUpdatedAt,
+              // ISS-8515: named explicitly, because the column lost its
+              // `DEFAULT 0` in this same change. This is the wired `pnpm seed`
+              // local-dev bootstrap, so an omission here would hand every fresh
+              // developer database a NULL cost where it used to get 0 — a
+              // different starting state than the one this seed has always
+              // described. The seeded session carries no token rows, so 0 is
+              // also the honest value.
+              estimatedCost: 0,
+              // ISS-6463: NOT NULL. Seeded at the start time, which is what the
+              // ingest writer's GREATEST floor produces for a session with no
+              // events — and this seed creates none.
+              lastActivityAt: sessionStartedAt,
             },
           },
         },
@@ -751,6 +791,19 @@ async function seedArtifacts(
   });
 
   artifactIds.push(sessionArtifactId);
+
+  // Keep this pair outside the general comment/evaluation corpus so the E2E
+  // native-comment lifecycle has no independently qualifying seeded author.
+  await seedBranchProductEvidence(prisma, {
+    organizationId,
+    githubRepositoryId,
+    projectId: pickRequired(
+      projectIds,
+      0,
+      "seedArtifacts.collaborators.projectIds"
+    ),
+    computeTargetId,
+  });
 
   logUpsertSummary(counts);
 

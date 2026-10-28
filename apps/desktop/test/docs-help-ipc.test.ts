@@ -8,7 +8,7 @@
  * invoking the real handler registrations, not source-text scans.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   createDocsHelpService,
   type DocsHelpService,

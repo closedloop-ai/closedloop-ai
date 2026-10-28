@@ -10,11 +10,15 @@
  * `cost-kpi.test.ts` instead of being reachable from only one file.
  */
 
+import { GitHubPRState } from "@repo/api/src/types/github";
+import { SessionArtifactLinkKind } from "@repo/api/src/types/session-artifact-link";
 import { expect, vi } from "vitest";
 import {
   type ProjectedPrIdentityInput,
   projectedPrIdentity,
 } from "@/app/insights/merged-pr-loc";
+import { GITHUB_REPO_SCOPE } from "@/lib/github/github-connection-credential";
+import { isRecord } from "@/lib/type-guards";
 
 /** The organization every fixture and org-scoping assertion is keyed to. */
 export const ORG = "org-1";
@@ -40,6 +44,29 @@ export function collectKey(
 
 export function findOrgIds(value: unknown, found: string[]): void {
   collectKey(value, "organizationId", found);
+}
+
+/**
+ * ISS-8153: true when a branch-donut `where`'s AND arms carry the owned-rows
+ * has-PR (`some`) / no-PR (`none`) arm — the canonical predicates replaced the
+ * pointer test, so the fakes route donut counts on this shape.
+ */
+export function hasOwnedPrArm(where: unknown, kind: "some" | "none"): boolean {
+  if (!where || typeof where !== "object") {
+    return false;
+  }
+  const arms = (where as { AND?: unknown }).AND;
+  if (!Array.isArray(arms)) {
+    return false;
+  }
+  return arms.some((arm) => {
+    const details = (
+      arm as {
+        artifact?: { is?: { pullRequestDetails?: Record<string, unknown> } };
+      }
+    )?.artifact?.is?.pullRequestDetails;
+    return Boolean(details && kind in details);
+  });
 }
 
 export function hasEmptyInPredicate(value: unknown): boolean {
@@ -106,6 +133,19 @@ export function makeFakeDb(fixtures: {
   // empty, i.e. a count of zero.
   priorMergedPrs?: ProjectedPrIdentityInput[];
   closedPrs?: ProjectedPrIdentityInput[];
+  /**
+   * ISS-12408: what the shared pull-request fold returns for the Delivery view.
+   * Each figure defaults to the distinct pull requests in the matching fixture
+   * above (`mergedPrs`, `closedPrs`, `priorMergedPrs`), which is what the
+   * statement would count over those rows.
+   */
+  pullRequestFacts?: {
+    merged?: number;
+    closedUnmerged?: number;
+    priorMerged?: number;
+    medianSize?: number | null;
+    sized?: number;
+  };
   checkStatusGroups?: unknown[];
   // ISS-4634: where-aware variant of `checkStatusGroups`. The check-status donut
   // is now windowed on the selected range, so a static fixture cannot tell a
@@ -115,8 +155,8 @@ export function makeFakeDb(fixtures: {
   checkStatusGroupsFor?: (where: Record<string, unknown>) => unknown[];
   reviewQueueGroups?: unknown[];
   sessions?: unknown[];
-  eventTypeGroups?: unknown[];
-  toolUsageGroups?: unknown[];
+  eventTypeGroups?: { eventType: string; _count: { _all: number } }[];
+  toolUsageGroups?: { toolName: string; _count: { _all: number } }[];
   eventVolumeRows?: unknown[];
   // FEA-2877: the utilization path rolls sessions up in the DB. Each raw query
   // is routed to its own fixture by inspecting the emitted SQL text.
@@ -138,8 +178,7 @@ export function makeFakeDb(fixtures: {
   agentStatusBuckets?: unknown[];
   agentTypeBuckets?: unknown[];
   // FEA-3537: the agent-pipeline graph rolls up nodes (by subagent type) and
-  // edges (parent→child hand-offs) from the same unnested `agents` JSON. Routed
-  // by the columns each query emits ("parentExternalAgentId" / "subagent_type").
+  // edges (parent→child hand-offs) from the same narrowed `agent_rows` SQL set.
   agentPipelineNodes?: unknown[];
   agentPipelineEdges?: unknown[];
   // FEA-2877: simulate a Postgres tzdata that rejects the requester timezone —
@@ -189,6 +228,19 @@ export function makeFakeDb(fixtures: {
   // delta-bearing tests assume a full prior period; pass a recent Date to
   // exercise the partial-prior case, or `null` for a no-history org.
   earliest?: Date | null;
+  orgMergedPullRequestLinks?: unknown[];
+  // ISS-8424: the all-time session-linked merged census the Delivery read takes
+  // to tell an unmeasured population from a measured zero
+  // (`censusMergedPrVerification`). Defaults to a MEASURED population, so every
+  // suite predating ISS-8424 keeps rendering real numbers; a suite that wants
+  // the unmeasured branch asks for it by name.
+  mergedPrVerificationCensus?: {
+    hasSessionLinkedMergedPrs: boolean;
+    hasVerifiedMergedPrs: boolean;
+  };
+  // ISS-11915: the Branch ids the Branches list's candidate read returns for
+  // the Dashboard period. Defaults to none.
+  branchListPopulationIds?: string[];
 }): FakeInsightsDb {
   const earliest =
     fixtures.earliest === undefined ? new Date(0) : fixtures.earliest;
@@ -207,6 +259,10 @@ export function makeFakeDb(fixtures: {
     }
     return value;
   };
+  const mergedPrs = withAdmissionBranchCounts(fixtures.mergedPrs ?? []);
+  const orgMergedPullRequestLinks =
+    fixtures.orgMergedPullRequestLinks ??
+    defaultOrgMergedPullRequestLinks(mergedPrs);
   const count = (args: { where: Record<string, unknown> }) => {
     wheres.push(args.where);
     return Promise.resolve(fixtures.counts?.(args.where) ?? 0);
@@ -215,7 +271,7 @@ export function makeFakeDb(fixtures: {
     pullRequestDetail: {
       findMany: (a: { where?: unknown }) => {
         mergedFindArgs.push(a as Record<string, unknown>);
-        return Promise.resolve(record(a, fixtures.mergedPrs ?? []));
+        return Promise.resolve(filterRowsById(mergedPrs, a.where));
       },
       count,
       groupBy: (a: { where?: unknown }) =>
@@ -275,6 +331,10 @@ export function makeFakeDb(fixtures: {
         ),
       count,
     },
+    artifactLink: {
+      findMany: (a: { where?: unknown }) =>
+        Promise.resolve(record(a, orgMergedPullRequestLinks)),
+    },
     agentSessionTokenUsage: {
       // Token analytics are DB-aggregated (FEA-2876): the KPI/token-distribution
       // totals come from aggregate({_sum}); the spend-by-model breakdown and the
@@ -308,6 +368,14 @@ export function makeFakeDb(fixtures: {
     },
     $queryRaw: (sql: unknown) => {
       rawQueries.push(sql);
+      // ISS-11915: the Dashboard branch population is the Branches list's own
+      // candidate read. Routed FIRST: its eligibility SQL also reads
+      // `pull_request_detail`, which the distinct-PR routes below would match.
+      if (flattenRawSql(sql).text.includes("latest_activity_atom")) {
+        return Promise.resolve(
+          (fixtures.branchListPopulationIds ?? []).map(candidateRawRowFor)
+        );
+      }
       // Route each raw aggregation to its fixture by the SQL it emits:
       // - the session rollup (count + runtime + status) carries EXTRACT(EPOCH,
       // - the user breakdown joins users (u.email),
@@ -316,7 +384,48 @@ export function makeFakeDb(fixtures: {
       // - the event-volume query reads agent_session_events,
       // - the daily tool-run series (FEA-2956) SUMs tool_use_count per day,
       // - the remaining date_trunc query is the daily session-activity series.
-      const { text } = flattenRawSql(sql);
+      const { text, values } = flattenRawSql(sql);
+      // ISS-12408: the shared pull-request fold behind Merged PRs, its prior
+      // window, the closed-unmerged count and the median. Routed before every
+      // `pull_request_detail` branch below, which would otherwise answer it with
+      // ids or a count. It returns one row per window key the caller asked for.
+      if (text.includes("WITH counting AS MATERIALIZED")) {
+        const asked = values.flatMap((value) =>
+          Array.isArray(value) ? value.map(String) : []
+        );
+        const distinct = (rows: ProjectedPrIdentityInput[] | undefined) =>
+          new Set((rows ?? []).map(projectedPrIdentity)).size;
+        const facts = fixtures.pullRequestFacts ?? {};
+        const row = (key: string, merged: number, closedUnmerged: number) => ({
+          key,
+          merged,
+          sized: key === "current" ? (facts.sized ?? 0) : 0,
+          median_size: key === "current" ? (facts.medianSize ?? null) : null,
+          closed_unmerged: closedUnmerged,
+          decided_identities: merged + closedUnmerged,
+          conflicted: false,
+        });
+        return Promise.resolve([
+          ...(asked.includes("current")
+            ? [
+                row(
+                  "current",
+                  facts.merged ?? distinct(mergedPrs.filter(hasPrIdentity)),
+                  facts.closedUnmerged ?? distinct(fixtures.closedPrs)
+                ),
+              ]
+            : []),
+          ...(asked.includes("prior")
+            ? [
+                row(
+                  "prior",
+                  facts.priorMerged ?? distinct(fixtures.priorMergedPrs),
+                  0
+                ),
+              ]
+            : []),
+        ]);
+      }
       // ISS-5624: the distinct-PR counts behind the prior-window delta and the
       // merge-rate denominator. Routed by their table, then told apart by the
       // column each windows on — the prior merged window on `p.merged_at`, the
@@ -324,7 +433,38 @@ export function makeFakeDb(fixtures: {
       // reduces the fixture rows through the real identity helper the emitted
       // SQL mirrors, so a scenario still expresses itself as "N rows for M pull
       // requests" and the service sees the M the statement would have returned.
+      // ISS-8424: the verification census. Routed BEFORE the distinct-PR counts
+      // below, which it would otherwise match — it reads the same table and
+      // also windows nothing but `p.merged_at IS NOT NULL`. Its aliased EXISTS
+      // probes are the one shape no other statement over this table emits.
+      if (text.includes('AS "hasVerifiedMergedPrs"')) {
+        const census = fixtures.mergedPrVerificationCensus ?? {
+          hasSessionLinkedMergedPrs: true,
+          hasVerifiedMergedPrs: true,
+        };
+        return Promise.resolve([census]);
+      }
       if (text.includes("FROM pull_request_detail p")) {
+        if (text.includes("SELECT p.id")) {
+          return Promise.resolve(
+            mergedPrs.flatMap((row) =>
+              isRecord(row) && typeof row.id === "string"
+                ? [{ id: row.id }]
+                : []
+            )
+          );
+        }
+        if (!text.includes("SELECT DISTINCT") && text.includes("p.merged_at")) {
+          return Promise.resolve([
+            {
+              n:
+                fixtures.counts?.({
+                  prState: GitHubPRState.Merged,
+                  mergedAt: { lte: true },
+                }) ?? 0,
+            },
+          ]);
+        }
         const rows = text.includes("p.merged_at")
           ? (fixtures.priorMergedPrs ?? [])
           : (fixtures.closedPrs ?? []);
@@ -332,13 +472,53 @@ export function makeFakeDb(fixtures: {
           { n: new Set(rows.map(projectedPrIdentity)).size },
         ]);
       }
-      // FEA-3537: the agent-pipeline node/edge queries also unnest `agents`, so
-      // route them (before the generic bucket branch) by their unique columns.
-      if (text.includes("parentExternalAgentId")) {
-        return Promise.resolve(fixtures.agentPipelineEdges ?? []);
-      }
-      if (text.includes("subagent_type")) {
-        return Promise.resolve(fixtures.agentPipelineNodes ?? []);
+      // FEA-3537: the agent-pipeline graph now returns node and edge rows from a
+      // single query over one materialized `agent_rows` CTE. Route it before the
+      // generic JSON-agent bucket branch, which also unnests `agents`.
+      //
+      // ISS-7511 — this branch FABRICATES the result: it recognizes the CTE name
+      // and hands back finished rows, so nothing downstream of it exercises the
+      // aggregation. What a caller may conclude from it is the round-trip count,
+      // the scope predicate carried in the emitted SQL, and the JS mapping over
+      // the returned rows — never that the statement groups, joins, or windows
+      // correctly. The clauses that build these rows are covered against a real
+      // Postgres in `app/insights/agent-pipeline.integration.test.ts`; assert new
+      // SQL behavior there, not by widening this fixture.
+      if (text.includes("WITH agent_rows AS MATERIALIZED")) {
+        return Promise.resolve([
+          ...(fixtures.agentPipelineNodes ?? []).map((row, index) => {
+            const node = row as Record<string, unknown>;
+            return {
+              rowType: "node",
+              sortOrder: index + 1,
+              subagentType: node.subagent_type,
+              total: node.total,
+              completed: node.completed,
+              errors: node.errors,
+              sessions: node.sessions,
+              avgDuration: node.avg_duration,
+              source: null,
+              target: null,
+              weight: null,
+            };
+          }),
+          ...(fixtures.agentPipelineEdges ?? []).map((row, index) => {
+            const edge = row as Record<string, unknown>;
+            return {
+              rowType: "edge",
+              sortOrder: index + 1,
+              subagentType: null,
+              total: null,
+              completed: null,
+              errors: null,
+              sessions: null,
+              avgDuration: null,
+              source: edge.source,
+              target: edge.target,
+              weight: edge.weight,
+            };
+          }),
+        ]);
       }
       // FEA-4022: the frustration-trend series SUMs frustration_raw per day over
       // non-null rows. Routed by its unique column before the generic branch.
@@ -422,6 +602,27 @@ export function makeFakeDb(fixtures: {
         return Promise.resolve(fixtures.modelUsageRows ?? []);
       }
       if (text.includes("agent_session_events")) {
+        if (text.includes('AS "toolName"')) {
+          return Promise.resolve(
+            (fixtures.toolUsageGroups ?? []).map((row) => ({
+              toolName: row.toolName,
+              n: row._count._all,
+            }))
+          );
+        }
+        if (text.includes('AS "eventType"')) {
+          return Promise.resolve(
+            (fixtures.eventTypeGroups ?? []).map((row) => ({
+              eventType: row.eventType,
+              n: row._count._all,
+            }))
+          );
+        }
+        if (text.includes("COALESCE(SUM(e.n), 0)")) {
+          return Promise.resolve([
+            { n: fixtures.counts?.({ eventCreatedAt: {} }) ?? 0 },
+          ]);
+        }
         // FEA-3465: simulate a Postgres tzdata that rejects the requester
         // timezone — the tz-aware event-volume query (AT TIME ZONE) throws so the
         // service must retry in UTC rather than 500 the utilization endpoint.
@@ -459,6 +660,121 @@ export function makeFakeDb(fixtures: {
     },
   };
   return { db, wheres, rawQueries, mergedFindArgs };
+}
+
+function filterRowsById(rows: unknown[], where: unknown): unknown[] {
+  if (!(isRecord(where) && isRecord(where.id))) {
+    return rows;
+  }
+  const ids = where.id.in;
+  if (!Array.isArray(ids)) {
+    return rows;
+  }
+  const idSet = new Set(
+    ids.filter((id): id is string => typeof id === "string")
+  );
+  return rows.filter((row) => isRecord(row) && idSet.has(String(row.id)));
+}
+
+function withAdmissionBranchCounts(rows: unknown[]): unknown[] {
+  const countsByBranchId = new Map<string, number>();
+  for (const row of rows) {
+    const branchArtifactId = readBranchArtifactId(row);
+    if (branchArtifactId) {
+      countsByBranchId.set(
+        branchArtifactId,
+        (countsByBranchId.get(branchArtifactId) ?? 0) + 1
+      );
+    }
+  }
+  return rows.map((row, index) => {
+    if (!isRecord(row)) {
+      return row;
+    }
+    const branchArtifactId = readBranchArtifactId(row);
+    if (!branchArtifactId) {
+      return row;
+    }
+    const branchArtifact = isRecord(row.branchArtifact)
+      ? row.branchArtifact
+      : {};
+    const count = isRecord(branchArtifact._count)
+      ? branchArtifact._count.pullRequestDetails
+      : undefined;
+    return {
+      ...row,
+      id: typeof row.id === "string" ? row.id : `merged-pr-${index + 1}`,
+      lastVerifiedAt:
+        "lastVerifiedAt" in row ? row.lastVerifiedAt : new Date(0),
+      branchArtifact: {
+        ...branchArtifact,
+        id:
+          typeof branchArtifact.id === "string"
+            ? branchArtifact.id
+            : branchArtifactId,
+        _count: {
+          ...(isRecord(branchArtifact._count) ? branchArtifact._count : {}),
+          pullRequestDetails:
+            typeof count === "number"
+              ? count
+              : (countsByBranchId.get(branchArtifactId) ?? 1),
+        },
+      },
+    };
+  });
+}
+
+function defaultOrgMergedPullRequestLinks(rows: unknown[]): unknown[] {
+  const links: unknown[] = [];
+  for (const row of rows) {
+    if (!isRecord(row)) {
+      continue;
+    }
+    const targetId = readBranchArtifactId(row);
+    if (!targetId) {
+      continue;
+    }
+    links.push({
+      targetId,
+      metadata: defaultOrgMergedPullRequestLinkMetadata(row),
+    });
+  }
+  return links;
+}
+
+function defaultOrgMergedPullRequestLinkMetadata(row: Record<string, unknown>) {
+  const repositoryFullName = readRepositoryFullName(row);
+  const prNumber = typeof row.number === "number" ? row.number : null;
+  if (repositoryFullName && prNumber != null) {
+    return {
+      linkKind: SessionArtifactLinkKind.SessionPr,
+      prRefs: [{ repositoryFullName, prNumber, relationTypes: [] }],
+    };
+  }
+  return { linkKind: SessionArtifactLinkKind.SessionPr };
+}
+
+function readBranchArtifactId(row: unknown): string | null {
+  if (!isRecord(row)) {
+    return null;
+  }
+  if (typeof row.branchArtifactId === "string") {
+    return row.branchArtifactId;
+  }
+  return isRecord(row.branchArtifact) &&
+    typeof row.branchArtifact.id === "string"
+    ? row.branchArtifact.id
+    : null;
+}
+
+function readRepositoryFullName(row: Record<string, unknown>): string | null {
+  if (typeof row.repositoryFullName === "string" && row.repositoryFullName) {
+    return row.repositoryFullName;
+  }
+  if (isRecord(row.repository) && typeof row.repository.fullName === "string") {
+    return row.repository.fullName;
+  }
+  return null;
 }
 
 /**
@@ -532,16 +848,30 @@ export function activeInstallationFixture(fixtures: {
   return { id: "gh-install-1" };
 }
 
+/**
+ * ISS-7404: delivery provenance is resolved through
+ * `resolveGitHubDataConnectionStatus`, which now judges a grant on its mirrored
+ * scopes. The default carries `repo` because these fixtures stand in for a
+ * grant that CAN serve GitHub data; pass a narrower set for the refusal case.
+ */
 export function makeInsightsUserGrant(
   overrides: Partial<{
     revokedAt: Date | null;
-    tokenExpiresAt: Date | null;
+    scopes: string[];
   }> = {}
 ) {
   return {
     revokedAt: overrides.revokedAt ?? null,
-    tokenExpiresAt: overrides.tokenExpiresAt ?? null,
+    scopes: overrides.scopes ?? [GITHUB_REPO_SCOPE],
   };
+}
+
+function hasPrIdentity(row: unknown): row is ProjectedPrIdentityInput {
+  return (
+    isRecord(row) &&
+    typeof row.id === "string" &&
+    typeof row.number === "number"
+  );
 }
 
 /**
@@ -558,7 +888,7 @@ export function identityRow(
     id,
     number,
     githubId: null,
-    repositoryFullName: "acme/example-repo",
+    repositoryFullName: "acme/closedloop-ai",
     repositoryId: null,
     ...overrides,
   };
@@ -601,6 +931,7 @@ export async function databaseMock(): Promise<Record<string, unknown>> {
       MERGED: githubTypes.GitHubPRState.Merged,
       OPEN: githubTypes.GitHubPRState.Open,
     },
+    ArtifactType: { BRANCH: "BRANCH", SESSION: "SESSION" },
     GitHubInstallationStatus: {
       ACTIVE: "ACTIVE",
       PENDING_CLAIM: "PENDING_CLAIM",
@@ -629,6 +960,82 @@ export async function databaseMock(): Promise<Record<string, unknown>> {
           .concat(""),
         values: items,
       }),
+      raw: (text: string) => ({ strings: [text], values: [] }),
+      empty: { strings: [""], values: [] },
     },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Branch-population fixture evaluation (ISS-4634, re-founded on the Branches
+// list population by ISS-11915). Harness code belongs here per this module's
+// own charter.
+// ---------------------------------------------------------------------------
+export type BranchPopulationRow = {
+  id: string;
+  hasPr: boolean;
+  checksStatus: string;
+};
+
+/**
+ * The fixture rows the donut's `where` admits. Production narrows every donut
+ * query to the Branches list population with `artifactId: { in: ids }`, so a
+ * query that dropped that predicate admits NOTHING here rather than the whole
+ * fixture, and the assertion moves.
+ */
+function populationRowsIn(
+  rows: BranchPopulationRow[],
+  where: Record<string, unknown>
+): BranchPopulationRow[] {
+  const artifactId = where.artifactId;
+  const ids =
+    isRecord(artifactId) && Array.isArray(artifactId.in) ? artifactId.in : [];
+  return rows.filter((row) => ids.includes(row.id));
+}
+
+export function checkStatusGroupsFrom(
+  rows: BranchPopulationRow[],
+  where: Record<string, unknown>
+): { checksStatus: string; _count: { _all: number } }[] {
+  const tally = new Map<string, number>();
+  for (const row of populationRowsIn(rows, where)) {
+    tally.set(row.checksStatus, (tally.get(row.checksStatus) ?? 0) + 1);
+  }
+  return [...tally].map(([checksStatus, n]) => ({
+    checksStatus,
+    _count: { _all: n },
+  }));
+}
+
+/** The branch-coverage counts, or null when `where` is some other count call. */
+export function branchPrCountFrom(
+  rows: BranchPopulationRow[],
+  where: Record<string, unknown>
+): number | null {
+  const wantsPr = hasOwnedPrArm(where, "some");
+  const wantsNoPr = hasOwnedPrArm(where, "none");
+  if (!(wantsPr || wantsNoPr)) {
+    return null;
+  }
+  return populationRowsIn(rows, where).filter((row) => row.hasPr === wantsPr)
+    .length;
+}
+
+/** One candidate-read raw row for a population id, with no Last-active evidence. */
+function candidateRawRowFor(id: string): Record<string, unknown> {
+  return {
+    id,
+    repositorySortKey: "acme/repo",
+    branchSortKey: id,
+    atomVersion: null,
+    atomSource: null,
+    atomSourceEventId: null,
+    atomOccurredAt: null,
+    atomActivityKind: null,
+    atomAttributionKind: null,
+    atomPullRequestDetailId: null,
+    atomCompleteness: null,
+    atomCreatedAt: null,
+    linkedSessionActivityAt: null,
   };
 }

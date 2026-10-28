@@ -4,6 +4,8 @@ import {
   ThreadSource,
   ThreadStatus,
 } from "@repo/api/src/types/comment";
+import { CommentAnchorState } from "@repo/api/src/types/comment-anchor";
+import { CommentAnchorKind } from "@repo/api/src/types/comment-anchor-kind";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { registerGetDocumentComments } from "../tools/get-document-comments.js";
 
@@ -86,7 +88,7 @@ describe("get-document-comments MCP tool", () => {
     expect(text).not.toContain("lastSyncedAt");
   });
 
-  it("omits legacy native document comments from the MCP read output", async () => {
+  it("lists native document comments in the MCP read output (PLN-2187 Q-003)", async () => {
     apiClient.get.mockResolvedValue([
       {
         id: "thread-2",
@@ -110,11 +112,144 @@ describe("get-document-comments MCP tool", () => {
       documentId: "FEA-7",
     });
     const text = response?.content?.[0]?.text ?? "";
-    const parsed = JSON.parse(text) as unknown[];
 
     expect(apiClient.get).toHaveBeenCalledWith("/documents/FEA-7/threads", {});
-    expect(parsed).toEqual([]);
-    expect(text).not.toContain(ThreadSource.Native);
+    expect(JSON.parse(text)).toEqual([
+      {
+        id: "thread-2",
+        status: ThreadStatus.Open,
+        source: ThreadSource.Native,
+        anchorStatus: null,
+        artifactId: "artifact-2",
+        createdAt: "2026-02-01T00:00:00.000Z",
+        comments: [
+          {
+            id: "comment-2",
+            plainText: "triage note",
+            createdAt: "2026-02-01T00:00:00.000Z",
+            author: "user-2",
+          },
+        ],
+      },
+    ]);
+  });
+
+  it.each([
+    [
+      CommentAnchorKind.Text,
+      CommentAnchorState.Anchored,
+      DocumentThreadAnchorStatus.Anchored,
+    ],
+    [
+      CommentAnchorKind.Text,
+      CommentAnchorState.Moved,
+      DocumentThreadAnchorStatus.Anchored,
+    ],
+    [
+      CommentAnchorKind.Text,
+      CommentAnchorState.Orphaned,
+      DocumentThreadAnchorStatus.Floating,
+    ],
+    [
+      CommentAnchorKind.Artifact,
+      CommentAnchorState.Anchored,
+      DocumentThreadAnchorStatus.ArtifactLevel,
+    ],
+  ])(
+    "derives anchorStatus from a typed %s anchor in state %s, over metadata",
+    async (kind, anchorState, expected) => {
+      apiClient.get.mockResolvedValue([
+        typedAnchorThread({
+          anchor: kind === CommentAnchorKind.Text ? TEXT_ANCHOR : { kind },
+          anchorState,
+          metadata: {
+            anchorStatus:
+              expected === DocumentThreadAnchorStatus.Floating
+                ? DocumentThreadAnchorStatus.Anchored
+                : DocumentThreadAnchorStatus.Floating,
+          },
+        }),
+      ]);
+
+      expect(await readAnchorStatus()).toBe(expected);
+    }
+  );
+
+  it.each([
+    ["an older API that sends no typed anchor", {}],
+    ["a null anchor", { anchor: null, anchorState: null }],
+    ["an anchor kind this build does not know", { anchor: { kind: "canvas" } }],
+    [
+      "an anchor state this build does not know",
+      { anchor: TEXT_ANCHOR, anchorState: "DRIFTED" },
+    ],
+    ["a text anchor with no state", { anchor: TEXT_ANCHOR, anchorState: null }],
+    [
+      "an outdated text anchor",
+      { anchor: TEXT_ANCHOR, anchorState: CommentAnchorState.Outdated },
+    ],
+    ["an anchor that is not an object", { anchor: "text" }],
+  ])("falls back to the metadata path for %s", async (_label, typed) => {
+    apiClient.get.mockResolvedValue([
+      typedAnchorThread({
+        ...typed,
+        metadata: { anchorStatus: METADATA_FALLBACK_STATUS },
+      }),
+    ]);
+
+    expect(await readAnchorStatus()).toBe(METADATA_FALLBACK_STATUS);
+  });
+
+  it("reads an artifact anchor as artifact-level in a state this build does not know", async () => {
+    apiClient.get.mockResolvedValue([
+      typedAnchorThread({
+        anchor: { kind: CommentAnchorKind.Artifact },
+        anchorState: UNKNOWN_ANCHOR_STATE,
+      }),
+    ]);
+
+    expect(await readAnchorStatus()).toBe(
+      DocumentThreadAnchorStatus.ArtifactLevel
+    );
+  });
+
+  it("leaves a metadata-less text anchor in a state this build does not know without a status", async () => {
+    apiClient.get.mockResolvedValue([
+      typedAnchorThread({
+        anchor: TEXT_ANCHOR,
+        anchorState: UNKNOWN_ANCHOR_STATE,
+      }),
+    ]);
+
+    expect(await readAnchorStatus()).toBeNull();
+  });
+
+  it("keeps the typed anchor fields out of the MCP output", async () => {
+    apiClient.get.mockResolvedValue([
+      typedAnchorThread({
+        anchor: TEXT_ANCHOR,
+        anchorState: CommentAnchorState.Anchored,
+        metadata: null,
+      }),
+    ]);
+
+    const response = await registeredHandler()?.({ documentId: "PRD-7" });
+    const [thread] = JSON.parse(response?.content?.[0]?.text ?? "[]") as Record<
+      string,
+      unknown
+    >[];
+
+    expect(Object.keys(thread ?? {}).sort()).toEqual(
+      [
+        "anchorStatus",
+        "artifactId",
+        "comments",
+        "createdAt",
+        "id",
+        "source",
+        "status",
+      ].sort()
+    );
   });
 
   it("exposes artifact-level status for unanchored Liveblocks document comments", async () => {
@@ -228,6 +363,38 @@ describe("get-document-comments MCP tool", () => {
     });
   });
 });
+
+const TEXT_ANCHOR = {
+  kind: CommentAnchorKind.Text,
+  documentVersion: 3,
+  quote: { exact: "quoted", prefix: "", suffix: "" },
+};
+
+/** No text anchor maps here, so reading it proves the metadata path ran. */
+const METADATA_FALLBACK_STATUS = DocumentThreadAnchorStatus.ArtifactLevel;
+
+/** A state a newer API could send that this build's schema does not know. */
+const UNKNOWN_ANCHOR_STATE = "DRIFTED";
+
+function typedAnchorThread(fields: Record<string, unknown>) {
+  return {
+    id: "thread-typed",
+    status: ThreadStatus.Open,
+    source: ThreadSource.Native,
+    artifactId: "artifact-typed",
+    createdAt: "2026-04-01T00:00:00.000Z",
+    comments: [],
+    ...fields,
+  };
+}
+
+async function readAnchorStatus(): Promise<unknown> {
+  const response = await registeredHandler()?.({ documentId: "PRD-7" });
+  const [thread] = JSON.parse(response?.content?.[0]?.text ?? "[]") as {
+    anchorStatus?: unknown;
+  }[];
+  return thread?.anchorStatus;
+}
 
 function registeredHandler():
   | ((input: { documentId: string; status?: string }) => Promise<{

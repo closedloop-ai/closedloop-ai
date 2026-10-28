@@ -32,9 +32,12 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
-import type { SyncedAgentSessionEvent } from "@repo/api/src/types/agent-session";
+import type {
+  SyncedAgentSessionEvent,
+  TokenEventCostPoint,
+} from "@repo/api/src/types/agent-session";
 import { SESSION_DETAIL_EVENT_MAX_ROWS } from "@repo/api/src/types/agent-session-detail-limits";
+import { test } from "vitest";
 import type { SyncedAgentSession } from "../src/main/agent-sync/agent-session-sync-contract.js";
 import type {
   AgentSessionSyncSource,
@@ -42,6 +45,7 @@ import type {
 } from "../src/main/agent-sync/agent-session-sync-source.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 import { getSharedAgentSessionDetail } from "../src/main/session/shared-agent-session-detail-read.js";
+import { projectedEventRowCount } from "./helpers/turn-item-rows.js";
 
 const SESSION_ID = "cap-session";
 const SESSION_STARTED_AT = "2026-07-10T00:00:00.000Z";
@@ -122,9 +126,13 @@ type SeenLoad = {
 function fakeSource(
   session: SyncedAgentSession,
   seen: SeenLoad,
-  eventCounts?: SessionEventCounts
+  eventCounts?: SessionEventCounts,
+  tokenEvents?: TokenEventCostPoint[]
 ): AgentSessionSyncSource {
   return {
+    ...(tokenEvents
+      ? { loadSessionTokenEvents: () => Promise.resolve(tokenEvents) }
+      : {}),
     listAllSessionCursorRows: () => [],
     listSessionCursorPage: () => ({ rows: [], total: 0 }),
     listUpdatedSessionCursorRows: () => [],
@@ -263,9 +271,12 @@ test("ISS-5407: a stream past the ceiling serves the prefix and flags eventsTrun
   assert.ok(detail);
   assert.equal(detail.events.length, SESSION_DETAIL_EVENT_MAX_ROWS);
   assert.equal(detail.eventsTruncated, true);
-  // `timeline`/`turnItems` derive from the same prefix, so the trace the panel
-  // paints never claims rows the bounded read did not serve.
-  assert.equal(detail.timeline?.length, SESSION_DETAIL_EVENT_MAX_ROWS);
+  // `turnItems` derive from the same prefix, so the trace the panel paints
+  // never claims rows the bounded read did not serve.
+  assert.equal(
+    projectedEventRowCount(detail.turnItems),
+    SESSION_DETAIL_EVENT_MAX_ROWS
+  );
 });
 
 test("ISS-5407: a stream exactly at the ceiling is complete — eventsTruncated stays absent", async () => {
@@ -283,6 +294,138 @@ test("ISS-5407: a stream exactly at the ceiling is complete — eventsTruncated 
     Object.hasOwn(detail, "eventsTruncated"),
     false,
     "eventsTruncated is omitted, not false"
+  );
+});
+
+/** A session whose folded summary scalars are both present to be qualified. */
+const MEASURED_SCALARS = { autonomy: 41, steeringEpisodes: 4 } as const;
+
+test("ISS-5636: a truncated read flags a hook-only session's event-folded scalars", async () => {
+  const seen: SeenLoad = {};
+  const detail = await getSharedAgentSessionDetail(
+    fakeSource(
+      // `metadata: null` — no parsed transcript and no headless entrypoint, so
+      // the human turns behind `steeringEpisodes` were matched out of the raw
+      // event rows, which IS the bounded read.
+      syncedSession(SESSION_DETAIL_EVENT_MAX_ROWS + 1, MEASURED_SCALARS),
+      seen
+    ),
+    SESSION_ID
+  );
+
+  assert.ok(detail);
+  // These render as bare whole-run stats on the Properties panel, and
+  // `eventsTruncated` alone cannot carry them: the cloud detail sets it too
+  // while reading each scalar off a persisted column, so a shared row
+  // qualifying on it would hedge a whole-run cloud number.
+  assert.equal(detail.autonomyTruncated, true);
+  assert.equal(detail.steeringEpisodesTruncated, true);
+});
+
+/**
+ * ISS-5636 (whitlockk): the reviewer's counterfactual — a session whose steering
+ * count comes from inputs the raw-event cap never bounded, while the raw-event
+ * read DID hit its cap. One flag stamped off that read calls this number a
+ * prefix count when it is a whole-run fact, which is the same defect pointing
+ * the other way. Completeness comes from each DERIVATION, so the two flags
+ * disagree here, on purpose.
+ */
+test("ISS-5636: a headless session's fixed steer count is not flagged by a truncated read", async () => {
+  const seen: SeenLoad = {};
+  const detail = await getSharedAgentSessionDetail(
+    fakeSource(
+      syncedSession(SESSION_DETAIL_EVENT_MAX_ROWS + 1, {
+        ...MEASURED_SCALARS,
+        // A headless run's steering is returned as a fixed `0` from the
+        // entrypoint, so no row cap can move it.
+        steeringEpisodes: 0,
+        // `sdk-` prefix — `isHeadlessEntrypoint`, the same SSOT the deriver
+        // branches on.
+        metadata: { entrypoint: "sdk-cli" },
+      }),
+      seen
+    ),
+    SESSION_ID
+  );
+
+  assert.ok(detail);
+  assert.equal(detail.eventsTruncated, true);
+  assert.equal(
+    Object.hasOwn(detail, "steeringEpisodesTruncated"),
+    false,
+    "a construction-fixed steer count is not a prefix count"
+  );
+  // Autonomy still draws on the bounded rows for its agent-activity span, so it
+  // remains flagged — the point is that the two are decided separately.
+  assert.equal(detail.autonomyTruncated, true);
+});
+
+test("ISS-5636: a transcript-backed steer count is not flagged by a truncated read", async () => {
+  const seen: SeenLoad = {};
+  const detail = await getSharedAgentSessionDetail(
+    fakeSource(
+      syncedSession(SESSION_DETAIL_EVENT_MAX_ROWS + 1, {
+        ...MEASURED_SCALARS,
+        // `sessionHasParsedTranscript`: human turns come from
+        // `metadata.messages`, which the detail read never bounds.
+        metadata: {
+          messages: [{ role: "human", timestamp: "2026-07-10T00:00:00.000Z" }],
+        },
+      }),
+      seen
+    ),
+    SESSION_ID
+  );
+
+  assert.ok(detail);
+  assert.equal(detail.eventsTruncated, true);
+  assert.equal(
+    Object.hasOwn(detail, "steeringEpisodesTruncated"),
+    false,
+    "a count folded from the whole message stream is not a prefix count"
+  );
+});
+
+test("ISS-5636: a scalar the producer never resolved is not qualified", async () => {
+  const seen: SeenLoad = {};
+  const detail = await getSharedAgentSessionDetail(
+    fakeSource(
+      syncedSession(SESSION_DETAIL_EVENT_MAX_ROWS + 1, {
+        autonomy: null,
+        steeringEpisodes: null,
+      }),
+      seen
+    ),
+    SESSION_ID
+  );
+
+  assert.ok(detail);
+  // There is no rendered number for a prefix note to describe, so hedging would
+  // attach a qualifier to an empty cell.
+  assert.equal(Object.hasOwn(detail, "autonomyTruncated"), false);
+  assert.equal(Object.hasOwn(detail, "steeringEpisodesTruncated"), false);
+});
+
+test("ISS-5636: a complete read omits both scalar flags rather than serializing false", async () => {
+  const seen: SeenLoad = {};
+  const detail = await getSharedAgentSessionDetail(
+    fakeSource(
+      syncedSession(SESSION_DETAIL_EVENT_MAX_ROWS, MEASURED_SCALARS),
+      seen
+    ),
+    SESSION_ID
+  );
+
+  assert.ok(detail);
+  assert.equal(
+    Object.hasOwn(detail, "autonomyTruncated"),
+    false,
+    "autonomyTruncated is omitted, not false"
+  );
+  assert.equal(
+    Object.hasOwn(detail, "steeringEpisodesTruncated"),
+    false,
+    "steeringEpisodesTruncated is omitted, not false"
   );
 });
 
@@ -336,7 +479,7 @@ test("ISS-5407: a bounded read that did NOT hit its limit keeps the event deriva
     now: () => "2026-07-10T00:00:00.000Z",
   });
   try {
-    // A DIVERGENT column, the shape `session-timeline-axis-window.spec.ts` seeds:
+    // A DIVERGENT column separates the retention anchor from event activity:
     // on desktop `sessions.last_activity_at` is the retention/default-window
     // anchor, and ISS-4833's semantics are that the detail's rendered
     // `lastActivityAt` is EVENT-derived. A session that came in under the limit
@@ -483,4 +626,58 @@ test("ISS-5407: a source with no aggregate leaves the counts on their loaded-row
   assert.equal(detail.eventsTruncated, true);
   assert.equal(detail.toolUseCount, SESSION_DETAIL_EVENT_MAX_ROWS);
   assert.equal(detail.errorCount, SESSION_DETAIL_EVENT_MAX_ROWS);
+});
+
+/**
+ * ISS-9857: the cost points the producer attributed to the prefix's turn rows,
+ * as `loadSessionTokenEvents` serves them.
+ */
+const TOKEN_EVENT_COST_POINTS: TokenEventCostPoint[] = [
+  { tMs: Date.UTC(2026, 6, 10, 0, 0, 0, 100), costUsd: 0.01 },
+  {
+    tMs: Date.UTC(2026, 6, 10, 0, 0, 0, 200),
+    costUsd: 0.02,
+    agentExternalId: "agent-1",
+  },
+];
+
+test("ISS-9857: a truncated detail carries the producer's token cost points for a client re-projection", async () => {
+  const seen: SeenLoad = {};
+  const detail = await getSharedAgentSessionDetail(
+    fakeSource(
+      syncedSession(SESSION_DETAIL_EVENT_MAX_ROWS + 1),
+      seen,
+      undefined,
+      TOKEN_EVENT_COST_POINTS
+    ),
+    SESSION_ID
+  );
+
+  assert.ok(detail);
+  assert.equal(detail.eventsTruncated, true);
+  // A client that pages past the prefix re-projects prefix + pages through the
+  // same projector `turnItems` came from; without these points that render
+  // would strip the cost badges the prefix rows already carried.
+  assert.deepEqual(detail.tokenEventCostPoints, TOKEN_EVENT_COST_POINTS);
+});
+
+test("ISS-9857: a complete detail omits tokenEventCostPoints — no client re-projects it", async () => {
+  const seen: SeenLoad = {};
+  const detail = await getSharedAgentSessionDetail(
+    fakeSource(
+      syncedSession(SESSION_DETAIL_EVENT_MAX_ROWS),
+      seen,
+      undefined,
+      TOKEN_EVENT_COST_POINTS
+    ),
+    SESSION_ID
+  );
+
+  assert.ok(detail);
+  assert.equal(Object.hasOwn(detail, "eventsTruncated"), false);
+  assert.equal(
+    Object.hasOwn(detail, "tokenEventCostPoints"),
+    false,
+    "the key is absent, not an empty or serialized-undefined value"
+  );
 });

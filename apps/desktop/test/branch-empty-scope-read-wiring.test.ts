@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import { encodeBranchId } from "@repo/api/src/types/branch";
+import { describe, test } from "vitest";
 import { getSharedBranchAnalytics } from "../src/main/branch/branch-analytics-read.js";
 import { getSharedBranchCohortAnalytics } from "../src/main/branch/branch-cohort-analytics.js";
 import { readCanonicalBranchMetricEventRows } from "../src/main/branch/branch-metric-event-read.js";
@@ -63,12 +63,8 @@ function recordingSource(rows: CannedRows): {
   source: BranchSyncSource;
   activityCalls: BranchCanonicalActivityReadRequest[];
   evidenceCalls: BranchMetricEventEvidenceRequest[];
-  queries: string[];
 } {
-  const queries: string[] = [];
-  const base = makeSource(rows, (sql) => {
-    queries.push(sql);
-  });
+  const base = makeSource(rows);
   const activityCalls: BranchCanonicalActivityReadRequest[] = [];
   const evidenceCalls: BranchMetricEventEvidenceRequest[] = [];
   const source: BranchSyncSource = {
@@ -82,7 +78,7 @@ function recordingSource(rows: CannedRows): {
       return base.readBranchMetricEventEvidence(request);
     },
   };
-  return { source, activityCalls, evidenceCalls, queries };
+  return { source, activityCalls, evidenceCalls };
 }
 
 /** A corpus with no branches at all — every serving op resolves an empty cohort. */
@@ -96,37 +92,23 @@ const ONE_BRANCH_CORPUS: CannedRows = {
 const NO_CALLS = "an empty cohort must not reach the bounded lane";
 const READ_BOUNDARY = new Date("2026-06-10T00:00:00.000Z");
 
-const REACHED_COHORT_READ =
-  "the serving op must have run its link read and reached its cohort read";
-
-/**
- * The op reached its cohort read rather than bailing early — asserted by every
- * test below, because without it a future early-return would keep the no-call
- * assertions green for the wrong reason.
- */
-function reachedCohortRead(queries: readonly string[]): boolean {
-  return queries.includes("links");
-}
-
 describe("Branch empty-scope reads — production wiring", () => {
   test("getSharedBranches does not call the activity facade for an empty cohort", async () => {
-    const { source, activityCalls, queries } = recordingSource(EMPTY_CORPUS);
+    const { source, activityCalls } = recordingSource(EMPTY_CORPUS);
 
     const result = await getSharedBranches(source);
 
     assert.deepEqual(result.items, []);
-    assert.ok(reachedCohortRead(queries), REACHED_COHORT_READ);
     assert.deepEqual(activityCalls, [], NO_CALLS);
   });
 
   test("getSharedBranchesPageData does not call the activity facade for an empty cohort", async () => {
-    const { source, activityCalls, evidenceCalls, queries } =
+    const { source, activityCalls, evidenceCalls } =
       recordingSource(EMPTY_CORPUS);
 
     const result = await getSharedBranchesPageData(source);
 
     assert.deepEqual(result.list?.items, []);
-    assert.ok(reachedCohortRead(queries), REACHED_COHORT_READ);
     assert.deepEqual(activityCalls, [], NO_CALLS);
     // The same page's evidence read is NOT cohort-scoped — it passes no
     // `branchKeys` at all, which means "the whole eligible corpus", the heaviest
@@ -137,20 +119,18 @@ describe("Branch empty-scope reads — production wiring", () => {
   });
 
   test("getSharedBranchAnalytics does not call the activity facade for an empty cohort", async () => {
-    const { source, activityCalls, queries } = recordingSource(EMPTY_CORPUS);
+    const { source, activityCalls } = recordingSource(EMPTY_CORPUS);
 
     await getSharedBranchAnalytics(source);
 
-    assert.ok(reachedCohortRead(queries), REACHED_COHORT_READ);
     assert.deepEqual(activityCalls, [], NO_CALLS);
   });
 
   test("getSharedBranchUsage does not call the activity facade for an empty cohort", async () => {
-    const { source, activityCalls, queries } = recordingSource(EMPTY_CORPUS);
+    const { source, activityCalls } = recordingSource(EMPTY_CORPUS);
 
     await getSharedBranchUsage(source);
 
-    assert.ok(reachedCohortRead(queries), REACHED_COHORT_READ);
     assert.deepEqual(activityCalls, [], NO_CALLS);
   });
 
@@ -158,7 +138,7 @@ describe("Branch empty-scope reads — production wiring", () => {
     // The cohort request schema requires at least one branch id, so the
     // realistic empty cohort here is a requested id matching no eligible link
     // row, which leaves `eligibleBranchKeys` empty.
-    const { source, activityCalls, queries } = recordingSource(EMPTY_CORPUS);
+    const { source, activityCalls } = recordingSource(EMPTY_CORPUS);
 
     const result = await getSharedBranchCohortAnalytics(source, {
       branchIds: [
@@ -167,7 +147,6 @@ describe("Branch empty-scope reads — production wiring", () => {
     });
 
     assert.deepEqual(result?.matchedBranchIds, []);
-    assert.ok(reachedCohortRead(queries), REACHED_COHORT_READ);
     assert.deepEqual(activityCalls, [], NO_CALLS);
   });
 

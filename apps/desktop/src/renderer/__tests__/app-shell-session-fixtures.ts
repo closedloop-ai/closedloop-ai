@@ -1,32 +1,37 @@
 /**
- * @file app-shell-session-fixtures.ts
  * @description Agent-session data builders and the shared list filter used by
  * the desktop shell route tests.
  *
- * Split out of `app-shell.test.tsx` (ISS-5037): that file is a grandfathered
- * over-size module, and its data factories are a cohesive unit with no
- * dependency on the suite's `vi.mock` graph — they are plain builders. Keeping
- * them here lets the shell suite hold test CASES and shrinks the grandfathered
- * file rather than growing it.
+ * Split out of the former monolithic `app-shell.test.tsx` (ISS-5037), since
+ * split by responsibility into the `app-shell-*.test.tsx` siblings: its data
+ * factories are a cohesive unit with no dependency on the suites' `vi.mock`
+ * graph — they are plain builders. Keeping them here lets those suites hold
+ * test CASES only.
  */
 import type {
   AgentSessionAnalytics,
   AgentSessionDetail,
   AgentSessionListItem,
   AgentSessionListResponse,
-  AgentSessionState,
   AgentSessionUsageSummary,
 } from "@repo/api/src/types/agent-session";
+import {
+  LIST_QUERY_EXPRESSION_VERSION,
+  ListFilterOperator,
+  type ListQueryExpression,
+  ListSortDirection,
+} from "@repo/api/src/types/list-query-expression";
+import { SessionListField } from "@repo/api/src/types/list-query-fields";
+import { ReadInitiator } from "@repo/api/src/types/read-initiator";
+import { expect } from "vitest";
 
 export function agentSessionListItem({
   id,
   name,
-  state,
   status,
 }: {
   id: string;
   name: string;
-  state?: AgentSessionState;
   status: string;
 }): AgentSessionListItem {
   const timestamp = new Date("2026-01-01T00:00:00.000Z");
@@ -57,18 +62,17 @@ export function agentSessionListItem({
     name,
     outputTokens: 20,
     project: null,
-    repositoryFullName: "closedloop-ai/example-repo",
+    repositoryFullName: "closedloop-ai/closedloop-ai",
     slug: null,
     sourceArtifact: null,
     sourceArtifactId: null,
     sourceLoopId: null,
     startedAt: timestamp,
-    state,
     status,
     toolUseCount: 1,
     updatedAt: timestamp,
     user: null,
-    worktreePath: "/tmp/example-repo",
+    worktreePath: "/tmp/closedloop-ai",
   };
 }
 
@@ -111,7 +115,7 @@ export function agentSessionDetail(
       {
         cacheReadTokens: 0,
         cacheWriteTokens: 0,
-        estimatedCostUsd: item.estimatedCost,
+        estimatedCostUsd: item.estimatedCost ?? undefined,
         inputTokens: item.inputTokens,
         model: item.model ?? "gpt-test",
         outputTokens: item.outputTokens,
@@ -175,6 +179,7 @@ export function agentSessionAnalytics(): AgentSessionAnalytics {
 
 export type ShellSessionsListRequest = {
   limit?: number;
+  listQuery?: ListQueryExpression;
   offset?: number;
   search?: string;
   status?: string;
@@ -188,12 +193,7 @@ export function filterSessionsList(
   items: AgentSessionListItem[],
   request: ShellSessionsListRequest
 ): AgentSessionListResponse {
-  let statuses: string[] = [];
-  if (request.statuses && request.statuses.length > 0) {
-    statuses = request.statuses;
-  } else if (request.status) {
-    statuses = [request.status];
-  }
+  const statuses = requestedSessionStatuses(request);
   let filtered =
     statuses.length > 0
       ? items.filter((item) => statuses.includes(item.status))
@@ -217,5 +217,66 @@ export function filterSessionsList(
     items: filtered.slice(offset, offset + limit),
     total: filtered.length,
     viewerScope: "self",
+  };
+}
+
+/**
+ * The statuses a Sessions read asks for, whichever spelling carries them: the
+ * canonical `listQuery` status clause (PRD-721) or the legacy `statuses` and
+ * `status` params.
+ */
+export function requestedSessionStatuses(request: {
+  listQuery?: ListQueryExpression;
+  status?: string;
+  statuses?: readonly string[];
+}): string[] {
+  if (request.statuses && request.statuses.length > 0) {
+    return [...request.statuses];
+  }
+  if (request.status) {
+    return [request.status];
+  }
+  const clause = request.listQuery?.filters?.find(
+    (filter) =>
+      filter.field === SessionListField.Status &&
+      filter.operator === ListFilterOperator.IsAnyOf
+  );
+  return clause && "values" in clause ? clause.values.map(String) : [];
+}
+
+/**
+ * The canonical Sessions read the list sends with no facet chosen: the stable
+ * last-activity window and the default most-recent-activity sort (PLN-1034),
+ * with `search` riding beside the expression.
+ */
+export function defaultSessionsPageDataRequest({
+  offset,
+  search,
+}: {
+  offset: number;
+  search: string | undefined;
+}) {
+  return {
+    readInitiator: ReadInitiator.User,
+    limit: 25,
+    offset,
+    search,
+    listQuery: {
+      version: LIST_QUERY_EXPRESSION_VERSION,
+      filters: [
+        {
+          field: SessionListField.LastActivity,
+          operator: ListFilterOperator.IsBetween,
+          min: expect.any(String),
+          max: expect.any(String),
+        },
+      ],
+      sorts: [
+        {
+          field: SessionListField.LastActivity,
+          direction: ListSortDirection.Desc,
+        },
+      ],
+    },
   };
 }

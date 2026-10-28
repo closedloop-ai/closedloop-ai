@@ -19,8 +19,8 @@
  */
 
 import assert from "node:assert/strict";
-import { after, before, describe, test } from "node:test";
 import { AGENT_SESSION_SYNC_SCHEMA_VERSION } from "@repo/api/src/types/agent-session";
+import { afterAll, beforeAll, describe, test } from "vitest";
 import {
   type MockCloudServer,
   READ_BACK_PATH,
@@ -52,11 +52,11 @@ import {
 describe("ISS-6099: the mock cloud retains and reconciles payload CONTENT", () => {
   let mock: MockCloudServer;
 
-  before(async () => {
+  beforeAll(async () => {
     mock = await startMockCloudServer({ computeTargetId: COMPUTE_TARGET_ID });
   });
 
-  after(async () => {
+  afterAll(async () => {
     await mock.close();
   });
 
@@ -481,11 +481,11 @@ describe("ISS-6099: read-back completeness is an invariant, not an assumption", 
 describe("ISS-6099: bounds and version skew are asserted, not assumed", () => {
   let mock: MockCloudServer;
 
-  before(async () => {
+  beforeAll(async () => {
     mock = await startMockCloudServer({ computeTargetId: COMPUTE_TARGET_ID });
   });
 
-  after(async () => {
+  afterAll(async () => {
     await mock.close();
   });
 
@@ -713,7 +713,6 @@ describe("ISS-6099: bounds and version skew are asserted, not assumed", () => {
         events: [{ id: "e1" }],
         tokenUsageByModel: [{ model: "sonnet" }],
       });
-      // biome-ignore lint/performance/noDelete: the point is a genuinely absent key.
       delete dropped[relation];
       await postBatch(mock, [dropped]);
 

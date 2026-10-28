@@ -1,0 +1,13 @@
+-- ISS-10720: WHICH SOURCE attributed an invocation to its component.
+--
+-- A SECOND AXIS beside `evidence_class`, not a widening of it. That column
+-- answers where the DEFINITION came from and the cloud read keys the
+-- component-detail source pointer off it, so writing an attribution answer
+-- into it would delete a provenance pointer that is still perfectly well
+-- known. One column was carrying two jobs that disagree.
+--
+-- Purely additive: one new NULLABLE column with no default, no existing row
+-- rewritten, no existing column changed. NULL means "the transcript attributed
+-- it", which is every row written before this migration and every row the OTel
+-- join does not reach -- never "unknown".
+ALTER TABLE "agent_component_invocations" ADD COLUMN "attribution_source" TEXT;

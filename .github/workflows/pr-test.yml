@@ -106,11 +106,13 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    # 25, not 10: the refreshed suite is 822 test files / ~9.2k tests, and
-    # apps/api alone takes ~5.3min. The 10min budget predates the refresh and
-    # cancelled the job mid-run at 22:18 having already passed api 822/822 —
-    # steady progress, not a hang.
-    timeout-minutes: 25
+    # 75, not 25: the 2026-10-23 refresh brought the filtered graph to ~4.7k
+    # test files. Run 40550715238 passed all 31 packages that finished,
+    # including api 1742/1742 about 17 minutes into the step, and was cancelled
+    # at 25 minutes with @repo/app (1,816 files) and app (420 files) still
+    # running: steady progress, not a hang. app waits on @repo/app, and both
+    # take ~3.2x api locally, so the job needs ~50 minutes; 75 is that plus half.
+    timeout-minutes: 75
     permissions:
       contents: read
 

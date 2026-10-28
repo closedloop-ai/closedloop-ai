@@ -5,10 +5,10 @@ import {
 } from "./synthetic-otlp";
 
 /**
- * Pure parsing + leg evaluation for the tail-sampling mechanical verification
- * (FEA-2182). The runner does the I/O (scrape Prometheus, read the export file);
- * everything here is a pure function of strings so the decision logic is fully
- * unit-tested without Docker.
+ * Parsing + leg evaluation for the tail-sampling mechanical verification
+ * (FEA-2182). The runner owns the process lifecycle; everything here is a pure
+ * function of strings — or, for `settleExportedScenarioCounts`, of an injected
+ * reader and wait — so the decision logic is fully unit-tested without Docker.
  */
 
 /** Per-policy decision counts from the collector's own tail-sampling metric. */
@@ -93,7 +93,18 @@ export function parseDecisionMetrics(prometheusText: string): DecisionMetrics {
 export function parseExportedScenarioCounts(
   fileContent: string
 ): ReadonlyMap<Scenario, number> {
+  return parseExport(fileContent).counts;
+}
+
+/**
+ * The same parse, plus the count of lines that were not valid JSON. A line the
+ * exporter is midway through writing is unparseable and NORMAL — the settle
+ * absorbs it by re-reading — so the count is only meaningful once the counts
+ * have settled, where it separates a corrupt record from a missing one.
+ */
+function parseExport(fileContent: string): ParsedExport {
   const traceSpansByScenario = new Map<Scenario, Map<string, Set<string>>>();
+  let malformedLines = 0;
 
   const add = (scenario: string, traceId: string, spanName: string): void => {
     const key = scenario as Scenario;
@@ -113,6 +124,7 @@ export function parseExportedScenarioCounts(
     try {
       parsed = JSON.parse(line);
     } catch {
+      malformedLines += 1;
       continue;
     }
     for (const span of iterateSpans(parsed)) {
@@ -133,7 +145,7 @@ export function parseExportedScenarioCounts(
   for (const [scenario, traceSpans] of traceSpansByScenario) {
     counts.set(scenario, countCompleteRetainedTraces(scenario, traceSpans));
   }
-  return counts;
+  return { counts, malformedLines };
 }
 
 function countCompleteRetainedTraces(
@@ -149,6 +161,14 @@ function countCompleteRetainedTraces(
   return count;
 }
 
+/**
+ * A Slow trace is the two-span desktop shape — an `ipc.list` child exported at
+ * T0 and the `cl-desktop` root exported when it closes — so counting distinct
+ * trace ids would score a trace whose root missed the vote as retained. That is
+ * precisely the delivery-order failure `slowTraceLatencyThresholdMs <
+ * decisionWaitSeconds` exists to prevent, so the slow leg counts only traces
+ * that arrived WHOLE. Every other scenario is one span per trace.
+ */
 function isCompleteRetainedTrace(
   scenario: Scenario,
   spanNames: ReadonlySet<string>
@@ -299,4 +319,113 @@ function evaluateBaselineLeg(
     ? `sampled ${base.retainedInFile}/${base.sent} (${pct}%; target ${samplingPercentage}%); ${base.policyName} sampled=true ×${base.decisionSampledTrue}/${totalSent} traces`
     : `expected a strict sampled subset (target ${samplingPercentage}%): file ${base.retainedInFile}/${base.sent} (${pct}%, ${okOr(fileOk, "OUT OF BAND")}), decision sampled=true ${base.decisionSampledTrue}/${totalSent} (${okOr(metricOk, "OUT OF BAND")})`;
   return { ...base, pass, detail };
+}
+
+// --- Export-file settle -----------------------------------------------------
+
+export type ExportFileSettle = {
+  /** Re-read the whole export file. */
+  readonly readExportFile: () => string;
+  /** Wait between reads; injected so callers, and tests, own the clock. */
+  readonly wait: () => Promise<void>;
+  /** Consecutive unchanged reads required before the counts are accepted. */
+  readonly stableReads: number;
+  /** Hard bound on reads, so an exporter that never goes quiet cannot hang. */
+  readonly maxReads: number;
+};
+
+function sameCounts(
+  a: ReadonlyMap<Scenario, number>,
+  b: ReadonlyMap<Scenario, number>
+): boolean {
+  if (a.size !== b.size) {
+    return false;
+  }
+  for (const [scenario, count] of a) {
+    if (b.get(scenario) !== count) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Read the export file until its whole-trace counts stop growing.
+ *
+ * The tail-sampling decision metric increments before the file exporter's
+ * buffered write reaches disk, so a read taken the instant the vote lands can
+ * clip a span that is still in the exporter's buffer and score a whole trace as
+ * partial (ISS-9913). Waiting for the counts to hold still removes that
+ * ambiguity WITHOUT hiding a genuine partial export, because the two settle
+ * differently: a clipped read converges upward as the buffer drains, while a
+ * trace whose root never reached the collector never appears at all, so its
+ * count settles short and `isCompleteRetainedTrace` still fails the leg.
+ *
+ * Exhausting `maxReads` while the counts are still moving throws rather than
+ * returning the last snapshot. That snapshot is a read the exporter has already
+ * contradicted, so scoring it would reintroduce the exact ambiguity this
+ * function exists to remove — a still-draining buffer would print the same
+ * `file N/M MISMATCH` a genuine delivery-order failure prints, and the record's
+ * claim that a short count means the trace never arrived would stop being true.
+ * The run is inconclusive at that point, not failing. A settled read that still
+ * contains an unparseable line is refused the same way, and for the same
+ * reason: a skipped corrupt record scores its trace as missing.
+ */
+export async function settleExportedScenarioCounts(
+  settle: ExportFileSettle
+): Promise<ReadonlyMap<Scenario, number>> {
+  let parsed = parseExport(settle.readExportFile());
+  let unchanged = 0;
+  for (let read = 1; read < settle.maxReads; read += 1) {
+    await settle.wait();
+    const next = parseExport(settle.readExportFile());
+    unchanged = sameCounts(parsed.counts, next.counts) ? unchanged + 1 : 0;
+    parsed = next;
+    if (unchanged >= settle.stableReads) {
+      assertParsedCleanly(parsed);
+      return parsed.counts;
+    }
+  }
+  throw new InconclusiveVerificationError(
+    `export file never settled: whole-trace counts were still changing after ${settle.maxReads} reads (last read ${renderCounts(parsed.counts)}). The verification is INCONCLUSIVE — the exporter is still draining, so this is not a tail-sampling policy failure.`
+  );
+}
+
+/**
+ * A line that is still unparseable once the counts have settled is a corrupt
+ * export record, not a partial write. Skipping it would score its trace as
+ * missing, which reads identically to a trace that never reached the collector
+ * — the same conflation the settle exists to remove, and it would falsify the
+ * generated record's claim about what a short count means.
+ */
+function assertParsedCleanly(parsed: ParsedExport): void {
+  if (parsed.malformedLines > 0) {
+    throw new InconclusiveVerificationError(
+      `export file settled with ${parsed.malformedLines} unparseable line(s) (counts ${renderCounts(parsed.counts)}). The verification is INCONCLUSIVE — a corrupt record's trace cannot be told from one that never arrived, so no leg verdict is claimed.`
+    );
+  }
+}
+
+/**
+ * Raised when the export file could not serve as ground truth — its counts were
+ * still moving at the read cap, or the settled read did not parse cleanly.
+ * Distinct from a failing leg: nothing was measured, so no policy verdict is
+ * claimed and no verification record is generated.
+ */
+export class InconclusiveVerificationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InconclusiveVerificationError";
+  }
+}
+
+type ParsedExport = {
+  readonly counts: ReadonlyMap<Scenario, number>;
+  readonly malformedLines: number;
+};
+
+function renderCounts(counts: ReadonlyMap<Scenario, number>): string {
+  return [...counts]
+    .map(([scenario, count]) => `${scenario}=${count}`)
+    .join(", ");
 }

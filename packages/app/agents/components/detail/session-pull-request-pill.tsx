@@ -30,8 +30,8 @@ const PR_TITLE_MAX_LENGTH = 80 as const;
 
 /**
  * ISS-4793: the session-detail Properties-pane "Pull requests" pill, extracted
- * out of the grandfathered `agent-session-detail-view.tsx` (which is shrink-only
- * per the file-size rules) as a sibling of `session-linked-artifacts-row.tsx`.
+ * out of `agent-session-detail-view.tsx` as a sibling of
+ * `session-linked-artifacts-row.tsx`.
  *
  * FEA-4256: the pill's whole content is the PR's identity (icon + #num + the
  * GitHub state), so a click on it opens the PR on GitHub, never a branch page.
@@ -165,24 +165,13 @@ function buildStatusSuffix(status: string): string {
   return ` (${toTitleCase(raw)})`;
 }
 
-function toTitleCase(value: string): string {
+export function toTitleCase(value: string): string {
   return value.replace(
     TITLE_CASE_WORD_REGEX,
     (word) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`
   );
 }
 
-/**
- * The PR's real subject, or "" when we do not have one.
- *
- * `sessionPrWithLifecycle` (`packages/lib/session-trace/derivation.ts`) fills an
- * absent title with the literal `PR #<num>`, and `sessionPrSchema` requires
- * `title` min-length 1 on the legacy JSON path, so "no subject" reaches this
- * component as that placeholder rather than as an empty string. Echoing it back
- * would render "Pull request #4170: PR #4170", presenting the projection's
- * stand-in for missing data as the data itself. Drop it and let the caller fall
- * back to the head-only sentence, which is what we can actually assert.
- */
 /**
  * The unresolvable pill's tooltip copy: the same identity sentence as the link
  * branch, then WHY there is no destination, so the reader is not left comparing
@@ -207,12 +196,23 @@ export function buildUnresolvedPullRequestTitle(
 }
 
 function toPullRequestSubject(pr: SessionPR): string {
-  const subject = pr.title?.trim() ?? "";
-  if (!subject || subject === `PR #${pr.num}`) {
-    return "";
-  }
+  const subject = pullRequestSubject(pr);
   if (subject.length > PR_TITLE_MAX_LENGTH) {
     return `${subject.slice(0, PR_TITLE_MAX_LENGTH).trimEnd()}…`;
   }
   return subject;
+}
+
+/**
+ * The PR's real subject, or "" when we do not have one.
+ *
+ * `sessionPrWithLifecycle` (`packages/lib/session-trace/derivation.ts`) fills an
+ * absent title with the literal `PR #<num>`, and `sessionPrSchema` requires
+ * `title` min-length 1 on the legacy JSON path, so "no subject" arrives as that
+ * placeholder rather than as an empty string. Echoing it back would present the
+ * projection's stand-in for missing data as the data itself.
+ */
+export function pullRequestSubject(pr: SessionPR): string {
+  const subject = pr.title?.trim() ?? "";
+  return subject === `PR #${pr.num}` ? "" : subject;
 }

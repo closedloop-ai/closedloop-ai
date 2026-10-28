@@ -8,6 +8,7 @@
  *      • Throws when either document is a TEMPLATE.
  *      • Calls LLM with correct prompts (with and without template content).
  *      • Throws when LLM returns empty content.
+ *      • Throws without writing when the LLM stops at the output limit.
  *      • Saves a new version on the primary and deletes the secondary artifact.
  *      • Calls deleteDocumentRoom for the secondary slug.
  *      • Returns NotFound when the primary detail row is missing during tx.
@@ -73,6 +74,27 @@ const mockFindOrgTemplate = documentTemplatesService.findOrgTemplate as Mock;
 const mockDeleteDocumentRoom = deleteDocumentRoom as Mock;
 const mockSanitizeAndLog = sanitizeAndLog as Mock;
 const mockGenerateText = generateText as Mock;
+
+/**
+ * The columns `tx.artifact.delete` returns to the merge transaction. Since
+ * ISS-10029 the merge builds its `document.deleted` audit detail from that
+ * return value, so a `delete` double resolving `undefined` is no longer a
+ * stand-in for one that ran — it is a row that never existed. Whether the entry
+ * actually reaches the outbox is decided against real Postgres by
+ * `app/documents/document-delete-audit.integration.test.ts`; `withDb` is a bare
+ * double here and never runs its callback.
+ */
+const DELETED_SECONDARY_ROW = {
+  slug: "secondary-slug",
+  name: "Secondary Document",
+  subtype: "PRD",
+  status: DocumentStatus.Draft,
+  projectId: "proj-1",
+};
+
+function txArtifactDeleteMock() {
+  return vi.fn().mockResolvedValue(DELETED_SECONDARY_ROW);
+}
 
 function mockTx(tx: Record<string, unknown>) {
   mockWithDbTx.mockImplementation(
@@ -149,14 +171,17 @@ function setupHappyPath(overrides?: {
     .mockResolvedValueOnce({ content: primaryContent })
     .mockResolvedValueOnce({ content: secondaryContent });
   mockFindOrgTemplate.mockResolvedValueOnce(null);
-  mockGenerateText.mockResolvedValueOnce({ text: mergedText });
+  mockGenerateText.mockResolvedValueOnce({
+    text: mergedText,
+    finishReason: "stop",
+  });
   mockTx({
     documentDetail: {
       findUnique: vi.fn().mockResolvedValue({ latestVersion }),
       update: vi.fn(),
     },
     documentVersion: { create: vi.fn() },
-    artifact: { delete: vi.fn() },
+    artifact: { delete: txArtifactDeleteMock() },
   });
   mockDeleteDocumentRoom.mockResolvedValueOnce(undefined);
 }
@@ -256,6 +281,64 @@ describe("documentMergeService.merge", () => {
     );
   });
 
+  it("throws without writing anything when the LLM stops at the output limit", async () => {
+    mockFindByIdSimple
+      .mockResolvedValueOnce(PRIMARY_DOC)
+      .mockResolvedValueOnce(SECONDARY_DOC);
+    mockGetLatest
+      .mockResolvedValueOnce({ content: "some content" })
+      .mockResolvedValueOnce({ content: "some content" });
+    mockFindOrgTemplate.mockResolvedValue(null);
+    mockGenerateText.mockResolvedValue({
+      text: "merged content cut off mid-sent",
+      finishReason: "length",
+    });
+
+    await expect(documentMergeService.merge(...MERGE_ARGS)).rejects.toThrow(
+      "LLM merge output is incomplete (finish reason: length)"
+    );
+    expect(mockWithDbTx).not.toHaveBeenCalled();
+    expect(mockDeleteDocumentRoom).not.toHaveBeenCalled();
+  });
+
+  it("throws without writing anything when the LLM refuses partway through", async () => {
+    mockFindByIdSimple
+      .mockResolvedValueOnce(PRIMARY_DOC)
+      .mockResolvedValueOnce(SECONDARY_DOC);
+    mockGetLatest
+      .mockResolvedValueOnce({ content: "some content" })
+      .mockResolvedValueOnce({ content: "some content" });
+    mockFindOrgTemplate.mockResolvedValue(null);
+    mockGenerateText.mockResolvedValue({
+      text: "merged content up to the refus",
+      finishReason: "content-filter",
+    });
+
+    await expect(documentMergeService.merge(...MERGE_ARGS)).rejects.toThrow(
+      "LLM merge output is incomplete (finish reason: content-filter)"
+    );
+    expect(mockWithDbTx).not.toHaveBeenCalled();
+    expect(mockDeleteDocumentRoom).not.toHaveBeenCalled();
+  });
+
+  it("rejects input between the old and new token budgets", async () => {
+    // 2 x 360k ASCII chars ~ 180k estimated tokens: under the 187,712 budget a
+    // 4096-token output reserve allowed, over the 171,808 a 20k reserve allows.
+    const content = "a".repeat(360_000);
+    mockFindByIdSimple
+      .mockResolvedValueOnce(PRIMARY_DOC)
+      .mockResolvedValueOnce(SECONDARY_DOC);
+    mockGetLatest
+      .mockResolvedValueOnce({ content })
+      .mockResolvedValueOnce({ content });
+    mockFindOrgTemplate.mockResolvedValue(null);
+
+    await expect(documentMergeService.merge(...MERGE_ARGS)).rejects.toThrow(
+      "Documents too large to merge"
+    );
+    expect(mockGenerateText).not.toHaveBeenCalled();
+  });
+
   it("throws before calling the LLM when combined content exceeds the token budget", async () => {
     // ~200k estimated tokens (>4 chars/token heuristic) overflows the input
     // budget, which must fail loudly rather than let the provider truncate.
@@ -291,7 +374,7 @@ describe("documentMergeService.merge", () => {
             content: expect.stringContaining("primary content"),
           }),
         ],
-        maxOutputTokens: 4096,
+        maxOutputTokens: 20_000,
         // Pinned to 0 so the faithfulness-critical merge is deterministic
         // rather than running at the provider default (~1.0).
         temperature: 0,
@@ -328,14 +411,17 @@ describe("documentMergeService.merge", () => {
       .mockResolvedValueOnce({ content: "secondary content" })
       .mockResolvedValueOnce({ content: "template content" });
     mockFindOrgTemplate.mockResolvedValue(templateDoc);
-    mockGenerateText.mockResolvedValue({ text: "merged content" });
+    mockGenerateText.mockResolvedValue({
+      text: "merged content",
+      finishReason: "stop",
+    });
     mockTx({
       documentDetail: {
         findUnique: vi.fn().mockResolvedValue({ latestVersion: 2 }),
         update: vi.fn(),
       },
       documentVersion: { create: vi.fn() },
-      artifact: { delete: vi.fn() },
+      artifact: { delete: txArtifactDeleteMock() },
     });
     mockDeleteDocumentRoom.mockResolvedValue(undefined);
 
@@ -372,7 +458,10 @@ describe("documentMergeService.merge", () => {
       .mockResolvedValueOnce({ content: "primary content" })
       .mockResolvedValueOnce({ content: "secondary content" });
     mockFindOrgTemplate.mockResolvedValue(null);
-    mockGenerateText.mockResolvedValue({ text: "merged content" });
+    mockGenerateText.mockResolvedValue({
+      text: "merged content",
+      finishReason: "stop",
+    });
     mockTx({
       documentDetail: {
         findUnique: vi.fn().mockResolvedValue(null),
@@ -394,7 +483,7 @@ describe("documentMergeService.merge", () => {
       .mockResolvedValue({ latestVersion: 3 });
     const txDocumentDetailUpdate = vi.fn();
     const txDocumentVersionCreate = vi.fn();
-    const txArtifactDelete = vi.fn();
+    const txArtifactDelete = txArtifactDeleteMock();
 
     setupHappyPath({ latestVersion: 3 });
     // Override the tx with named mocks for assertion
@@ -531,6 +620,7 @@ describe("documentMergeService.merge", () => {
     mockFindOrgTemplate.mockResolvedValue(null);
     mockGenerateText.mockResolvedValue({
       text: "<script>alert(1)</script>merged",
+      finishReason: "stop",
     });
     mockSanitizeAndLog.mockReturnValueOnce("sanitized merged");
     mockTx({
@@ -539,7 +629,7 @@ describe("documentMergeService.merge", () => {
         update: vi.fn(),
       },
       documentVersion: { create: txDocumentVersionCreate },
-      artifact: { delete: vi.fn() },
+      artifact: { delete: txArtifactDeleteMock() },
     });
     mockDeleteDocumentRoom.mockResolvedValue(undefined);
 

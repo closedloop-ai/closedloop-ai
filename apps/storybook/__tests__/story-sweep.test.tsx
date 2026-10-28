@@ -15,11 +15,16 @@
  * `story-glob-parity.test.ts`, which reads BOTH lists from source — so neither a
  * new glob root in `main.ts` nor a deleted glob here can silently escape.
  */
-import { composeStories } from "@storybook/react";
+import { composeStories, composeStory } from "@storybook/react";
 import { describe, expect, it } from "vitest";
+import { stubContainerWidthPx } from "../../../packages/typescript-config/vitest-container-width-stub";
 
 type StoryModule = Parameters<typeof composeStories>[0];
-type ComposedStory = { run: () => Promise<void> };
+type ComposedStory = {
+  globals?: { viewport?: { value?: string } };
+  parameters?: { storySweep?: { timeoutMs?: number } };
+  run: () => Promise<void>;
+};
 
 /**
  * Globals the story corpus installs on `window`, which every run in this file
@@ -34,6 +39,17 @@ type ComposedStory = { run: () => Promise<void> };
  * a redesign.
  */
 const STORY_INSTALLED_GLOBALS = ["desktopApi"];
+const STORY_VIEWPORT_DIMENSIONS = /^(\d+)-\d+$/;
+/**
+ * Storybook 10.6 runs a story's `beforeEach` cleanups at the start of the NEXT
+ * `run()`. A story that stubs the viewport itself would then restore this
+ * sweep's viewport stub after the sweep had put the original back. Running this
+ * empty story flushes those cleanups while the sweep's stub is still installed.
+ */
+const FLUSH_STORY_CLEANUPS = composeStory(
+  { render: () => null },
+  { title: "Story sweep/Flush cleanups" }
+);
 
 // Relative to this file. Vite resolves `import.meta.glob` patterns at transform
 // time, so these must stay literal — they cannot be read from `main.ts` at
@@ -54,6 +70,11 @@ const storyModules = import.meta.glob<StoryModule>([
   "../../../packages/app/*/components/**/*.stories.mjs",
   "../../../packages/app/*/components/**/*.stories.ts",
   "../../../packages/app/*/components/**/*.stories.tsx",
+  "../../../packages/app/*/*/components/**/*.stories.js",
+  "../../../packages/app/*/*/components/**/*.stories.jsx",
+  "../../../packages/app/*/*/components/**/*.stories.mjs",
+  "../../../packages/app/*/*/components/**/*.stories.ts",
+  "../../../packages/app/*/*/components/**/*.stories.tsx",
   "../../../apps/desktop/src/renderer/components/**/*.stories.js",
   "../../../apps/desktop/src/renderer/components/**/*.stories.jsx",
   "../../../apps/desktop/src/renderer/components/**/*.stories.mjs",
@@ -76,6 +97,10 @@ const loaded = await Promise.all(
 );
 
 describe("every indexed story mounts and plays", () => {
+  it("caps a story's requested timeout at the sweep maximum", () => {
+    expect(resolveStorySweepTimeoutMs(60_000)).toBe(15_000);
+  });
+
   it("indexes a story corpus at all", () => {
     // A glob that silently matches nothing would make every assertion below
     // vacuous and the suite would still report green.
@@ -106,9 +131,18 @@ describe("every indexed story mounts and plays", () => {
       }
 
       for (const name of names) {
-        it(name, async () => {
-          await runIsolated(composed[name]);
-        });
+        // Every story gets Vitest's 5s default unless it declares
+        // `parameters.storySweep.timeoutMs` with its own justification; the
+        // sweep caps that request at 15s.
+        it(
+          name,
+          async () => {
+            await runIsolated(composed[name]);
+          },
+          resolveStorySweepTimeoutMs(
+            composed[name].parameters?.storySweep?.timeoutMs
+          )
+        );
       }
     });
   }
@@ -137,10 +171,40 @@ async function runIsolated(story: ComposedStory): Promise<void> {
   const saved = STORY_INSTALLED_GLOBALS.map(
     (key) => [key, Object.getOwnPropertyDescriptor(target, key)] as const
   );
+  // Shared artifact lists mirror their view state into the real location, so a
+  // story's columns and metrics would otherwise restore into the next story.
+  const href = target.location.href;
+  const innerWidthDescriptor = Object.getOwnPropertyDescriptor(
+    target,
+    "innerWidth"
+  );
+  const viewportDimensions = STORY_VIEWPORT_DIMENSIONS.exec(
+    story.globals?.viewport?.value ?? ""
+  );
+  let restoreContainerWidth: (() => void) | undefined;
 
+  forgetLastFocusVisible(target.document);
   try {
+    if (viewportDimensions) {
+      const viewportWidth = Number(viewportDimensions[1]);
+      Object.defineProperty(target, "innerWidth", {
+        configurable: true,
+        value: viewportWidth,
+      });
+      restoreContainerWidth = stubContainerWidthPx(viewportWidth);
+    }
     await story.run();
   } finally {
+    if (viewportDimensions) {
+      await FLUSH_STORY_CLEANUPS.run();
+    }
+    target.history.replaceState(null, "", href);
+    restoreContainerWidth?.();
+    if (innerWidthDescriptor) {
+      Object.defineProperty(target, "innerWidth", innerWidthDescriptor);
+    } else {
+      Reflect.deleteProperty(target, "innerWidth");
+    }
     for (const [key, descriptor] of saved) {
       if (descriptor) {
         Object.defineProperty(target, key, descriptor);
@@ -149,4 +213,40 @@ async function runIsolated(story: ComposedStory): Promise<void> {
       }
     }
   }
+}
+
+/**
+ * jsdom's `:focus-visible` (@asamuzakjp/dom-selector 9.2) remembers the last
+ * element it matched and counts a later Tab-focused element as visible only
+ * while that memory is empty or names the same element. It forgets only when
+ * the remembered element is evaluated while focused but no longer visible, which
+ * an element from an earlier story never is. A throwaway button made visible by
+ * a key press, then judged after a mouse press, clears that memory so each
+ * story's keyboard focus is judged as it would be on a fresh page.
+ */
+function forgetLastFocusVisible(document: Document): void {
+  const view = document.defaultView;
+  if (!view) {
+    return;
+  }
+  const probe = document.createElement("button");
+  document.body.append(probe);
+  probe.focus();
+  probe.dispatchEvent(
+    new view.KeyboardEvent("keydown", { bubbles: true, key: "a" })
+  );
+  probe.matches(":focus-visible");
+  probe.dispatchEvent(new view.MouseEvent("mousedown", { bubbles: true }));
+  probe.matches(":focus-visible");
+  probe.blur();
+  probe.remove();
+}
+
+const STORY_SWEEP_MAX_TIMEOUT_MS = 15_000;
+
+function resolveStorySweepTimeoutMs(timeoutMs?: number): number | undefined {
+  if (timeoutMs === undefined) {
+    return undefined;
+  }
+  return Math.min(timeoutMs, STORY_SWEEP_MAX_TIMEOUT_MS);
 }

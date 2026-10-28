@@ -33,8 +33,9 @@
  *     nothing has to parse a value invented here. (The first-launch import
  *     splash reads the same field; it is not this spec's subject.)
  *
- * The session LIST read is deliberately untouched — it answering while the
- * source is down is the entire premise of the bug.
+ * The session LIST read is not substituted — it answering while the source is
+ * down is the entire premise of the bug. It is observed after completion so the
+ * spec can prove the stale zero landed before release.
  *
  * HOW. Electron's `-r` loads this in the main process before the app's own
  * entrypoint, so it can wrap `ipcMain.handle` and decorate these two listeners
@@ -54,6 +55,8 @@ const { ipcMain } = require("electron");
 const AGENT_MONITOR_URL_CHANNEL = "desktop:get-agent-monitor-url";
 /** The shared runtime-status poll the import-progress projection reads. */
 const RUNTIME_STATUS_CHANNEL = "desktop:get-runtime-status";
+/** `SHARED_AGENT_SESSIONS_IPC_CHANNELS.list`. */
+const SHARED_AGENT_SESSIONS_LIST_CHANNEL = "desktop:shared-agent-sessions:list";
 
 /** `LOCAL_SESSION_SOURCE_STATUSES.starting`. */
 const STARTING = "starting";
@@ -70,6 +73,17 @@ if (process.env.CL_E2E_LOCAL_SESSION_SOURCE_GATE === "1") {
     held: true,
     /** Probes answered while held — proves the renderer really was polling. */
     heldProbes: 0,
+    /** Session-list responses that completed while the source was held. */
+    heldSessionListReads: 0,
+    /** Completed held session-list responses whose total was exactly zero. */
+    heldZeroSessionListReads: 0,
+    stats() {
+      return {
+        heldProbes: gate.heldProbes,
+        heldSessionListReads: gate.heldSessionListReads,
+        heldZeroSessionListReads: gate.heldZeroSessionListReads,
+      };
+    },
     release() {
       gate.held = false;
       return gate.heldProbes;
@@ -81,12 +95,26 @@ if (process.env.CL_E2E_LOCAL_SESSION_SOURCE_GATE === "1") {
   ipcMain.handle = (channel, listener) => {
     if (
       channel !== AGENT_MONITOR_URL_CHANNEL &&
-      channel !== RUNTIME_STATUS_CHANNEL
+      channel !== RUNTIME_STATUS_CHANNEL &&
+      channel !== SHARED_AGENT_SESSIONS_LIST_CHANNEL
     ) {
       return registerHandler(channel, listener);
     }
     return registerHandler(channel, async (event, ...args) => {
       const response = await listener(event, ...args);
+      if (channel === SHARED_AGENT_SESSIONS_LIST_CHANNEL) {
+        if (gate.held) {
+          gate.heldSessionListReads += 1;
+          if (
+            response &&
+            typeof response === "object" &&
+            Reflect.get(response, "total") === 0
+          ) {
+            gate.heldZeroSessionListReads += 1;
+          }
+        }
+        return response;
+      }
       if (!gate.held) {
         return response;
       }

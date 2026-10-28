@@ -1,0 +1,348 @@
+{
+  "schema_version": 2,
+  "review_id": "8517be45-1349-488b-bb9d-fe4645899d41",
+  "pr_number": 4213,
+  "head_sha": "",
+  "diff_tip": "origin/fix/iss-4707-bound-policy-denial-metric",
+  "review_branch": "fix/iss-4707-bound-policy-denial-metric",
+  "base_ref": "main",
+  "diff_scope": "origin/main...origin/fix/iss-4707-bound-policy-denial-metric",
+  "mode": "github",
+  "intent": "mixed",
+  "verified": [
+    {
+      "file": "apps/api/lib/org-session-sync-policy.test.ts",
+      "line": 23,
+      "severity": "MEDIUM",
+      "category": "Code Quality",
+      "issue": "[P2] SSOT drift: WINDOW_MS re-declared locally instead of importing SESSION_INGESTION_POLICY_DENIED_WINDOW_MS",
+      "explanation": "Both new/modified test files redeclare the window constant as a local literal (`const WINDOW_MS = 60_000`) rather than importing the canonical exported `SESSION_INGESTION_POLICY_DENIED_WINDOW_MS` from `session-ingestion-policy-denied-throttle.ts`. CLAUDE.md Learned Patterns `[mistake]`: \"SSOT-drift-by-copy \u2014 a literal or helper re-declared where a canonical symbol of the same value already exists. Grep for the value/name and import the canonical symbol instead of re-declaring it.\"\n\nThe higher-risk instance is `org-session-sync-policy.test.ts:23`, where `WINDOW_MS` drives `vi.setSystemTime(WINDOW_MS)` at lines 141 and 160 to advance past the window boundary on the PRODUCTION singleton (`sessionIngestionPolicyDeniedThrottle`, which uses the default window). If `SESSION_INGESTION_POLICY_DENIED_WINDOW_MS` is changed (e.g. tightened for abuse control), the test would advance to the wrong boundary and silently test against a stale expectation \u2014 the window-rollover behavior would either always or never fire depending on the new value.\n\nThe same drift appears in `session-ingestion-policy-denied-throttle.test.ts:7`, where `WINDOW_MS` is passed explicitly as `windowMs:` to custom throttle instances. The risk there is lower (the explicit constructor arg makes the tests independent of the default), but it's the same SSOT violation. The canonical symbol is already exported: `session-ingestion-policy-denied-throttle.ts:31 \u2192 export const SESSION_INGESTION_POLICY_DENIED_WINDOW_MS = 60_000;`",
+      "recommendation": "In both test files, replace `const WINDOW_MS = 60_000;` with `import { SESSION_INGESTION_POLICY_DENIED_WINDOW_MS } from \"./observability/session-ingestion-policy-denied-throttle\";` (adjust relative path for each file) and update usages from `WINDOW_MS` to `SESSION_INGESTION_POLICY_DENIED_WINDOW_MS`. This ensures a future change to the production window automatically invalidates the test boundary expectations.",
+      "code_snippet": "const WINDOW_MS = 60_000;",
+      "priority": 2,
+      "confidence": 0.9,
+      "reviewer": "auditor",
+      "schema_version": 2,
+      "finding_scope": "diff",
+      "system_marker": null,
+      "source": "agent",
+      "emitted_at": "2026-08-01T22:41:54.953310+00:00",
+      "reviewer_trigger": {
+        "type": "core",
+        "evidence": null
+      },
+      "evidence": [],
+      "reasoning_certificate": null,
+      "justified": false,
+      "justification": null,
+      "external_impact": [],
+      "grep_query_used": null,
+      "verifier_verdict": null,
+      "verifier_severity": null,
+      "verifier_confidence": null,
+      "verifier_reasoning": null,
+      "verifier_model": null,
+      "verification_duration_ms": null,
+      "evidence_checks": [],
+      "rejection_class": null,
+      "human_review_recommended": false,
+      "other_locations": [],
+      "subcategory": null,
+      "id": "auditor_f0"
+    },
+    {
+      "file": "apps/api/lib/observability/session-ingestion-policy-denied-throttle.ts",
+      "line": 137,
+      "severity": "MEDIUM",
+      "category": "Correctness",
+      "issue": "[P2] Suppressed denials are silently dropped when an idle key is pruned/evicted, contradicting the 'no denial dropped' invariant",
+      "explanation": "The module docstring (lines 16-20) and the metrics docstrings (session-ingestion-metrics.ts lines 55-59 and 109-114) promise that sum(count) 'stays faithful to the real denial volume' and that 'no denial is dropped from the additive counter' because suppressed denials are flushed as an aggregate on the NEXT window's first denial. But that flush only happens if the key re-fires. If a key accumulates suppressedCount>0 and then goes quiet, both cleanup paths delete it WITHOUT flushing: pruneExpired (line 137) deletes any expired key other than the one currently being recorded (its exceptKey guard protects only the current key, not other idle keys), and pruneOldestEntries (lines 143-150) evicts the oldest entry by insertion order with no suppressedCount check when the cap is exceeded. Trace: key K records at t=0 (EMIT_FIRST, suppressedCount grows to 5 over t=1..5), then goes quiet; at t=60001 a DIFFERENT key J calls record(), pruneExpired(60001, keyJ) sees K.resetAt=60000<=60001 and K!==keyJ, deletes K, and its 5 suppressed denials are lost forever. The additive-counter promise is therefore false for exactly the quiet-after-burst case.",
+      "recommendation": "Either (a) flush suppressedCount>0 entries before deleting them in pruneExpired/pruneOldestEntries (e.g. return them so the caller can emit an aggregate), or (b) soften the docstrings to state the counter is best-effort and may undercount when an idle key's window is reclaimed before it re-fires. Given this is explicitly best-effort abuse-control telemetry and the dropped denials are the throttled replay traffic, (b) is acceptable, but the current prose overstates the guarantee.",
+      "code_snippet": "if (key !== exceptKey && now >= entry.resetAt) {\n  this.entries.delete(key);\n}",
+      "priority": 2,
+      "confidence": 0.75,
+      "reviewer": "bha_p0",
+      "schema_version": 2,
+      "finding_scope": "diff",
+      "system_marker": null,
+      "source": "agent",
+      "emitted_at": "2026-08-01T22:41:54.953310+00:00",
+      "reviewer_trigger": {
+        "type": "core",
+        "evidence": null
+      },
+      "evidence": [],
+      "reasoning_certificate": null,
+      "justified": false,
+      "justification": null,
+      "external_impact": [],
+      "grep_query_used": null,
+      "verifier_verdict": "CONFIRMED",
+      "verifier_severity": null,
+      "verifier_confidence": 0.9,
+      "verifier_reasoning": "The code snippet cited in the finding exists verbatim at lines 137-138 of apps/api/lib/observability/session-ingestion-policy-denied-throttle.ts. The `pruneExpired` method iterates all entries and deletes any where `key !== exceptKey && now >= entry.resetAt` with no check on `entry.suppressedCount`. The `exceptKey` guard at line 137 protects only the key currently being recorded (the current `record()` caller), not other idle keys that may have accumulated `suppressedCount > 0`. The quiet-after-burst scenario described in the finding is fully reachable: key K accumulates suppressedCount during a burst, goes quiet, its window expires, then a different key J triggers `pruneExpired(now, keyJ)` which deletes K and discards K's suppressedCount permanently. The `pruneOldestEntries` path (lines 143-150) has the same issue \u2014 it evicts the oldest entry by insertion order with no suppressedCount guard.\n\nThe module docstring (lines 13-20) promises 'the additive sum(count) a Datadog monitor computes still reflects the true denial volume' and 'The count is not lost \u2014 it is flushed as an aggregate rollup on the first emit of the NEXT window for that key.' This guarantee is false for the quiet-after-burst case. The flush-on-rollover logic (lines 118-125) only executes when the same key re-fires within a new window. If the key goes quiet, the rollover never runs and the suppressedCount is silently discarded on the next pruning sweep.\n\nNo upstream guard or defensive check prevents this data loss. MEDIUM is the appropriate severity: this is a telemetry metric undercounting issue (not a security or allow/deny correctness bug, as the comment at lines 93-95 confirms the throttling bug cannot affect the actual policy decision), but the docstring explicitly promises a guarantee that the code does not uphold, which is a meaningful correctness defect. The finding's recommendation \u2014 either flush suppressedCount before deletion or soften the docstring to 'best-effort' \u2014 is well-reasoned.",
+      "verifier_model": null,
+      "verification_duration_ms": null,
+      "evidence_checks": [
+        {
+          "claim": "snippet exists at apps/api/lib/observability/session-ingestion-policy-denied-throttle.ts:137",
+          "expected": "if (key !== exceptKey && now >= entry.resetAt) {\n  this.entries.delete(key);\n}",
+          "actual_read": "if (key !== exceptKey && now >= entry.resetAt) {\n        this.entries.delete(key);\n      }",
+          "verified": true,
+          "source": "apps/api/lib/observability/session-ingestion-policy-denied-throttle.ts:137"
+        },
+        {
+          "claim": "pruneExpired deletes entries without checking suppressedCount",
+          "expected": "No suppressedCount guard in pruneExpired before deletion",
+          "actual_read": "Lines 135-141: the loop checks only `key !== exceptKey && now >= entry.resetAt` before calling `this.entries.delete(key)`. There is no `entry.suppressedCount === 0` guard or flush step.",
+          "verified": true,
+          "source": "apps/api/lib/observability/session-ingestion-policy-denied-throttle.ts:135-141"
+        },
+        {
+          "claim": "pruneOldestEntries deletes entries without checking suppressedCount",
+          "expected": "No suppressedCount guard in pruneOldestEntries before deletion",
+          "actual_read": "Lines 143-150: evicts the oldest entry by insertion order using `this.entries.keys().next().value` with no check on suppressedCount before deletion.",
+          "verified": true,
+          "source": "apps/api/lib/observability/session-ingestion-policy-denied-throttle.ts:143-150"
+        },
+        {
+          "claim": "module docstring promises no denial is dropped from additive counter",
+          "expected": "Lines 13-20 contain a promise that the count is not lost and sum(count) reflects true denial volume",
+          "actual_read": "Lines 15-20: 'The count is not lost \u2014 it is flushed as an aggregate rollup on the first emit of the NEXT window for that key, so the additive sum(count) a Datadog monitor computes still reflects the true denial volume rather than a throttled undercount'",
+          "verified": true,
+          "source": "apps/api/lib/observability/session-ingestion-policy-denied-throttle.ts:13-20"
+        },
+        {
+          "claim": "flush-on-rollover only triggers when same key re-fires (never for quiet keys)",
+          "expected": "flushedSuppressedCount is only emitted in the window-rollover branch inside record(), which requires the same key to call record() again",
+          "actual_read": "Lines 118-125: the rollover branch `if (now >= current.resetAt)` runs only when `record()` is called for an existing key whose window has expired. If the key never re-fires, this branch never runs and suppressedCount is never flushed.",
+          "verified": true,
+          "source": "apps/api/lib/observability/session-ingestion-policy-denied-throttle.ts:118-125"
+        }
+      ],
+      "rejection_class": null,
+      "human_review_recommended": false,
+      "other_locations": [],
+      "subcategory": null,
+      "id": "bha_p0_f0"
+    },
+    {
+      "file": "apps/api/lib/observability/session-ingestion-policy-denied-throttle.ts",
+      "line": 143,
+      "severity": "MEDIUM",
+      "category": "Code Quality",
+      "issue": "[P2] pruneOldestEntries is line-for-line identical to FixedWindowRateLimiter",
+      "explanation": "SessionIngestionPolicyDeniedThrottle.pruneOldestEntries() (lines 143\u2013151) is 100% identical to FixedWindowRateLimiter.pruneOldestEntries() at apps/api/lib/fixed-window-rate-limiter.ts:68\u201376: same while(size > maxEntries) loop, same this.entries.keys().next().value idiom, same early return on undefined. The new file's module-level comment even calls out the prior art explicitly ('mirroring FixedWindowRateLimiter'), but the eviction logic was duplicated rather than extracted. Beyond that method, the two classes share ~65% structural surface: identical Map<string, ...> fields, same constructor defaulting pattern, clear() method, and the same pruneOldestEntries while-loop. The semantic difference that motivates a separate class (the exceptKey exclusion in pruneExpired + the flushedSuppressedCount flush semantics) is real, but it does not require duplicating the size-capping eviction method.",
+      "recommendation": "Extract pruneOldestEntries into a shared utility function (e.g., pruneOldestMapEntries(map, maxEntries)) in a co-located helper and import it in both FixedWindowRateLimiter and SessionIngestionPolicyDeniedThrottle.",
+      "code_snippet": "private pruneOldestEntries(): void {\n  while (this.entries.size > this.maxEntries) {\n    const oldestKey = this.entries.keys().next().value;\n    if (oldestKey === undefined) {\n      return;\n    }\n    this.entries.delete(oldestKey);\n  }\n}",
+      "priority": 2,
+      "confidence": 0.85,
+      "reviewer": "bhb",
+      "schema_version": 2,
+      "finding_scope": "diff",
+      "system_marker": null,
+      "source": "agent",
+      "emitted_at": "2026-08-01T22:41:54.953310+00:00",
+      "reviewer_trigger": {
+        "type": "core",
+        "evidence": null
+      },
+      "evidence": [],
+      "reasoning_certificate": null,
+      "justified": false,
+      "justification": null,
+      "external_impact": [],
+      "grep_query_used": null,
+      "verifier_verdict": null,
+      "verifier_severity": null,
+      "verifier_confidence": null,
+      "verifier_reasoning": null,
+      "verifier_model": null,
+      "verification_duration_ms": null,
+      "evidence_checks": [],
+      "rejection_class": null,
+      "human_review_recommended": false,
+      "other_locations": [],
+      "subcategory": null,
+      "id": "bhb_f0"
+    },
+    {
+      "file": "apps/api/lib/org-session-sync-policy.test.ts",
+      "line": 23,
+      "severity": "MEDIUM",
+      "category": "TestQuality",
+      "issue": "[P2] Local WINDOW_MS = 60_000 duplicates SESSION_INGESTION_POLICY_DENIED_WINDOW_MS; time-boundary assertions silently break if the constant changes",
+      "explanation": "org-session-sync-policy.test.ts:23 defines const WINDOW_MS = 60_000 as a local constant rather than importing SESSION_INGESTION_POLICY_DENIED_WINDOW_MS from the throttle module (session-ingestion-policy-denied-throttle.ts:31). The three integration tests added in this PR (lines 130\u2013175) use vi.setSystemTime(WINDOW_MS) to advance time exactly to the window boundary and then assert toHaveBeenCalledTimes(3) and the suppressed-count flush. Those assertions are correct only when WINDOW_MS equals the production singleton's actual window (which is SESSION_INGESTION_POLICY_DENIED_WINDOW_MS). If that exported constant is later changed (e.g., to 30_000 for a tighter throttle window), the test's vi.setSystemTime(60_000) would advance past two full windows instead of one, causing the rollover to fire twice and making the toHaveBeenCalledTimes and total-count assertions produce wrong expected values \u2014 likely still passing under the stale 60_000, masking the regression.",
+      "recommendation": "Import SESSION_INGESTION_POLICY_DENIED_WINDOW_MS from './observability/session-ingestion-policy-denied-throttle' and use it in place of the local WINDOW_MS constant, so the time-advance in tests stays mechanically coupled to the production default.",
+      "code_snippet": "const WINDOW_MS = 60_000;",
+      "priority": 2,
+      "confidence": 0.82,
+      "reviewer": "bhb",
+      "schema_version": 2,
+      "finding_scope": "diff",
+      "system_marker": null,
+      "source": "agent",
+      "emitted_at": "2026-08-01T22:41:54.953310+00:00",
+      "reviewer_trigger": {
+        "type": "core",
+        "evidence": null
+      },
+      "evidence": [],
+      "reasoning_certificate": null,
+      "justified": false,
+      "justification": null,
+      "external_impact": [],
+      "grep_query_used": null,
+      "verifier_verdict": "CONFIRMED",
+      "verifier_severity": null,
+      "verifier_confidence": 0.9,
+      "verifier_reasoning": "The code snippet is confirmed at line 23 of apps/api/lib/org-session-sync-policy.test.ts: `const WINDOW_MS = 60_000;`. The production throttle module (apps/api/lib/observability/session-ingestion-policy-denied-throttle.ts:31) exports `SESSION_INGESTION_POLICY_DENIED_WINDOW_MS = 60_000` as a named constant, and the process-level singleton `sessionIngestionPolicyDeniedThrottle` defaults its window to that exported value via `options.windowMs ?? SESSION_INGESTION_POLICY_DENIED_WINDOW_MS`. The test file imports and uses the singleton directly (calling `.clear()` in beforeEach), so the effective throttle window is always `SESSION_INGESTION_POLICY_DENIED_WINDOW_MS`. However, the time-advance calls at lines 142 and 160 use `vi.setSystemTime(WINDOW_MS)` where `WINDOW_MS` is the locally-hardcoded `60_000` rather than the imported constant. If `SESSION_INGESTION_POLICY_DENIED_WINDOW_MS` is later changed (for example to `30_000`), the singleton's window shrinks but the test still advances time by `60_000` ms \u2014 two full windows instead of one \u2014 causing the rollover to fire on entry to the new window rather than at its boundary. The `toHaveBeenCalledTimes(3)` assertions and the total-count checks would then produce wrong expected values while still appearing to pass under the stale local constant, masking the regression.\n\nNo guard exists that prevents this drift. The test imports `sessionIngestionPolicyDeniedThrottle` but does not import `SESSION_INGESTION_POLICY_DENIED_WINDOW_MS`, leaving the local alias mechanically decoupled from the production default. The fix \u2014 importing and using `SESSION_INGESTION_POLICY_DENIED_WINDOW_MS` in place of `WINDOW_MS` \u2014 is straightforward and directly addresses the concern.",
+      "verifier_model": null,
+      "verification_duration_ms": null,
+      "evidence_checks": [
+        {
+          "claim": "snippet `const WINDOW_MS = 60_000;` exists at apps/api/lib/org-session-sync-policy.test.ts:23",
+          "expected": "const WINDOW_MS = 60_000;",
+          "actual_read": "const WINDOW_MS = 60_000;",
+          "verified": true,
+          "source": "apps/api/lib/org-session-sync-policy.test.ts:23"
+        },
+        {
+          "claim": "SESSION_INGESTION_POLICY_DENIED_WINDOW_MS is exported from the throttle module at line 31",
+          "expected": "export const SESSION_INGESTION_POLICY_DENIED_WINDOW_MS = 60_000;",
+          "actual_read": "export const SESSION_INGESTION_POLICY_DENIED_WINDOW_MS = 60_000;",
+          "verified": true,
+          "source": "apps/api/lib/observability/session-ingestion-policy-denied-throttle.ts:31"
+        },
+        {
+          "claim": "time-boundary assertions at test lines 142 and 160 use WINDOW_MS (local constant) rather than the imported production constant",
+          "expected": "vi.setSystemTime(WINDOW_MS) at lines 142 and 160",
+          "actual_read": "vi.setSystemTime(WINDOW_MS); at line 142 and vi.setSystemTime(WINDOW_MS); at line 160",
+          "verified": true,
+          "source": "apps/api/lib/org-session-sync-policy.test.ts:142,160"
+        },
+        {
+          "claim": "the test does NOT import SESSION_INGESTION_POLICY_DENIED_WINDOW_MS, confirming the mechanical decoupling",
+          "expected": "no import of SESSION_INGESTION_POLICY_DENIED_WINDOW_MS in test file",
+          "actual_read": "imports are: vitest, FilterToken, SessionIngestionDenialReason, sessionIngestionPolicyDeniedThrottle, isOrgSessionSyncPolicyEnabled \u2014 SESSION_INGESTION_POLICY_DENIED_WINDOW_MS is absent",
+          "verified": true,
+          "source": "apps/api/lib/org-session-sync-policy.test.ts:1-23"
+        }
+      ],
+      "rejection_class": null,
+      "human_review_recommended": false,
+      "other_locations": [],
+      "subcategory": null,
+      "id": "bhb_f1"
+    }
+  ],
+  "justified": [],
+  "rejected": [],
+  "pending_verification": [],
+  "coverage_plan": {
+    "required": [],
+    "best_effort": [],
+    "deferred_for_budget": [],
+    "deprecation_warnings": [],
+    "budget": {
+      "total_cap": 20,
+      "required_count": 0,
+      "best_effort_count": 0,
+      "bha_partitions": 0
+    }
+  },
+  "coverage_gaps": [],
+  "verdict": "APPROVED",
+  "verdict_reason": "",
+  "stats": {
+    "by_severity": {
+      "BLOCKING": 0,
+      "HIGH": 0,
+      "MEDIUM": 4
+    },
+    "by_category": {
+      "Code Quality": 2,
+      "Correctness": 1,
+      "TestQuality": 1
+    },
+    "by_reviewer": {
+      "auditor": {
+        "verified": 1,
+        "rejected": 0,
+        "tentative": 0,
+        "justified": 0
+      },
+      "bha_p0": {
+        "verified": 1,
+        "rejected": 0,
+        "tentative": 0,
+        "justified": 0
+      },
+      "bhb": {
+        "verified": 2,
+        "rejected": 0,
+        "tentative": 0,
+        "justified": 0
+      }
+    },
+    "by_finding_scope": {
+      "diff": 4,
+      "system": 0,
+      "pr_metadata": 0
+    },
+    "verification": {
+      "verified_count": 4,
+      "rejected_count": 0,
+      "tentative_count": 0,
+      "downgrade_count": 0,
+      "justified_valid_count": 0,
+      "justified_invalid_count": 0,
+      "skipped_count": 0,
+      "false_positive_rate": 0.0,
+      "by_reviewer": {
+        "auditor": {
+          "verified": 1,
+          "rejected": 0,
+          "re_asserted": 0,
+          "fp_rate": 0.0
+        },
+        "bha_p0": {
+          "verified": 1,
+          "rejected": 0,
+          "re_asserted": 0,
+          "fp_rate": 0.0
+        },
+        "bhb": {
+          "verified": 2,
+          "rejected": 0,
+          "re_asserted": 0,
+          "fp_rate": 0.0
+        }
+      }
+    },
+    "impact_cumulative_count": 0,
+    "agent_failures": []
+  },
+  "telemetry": {
+    "duration_ms": 0,
+    "duration_by_stage_ms": {},
+    "estimated_cost_usd": 0.0,
+    "tokens": {
+      "input_uncached": 0,
+      "input_cached": 0,
+      "output": 0,
+      "by_model": {}
+    },
+    "cache_hit_rate": {
+      "bha": 0.0
+    },
+    "agent_failures": 0,
+    "schema_versions_seen": {
+      "finding": 2,
+      "result": 2
+    },
+    "findings_counts": {},
+    "verification_stats": {},
+    "coverage_stats": {}
+  }
+}

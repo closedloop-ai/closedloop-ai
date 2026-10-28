@@ -186,7 +186,8 @@ function ViewportTooltipDemo({
 }
 
 const meta = {
-  title: "App Core/Agents/Viewport Tooltip",
+  title: "Composites v1.0/Agents/Detail/Viewport Tooltip",
+  tags: ["deprecated"],
   component: ViewportTooltipDemo,
   parameters: { layout: "fullscreen" },
 } satisfies Meta<typeof ViewportTooltipDemo>;
@@ -326,6 +327,9 @@ export const ReachColumnAnchor: Story = {
       "Column hit target: the readout hangs off the outlined column the pointer actually lights up, not off the short bar at its foot.",
     label: "Quiet bucket",
     preset: TooltipAnchorPreset.Roomy,
+  },
+  parameters: {
+    controls: { include: ["caption", "label"] },
   },
   render: (args) => (
     <ReachAnchorStage caption={args.caption} label={args.label} />

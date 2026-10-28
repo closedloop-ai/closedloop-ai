@@ -170,10 +170,10 @@ export async function ensureTranscriptCached(
 
   // SSRF policy — the signed URL is minted by the read route, but a compromised
   // read-route response (or attacker-controlled S3 redirect metadata) could point
-  // it at an internal host. Validate the host on the same closed policy every
-  // other main-process signed-S3 fetch uses (a transcript GET is shaped exactly
-  // like a loop-attachment download), and refuse to follow redirects so a 3xx to
-  // 169.254.169.254 or a private address can never be fetched and cached.
+  // it at an internal host. Validate the host on the closed signed-S3 policy (a
+  // transcript GET is shaped exactly like an attachment download), and refuse to
+  // follow redirects so a 3xx to 169.254.169.254 or a private address can never
+  // be fetched and cached.
   const policyDecision = validateOutboundUrlForSurface(
     "loop_attachment_download",
     input.signedUrl

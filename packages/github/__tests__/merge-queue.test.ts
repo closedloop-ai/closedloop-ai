@@ -188,6 +188,49 @@ describe("getMergeQueueState", () => {
 
     expect((await read()).status).toBe(MergeQueueReadStatus.Failed);
   });
+
+  it("names the refused selection in a Failed detail", async () => {
+    // ISS-10438, raised by tamsinb on #7409. This query selects the same
+    // rollup fields as the open-PR read and the same cron calls both, so a
+    // scope GitHub refuses there it refuses here — and the flattened message
+    // repeats one identical line per entry, naming nothing. GitHub's own words
+    // and the shape octokit throws are written as literals: they are a
+    // third-party payload, and a fixture built from our own constant would
+    // agree with our own mistake.
+    mockGraphql.mockRejectedValue(
+      Object.assign(
+        new Error(
+          "Request failed due to following response errors:\n - Resource not accessible by integration"
+        ),
+        {
+          errors: [
+            {
+              type: "FORBIDDEN",
+              path: [
+                "repository",
+                "mergeQueue",
+                "entries",
+                "nodes",
+                2,
+                "headCommit",
+                "statusCheckRollup",
+              ],
+              message: "Resource not accessible by integration",
+            },
+          ],
+        }
+      )
+    );
+
+    const result = await read();
+
+    expect(result.status).toBe(MergeQueueReadStatus.Failed);
+    expect(result).toMatchObject({
+      detail: expect.stringContaining(
+        "(at repository.mergeQueue.entries.nodes.2.headCommit.statusCheckRollup)"
+      ),
+    });
+  });
 });
 
 // ISS-5141: the rollup and the required-context set.
@@ -323,7 +366,10 @@ describe("getMergeQueueState rollup parsing", () => {
     const state = expectOkState(await read());
 
     // The two gauges the strictness would have taken down: depth reads
-    // entries.totalCount, age reads the built head commit's committedDate.
+    // entries.totalCount, and the age reads the built head commit's rollup.
+    // (It read `committedDate` until ISS-9945 proved that field is enqueue time
+    // carried forward across a rebuild; what this row pins either way is that a
+    // node the schema cannot parse does not fail the whole entry.)
     expect(state.entries.totalCount).toBe(1);
     expect(state.entries.nodes[0].headCommit?.committedDate).toBe(
       "2026-08-05T15:00:00.000Z"
@@ -543,8 +589,14 @@ describe("the rollup sub-tree cannot fail the primary read (ISS-5141 follow-up)"
     expect(state.entries.nodes[0].headCommit?.statusCheckRollup).toBeNull();
   });
 
-  it("keeps age readable when the rollup is unparseable", async () => {
-    // The property that matters: the primary signal survives.
+  it("keeps the ENTRY readable when the rollup is unparseable, and leaves the gap visible", async () => {
+    // Renamed by ISS-9945: this never pinned that an AGE survives, and since the
+    // age moved onto check dispatch it demonstrably does not — an unparseable
+    // rollup carries no dispatch time, and the derivation reports that group's
+    // start as unknown rather than as a wedge. What the row really pins is the
+    // two halves that make that possible: the entry still parses, and the
+    // dropped node leaves `totalCount` disagreeing with the surviving nodes, so
+    // the gap is visible downstream instead of reading as an empty rollup.
     mockGraphql.mockResolvedValue(
       rollupResponse({ contexts: { totalCount: 1, nodes: ["not-an-object"] } })
     );
@@ -554,6 +606,87 @@ describe("the rollup sub-tree cannot fail the primary read (ISS-5141 follow-up)"
     expect(state.entries.nodes[0].headCommit?.committedDate).toBe(
       "2026-08-05T15:00:00.000Z"
     );
+    const rollup = state.entries.nodes[0].headCommit?.statusCheckRollup;
+    expect(rollup?.contexts.totalCount).toBe(1);
+    expect(rollup?.contexts.nodes).toEqual([null]);
+  });
+});
+
+describe("a bad DISPLAY scalar cannot fail the primary read (ISS-10417)", () => {
+  /** One built entry whose ISS-10417 display scalars are whatever a row says. */
+  function displayScalarResponse(overrides: Record<string, unknown>) {
+    return {
+      repository: {
+        mergeQueue: {
+          entries: {
+            totalCount: 1,
+            nodes: [
+              {
+                state: "AWAITING_CHECKS",
+                position: 3,
+                enqueuedAt: "2026-08-05T14:00:00Z",
+                estimatedTimeToMerge: 1317,
+                pullRequest: { number: 100, author: { login: "kerensa" } },
+                headCommit: {
+                  committedDate: "2026-08-05T15:00:00.000Z",
+                  oid: "abc",
+                  statusCheckRollup: null,
+                },
+                ...overrides,
+              },
+            ],
+          },
+        },
+      },
+    };
+  }
+
+  // @whitlockk, review of #7458: `nullish()` was only the ABSENT case. A bad value
+  // in one of these board-only fields still failed the whole response as
+  // Malformed and took the sampler's age and depth gauges down with it — the
+  // exact coupling this file's comments promise cannot happen, arriving through
+  // a report that is allowed to say "unknown".
+  it.each([
+    { field: "position", bad: "3" },
+    { field: "enqueuedAt", bad: 1_754_400_000 },
+    { field: "estimatedTimeToMerge", bad: 1.5 },
+  ])(
+    "degrades a bad $field to absent rather than failing the read",
+    async ({ field, bad }) => {
+      mockGraphql.mockResolvedValue(displayScalarResponse({ [field]: bad }));
+
+      const state = expectOkState(await read());
+      const node = state.entries.nodes[0] as unknown as Record<string, unknown>;
+
+      expect(node[field]).toBeNull();
+      // Only the unreadable field is lost. The gauges' own inputs survive.
+      expect(state.entries.nodes[0].headCommit?.committedDate).toBe(
+        "2026-08-05T15:00:00.000Z"
+      );
+      expect(state.entries.totalCount).toBe(1);
+    }
+  );
+
+  it("degrades a bad author to absent while keeping the PR number", async () => {
+    mockGraphql.mockResolvedValue(
+      displayScalarResponse({ pullRequest: { number: 100, author: 42 } })
+    );
+
+    const state = expectOkState(await read());
+
+    expect(state.entries.nodes[0].pullRequest?.number).toBe(100);
+    expect(state.entries.nodes[0].pullRequest?.author).toBeNull();
+  });
+
+  // The tolerance is scoped. A field with no honest "unknown" rendering — the
+  // ones the stall cron actually derives over — must still fail the read rather
+  // than be silently caught into a confident reading of something else.
+  it("still reports Malformed for a bad pull request NUMBER", async () => {
+    mockGraphql.mockResolvedValue(
+      displayScalarResponse({ pullRequest: { number: "100" } })
+    );
+
+    expect((await read()).status).toBe(MergeQueueReadStatus.Malformed);
   });
 });
 

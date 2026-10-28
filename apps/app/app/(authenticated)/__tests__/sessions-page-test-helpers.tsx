@@ -1,22 +1,10 @@
 import { createAgentSessionListItemFixture } from "@repo/app/agents/components/sessions/session-list-fixtures";
-import { SessionStatusFacetValue } from "@repo/app/agents/lib/session-status-filters";
-import type { ReactNode } from "react";
+import { Children, isValidElement, type ReactNode } from "react";
 import { type Mock, vi } from "vitest";
-
-/**
- * The slice of `SessionFacetFilters` the toolbar stand-in reads. Deliberately
- * structural rather than the real type: this module is hoisted into `vi.mock`
- * factories, so it must not pull `@repo/app`'s facet adapter in at module-eval
- * time.
- */
-type StubSessionFacetFilters = {
-  statuses: string[];
-  userIds: string[];
-  repositories: string[];
-};
 
 const {
   enabledFeatureFlagsMock,
+  unresolvedFeatureFlagsMock,
   navigationReplaceMock,
   pathnameMock,
   searchParamsMock,
@@ -24,8 +12,10 @@ const {
   useAgentSessionsMock,
   useAgentSessionsPageDataMock,
   useAgentSessionUsageMock,
+  viewReadyOverrideMock,
 } = vi.hoisted<{
   enabledFeatureFlagsMock: Set<string>;
+  unresolvedFeatureFlagsMock: Set<string>;
   navigationReplaceMock: Mock;
   pathnameMock: { value: string };
   searchParamsMock: URLSearchParams;
@@ -33,8 +23,10 @@ const {
   useAgentSessionsMock: Mock;
   useAgentSessionsPageDataMock: Mock;
   useAgentSessionUsageMock: Mock;
+  viewReadyOverrideMock: { value: boolean | null };
 }>(() => ({
   enabledFeatureFlagsMock: new Set<string>(),
+  unresolvedFeatureFlagsMock: new Set<string>(),
   navigationReplaceMock: vi.fn(),
   pathnameMock: { value: "/sessions" },
   searchParamsMock: new URLSearchParams(),
@@ -42,6 +34,7 @@ const {
   useAgentSessionsMock: vi.fn(),
   useAgentSessionsPageDataMock: vi.fn(),
   useAgentSessionUsageMock: vi.fn(),
+  viewReadyOverrideMock: { value: null },
 }));
 
 // FEA-4177: the org Sessions page reads the list (`useAgentSessions`) and the
@@ -72,7 +65,45 @@ vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
   useFeatureFlagEnabled: (key: string) => enabledFeatureFlagsMock.has(key),
   useFeatureFlagEnabledOptional: (key: string) =>
     enabledFeatureFlagsMock.has(key),
+  // FEA-4201: the readiness-carrying read. Ready by DEFAULT, so every suite that
+  // predates the gate keeps the synchronous behaviour it was written against;
+  // `holdSessionsFeatureFlagResolution` opts one test into the unresolved window
+  // an asynchronous provider really has.
+  useFeatureFlagGate: (key: string) => ({
+    enabled: enabledFeatureFlagsMock.has(key),
+    isReady: !unresolvedFeatureFlagsMock.has(key),
+  }),
+  // ISS-9692: the same read through the provider-optional port, which is what
+  // `useTablePageSizeOptions` uses (these page tests render no adapter). Shares
+  // both mock sets, so `holdSessionsFeatureFlagResolution` can hold the
+  // page-size ladder unresolved exactly as it holds the window.
+  useFeatureFlagGateOptional: (key: string) => ({
+    enabled: enabledFeatureFlagsMock.has(key),
+    isReady: !unresolvedFeatureFlagsMock.has(key),
+  }),
 }));
+
+// ISS-6382: the REAL `useSessionsViewState` still runs — this only lets a test
+// pin `isViewReady`, the one output whose true value is a post-mount race no
+// jsdom assertion can land on. `null` (the default, restored by
+// `resetSessionsPageTestState`) is a straight passthrough, so every other suite
+// in this module keeps the unmocked hook.
+vi.mock("@repo/app/agents/hooks/use-sessions-view-state", async (original) => {
+  const actual =
+    await original<
+      typeof import("@repo/app/agents/hooks/use-sessions-view-state")
+    >();
+  return {
+    ...actual,
+    useSessionsViewState: (persistKey?: string) => {
+      const state = actual.useSessionsViewState(persistKey);
+      if (viewReadyOverrideMock.value === null) {
+        return state;
+      }
+      return { ...state, isViewReady: viewReadyOverrideMock.value };
+    },
+  };
+});
 
 vi.mock("@repo/navigation/use-search-params-value", () => ({
   useSearchParamsValue: () => searchParamsMock,
@@ -91,30 +122,68 @@ vi.mock("@repo/navigation/use-path", () => ({
   usePath: () => pathnameMock.value,
 }));
 
-vi.mock("@repo/design-system/components/ui/select", () => ({
-  Select: ({
-    children,
-    onValueChange,
-    value,
-  }: {
-    children: ReactNode;
-    onValueChange: (value: string) => void;
-    value: string;
-  }) => (
-    <select
-      onChange={(event) => onValueChange(event.currentTarget.value)}
-      value={value}
-    >
-      {children}
-    </select>
-  ),
-  SelectContent: ({ children }: { children: ReactNode }) => <>{children}</>,
-  SelectItem: ({ children, value }: { children: ReactNode; value: string }) => (
-    <option value={value}>{children}</option>
-  ),
-  SelectTrigger: () => null,
-  SelectValue: () => null,
-}));
+vi.mock("@repo/design-system/components/ui/select", () => {
+  /**
+   * The real control names itself on its TRIGGER (`SelectTrigger aria-label`), so
+   * a stub that renders no trigger renders a `<select>` with no accessible name —
+   * an axe `select-name` violation this harness invented (ISS-10301). The v1
+   * toolbar stand-in rendered no Selects at all, so the page's a11y sweeps never
+   * reached one until the real v2 footer arrived.
+   *
+   * Lifting the trigger's label onto the `<select>` is what makes the stub report
+   * the production accessible name, so a shipped control that LOSES its label
+   * still reddens these sweeps.
+   */
+  function SelectTrigger(_props: {
+    "aria-label"?: string;
+    children?: ReactNode;
+  }) {
+    return null;
+  }
+  function triggerLabel(children: ReactNode): string | undefined {
+    for (const child of Children.toArray(children)) {
+      if (isValidElement(child) && child.type === SelectTrigger) {
+        return (child.props as { "aria-label"?: string })["aria-label"];
+      }
+    }
+    return;
+  }
+  return {
+    // `disabled` is forwarded (ISS-9216): the stub is how these suites reach every
+    // Select on the page, so a stub that drops it reports an operable control for
+    // one the user cannot touch.
+    Select: ({
+      children,
+      disabled,
+      onValueChange,
+      value,
+    }: {
+      children: ReactNode;
+      disabled?: boolean;
+      onValueChange: (value: string) => void;
+      value: string;
+    }) => (
+      <select
+        aria-label={triggerLabel(children)}
+        disabled={disabled}
+        onChange={(event) => onValueChange(event.currentTarget.value)}
+        value={value}
+      >
+        {children}
+      </select>
+    ),
+    SelectContent: ({ children }: { children: ReactNode }) => <>{children}</>,
+    SelectItem: ({
+      children,
+      value,
+    }: {
+      children: ReactNode;
+      value: string;
+    }) => <option value={value}>{children}</option>,
+    SelectTrigger,
+    SelectValue: () => null,
+  };
+});
 
 // ISS-5478: this stand-in RENDERS ITS CHILDREN. The page's header actions are a
 // real page-level contract now (Refresh lives in the header's right slot), and a
@@ -126,101 +195,36 @@ vi.mock("@/app/(authenticated)/components/header", () => ({
   ),
 }));
 
-vi.mock("@repo/app/agents/components/sessions/sessions-toolbar", () => ({
-  SessionsToolbar: ({
-    filters,
-    onFiltersChange,
-    scopeUserId,
-    onRemoveScopeUser,
-    usage,
-  }: {
-    filters: StubSessionFacetFilters;
-    onFiltersChange: (next: StubSessionFacetFilters) => void;
-    scopeUserId?: string | null;
-    onRemoveScopeUser?: (next: StubSessionFacetFilters) => void;
-    usage?: { byHarness?: { harness: string }[] };
-  }) => (
-    <div>
-      {/* ISS-5975: the `onRefresh` prop and its `toolbar-received-on-refresh`
-          marker are gone with the control itself. The real `SessionsToolbar` no
-          longer accepts the prop at all, so a page wiring one back would fail
-          typecheck rather than needing a runtime marker here; the toolbar's own
-          absence guard lives in
-          `packages/app/agents/components/sessions/__tests__/sessions-prototype-alignment.test.tsx`. */}
-      {/* ISS-5283: the facet OPTION lists are built from this `usage`, so the
-          page contract under test is WHICH usage response reaches the toolbar.
-          Rendering the harness keys is the smallest observable proxy for that —
-          the real option builder is covered in the toolbar's own tests. */}
-      <span data-testid="toolbar-usage-harnesses">
-        {(usage?.byHarness ?? []).map((entry) => entry.harness).join(",")}
-      </span>
-      {/* ISS-4728: the real chip row is exercised in
-          `sessions-active-filters-bar.test.tsx`. This stand-in only proves the
-          page hands the toolbar the selected-user scope AND a way to clear it —
-          a scope forwarded without its remover would render a chip that names a
-          filter it cannot remove. */}
-      {scopeUserId ? (
-        <span data-testid="toolbar-scope-user-id">{scopeUserId}</span>
-      ) : null}
-      {onRemoveScopeUser ? (
-        <button onClick={() => onRemoveScopeUser(filters)} type="button">
-          Remove selected user scope
-        </button>
-      ) : null}
-      {/* ISS-4866 (review cid 3701353686): the MERGED removal — the real chip
-          row hands back the facets with the scoped user already dropped from
-          the Owner facet, so the page performs ONE URL write for both
-          narrowers. Modelled here as a distinct button because the page-level
-          contract under test is the resulting URL, and the old two-write
-          version passed every "both callbacks fired" assertion while leaving
-          `?userId` in place. */}
-      {onRemoveScopeUser && scopeUserId ? (
-        <button
-          onClick={() =>
-            onRemoveScopeUser({
-              ...filters,
-              userIds: filters.userIds.filter((id) => id !== scopeUserId),
-            })
-          }
-          type="button"
-        >
-          Remove merged owner scope
-        </button>
-      ) : null}
-      <button
-        onClick={() =>
-          onFiltersChange({
-            statuses: [],
-            userIds: ["user-e2e"],
-            repositories: [],
-          })
-        }
-        type="button"
-      >
-        Filter owner Ada
-      </button>
-      <button
-        onClick={() =>
-          onFiltersChange({
-            // ISS-4696: facet-VALID values only. This stand-in stands in for
-            // the real Filter popover, which can only ever emit what
-            // `SESSION_STATUS_FILTER_OPTIONS` offers — so seeding it with the
-            // retired `completed`/`abandoned` made the page test assert a
-            // URL/query pair the shipped UI can no longer produce.
-            statuses: [
-              SessionStatusFacetValue.Active,
-              SessionStatusFacetValue.Inactive,
-            ],
-            userIds: [],
-            repositories: [],
-          })
-        }
-        type="button"
-      >
-        Apply lifecycle filters
-      </button>
-    </div>
-  ),
+// ISS-7052 Part A: with `grid-table-v2` ON the page renders `SessionsListV2Host`,
+// which runs the REAL `useSessionOwnerNameResolver`. Its roster read owns a
+// `useApiClient()` call that THROWS without an <AuthAdapterProvider> — the same
+// reason the toolbar below and the CSV export row are stubbed. Mocking the
+// ROSTER rather than the resolver keeps the resolver's own gating under test:
+// it still decides whether a name is needed, and simply resolves none, which is
+// its documented fallback.
+// ISS-8718: the v2 lead cell also runs the REAL rename gate, whose ownership
+// read is `useCurrentUser` — another `useApiClient()` that throws here. A
+// factory missing the export fails the whole file before any assertion runs,
+// which is what it did. `data: undefined` is the gate's documented "viewer not
+// yet known" answer, so no rename control is offered and these suites keep
+// asserting exactly the page they asserted before.
+// ISS-12975: #9107's registered bulk actions read the real `userKeys` factory
+// to invalidate the organization-users list, so the mock carries the original.
+vi.mock("@repo/app/users/hooks/use-users", async (importOriginal) => ({
+  userKeys: (
+    await importOriginal<typeof import("@repo/app/users/hooks/use-users")>()
+  ).userKeys,
+  useCurrentUser: () => ({ data: undefined }),
+  useOrganizationUsers: () => ({ data: undefined }),
+}));
+
+// ISS-5355, and the same reasoning one comment up: the v2 host also runs the
+// REAL `useSessionProjectNameResolver` so the Project facet has a name for a
+// project the active window cannot label. Its org-project read owns the same
+// throwing `useApiClient()`. Mocking the PROJECT LIST rather than the resolver
+// keeps the resolver's own gating under test.
+vi.mock("@repo/app/projects/hooks/use-projects", () => ({
+  useProjects: () => ({ data: undefined }),
 }));
 
 vi.mock("@/hooks/use-org-slug", () => ({
@@ -271,6 +275,30 @@ function isSessionsTableQuery(args: unknown): boolean {
  * + active-runs panel still call `useAgentSessions`. Scan both call streams so a
  * single accessor serves every page test.
  */
+/**
+ * The OPTIONS argument of the most recent Sessions history-table read — the
+ * `{ enabled, placeholderData }` object, not the filters.
+ *
+ * FEA-4201: a gate that holds a read is only observable here. The filters
+ * accessor above cannot see it, because a held read is still CALLED with the
+ * filters it would use; what changes is whether it is allowed to fetch.
+ */
+export function lastSessionsTableCallOptions():
+  | Record<string, unknown>
+  | undefined {
+  const calls = [
+    ...useAgentSessionsMock.mock.calls,
+    ...useAgentSessionsPageDataMock.mock.calls,
+  ];
+  for (let index = calls.length - 1; index >= 0; index--) {
+    const call = calls[index];
+    if (isSessionsTableQuery(call?.[0])) {
+      return call?.[1] as Record<string, unknown> | undefined;
+    }
+  }
+  return undefined;
+}
+
 export function lastSessionsTableCallArgs():
   | Record<string, unknown>
   | undefined {
@@ -338,6 +366,8 @@ function pageDataResult(list: ReturnType<typeof populatedListResponse>) {
 
 export function resetSessionsPageTestState(viewerScope: ViewerScope) {
   enabledFeatureFlagsMock.clear();
+  unresolvedFeatureFlagsMock.clear();
+  viewReadyOverrideMock.value = null;
   navigationReplaceMock.mockReset();
   pathnameMock.value =
     viewerScope === "organization" ? "/acme/sessions" : "/sessions";
@@ -412,15 +442,43 @@ export function setSessionsTotal(total: number) {
   );
 }
 
+/**
+ * A first fetch actually in flight. ISS-6382 moved the page's skeleton branch
+ * from `isLoading` to `isPending` (which also covers a read the restore gate is
+ * holding closed), so the fixture carries both flags exactly as TanStack Query
+ * reports them for this state — not a weakened expectation, a corrected shape.
+ */
 export function mockSessionsPageLoadingState() {
   useAgentSessionsMock.mockReturnValue({
     data: undefined,
     isLoading: true,
+    isPending: true,
   });
   useAgentSessionsPageDataMock.mockReturnValue({
     data: undefined,
     isLoading: true,
+    isPending: true,
     isLoadingError: false,
+  });
+}
+
+/**
+ * ISS-6382: the shape TanStack Query reports for a read held CLOSED by the
+ * restore gate — `isPending` true (there is nothing to show) while `isLoading`
+ * is false, because no fetch is in flight. The distinction is the whole point:
+ * the pre-gate page keyed its skeleton on `isLoading`, so this state fell
+ * through to the zero-row branch and rendered the honest-empty surface.
+ */
+export function mockSessionsPageGatedRead() {
+  useAgentSessionsMock.mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isPending: true,
+  });
+  useAgentSessionUsageMock.mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isPending: true,
   });
 }
 
@@ -440,19 +498,39 @@ export function mockSessionsPageEmptyState(viewerScope: ViewerScope) {
  * FEA-4177 (whitlockk): the list query's error state on an INITIAL rejection — no
  * data, `isError` true. The org sessions page reads `useAgentSessions`; return a
  * `refetch` spy so the Retry affordance's wiring is assertable.
+ *
+ * ISS-7414 (whitlockk review): the SUMMARY read is errored here too, which is what a
+ * general outage actually looks like — one failure erroring both halves. It now
+ * carries its own `refetch` spy, returned rather than passed, because without one
+ * the recovery control's effect on the cards and facet counts cannot be asserted
+ * at all: the page would call `refetch()` on a mock that never had one. Resolves,
+ * because the page attaches a self-catch to the returned promise.
+ *
+ * ISS-7519: an initial rejection sets BOTH flags on the real observer
+ * (`isLoadingError = isError && !hasData`), so this fixture states both. They
+ * diverge only on a refetch failure over held data — the case this hand-set
+ * fixture cannot represent at all, and which
+ * `sessions/__tests__/page-read-failure-states.test.tsx` drives through a real
+ * query instead.
  */
-export function mockSessionsPageListErrorState(refetch: () => void) {
+export function mockSessionsPageListErrorState(refetch: () => void): {
+  usageRefetch: Mock;
+} {
+  const usageRefetch = vi.fn().mockResolvedValue(undefined);
   useAgentSessionsMock.mockReturnValue({
     data: undefined,
     isLoading: false,
     isError: true,
+    isLoadingError: true,
     refetch,
   });
   useAgentSessionUsageMock.mockReturnValue({
     data: undefined,
     isLoading: false,
     isLoadingError: true,
+    refetch: usageRefetch,
   });
+  return { usageRefetch };
 }
 
 /**
@@ -462,6 +540,16 @@ export function mockSessionsPageListErrorState(refetch: () => void) {
  */
 export function enableSessionsPageFeatureFlag(key: string) {
   enabledFeatureFlagsMock.add(key);
+}
+
+/**
+ * FEA-4201: hold one flag in the UNRESOLVED window an asynchronous provider
+ * (PostHog) really has, where the flag reads `false` because no answer has
+ * arrived yet rather than because it is off. The state a synchronous mock cannot
+ * otherwise reach, and the one a read keyed off the flag must not act on.
+ */
+export function holdSessionsFeatureFlagResolution(key: string) {
+  unresolvedFeatureFlagsMock.add(key);
 }
 
 /**
@@ -512,3 +600,19 @@ export type SessionsPageQueryFreshness = {
   usageIsError?: boolean;
   usageIsStale?: boolean;
 };
+
+/**
+ * ISS-6382 (whitlockk review): pin `isViewReady` false for the whole test, so the
+ * held-closed window is assertable at all. The restore commits in an effect, and
+ * `render()` flushes effects, so a plain render never leaves that window
+ * observable in the DOM — only in the first entry of a mock's call log.
+ *
+ * Everything else about the page stays real, including the mocked reads: leave
+ * them on the default POPULATED fixture and you have the warm-cache shape, which
+ * is what this exists for. `enabled: false` does not make a warm observer
+ * pending, so a page inferring readiness from query state renders the
+ * pre-restore rows, cards, and total here while the gate is shut.
+ */
+export function holdSessionsViewRestore() {
+  viewReadyOverrideMock.value = false;
+}

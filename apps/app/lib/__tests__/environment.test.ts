@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { getAppEnvironment } from "../environment";
 
 const ENV_KEY = "NEXT_PUBLIC_APP_ENVIRONMENT";
@@ -6,23 +6,15 @@ const URL_KEY = "NEXT_PUBLIC_APP_URL";
 const VERCEL_ENV_KEY = "NEXT_PUBLIC_VERCEL_ENV";
 
 describe("getAppEnvironment", () => {
-  let originalEnv: string | undefined;
-  let originalUrl: string | undefined;
-  let originalVercelEnv: string | undefined;
-
   beforeEach(() => {
-    originalEnv = process.env[ENV_KEY];
-    originalUrl = process.env[URL_KEY];
-    originalVercelEnv = process.env[VERCEL_ENV_KEY];
-    process.env[ENV_KEY] = undefined;
-    process.env[URL_KEY] = undefined;
-    process.env[VERCEL_ENV_KEY] = undefined;
+    vi.stubEnv(ENV_KEY, undefined);
+    vi.stubEnv(URL_KEY, undefined);
+    vi.stubEnv(VERCEL_ENV_KEY, undefined);
+    vi.stubEnv("VERCEL_ENV", undefined);
   });
 
   afterEach(() => {
-    process.env[ENV_KEY] = originalEnv;
-    process.env[URL_KEY] = originalUrl;
-    process.env[VERCEL_ENV_KEY] = originalVercelEnv;
+    vi.unstubAllEnvs();
   });
 
   test("explicit NEXT_PUBLIC_APP_ENVIRONMENT=production resolves to prod", () => {
@@ -110,5 +102,36 @@ describe("getAppEnvironment", () => {
     process.env[ENV_KEY] = "stage";
     process.env[URL_KEY] = "https://app-stage.stage.example";
     expect(getAppEnvironment()).toBe("stage");
+  });
+  test("explicit stage still wins when next dev uses NODE_ENV=development", () => {
+    vi.stubEnv("NODE_ENV", "development");
+    process.env[ENV_KEY] = "stage";
+    expect(getAppEnvironment()).toBe("stage");
+  });
+
+  test("public Vercel preview wins over raw production on the server", () => {
+    process.env[VERCEL_ENV_KEY] = "preview";
+    process.env.VERCEL_ENV = "production";
+    process.env[ENV_KEY] = "production";
+    expect(getAppEnvironment()).toBe("preview");
+  });
+
+  test("raw Vercel preview is used when its public marker is absent", () => {
+    process.env.VERCEL_ENV = "preview";
+    process.env[ENV_KEY] = "production";
+    expect(getAppEnvironment()).toBe("preview");
+  });
+
+  test.each(["http://127.0.0.1:3000", "http://[::1]:3000"])(
+    "retains the existing stage fallback for %s",
+    (url) => {
+      process.env[URL_KEY] = url;
+      expect(getAppEnvironment()).toBe("stage");
+    }
+  );
+
+  test("retains the existing localhost substring policy", () => {
+    process.env[URL_KEY] = "https://localhost.example.test";
+    expect(getAppEnvironment()).toBe("local");
   });
 });

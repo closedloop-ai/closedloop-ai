@@ -21,75 +21,14 @@
  * mirroring `db-host-client-clone-safe-post.test.ts`, so no Electron boot.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { DbHostClient } from "../src/main/database/db-host/db-host-client.js";
-import {
-  type DbHostError,
-  DbHostRequestKind,
-  DbHostResponseKind,
-  serializeDbHostError,
-} from "../src/main/database/db-host/db-host-protocol.js";
+import { test } from "vitest";
+import { serializeDbHostError } from "../src/main/database/db-host/db-host-protocol.js";
 import {
   DesktopMigrationError,
   isDbAheadOfAppError,
   MigrationRefusalKind,
 } from "../src/main/lifecycle/migration-refusal.js";
-import type {
-  DbHostChildListenerArgs,
-  DbHostChildMessageListener,
-} from "./db-host-fake-child-support.js";
-
-/**
- * A fake forked db-host child whose init Ready reply carries a supplied
- * serialized error, modelling a migration refusal thrown in the child.
- */
-function makeFakeChild(readyError: DbHostError | undefined) {
-  const posted: { kind: string; id?: number }[] = [];
-  let messageListener: DbHostChildMessageListener | undefined;
-  const child = {
-    stderr: null,
-    on(...args: DbHostChildListenerArgs): unknown {
-      if (args[0] === "message") {
-        messageListener = args[1];
-      }
-      return child;
-    },
-    postMessage(message: { kind: string; id?: number }) {
-      posted.push(message);
-    },
-    kill() {
-      // no-op for the fake
-    },
-  };
-  return {
-    child,
-    ready() {
-      const initId = posted.find((m) => m.kind === DbHostRequestKind.Init)?.id;
-      messageListener?.({
-        kind: DbHostResponseKind.Ready,
-        id: initId,
-        ...(readyError ? { error: readyError } : {}),
-      });
-    },
-  };
-}
-
-type FakeChild = ReturnType<typeof makeFakeChild>;
-
-/** Start a client over the fake, delivering its Ready reply, and return the rejection. */
-async function startAndCaptureError(fake: FakeChild): Promise<unknown> {
-  const client = new DbHostClient({
-    onEmit: () => undefined,
-    onLog: () => undefined,
-    fork: () => fake.child,
-  });
-  const started = client.start({ dataDir: "/tmp/agent-dashboard" }).then(
-    () => null,
-    (error: unknown) => error
-  );
-  fake.ready();
-  return await started;
-}
+import { captureRebuiltBootError } from "./db-host-fake-child-support.js";
 
 test("a DesktopMigrationError round-trips through the db-host boundary and stays classified DB-ahead", async () => {
   // The child threw the DB-ahead (Downgrade) refusal; serialize it exactly as
@@ -106,8 +45,7 @@ test("a DesktopMigrationError round-trips through the db-host boundary and stays
     "serializeDbHostError must carry the refusal kind on the wire"
   );
 
-  const fake = makeFakeChild(serialized);
-  const error = await startAndCaptureError(fake);
+  const error = await captureRebuiltBootError(serialized);
 
   assert.ok(
     error instanceof DesktopMigrationError,
@@ -134,8 +72,7 @@ test("a non-migration boot error round-trips to a plain Error (never DB-ahead)",
     "a non-refusal error must not carry a refusal kind"
   );
 
-  const fake = makeFakeChild(serialized);
-  const error = await startAndCaptureError(fake);
+  const error = await captureRebuiltBootError(serialized);
 
   assert.ok(error instanceof Error);
   assert.ok(
@@ -152,12 +89,11 @@ test("a non-migration boot error round-trips to a plain Error (never DB-ahead)",
 test("an unknown/version-skewed refusalKind degrades to a plain Error", async () => {
   // A newer child could send a refusal kind this build does not know; it must
   // not throw or mis-classify — degrade to a plain Error.
-  const fake = makeFakeChild({
+  const error = await captureRebuiltBootError({
     message: "refusing for an unknown reason",
     name: "DesktopMigrationError",
     refusalKind: "some_future_refusal" as MigrationRefusalKind,
   });
-  const error = await startAndCaptureError(fake);
 
   assert.ok(error instanceof Error);
   assert.ok(

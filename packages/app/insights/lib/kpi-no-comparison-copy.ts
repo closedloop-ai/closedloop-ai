@@ -3,8 +3,7 @@ import { KpiDeltaBasis } from "@closedloop-ai/loops-api/insights";
 // Copy constants for the KPI delta-slot "No comparison" chip (ISS-4995). Kept in
 // a lightweight module so the reason string is an importable SSOT — tests, the
 // dashboard row, and the Insights tile read the same literal instead of each
-// re-declaring it. Mirrors `branches/lib/branch-headline-copy.ts`, which does the
-// same job for the branch-detail headline cards (FEA-4241).
+// re-declaring it.
 
 /**
  * Tooltip + screen-reader reason for a KPI whose producer computes no
@@ -30,9 +29,7 @@ import { KpiDeltaBasis } from "@closedloop-ai/loops-api/insights";
  *    (ISS-4995 review). The chip beside it reads "No comparison" and a screen
  *    reader announces the two back to back, so an earlier draft that said
  *    "trend" here had one control naming one thing two ways. "comparison" is
- *    also the noun the branch-detail card's sentence uses next door
- *    (`branches/lib/branch-headline-copy.ts`), so the whole affordance now
- *    speaks with one vocabulary wherever it renders.
+ *    the single noun this affordance uses wherever it renders.
  * 3. It does not hedge with "from this data" (ISS-4995 review). That phrase was
  *    added to keep the sentence honest on desktop, where the SAME tile is fed by
  *    the cloud routes in Cloud mode and the local store in Local mode, so an

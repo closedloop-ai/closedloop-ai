@@ -1,8 +1,12 @@
 appId: ai.closedloop.desktop
 productName: Closedloop
 
-# ISS-6109: the OS-level custom URI scheme the web app's "Launch Desktop App"
-# control fires. electron-builder reads this block for exactly two of the
+# Debian package metadata requires a homepage; apply it to the staged manifest.
+extraMetadata:
+  homepage: https://closedloop.ai
+
+# ISS-6109: the OS-level custom URI scheme the web app's onboarding download
+# step and Desktop handback fire. electron-builder reads this block for exactly two of the
 # platforms we care about — macOS `CFBundleURLTypes` in Info.plist and the Linux
 # .desktop `MimeType` (plus the Windows AppX target, which we do not build).
 # NSIS/Squirrel ignore it, so WINDOWS registration comes solely from the runtime
@@ -26,6 +30,8 @@ files:
   - package.json
 
 beforeBuild: ./scripts/use-staged-node-modules.mjs
+# ISS-12185: appends the hidden-file positions to dmg.contents below.
+beforePack: ./scripts/dmg-hidden-files.mjs
 
 extraResources:
   - from: resources/icon-1024.png
@@ -50,10 +56,6 @@ extraResources:
     to: statusline
     filter:
       - "*.js"
-  - from: resources/command-packs
-    to: command-packs
-    filter:
-      - "**/*"
   # Bundled coaching packs (overridable best-practice signal sets for Agent
   # Coaching Tips). agent-coaching-packs.ts seeds these into userData on first
   # run and the active pack's signals replace the built-in defaults.
@@ -61,17 +63,6 @@ extraResources:
     to: coaching-packs
     filter:
       - "**/*"
-  # Bundled audit-bot character prompts (PRD-556 / FEA-3847; full cast FEA-4013).
-  # The on-demand crewd review pass reads `<character>.md` (e.g. docs-darwin.md,
-  # kaitoc/desktop-denny.md) from here as the analysis prompt; resolved from
-  # `resourcesPath` in a packaged build. `**/*.md` (not `*.md`) so the author
-  # subfolders — the full discovered cast the picker offers — ship too; a
-  # single-level glob would ship only the 4 top-level prompts and the runner
-  # would then fail "character prompt not found" for every nightly character.
-  - from: resources/audit-characters
-    to: audit-characters
-    filter:
-      - "**/*.md"
 
 mac:
   icon: resources/icon.icns
@@ -87,11 +78,59 @@ mac:
   entitlementsInherit: build/entitlements.mac.plist
   notarize: true
 
+dmg:
+  # ISS-12185: the app and the /Applications link sit on the arrow in
+  # build/background.png, which dmg-builder picks up by name. That image is
+  # dmg-builder's default background with the arrow moved up to y=175, the
+  # middle of the window below its title bar (32pt on macOS 26, 28 before).
+  # Listed explicitly so the beforePack hook has a list to extend.
+  contents:
+    - x: 130
+      y: 175
+      type: file
+    - x: 410
+      y: 175
+      type: link
+      path: /Applications
+
+linux:
+  executableName: closedloop
+  icon: resources/icon-1024.png
+  target:
+    - target: AppImage
+      arch:
+        - x64
+    - target: deb
+      arch:
+        - x64
+  artifactName: Closedloop-${version}-linux-x64.${ext}
+  category: Development
+
+deb:
+  packageName: closedloop
+
 publish:
   provider: generic
   # Packaged clients read the public API updater feed. The API authenticates
   # to GitHub server-side and serves only Desktop updater metadata/assets.
   url: https://api.closedloop.ai/desktop/updates
+  # ISS-10424: one byte range per request. electron-updater otherwise packs up
+  # to 1000 ranges into each differential request, and the GitHub release-asset
+  # CDN the API redirects to answers a multi-range request with
+  # `501 Unsupported client range` (probed 2026-09-16), which fails every
+  # differential download back to a full one. Baked into app-update.yml, so it
+  # takes effect for installs built after this line.
+  #
+  # Known ceiling, measured 2026-09-16: on the first 302 electron-updater's
+  # DifferentialDownloader rewrites its shared requestOptions to the redirect
+  # target and reuses that ONE signed release-assets URL for every remaining
+  # range, so only range #1 touches the API route and the whole download rides a
+  # single short-lived signature. Probing one returned 206 at 390 s and had
+  # lapsed by 990 s, so the window is somewhere in 6.5-16.5 min. A differential
+  # run slower than that loses the signature partway through and electron-
+  # updater falls back to the full download it would have done anyway — slower
+  # than today, never broken.
+  useMultipleRangeRequest: false
 
 directories:
   output: dist-dmg

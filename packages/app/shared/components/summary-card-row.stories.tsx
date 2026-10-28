@@ -78,7 +78,7 @@ function SessionsStripCards() {
       <MetricCard
         className={summaryCardClass(true)}
         detail="across sessions in range"
-        label="LOC / $ (Merged)"
+        label="LOC / $"
         value="18.4"
       />
     </>
@@ -101,8 +101,9 @@ function DerivedStrip() {
 }
 
 const meta = {
-  title: "App Core/Shared/Summary Card Row",
+  title: "Composites v1.0/App Shell/Summary Card Row",
   component: SummaryCardRow,
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   args: { children: null as ReactNode },
 } satisfies Meta<typeof SummaryCardRow>;

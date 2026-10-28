@@ -21,7 +21,7 @@
  * dropped from it. The last case drives the REAL heal to prove the pair settles.
  */
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { toCanonicalIso } from "../src/main/database/db-helpers.js";
 import type { DesktopPrisma } from "../src/main/database/prisma-client.js";
 import { sweepExpiredSessions } from "../src/main/database/session-maintenance.js";

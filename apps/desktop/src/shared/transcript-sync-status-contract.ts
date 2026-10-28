@@ -81,26 +81,22 @@ export function asTranscriptSyncClass(
 export type TranscriptSyncStatusCounts = Record<TranscriptSyncStatus, number>;
 
 /**
- * The PRD-532 §7 consent + org-policy egress gate, as THREE states rather than
- * a boolean.
+ * The PRD-532 §7 consent egress gate, as a named verdict rather than a bare
+ * boolean.
  *
- * ISS-5348 (review): a boolean could not tell a settled denial apart from the
- * boot window where the org policy has not resolved yet — `OrgSyncPolicyStore`
- * is born `Unknown` and `orgPolicyAllowsSessionSync` fails closed on it, so both
- * arrived as `false`. That is correct for EGRESS (never upload on an unresolved
- * policy) and wrong for DISPLAY: the splash renders at boot, which is precisely
- * when the window is open, so the footer stated "Transcript upload isn't active"
- * as settled fact and then flipped on the next poll. Egress still keys off
- * `Allowed` alone, so failing closed is unchanged; only the renderer gains the
- * ability to say "not resolved yet" instead of inventing a denial.
+ * ISS-5348 added a third state, `Unresolved`, because a boolean could not tell a
+ * settled denial apart from the boot window in which the server-owned org policy
+ * had not been fetched yet, and the import splash rendered that window as
+ * "Transcript upload isn't active" before flipping a poll later. ISS-11449
+ * removed that state with the policy it described: the consent tier is a local,
+ * synchronously-readable user choice, so every read now has a settled answer and
+ * there is no pending window left to represent.
  */
 export const TranscriptEgressGate = {
-  /** Consent tier and org policy both permit egress. */
+  /** The consent tier permits egress. */
   Allowed: "allowed",
-  /** A settled no: an insufficient/absent consent tier, or a denying policy. */
+  /** A settled no: an insufficient or absent consent tier. */
   Denied: "denied",
-  /** The org policy has not resolved yet. NOT a denial — no verdict exists. */
-  Unresolved: "unresolved",
 } as const;
 export type TranscriptEgressGate =
   (typeof TranscriptEgressGate)[keyof typeof TranscriptEgressGate];
@@ -110,12 +106,11 @@ export type TranscriptEgressGate =
  *
  * ISS-4716: `enabled` alone is NOT the egress gate — it is only the persisted
  * `transcriptSyncEnabled` toggle. `TranscriptSyncService.shouldRun()` ANDs four
- * preconditions (tier/org-policy consent, the toggle, online, and a live
- * store), and a consumer that reads only `enabled` will describe a lane that
- * cannot run as if it were healthy. `tierGate` and `storeReady` expose the two
- * the service used to keep private, so the renderer can tell "you turned it
- * off" apart from "your org policy denies this" apart from "your org policy
- * hasn't resolved yet" apart from "the database isn't up yet".
+ * preconditions (the consent tier, the toggle, online, and a live store), and a
+ * consumer that reads only `enabled` will describe a lane that cannot run as if
+ * it were healthy. `tierGate` and `storeReady` expose the two the service used to
+ * keep private, so the renderer can tell "you turned it off" apart from "your
+ * sync level excludes transcripts" apart from "the database isn't up yet".
  *
  * All fields are REQUIRED: main, preload, and the renderer ship in a single
  * Electron build, so this shape never crosses a version-skewed boundary and an
@@ -125,13 +120,37 @@ export type TranscriptSyncStatusSnapshot = {
   enabled: boolean;
   online: boolean;
   /**
-   * PRD-532 §7 consent + org-policy egress gate. Three-valued so a consumer
-   * cannot render the unresolved boot window as a settled denial — see
-   * {@link TranscriptEgressGate}. Only `Allowed` permits the lane to drain.
+   * PRD-532 §7 consent egress gate — see {@link TranscriptEgressGate}. Only
+   * `Allowed` permits the lane to drain.
    */
   tierGate: TranscriptEgressGate;
   /** `shouldRun()`'s store precondition: false while the DB is starting or failed. */
   storeReady: boolean;
+  /**
+   * ISS-7516 — the cloud identity of the machine this snapshot describes, or
+   * `null` when there isn't one yet (offline or signed out).
+   *
+   * NOT conditional on a lane existing. A machine on the metadata data-sync
+   * level never constructs a `TranscriptSyncService` at all, and that is
+   * precisely the machine whose sessions need the never-expected verdict, so
+   * the no-lane snapshot
+   * ({@link ../main/transcript-sync/transcript-sync-lane-absent-status}) carries
+   * the same identity, read from the same accessor, rather than a `null` that
+   * would make the verdict unreachable on that tier.
+   *
+   * Identity rides this snapshot because every other field here is a statement
+   * about one machine's archive lane and is worthless without knowing which
+   * machine that is. The renderer's need is exactly that: a session
+   * detail can be showing a session recorded on a DIFFERENT device, and this
+   * device's sync level says nothing about that session's transcript. Without
+   * an id to compare against, a reader on a `metadata` machine would be told
+   * their own level is why a colleague's `full` machine is still uploading —
+   * trading one false statement for another.
+   *
+   * `null` therefore means "cannot attribute", never "not this machine": a
+   * consumer must withhold the claim rather than assume a match.
+   */
+  computeTargetId: string | null;
   /**
    * Whole-table counts per lifecycle status.
    *
@@ -139,8 +158,13 @@ export type TranscriptSyncStatusSnapshot = {
    * an unindexed full-table read and sort on every 5s poll of a visible splash
    * (no index covers `last_mtime_ms DESC, updated_at ASC`, and SQLite cannot
    * walk a mixed-direction order from an ASC index), and it was a SAMPLE — a
-   * user with thousands of older dead-lettered rows could show a clean window,
-   * so the footer could miss the exact failure it exists to report. A
+   * user whose oldest rows are the ones sitting in a reportable state could
+   * show a clean window, so the footer could miss the condition it exists to
+   * report. (ISS-5348 argued that from `dead` rows; ISS-7094 retired `dead` as
+   * a footnote driver, so read the argument on the states the footer DOES
+   * report — a long-backed-off `failed` or `queued` row is as old and as
+   * invisible to a newest-N window. The census still counts every status: the
+   * footer stopped reading one, the aggregate did not stop reporting it.) A
    * `GROUP BY status` aggregate is served by the leading column of
    * `idx_transcript_sync_state_status_next`, materializes no rows in the
    * heap-capped db-host worker, and describes the whole population.

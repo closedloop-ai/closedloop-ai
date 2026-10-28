@@ -14,33 +14,37 @@ vi.mock("@repo/database", () => ({
   },
 }));
 
-vi.mock("@/lib/integration-encryption", () => ({
-  decryptIntegrationToken: vi.fn(),
-}));
-
 vi.mock("@repo/github/installation-auth", () => ({
   getInstallationOctokit: vi.fn(),
+}));
+
+// PLN-1742 M5: Clerk is consulted for every org, so these stored-credential
+// cases wire it to a stated "no linked account" denial (see beforeEach).
+vi.mock("@repo/auth/server", () => ({
+  clerkClient: vi.fn(),
 }));
 
 vi.mock("@repo/observability/log", () => ({
   log: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 
+import { clerkClient } from "@repo/auth/server";
 import { withDb } from "@repo/database";
 import type { GitHubClient } from "@/lib/github/github-access";
 import { getGitHubClient } from "@/lib/github/github-client-resolver";
 import {
   APP_USER_CONNECTION,
   makeResolverDb,
-  mockDecrypt,
   NOW,
   okFetch,
   USER_TARGET_INPUT,
   type WithDbMock,
+  wireClerkServedToken,
   wireDb,
 } from "./github-access-test-fixtures";
 
 const mockWithDb = withDb as unknown as WithDbMock;
+const mockClerkClient = clerkClient as unknown as ReturnType<typeof vi.fn>;
 
 // Verdict-cache READ semantics: when a stored capability row may answer for
 // the credential without a probe, and when it must be treated as a miss.
@@ -49,15 +53,16 @@ const mockWithDb = withDb as unknown as WithDbMock;
 describe("getGitHubClient (verdict-cache reads)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockDecrypt.mockResolvedValue("decrypted-token");
+    wireClerkServedToken(mockClerkClient);
   });
 
   it("serves a cached positive verdict without any GitHub request", async () => {
     const db = makeResolverDb({
       ...APP_USER_CONNECTION,
+      lastUsedAt: NOW,
       capabilities: [
         {
-          credentialKind: GitHubCredentialKind.GithubAppUser,
+          credentialKind: GitHubCredentialKind.OauthUser,
           denialReason: null,
           installationId: null,
           checkedAt: new Date("2026-07-30T11:58:00.000Z"),
@@ -75,7 +80,7 @@ describe("getGitHubClient (verdict-cache reads)", () => {
 
     expect(result.ok).toBe(true);
     const client = (result as { ok: true; value: GitHubClient }).value;
-    expect(client.kind).toBe(GitHubCredentialKind.GithubAppUser);
+    expect(client.kind).toBe(GitHubCredentialKind.OauthUser);
     expect(client.actingAs).toEqual({ githubUserId: "9001", login: "octocat" });
     expect(client.rateLimitTier).toBe(15_000);
     expect(fetchMock).not.toHaveBeenCalled();
@@ -88,9 +93,10 @@ describe("getGitHubClient (verdict-cache reads)", () => {
       mockWithDb,
       makeResolverDb({
         ...APP_USER_CONNECTION,
+        lastUsedAt: NOW,
         capabilities: [
           {
-            credentialKind: GitHubCredentialKind.GithubAppUser,
+            credentialKind: GitHubCredentialKind.OauthUser,
             denialReason: GitHubAccessDenialReason.NoInstallation,
             installationId: null,
             checkedAt: new Date("2026-07-30T11:58:00.000Z"),
@@ -116,9 +122,10 @@ describe("getGitHubClient (verdict-cache reads)", () => {
   it("treats an unknown cached denial reason as a miss and reprobes", async () => {
     const db = makeResolverDb({
       ...APP_USER_CONNECTION,
+      lastUsedAt: NOW,
       capabilities: [
         {
-          credentialKind: GitHubCredentialKind.GithubAppUser,
+          credentialKind: GitHubCredentialKind.OauthUser,
           // A newer writer cached a code this build does not know.
           denialReason: "quota_exceeded_v9",
           installationId: null,
@@ -140,14 +147,15 @@ describe("getGitHubClient (verdict-cache reads)", () => {
   });
 
   it("reprobes when the cached verdict belongs to the other credential family", async () => {
-    // A reconnect overwrote the scopes (flipping the derived family) but the
-    // capability rows survived — the stale OAuth-family denial must not bind
-    // the App-family credential.
+    // Verdict rows outlive a credential-family change (an App-family token's
+    // rows survive on a row Clerk now serves an OAuth grant for) — a stale
+    // App-family denial must not bind the OAuth-family credential.
     const db = makeResolverDb({
       ...APP_USER_CONNECTION,
+      lastUsedAt: NOW,
       capabilities: [
         {
-          credentialKind: GitHubCredentialKind.OauthUser,
+          credentialKind: GitHubCredentialKind.GithubAppUser,
           denialReason: GitHubAccessDenialReason.NoInstallation,
           installationId: null,
           checkedAt: new Date("2026-07-30T11:58:00.000Z"),
@@ -172,9 +180,10 @@ describe("getGitHubClient (verdict-cache reads)", () => {
     // interactive lane must still re-check negatives at its own short TTL.
     const db = makeResolverDb({
       ...APP_USER_CONNECTION,
+      lastUsedAt: NOW,
       capabilities: [
         {
-          credentialKind: GitHubCredentialKind.GithubAppUser,
+          credentialKind: GitHubCredentialKind.OauthUser,
           denialReason: GitHubAccessDenialReason.NoInstallation,
           installationId: null,
           checkedAt: new Date("2026-07-30T11:54:00.000Z"),

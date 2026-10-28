@@ -8,7 +8,18 @@
  * persistence and shell routing live in the sibling `app-shell-*.test.tsx`
  * files.
  */
+
+import { GRID_TABLE_SCROLL_BAND_TEST_ID } from "@closedloop-ai/design-system/components/ui/grid-table-list-surface";
 import type { AgentSessionsPageData } from "@repo/api/src/types/agent-session";
+import { ReadInitiator } from "@repo/api/src/types/read-initiator";
+import { SESSION_STATUS_LABELS } from "@repo/api/src/types/session-status-display";
+// Imported for the Filter control's own label AND for the module's side effect:
+// it installs the Radix pointer-capture shims jsdom omits, without which the
+// real `FilterPopover` throws on open. `apps/desktop` declares no `setupFiles`,
+// so this import is how every desktop suite that drives a real menu gets them
+// (see the harness header, and the sibling `sessions-view-toolbar-options-menu`
+// and `sessions-desktop-view-state-persistence` suites).
+import { SESSIONS_TOOLBAR_FILTER_BUTTON } from "@repo/app/agents/components/sessions/__tests__/sessions-toolbar-mount-harness";
 import { SessionStatusFacetValue } from "@repo/app/agents/lib/session-status-filters";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
@@ -20,44 +31,45 @@ import {
   SHOW_COMMENTS_BUTTON_NAME,
   setupAppShellSuite,
 } from "./app-shell-harness";
-import { agentSessionUsage } from "./app-shell-session-fixtures";
+import {
+  agentSessionUsage,
+  defaultSessionsPageDataRequest,
+  requestedSessionStatuses,
+} from "./app-shell-session-fixtures";
 
 vi.mock("../components/UpdateBanner", () => ({
   UpdateBanner: () => null,
 }));
-vi.mock("@repo/app/agents/components/sessions/sessions-toolbar", () => ({
-  SessionsToolbar: ({
-    onFiltersChange,
-  }: {
-    onFiltersChange: (next: {
-      statuses: string[];
-      userIds: string[];
-      repositories: string[];
-    }) => void;
-  }) => (
-    <button
-      onClick={() =>
-        onFiltersChange({
-          statuses: [SessionStatusFacetValue.Inactive],
-          userIds: [],
-          repositories: [],
-        })
-      }
-      type="button"
-    >
-      Apply inactive status filter
-    </button>
-  ),
-}));
+
+// ISS-10195: the guided-onboarding host is stubbed OUT of this Sessions suite.
+// It is mounted app-wide by the sidebar and calls
+// `useOnboardingSessionDiscovery(true)`, which reads
+// `agentSessionsApi.usage(ALL_LOCAL_SESSIONS)` — an empty-filter read with
+// nothing to do with the Insights opt-in this suite measures. Retiring the
+// workspace-experience gate removed the root resolver's boot-boundary hold, so
+// that read now lands inside the "scans stay opt-in" assertion below. Stubbing
+// the unrelated consumer keeps that assertion meaning exactly what it says —
+// that no INSIGHTS scan fired before the click — rather than widening it to
+// tolerate a second, unrelated caller.
+vi.mock(
+  "../components/onboarding/desktop-guided-onboarding-dialog-host",
+  () => ({
+    DesktopGuidedOnboardingDialogHost: () => null,
+  })
+);
 
 describe("App shell sessions surface", () => {
   setupAppShellSuite();
 
   it("renders real shared sessions and insights wrappers through the desktop provider", async () => {
-    // The default route is the Sessions page (Dashboard is a placeholder).
+    // Opened at #/sessions rather than at the empty-hash default: this test owns
+    // the shared Sessions/Insights WRAPPERS, and the empty-hash default is no
+    // longer Sessions (`DEFAULT_NAV_ID` is the canonical Dashboard landing), so
+    // relying on it here would only be re-testing the landing. The launch path
+    // through Dashboard into Sessions is pinned by the page-two test below.
     // Views are reached by hash navigation since the sidebar nav items are
     // links folded into a collapsed Labs section under FOCUS_MODE.
-    await renderDesktopApp("");
+    await renderDesktopApp("#/sessions");
 
     expect(await findTopbarCurrentPage("Sessions")).toBeDefined();
     expect(window.location.hash).toBe("#/sessions");
@@ -96,14 +108,15 @@ describe("App shell sessions surface", () => {
     );
 
     expect(window.desktopApi.agentSessionsApi.detail).toHaveBeenCalledWith(
-      "s-active"
+      "s-active",
+      { readInitiator: ReadInitiator.User }
     );
   });
 
-  it("submits top-left search to the sessions view and forwards the local search filter", async () => {
+  it("submits the Labs sidebar search to the sessions view and forwards the local search filter", async () => {
     await renderDesktopApp("#/sessions");
 
-    const searchInput = screen.getByPlaceholderText("Search");
+    const searchInput = await openLabsSearch();
     expect(searchInput.hasAttribute("disabled")).toBe(false);
     fireEvent.change(searchInput, {
       target: { value: "Failed Session" },
@@ -116,27 +129,9 @@ describe("App shell sessions surface", () => {
       expect(window.location.hash).toBe("#/sessions?search=Failed+Session");
     });
     await waitFor(() => {
-      expect(window.desktopApi.agentSessionsApi.pageData).toHaveBeenCalledWith({
-        limit: 25,
-        offset: 0,
-        search: "Failed Session",
-        // The stable complete UTC window scopes every sessions list query.
-        startDate: expect.any(String),
-        endDate: expect.any(String),
-        statuses: [],
-        repositories: [],
-        harnesses: [],
-        models: [],
-        autonomyTiers: [],
-        costBuckets: [],
-        changePresence: [],
-        prAssociation: [],
-        // PLN-1034: Sessions default to most-recent-activity, descending.
-        sortBy: "lastActivity",
-        sortDir: "desc",
-        // Owner facet (sessions-owner-attribution) threads userIds through the query.
-        userIds: [],
-      });
+      expect(window.desktopApi.agentSessionsApi.pageData).toHaveBeenCalledWith(
+        defaultSessionsPageDataRequest({ offset: 0, search: "Failed Session" })
+      );
     });
     expect(
       await screen.findByRole("link", { name: "Shell Failed Session" })
@@ -159,23 +154,35 @@ describe("App shell sessions surface", () => {
     // gate the search read there. The standalone facet-option `usage` read still
     // fires (unfiltered), and the loading-state assertions below confirm it is
     // never search-scoped.
+    //
+    // ISS-12161: the FEA-2187 fallback poll re-reads the UNFILTERED pageData key
+    // every 2s while the view still observes it, and that tick can land before
+    // the search read is issued (it did, under coverage timing). The poll is
+    // product-correct, so until the search read is issued the unfiltered key
+    // answers with the harness's own data. Only after the view has left it do
+    // non-search reads drop to 0, so the "26" below can only be the held value.
     const pendingPageData = new Promise<AgentSessionsPageData>(() => undefined);
-    vi.mocked(window.desktopApi.agentSessionsApi.pageData).mockImplementation(
-      (request = {}) => {
-        if (request.search) {
-          return pendingPageData;
-        }
-        return Promise.resolve({
-          list: { items: [], total: 0, viewerScope: "self" },
-          usage: agentSessionUsage(0),
-        });
+    const pageDataApi = vi.mocked(window.desktopApi.agentSessionsApi.pageData);
+    const serveUnfilteredPageData = pageDataApi.getMockImplementation();
+    let searchReadIssued = false;
+    pageDataApi.mockImplementation((request = {}) => {
+      if (request.search) {
+        searchReadIssued = true;
+        return pendingPageData;
       }
-    );
+      if (!searchReadIssued && serveUnfilteredPageData) {
+        return serveUnfilteredPageData(request);
+      }
+      return Promise.resolve({
+        list: { items: [], total: 0, viewerScope: "self" },
+        usage: agentSessionUsage(0),
+      });
+    });
     vi.mocked(window.desktopApi.agentSessionsApi.usage).mockImplementation(() =>
       Promise.resolve(agentSessionUsage(0))
     );
 
-    const searchInput = screen.getByPlaceholderText("Search");
+    const searchInput = await openLabsSearch();
     fireEvent.change(searchInput, {
       target: { value: "Failed Session" },
     });
@@ -205,7 +212,18 @@ describe("App shell sessions surface", () => {
     expect(
       screen.queryByRole("link", { name: "Shell Active Session" })
     ).toBeNull();
-    expect(screen.queryByLabelText("Go to next page")).toBeNull();
+    // ISS-9216: the v2 surface keeps the footer MOUNTED through a placeholder
+    // read and PINS every control in it, where the retired v1 body dropped the
+    // strip outright (dropping it cost a row's worth of height and reflowed the
+    // table above). What this line protects is unchanged — the reader still
+    // cannot page over rows the pending search has already made stale — so it
+    // now asserts the control is inert rather than absent.
+    // The Electron footer case additionally holds a real empty pageData read.
+    // The page-two case below clicks this same control on a
+    // settled list, so "pinned" here discriminates rather than always holding.
+    expect(
+      screen.getByLabelText("Go to next page").getAttribute("aria-disabled")
+    ).toBe("true");
     expect(
       vi
         .mocked(window.desktopApi.agentSessionsApi.usage)
@@ -222,9 +240,7 @@ describe("App shell sessions surface", () => {
     await renderDesktopApp("#/sessions?search=Failed+Session");
 
     expect(await findTopbarCurrentPage("Sessions")).toBeDefined();
-    const activeSearchInput = screen.getByRole("textbox", {
-      name: "Search",
-    }) as HTMLInputElement;
+    const activeSearchInput = await openLabsSearch();
     expect(activeSearchInput.value).toBe("Failed Session");
 
     fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
@@ -234,33 +250,16 @@ describe("App shell sessions surface", () => {
     });
     expect(activeSearchInput.value).toBe("");
     await waitFor(() => {
-      expect(window.desktopApi.agentSessionsApi.pageData).toHaveBeenCalledWith({
-        limit: 25,
-        offset: 0,
-        search: undefined,
-        // The stable complete UTC window scopes every sessions list query.
-        startDate: expect.any(String),
-        endDate: expect.any(String),
-        statuses: [],
-        repositories: [],
-        harnesses: [],
-        models: [],
-        autonomyTiers: [],
-        costBuckets: [],
-        changePresence: [],
-        prAssociation: [],
-        sortBy: "lastActivity",
-        sortDir: "desc",
-        // Owner facet (sessions-owner-attribution) threads userIds through the query.
-        userIds: [],
-      });
+      expect(window.desktopApi.agentSessionsApi.pageData).toHaveBeenCalledWith(
+        defaultSessionsPageDataRequest({ offset: 0, search: undefined })
+      );
     });
   });
 
   it("clears a draft sessions search to the unfiltered sessions route", async () => {
     await renderDesktopApp("#/sessions");
 
-    const searchInput = screen.getByRole("textbox", { name: "Search" });
+    const searchInput = await openLabsSearch();
     fireEvent.change(searchInput, {
       target: { value: "Failed Session" },
     });
@@ -289,9 +288,7 @@ describe("App shell sessions surface", () => {
       screen.queryByRole("link", { name: "Shell Active Session" })
     ).toBeNull();
 
-    const searchInput = screen.getByRole("textbox", {
-      name: "Search",
-    }) as HTMLInputElement;
+    const searchInput = await openLabsSearch();
     expect(searchInput.value).toBe("Failed Session");
 
     // Delete the query text, then submit (press Return) on the empty input.
@@ -308,26 +305,9 @@ describe("App shell sessions surface", () => {
     expect(screen.queryByRole("button", { name: "Clear search" })).toBeNull();
     // The reset re-issues the combined list + summary read with no search term.
     await waitFor(() => {
-      expect(window.desktopApi.agentSessionsApi.pageData).toHaveBeenCalledWith({
-        limit: 25,
-        offset: 0,
-        search: undefined,
-        // The stable complete UTC window scopes every sessions list query.
-        startDate: expect.any(String),
-        endDate: expect.any(String),
-        statuses: [],
-        repositories: [],
-        harnesses: [],
-        models: [],
-        autonomyTiers: [],
-        costBuckets: [],
-        changePresence: [],
-        prAssociation: [],
-        sortBy: "lastActivity",
-        sortDir: "desc",
-        // Owner facet (sessions-owner-attribution) threads userIds through the query.
-        userIds: [],
-      });
+      expect(window.desktopApi.agentSessionsApi.pageData).toHaveBeenCalledWith(
+        defaultSessionsPageDataRequest({ offset: 0, search: undefined })
+      );
     });
     // The full, unfiltered result set is shown again.
     expect(
@@ -343,9 +323,7 @@ describe("App shell sessions surface", () => {
       await screen.findByRole("link", { name: "Shell Failed Session" })
     ).toBeDefined();
 
-    const searchInput = screen.getByRole("textbox", {
-      name: "Search",
-    }) as HTMLInputElement;
+    const searchInput = await openLabsSearch();
     // Whitespace-only input is treated as empty and resets to the bare route.
     fireEvent.change(searchInput, { target: { value: "   " } });
     const searchForm = searchInput.closest("form");
@@ -373,9 +351,7 @@ describe("App shell sessions surface", () => {
       await screen.findByRole("link", { name: "Shell Active Session" })
     ).toBeDefined();
 
-    const searchInput = screen.getByRole("textbox", {
-      name: "Search",
-    }) as HTMLInputElement;
+    const searchInput = await openLabsSearch();
 
     // A query that matches nothing collapses the list to the empty state.
     fireEvent.change(searchInput, {
@@ -417,9 +393,7 @@ describe("App shell sessions surface", () => {
       await screen.findByRole("link", { name: "Shell Active Session" })
     ).toBeDefined();
 
-    const searchInput = screen.getByRole("textbox", {
-      name: "Search",
-    }) as HTMLInputElement;
+    const searchInput = await openLabsSearch();
     expect(searchInput.value).toBe("");
     // The unfiltered route shows no active-search indicator to begin with.
     expect(screen.queryByRole("button", { name: "Clear search" })).toBeNull();
@@ -449,16 +423,28 @@ describe("App shell sessions surface", () => {
     await renderDesktopApp("#/sessions?page=2");
     expect(await findTopbarCurrentPage("Sessions")).toBeDefined();
     await waitFor(() => {
-      expect(window.desktopApi.agentSessionsApi.pageData).toHaveBeenCalledWith(
-        expect.objectContaining({
-          offset: 25,
-          statuses: [],
-        })
-      );
+      expect(pageDataReads()).toContainEqual({ offset: 25, statuses: [] });
     });
 
+    // ISS-8909: driven through the REAL Filter control the shared v2 surface
+    // renders. The v1 `SessionsToolbar` this case used to mock is no longer
+    // mounted, so a mock of it would never run — but what the case asserts is
+    // the SHELL's contract and is unchanged: a status facet selection has to
+    // reach the desktop local data source and reset the page.
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: SESSIONS_TOOLBAR_FILTER_BUTTON }),
+      { button: 0, ctrlKey: false }
+    );
+    const statusFacet = within(screen.getByRole("menu")).getByRole("menuitem", {
+      name: "Status",
+    });
+    // Keyboard rather than hover: Radix opens a submenu on either, and the
+    // keyboard route needs no pointer geometry jsdom cannot supply.
+    fireEvent.keyDown(statusFacet, { key: "ArrowRight" });
     fireEvent.click(
-      screen.getByRole("button", { name: "Apply inactive status filter" })
+      await screen.findByRole("menuitem", {
+        name: SESSION_STATUS_LABELS[SessionStatusFacetValue.Inactive],
+      })
     );
 
     // FEA-3560: the page-resetting replace also mirrors the selected status
@@ -467,78 +453,51 @@ describe("App shell sessions surface", () => {
       expect(window.location.hash).toBe("#/sessions?status=inactive");
     });
     await waitFor(() => {
-      expect(window.desktopApi.agentSessionsApi.pageData).toHaveBeenCalledWith(
-        expect.objectContaining({
-          offset: 0,
-          statuses: [SessionStatusFacetValue.Inactive],
-        })
-      );
+      expect(pageDataReads()).toContainEqual({
+        offset: 0,
+        statuses: [SessionStatusFacetValue.Inactive],
+      });
     });
   });
 
   it("returns from a page-two session detail to the same sessions page and scroll position", async () => {
+    // Launch empty (Dashboard, the canonical landing) and navigate, so the
+    // Sessions list under test sits in the keep-alive map exactly where
+    // production puts it — second, under a still-mounted Dashboard.
     const firstRender = renderDesktopApp("");
+    expect(await findTopbarCurrentPage("Dashboard")).toBeDefined();
+    window.location.hash = "#/sessions";
     expect(await findTopbarCurrentPage("Sessions")).toBeDefined();
     expect(
-      await screen.findByRole("link", { name: "Shell Active Session" })
-    ).toBeDefined();
+      (await screen.findAllByRole("link", { name: "Shell Active Session" }))
+        .length
+    ).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByLabelText("Go to next page"));
     await waitFor(() => {
       expect(window.location.hash).toBe("#/sessions?page=2");
     });
     await waitFor(() => {
-      expect(window.desktopApi.agentSessionsApi.pageData).toHaveBeenCalledWith({
-        limit: 25,
-        offset: 25,
-        search: undefined,
-        // The stable complete UTC window scopes every sessions list query.
-        startDate: expect.any(String),
-        endDate: expect.any(String),
-        statuses: [],
-        repositories: [],
-        harnesses: [],
-        models: [],
-        autonomyTiers: [],
-        costBuckets: [],
-        changePresence: [],
-        prAssociation: [],
-        sortBy: "lastActivity",
-        sortDir: "desc",
-        // Owner facet (sessions-owner-attribution) threads userIds through the query.
-        userIds: [],
-      });
+      expect(window.desktopApi.agentSessionsApi.pageData).toHaveBeenCalledWith(
+        defaultSessionsPageDataRequest({ offset: 25, search: undefined })
+      );
     });
     firstRender.unmount();
 
     const { navigation } = renderDesktopApp("#/sessions?page=2");
     expect(await findTopbarCurrentPage("Sessions")).toBeDefined();
     await waitFor(() => {
-      expect(window.desktopApi.agentSessionsApi.pageData).toHaveBeenCalledWith({
-        limit: 25,
-        offset: 25,
-        search: undefined,
-        // The stable complete UTC window scopes every sessions list query.
-        startDate: expect.any(String),
-        endDate: expect.any(String),
-        statuses: [],
-        repositories: [],
-        harnesses: [],
-        models: [],
-        autonomyTiers: [],
-        costBuckets: [],
-        changePresence: [],
-        prAssociation: [],
-        sortBy: "lastActivity",
-        sortDir: "desc",
-        // Owner facet (sessions-owner-attribution) threads userIds through the query.
-        userIds: [],
-      });
+      expect(window.desktopApi.agentSessionsApi.pageData).toHaveBeenCalledWith(
+        defaultSessionsPageDataRequest({ offset: 25, search: undefined })
+      );
     });
 
-    const contentViewport = screen.getByTestId("desktop-content-viewport");
-    contentViewport.scrollTop = 384;
-    fireEvent.scroll(contentViewport);
+    // ISS-12471: the content viewport is NOT the scroller on this route -- the
+    // Sessions body pins itself to the window height and the grid band scrolls
+    // inside it.
+    const scrollBand = screen.getByTestId(GRID_TABLE_SCROLL_BAND_TEST_ID);
+    scrollBand.scrollTop = 384;
+    fireEvent.scroll(scrollBand);
 
     const pageTwoLink = await screen.findByRole("link", {
       name: "Shell Page Two Session",
@@ -549,7 +508,8 @@ describe("App shell sessions surface", () => {
       await findSharedRouteHeading("Shell Page Two Session")
     ).toBeDefined();
     expect(window.desktopApi.agentSessionsApi.detail).toHaveBeenCalledWith(
-      "s-page-two"
+      "s-page-two",
+      { readInitiator: ReadInitiator.User }
     );
     expect(navigation.getHistory()).toContain("/sessions/s-page-two");
     // The breadcrumb's "Sessions" parent preserves the originating list's page
@@ -567,8 +527,13 @@ describe("App shell sessions surface", () => {
     expect(
       await screen.findByRole("link", { name: "Shell Page Two Session" })
     ).toBeDefined();
+    // The band the list comes back on is a fresh node, so the offset below is
+    // the restore and not a value jsdom was still holding.
+    expect(screen.getByTestId(GRID_TABLE_SCROLL_BAND_TEST_ID)).not.toBe(
+      scrollBand
+    );
     await waitFor(() => {
-      expect(screen.getByTestId("desktop-content-viewport").scrollTop).toBe(
+      expect(screen.getByTestId(GRID_TABLE_SCROLL_BAND_TEST_ID).scrollTop).toBe(
         384
       );
     });
@@ -594,6 +559,7 @@ describe("App shell sessions surface", () => {
     fireEvent.click(screen.getByRole("button", { name: "Load insights" }));
     await waitFor(() => {
       expect(window.desktopApi.agentSessionsApi.list).toHaveBeenCalledWith({
+        readInitiator: ReadInitiator.User,
         limit: 25,
         offset: 0,
       });
@@ -610,8 +576,54 @@ describe("App shell sessions surface", () => {
 
     expect(await screen.findByText("Session not found")).toBeDefined();
     expect(window.desktopApi.agentSessionsApi.detail).toHaveBeenCalledWith(
-      "missing"
+      "missing",
+      { readInitiator: ReadInitiator.User }
     );
+  });
+
+  /**
+   * A link that says "Back to Sessions" has to go to Sessions.
+   *
+   * The shell handed `SessionDetailView` the raw `sessionBackHref` — the last
+   * nav route of ANY section, which exists to keep the originating TAB
+   * highlighted, not to name a destination. That prop feeds only the not-found
+   * and provider-error states, whose sole control is a link labelled "Back to
+   * Sessions", so a detail opened from any other surface aimed that link at that
+   * surface. With Dashboard as the canonical landing it resolved to `/dashboard`
+   * on the ordinary launch path, and the one way out of a dead end navigated
+   * somewhere its own label denied.
+   *
+   * It now takes `sessionsListHref`, the Sessions-coerced href the breadcrumb
+   * parent already used, so the label and the destination cannot disagree —
+   * while still preserving the originating list's query when there is one. Both
+   * halves are pinned below: the coercion, and the preservation it must not cost.
+   */
+  it("points the not-found state's back link at Sessions, not at the landing page", async () => {
+    await renderDesktopApp("");
+    expect(await findTopbarCurrentPage("Dashboard")).toBeDefined();
+
+    window.location.hash = "#/sessions/missing";
+    expect(await screen.findByText("Session not found")).toBeDefined();
+
+    expect(
+      screen
+        .getByRole("link", { name: "Back to Sessions" })
+        .getAttribute("href")
+    ).toBe("#/sessions");
+  });
+
+  it("returns the not-found state to the originating sessions page, query and all", async () => {
+    await renderDesktopApp("#/sessions?page=2");
+    expect(await findTopbarCurrentPage("Sessions")).toBeDefined();
+
+    window.location.hash = "#/sessions/missing";
+    expect(await screen.findByText("Session not found")).toBeDefined();
+
+    expect(
+      screen
+        .getByRole("link", { name: "Back to Sessions" })
+        .getAttribute("href")
+    ).toBe("#/sessions?page=2");
   });
 
   it("renders desktop local session details without unsupported write controls", async () => {
@@ -652,10 +664,47 @@ describe("App shell sessions surface", () => {
     expect(document.querySelector(".sd3-cmts")).toBeNull();
 
     expect(window.desktopApi.agentSessionsApi.detail).toHaveBeenCalledWith(
-      "s-pending"
+      "s-pending",
+      { readInitiator: ReadInitiator.User }
     );
     expect(window.desktopApi.agentSessionsApi.detail).toHaveBeenCalledWith(
-      "s-blocked"
+      "s-blocked",
+      { readInitiator: ReadInitiator.User }
     );
   });
 });
+
+/**
+ * The sidebar search box, reached by opening Labs.
+ *
+ * ISS-8759 (desktop mirror): the search control moved INTO the Labs section,
+ * which ships collapsed (ISS-4478, reaffirmed by the operator 2026-09-03) and
+ * whose collapsible unmounts its body while closed. Every case that drives
+ * search therefore opens Labs first — the same thing the desktop e2e helpers
+ * (`labs-flag-seeding-contract.spec.ts`) already do. What each case asserts
+ * about SEARCH is unchanged; only the route to the control is.
+ */
+async function openLabsSearch(): Promise<HTMLInputElement> {
+  const labsToggle = await screen.findByRole("button", { name: "Labs" });
+  if (labsToggle.getAttribute("aria-expanded") !== "true") {
+    fireEvent.click(labsToggle);
+  }
+  await waitFor(() =>
+    expect(labsToggle.getAttribute("aria-expanded")).toBe("true")
+  );
+  // Re-queried AFTER the section has settled: the collapsible mounts its body
+  // asynchronously, so a reference taken mid-open can be replaced underneath.
+  return (await screen.findByRole("textbox", {
+    name: "Search",
+  })) as HTMLInputElement;
+}
+
+/** Each `pageData` read's page offset and requested statuses, in call order. */
+function pageDataReads() {
+  return vi
+    .mocked(window.desktopApi.agentSessionsApi.pageData)
+    .mock.calls.map(([request = {}]) => ({
+      offset: request.offset,
+      statuses: requestedSessionStatuses(request),
+    }));
+}

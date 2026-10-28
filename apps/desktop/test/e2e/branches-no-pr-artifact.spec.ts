@@ -17,8 +17,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
-import { gotoNav, launchDesktopApp } from "./helpers/desktop-app";
-import { startFakeGitHubAuthorityServer } from "./helpers/fake-github-authority-server";
+import {
+  clickDesktopDateRange,
+  DesktopDateRangeLabel,
+  gotoNav,
+  launchDesktopApp,
+} from "./helpers/desktop-app";
 import {
   seedNoPullRequestBranch,
   waitForBranchesSchema,
@@ -46,13 +50,9 @@ test.describe("Branches no-PR local artifact (FEA-2528)", () => {
     const userDataDir = fs.mkdtempSync(
       path.join(os.tmpdir(), "desktop-branches-no-pr-udd-")
     );
-    const authorityServer = await startFakeGitHubAuthorityServer([
-      SEED.repoFullName,
-    ]);
     const env = {
       CLAUDE_HOME: claudeHome,
       CODEX_HOME: codexHome,
-      ...authorityServer.env,
     };
 
     try {
@@ -82,13 +82,15 @@ test.describe("Branches no-PR local artifact (FEA-2528)", () => {
         await expect(
           page.locator("header").getByText("Branches", { exact: true })
         ).toBeVisible({ timeout: 30_000 });
-        await expect(page.getByText("AI spend", { exact: true })).toBeVisible({
+        await expect(
+          page.getByText("Active branches", { exact: true })
+        ).toBeVisible({
           timeout: 30_000,
         });
 
         // The seeded activity is fixed in the past for deterministic fixtures.
         // Widen the list window so the assertion is independent of run date.
-        await page.locator('[aria-label="All time"]:visible').click();
+        await clickDesktopDateRange(page, DesktopDateRangeLabel.AllTime);
 
         const branchLink = page
           .locator('a[href^="#/branches/"]')
@@ -101,8 +103,17 @@ test.describe("Branches no-PR local artifact (FEA-2528)", () => {
         await expect(
           branchRow.getByText("frontend", { exact: true })
         ).toBeVisible();
+        // ISS-9664: a PR-less branch is Open, not Draft. This spec used to
+        // assert Draft because the desktop producer had its own status ladder
+        // that fell through to Draft when no PR was connected, while the cloud
+        // read derived Open from the SAME evidence — the divergence this change
+        // removes by putting both surfaces on `toBranchStatus`. The word here
+        // moved because the derivation did: Kerensa ruled 2026-08-31 (ISS-8422)
+        // that Open is a statement about the BRANCH, not a claim about a PR, and
+        // `statusForSelectedCloudPullRequest` has shipped that answer on web
+        // since. Draft here was desktop stating a draft nobody drafted.
         await expect(
-          branchRow.getByText("Draft", { exact: true })
+          branchRow.getByText("Open", { exact: true })
         ).toBeVisible();
 
         // A no-PR branch should render the PR cell as missing data, not as a PR
@@ -115,7 +126,6 @@ test.describe("Branches no-PR local artifact (FEA-2528)", () => {
         await cleanup();
       }
     } finally {
-      await authorityServer.close();
       fs.rmSync(userDataDir, { recursive: true, force: true });
       fs.rmSync(claudeHome, { recursive: true, force: true });
       fs.rmSync(codexHome, { recursive: true, force: true });

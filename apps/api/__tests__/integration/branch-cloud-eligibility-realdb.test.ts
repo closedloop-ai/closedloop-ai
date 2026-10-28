@@ -1,12 +1,3 @@
-/**
- * ISS-5827 real-Postgres proof for canonical cloud Branch eligibility.
- *
- * The list candidate SQL and by-id guard must consume the same organization-
- * scoped repository-default authority. This suite mutates that authority while
- * retaining every Branch row, proving that list pagination/counts and direct
- * detail reads change together without deleting historical evidence.
- */
-import { BranchStatus } from "@repo/api/src/types/branch";
 import {
   GitHubFetchCredentialType,
   GitHubFetchMechanism,
@@ -19,154 +10,168 @@ import {
   RepositoryDefaultSource,
 } from "@repo/api/src/types/repository-default-identity";
 import { VcsProviderKind } from "@repo/api/src/types/vcs-provider-kind";
-import { ArtifactType, GitHubInstallationStatus, withDb } from "@repo/database";
+import { withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { branchReadService } from "@/app/branches/branch-read-service";
 import { isCloudBranchEligible } from "@/app/branches/cloud-branch-eligibility";
 import {
-  autoRollbackTransaction,
-  createTestOrganization,
-  createTestProject,
-  createTestUser,
-  linkValidSessionToBranch,
-} from "../utils/db-helpers";
+  hiddenState,
+  initialObservedAt,
+  listBranchPage,
+  newestObservedAt,
+  providerRepositoryId,
+  readVisibility,
+  repositoryFullName,
+  type SeededOrganization,
+  seedBranches,
+  seedOrganization as seedOrganizationWith,
+  setAvailableAuthority,
+  visibleState,
+} from "../support/branches/cloud-eligibility-realdb.test-helpers";
+import { createCommittedTestOrganizationTracker } from "../utils/db-helpers";
 
 const hasDatabase = Boolean(keys().DATABASE_URL);
-const repositoryFullName = "iss-5827/cloud-eligibility";
-const providerRepositoryId = "5827";
-const initialObservedAt = new Date("2026-08-11T10:00:00.000Z");
 const changedObservedAt = new Date("2026-08-11T11:00:00.000Z");
 const isolatedObservedAt = new Date("2026-08-11T12:00:00.000Z");
-const newestObservedAt = new Date("2026-08-11T13:00:00.000Z");
+const committedOrganizations = createCommittedTestOrganizationTracker();
+
+function seedOrganization(label: string): Promise<SeededOrganization> {
+  return seedOrganizationWith(committedOrganizations, label);
+}
+
+afterEach(async () => {
+  await committedOrganizations.cleanup();
+});
 
 describe.skipIf(!hasDatabase)(
   "ISS-5827 cloud Branch eligibility (real Postgres)",
   () => {
     it("keeps list pagination and direct detail aligned as authority changes", async () => {
-      await autoRollbackTransaction(
-        async () => {
-          const primary = await seedOrganization("primary");
-          const isolated = await seedOrganization("isolated");
-          const branchIds = await seedBranches(primary, [
-            "main",
-            "feature/one",
-            "feature/two",
-          ]);
-          await seedHistoricalLegacyPullRequest(
-            primary,
+      await committedOrganizations.run(async () => {
+        const primary = await seedOrganization("primary");
+        const isolated = await seedOrganization("isolated");
+        const branchIds = await seedBranches(primary, [
+          "main",
+          "feature/one",
+          "feature/two",
+        ]);
+        await seedHistoricalLegacyPullRequest(
+          primary,
+          branchIds.get("feature/one") ?? ""
+        );
+
+        await setAvailableAuthority(
+          primary.repositoryId,
+          "main",
+          initialObservedAt
+        );
+        await setAvailableAuthority(
+          isolated.repositoryId,
+          "feature/two",
+          isolatedObservedAt
+        );
+
+        const firstPage = await listBranchPage(primary.organizationId, 1, 0);
+        const secondPage = await listBranchPage(primary.organizationId, 1, 1);
+        expect(firstPage).toMatchObject({ total: 2, hasMore: true });
+        expect(secondPage).toMatchObject({ total: 2, hasMore: false });
+        expect(
+          new Set([
+            firstPage.items[0]?.branchName,
+            secondPage.items[0]?.branchName,
+          ])
+        ).toEqual(new Set(["feature/one", "feature/two"]));
+        await expect(
+          branchReadService.getBranchDetail(
+            primary.organizationId,
             branchIds.get("feature/one") ?? ""
-          );
+          )
+        ).resolves.toMatchObject({ branchName: "feature/one" });
+        await expect(
+          branchReadService.getBranchDetail(
+            primary.organizationId,
+            branchIds.get("main") ?? ""
+          )
+        ).resolves.toBeNull();
 
-          await setAvailableAuthority(
-            primary.repositoryId,
-            "main",
-            initialObservedAt
-          );
-          await setAvailableAuthority(
-            isolated.repositoryId,
-            "feature/two",
-            isolatedObservedAt
-          );
+        await setAvailableAuthority(
+          primary.repositoryId,
+          "feature/one",
+          changedObservedAt
+        );
 
-          const firstPage = await list(primary.organizationId, 1, 0);
-          const secondPage = await list(primary.organizationId, 1, 1);
-          expect(firstPage).toMatchObject({ total: 2, hasMore: true });
-          expect(secondPage).toMatchObject({ total: 2, hasMore: false });
-          expect(
-            new Set([
-              firstPage.items[0]?.branchName,
-              secondPage.items[0]?.branchName,
-            ])
-          ).toEqual(new Set(["feature/one", "feature/two"]));
-          await expect(
-            branchReadService.getBranchDetail(
-              primary.organizationId,
-              branchIds.get("feature/one") ?? ""
-            )
-          ).resolves.toMatchObject({ branchName: "feature/one" });
-          await expect(
-            branchReadService.getBranchDetail(
-              primary.organizationId,
-              branchIds.get("main") ?? ""
-            )
-          ).resolves.toBeNull();
+        const afterDefaultChange = await listBranchPage(
+          primary.organizationId,
+          10,
+          0
+        );
+        expect(afterDefaultChange).toMatchObject({
+          total: 2,
+          hasMore: false,
+        });
+        expect(new Set(afterDefaultChange.items.map(rowName))).toEqual(
+          new Set(["main", "feature/two"])
+        );
+        await expect(
+          branchReadService.getBranchDetail(
+            primary.organizationId,
+            branchIds.get("feature/one") ?? ""
+          )
+        ).resolves.toBeNull();
+        await expect(
+          branchReadService.getBranchDetail(
+            primary.organizationId,
+            branchIds.get("main") ?? ""
+          )
+        ).resolves.toMatchObject({ branchName: "main" });
 
-          await setAvailableAuthority(
-            primary.repositoryId,
-            "feature/one",
-            changedObservedAt
-          );
+        const persistedBranches = await withDb((db) =>
+          db.branchDetail.count({
+            where: {
+              organizationId: primary.organizationId,
+              repositoryFullName,
+            },
+          })
+        );
+        expect(persistedBranches).toBe(3);
 
-          const afterDefaultChange = await list(primary.organizationId, 10, 0);
-          expect(afterDefaultChange).toMatchObject({
-            total: 2,
-            hasMore: false,
-          });
-          expect(new Set(afterDefaultChange.items.map(rowName))).toEqual(
-            new Set(["main", "feature/two"])
-          );
-          await expect(
-            branchReadService.getBranchDetail(
-              primary.organizationId,
-              branchIds.get("feature/one") ?? ""
-            )
-          ).resolves.toBeNull();
-          await expect(
-            branchReadService.getBranchDetail(
-              primary.organizationId,
-              branchIds.get("main") ?? ""
-            )
-          ).resolves.toMatchObject({ branchName: "main" });
+        await clearAuthority(primary.repositoryId);
+        await expect(
+          listBranchPage(primary.organizationId, 10, 0)
+        ).resolves.toMatchObject({ items: [], total: 0, hasMore: false });
+        await expect(
+          branchReadService.getBranchDetail(
+            primary.organizationId,
+            branchIds.get("main") ?? ""
+          )
+        ).resolves.toBeNull();
 
-          const persistedBranches = await withDb((db) =>
+        await setUnavailableAuthority(primary.repositoryId);
+        await expect(
+          listBranchPage(primary.organizationId, 10, 0)
+        ).resolves.toMatchObject({ items: [], total: 0, hasMore: false });
+        await expect(
+          branchReadService.getBranchDetail(
+            primary.organizationId,
+            branchIds.get("main") ?? ""
+          )
+        ).resolves.toBeNull();
+        expect(
+          await withDb((db) =>
             db.branchDetail.count({
               where: {
                 organizationId: primary.organizationId,
                 repositoryFullName,
               },
             })
-          );
-          expect(persistedBranches).toBe(3);
-
-          await clearAuthority(primary.repositoryId);
-          await expect(
-            list(primary.organizationId, 10, 0)
-          ).resolves.toMatchObject({ items: [], total: 0, hasMore: false });
-          await expect(
-            branchReadService.getBranchDetail(
-              primary.organizationId,
-              branchIds.get("main") ?? ""
-            )
-          ).resolves.toBeNull();
-
-          await setUnavailableAuthority(primary.repositoryId);
-          await expect(
-            list(primary.organizationId, 10, 0)
-          ).resolves.toMatchObject({ items: [], total: 0, hasMore: false });
-          await expect(
-            branchReadService.getBranchDetail(
-              primary.organizationId,
-              branchIds.get("main") ?? ""
-            )
-          ).resolves.toBeNull();
-          expect(
-            await withDb((db) =>
-              db.branchDetail.count({
-                where: {
-                  organizationId: primary.organizationId,
-                  repositoryFullName,
-                },
-              })
-            )
-          ).toBe(3);
-        },
-        { timeout: 20_000 }
-      );
+          )
+        ).toBe(3);
+      });
     }, 25_000);
 
     it("never falls back from newer conflicting pull-request authority", async () => {
-      await autoRollbackTransaction(async () => {
+      await committedOrganizations.run(async () => {
         const organization = await seedOrganization("newer-pr");
         const branchName = "feature/provider-conflict";
         const branchId =
@@ -220,7 +225,7 @@ describe.skipIf(!hasDatabase)(
     });
 
     it("does not let a delayed webhook outrank a newer REST snapshot", async () => {
-      await autoRollbackTransaction(async () => {
+      await committedOrganizations.run(async () => {
         const organization = await seedOrganization("mixed-freshness");
         const branchName = "main";
         const branchId =
@@ -250,7 +255,7 @@ describe.skipIf(!hasDatabase)(
     });
 
     it("keeps pure and SQL decisions aligned across legacy and fresh authority", async () => {
-      await autoRollbackTransaction(async () => {
+      await committedOrganizations.run(async () => {
         const organization = await seedOrganization("parity");
         const branchName = "feature/parity";
         const branchId =
@@ -300,7 +305,7 @@ describe.skipIf(!hasDatabase)(
     });
 
     it("rejects corrupt persisted provenance and tied partial authority", async () => {
-      await autoRollbackTransaction(async () => {
+      await committedOrganizations.run(async () => {
         const organization = await seedOrganization("corrupt");
         const branchName = "feature/corrupt-authority";
         const branchId =
@@ -365,85 +370,6 @@ describe.skipIf(!hasDatabase)(
   }
 );
 
-type SeededOrganization = {
-  organizationId: string;
-  userId: string;
-  projectId: string;
-  repositoryId: string;
-};
-
-async function seedOrganization(label: string): Promise<SeededOrganization> {
-  const organizationId = await createTestOrganization();
-  const user = await createTestUser(organizationId);
-  const projectId = await createTestProject(organizationId, user.id);
-  const installation = await withDb((db) =>
-    db.gitHubInstallation.create({
-      data: {
-        organizationId,
-        installationId: `iss-5827-${label}-${organizationId}`,
-        accountId: `iss-5827-${label}`,
-        accountLogin: label,
-        accountType: "Organization",
-        senderLogin: "sender",
-        senderId: `sender-${label}`,
-        status: GitHubInstallationStatus.ACTIVE,
-        repositories: {
-          create: {
-            githubRepoId: providerRepositoryId,
-            fullName: repositoryFullName,
-            name: "cloud-eligibility",
-            owner: "iss-5827",
-            private: false,
-          },
-        },
-      },
-      include: { repositories: { select: { id: true } } },
-    })
-  );
-  const repositoryId = installation.repositories[0]?.id;
-  if (!repositoryId) {
-    throw new Error("Expected installation repository fixture");
-  }
-  return { organizationId, userId: user.id, projectId, repositoryId };
-}
-
-async function seedBranches(
-  organization: SeededOrganization,
-  branchNames: string[]
-): Promise<Map<string, string>> {
-  const branchIds = new Map<string, string>();
-  for (const branchName of branchNames) {
-    const branch = await withDb((db) =>
-      db.artifact.create({
-        data: {
-          organizationId: organization.organizationId,
-          projectId: organization.projectId,
-          type: ArtifactType.BRANCH,
-          name: branchName,
-          status: BranchStatus.Open,
-          branch: {
-            create: {
-              organizationId: organization.organizationId,
-              repositoryId: organization.repositoryId,
-              repositoryFullName,
-              branchName,
-            },
-          },
-        },
-        select: { id: true },
-      })
-    );
-    await linkValidSessionToBranch({
-      organizationId: organization.organizationId,
-      userId: organization.userId,
-      branchArtifactId: branch.id,
-      label: branchName.replaceAll("/", "-"),
-    });
-    branchIds.set(branchName, branch.id);
-  }
-  return branchIds;
-}
-
 function seedHistoricalLegacyPullRequest(
   organization: SeededOrganization,
   branchArtifactId: string
@@ -465,37 +391,8 @@ function seedHistoricalLegacyPullRequest(
   );
 }
 
-function list(organizationId: string, limit: number, offset: number) {
-  return branchReadService.listBranches(organizationId, { limit, offset });
-}
-
 function rowName(row: { branchName: string }): string {
   return row.branchName;
-}
-
-function setAvailableAuthority(
-  repositoryId: string,
-  defaultBranchName: string,
-  observedAt: Date
-) {
-  return withDb((db) =>
-    db.gitHubInstallationRepository.update({
-      where: { id: repositoryId },
-      data: {
-        defaultBranchName,
-        defaultBranchAvailability: RepositoryDefaultAvailability.Available,
-        defaultBranchCompleteness: RepositoryDefaultCompleteness.Complete,
-        defaultBranchReason: null,
-        defaultBranchSource:
-          RepositoryDefaultSource.InstallationRepositoriesRest,
-        defaultBranchMechanism: GitHubFetchMechanism.Rest,
-        defaultBranchTrigger: GitHubFetchTrigger.UserAction,
-        defaultBranchCredentialType: GitHubFetchCredentialType.GitHubApp,
-        defaultBranchObservationKey: `iss-5827-${observedAt.toISOString()}`,
-        defaultBranchObservedAt: observedAt,
-      },
-    })
-  );
 }
 
 function clearAuthority(repositoryId: string) {
@@ -635,6 +532,7 @@ function seedPullRequestAuthority(
     await db.branchDetail.update({
       where: { artifactId: branchArtifactId },
       data: { currentPullRequestDetailId: pullRequest.id },
+      select: { artifactId: true },
     });
     return pullRequest.id;
   });
@@ -683,25 +581,6 @@ function clearPullRequestAuthority(pullRequestId: string) {
     })
   );
 }
-
-async function readVisibility(organizationId: string, branchId: string) {
-  const page = await list(organizationId, 10, 0);
-  const detail = await branchReadService.getBranchDetail(
-    organizationId,
-    branchId
-  );
-  return {
-    ids: page.items.map(({ id }) => id),
-    total: page.total,
-    detailId: detail?.id ?? null,
-  };
-}
-
-function visibleState(branchId: string) {
-  return { ids: [branchId], total: 1, detailId: branchId };
-}
-
-const hiddenState = { ids: [], total: 0, detailId: null };
 
 function pureEligibilityWithLegacy(
   branchName: string,

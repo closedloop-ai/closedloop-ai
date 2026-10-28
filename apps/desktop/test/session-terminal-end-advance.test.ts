@@ -24,7 +24,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import { openTestDb } from "./agent-db-test-utils.js";
 import { makePopulatedSession } from "./normalized-session-test-utils.js";
 
@@ -39,6 +39,16 @@ const RESUMED_END = "2026-06-07T15:00:00.000Z";
 const EARLIER_END = "2026-06-07T10:30:00.000Z";
 const FIRST_IMPORT_CLOCK = "2026-06-07T11:05:00.000Z";
 const SECOND_IMPORT_CLOCK = "2026-06-09T09:00:00.000Z";
+/**
+ * ISS-8758: the terminal-end reconciliation stamps `updated_at = now` inside the
+ * GATE transaction, publishing the row before the later event/link/invocation
+ * groups of the same pass have committed. A sync read can interleave between two
+ * group commits, so a later group's watermark write must move STRICTLY past that
+ * publication rather than writing `now` back — otherwise its own change sits
+ * behind a cursor that already observed the row at `now`. The resumed transcript
+ * below changes its event population, so exactly one such step lands.
+ */
+const SECOND_IMPORT_WATERMARK = "2026-06-09T09:00:00.001Z";
 
 type StoredEnds = {
   sessionEndedAt: string | null;
@@ -127,7 +137,7 @@ describe("ISS-5182: a terminal ended_at advances only from its own source", () =
       );
       assert.equal(
         stored.sessionUpdatedAt,
-        SECOND_IMPORT_CLOCK,
+        SECOND_IMPORT_WATERMARK,
         "the sync watermark must advance so the corrected duration reaches the cloud"
       );
     });

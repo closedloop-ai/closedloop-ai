@@ -17,9 +17,9 @@ import type { Meta, StoryObj } from "@storybook/react";
  * `Table Pagination`.
  */
 const meta = {
-  title: "Design System/Data Display/Pagination",
+  title: "Primitives v1.0/Data Display/Tables/Pagination",
   component: Pagination,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "centered" },
 } satisfies Meta<typeof Pagination>;
 

@@ -1,13 +1,13 @@
 import { context, TraceFlags, trace } from "@opentelemetry/api";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { deleteEnvForTest } from "../../__tests__/test-helpers";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getTraceContext,
   resetTraceContextProvider,
 } from "../../trace-context";
 import { TracingDisabledReason } from "../config";
-import { flushSpans, isTracingActive } from "../hooks";
+import { flushSpans, isTracingActive, resetSpanFlushHook } from "../hooks";
 import { initTracing, resetTracingForTest } from "../provider";
+import { clearTracingEnv, stubEnabledTracingEnv } from "./tracing-env";
 
 // ---------------------------------------------------------------------------
 // tracing/provider.ts — fail-open behaviour (ISS-4659).
@@ -20,6 +20,14 @@ import { initTracing, resetTracingForTest } from "../provider";
 const SAMPLED_OUT_TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736";
 const SAMPLED_OUT_SPAN_ID = "00f067aa0ba902b7";
 
+// Both slots are process-wide (ISS-5857, ISS-6817), so a case asserting on the
+// unregistered state must establish it rather than rely on runner file
+// isolation or on a sibling file having reached its teardown.
+beforeEach(() => {
+  resetSpanFlushHook();
+  resetTraceContextProvider();
+});
+
 afterEach(async () => {
   // Awaited: the provider drains asynchronously, and a later test's register()
   // must not race a teardown still in flight.
@@ -27,17 +35,6 @@ afterEach(async () => {
   resetTraceContextProvider();
   vi.unstubAllEnvs();
 });
-
-function clearTracingEnv(): void {
-  deleteEnvForTest(
-    "DD_TRACING_DISABLED",
-    "DD_TRACING_ENABLED",
-    "DD_API_KEY",
-    "DD_OTLP_TRACES_ENDPOINT",
-    "DD_TRACE_SAMPLE_RATE",
-    "VERCEL"
-  );
-}
 
 describe("initTracing", () => {
   it("stays inert on an undeployed runtime and reports why", () => {
@@ -72,13 +69,7 @@ describe("initTracing", () => {
   });
 
   it("registers a live trace-context provider once enabled", () => {
-    clearTracingEnv();
-    vi.stubEnv("DD_TRACING_ENABLED", "1");
-    vi.stubEnv("DD_API_KEY", "dd-test-key");
-    vi.stubEnv(
-      "DD_OTLP_TRACES_ENDPOINT",
-      "https://otlp.example.test/v1/traces"
-    );
+    stubEnabledTracingEnv();
 
     const result = initTracing();
 
@@ -92,13 +83,7 @@ describe("initTracing", () => {
   });
 
   it("does not stamp trace ids for a sampled-out span", () => {
-    clearTracingEnv();
-    vi.stubEnv("DD_TRACING_ENABLED", "1");
-    vi.stubEnv("DD_API_KEY", "dd-test-key");
-    vi.stubEnv(
-      "DD_OTLP_TRACES_ENDPOINT",
-      "https://otlp.example.test/v1/traces"
-    );
+    stubEnabledTracingEnv();
     initTracing();
 
     // `wrapSpanContext` yields a NonRecordingSpan — exactly what the sampler

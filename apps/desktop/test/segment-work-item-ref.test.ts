@@ -6,12 +6,12 @@
  * fallback gate (both states), commit exclusion, and order-independence.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { ACTIVITY_PHASE } from "@repo/api/src/types/activity-phase";
 import {
   ArtifactRefRelation,
   ArtifactRefTargetKind,
 } from "@repo/api/src/types/session-artifact-link";
-import { ACTIVITY_PHASE } from "../src/main/collectors/parsing/activity-taxonomy.js";
+import { test } from "vitest";
 import {
   resolveSegmentWorkItemRefs,
   type SegmentSpan,

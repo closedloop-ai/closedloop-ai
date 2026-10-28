@@ -38,6 +38,8 @@ export type TiptapToolbarProps = {
   readOnly?: boolean;
   hasLiveblocksExtension?: boolean;
   onPasteMarkdown?: () => void;
+  /** Prototype/local commenting hook for editors without Liveblocks. */
+  onAddComment?: () => void;
   onUploadInlineImage?: (file: File) => void;
   className?: string;
 };
@@ -47,11 +49,13 @@ export function TiptapToolbar({
   readOnly = false,
   hasLiveblocksExtension = false,
   onPasteMarkdown,
+  onAddComment,
   onUploadInlineImage,
   className,
 }: Readonly<TiptapToolbarProps>) {
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
+  const [hasTextSelection, setHasTextSelection] = useState(false);
   const [editorUploadHandler, setEditorUploadHandler] = useState<
     ((file: File) => Promise<void>) | undefined
   >();
@@ -61,11 +65,14 @@ export function TiptapToolbar({
     if (!editor) {
       setCanUndo(false);
       setCanRedo(false);
+      setHasTextSelection(false);
       setEditorUploadHandler(undefined);
       return;
     }
     setCanUndo(editor.can().undo());
     setCanRedo(editor.can().redo());
+    const selection = editor.state?.selection;
+    setHasTextSelection(selection ? selection.from !== selection.to : false);
     setEditorUploadHandler(() =>
       readOnly ? undefined : (editor as TiptapEditor).insertInlineImageFile
     );
@@ -247,12 +254,16 @@ export function TiptapToolbar({
             />
           </>
         )}
-        {hasLiveblocksExtension && (
+        {(hasLiveblocksExtension || onAddComment) && (
           <ToolbarButton
-            disabled={readOnly}
+            disabled={readOnly || !hasTextSelection}
             icon={MessageSquarePlus}
             label="Add Comment"
             onClick={() => {
+              if (onAddComment) {
+                onAddComment();
+                return;
+              }
               // addPendingComment is added by the Liveblocks extension at
               // runtime; guard the call so a missing/unregistered extension
               // is a no-op rather than a TypeError.

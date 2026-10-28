@@ -1,17 +1,22 @@
+import { TOTAL_ESTIMATED_COST_LABEL } from "@repo/api/src/types/total-estimated-cost-copy";
+import type { SessionTableRow } from "@repo/app/agents/lib/session-list-row";
 import { stubContainerWidthPx } from "@repo/app/test/mocks/container-width";
 import { tooltipMockModule } from "@repo/app/test/mocks/tooltip";
 import { render, renderHook, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppCoreStoryProviders } from "../../../../shared/storybook/decorators";
 import { useSessionsViewState } from "../../../hooks/use-sessions-view-state";
-import { DEFAULT_SESSION_FACET_FILTERS } from "../../../lib/session-filter-adapter";
 import { SessionGroupBy } from "../../../lib/session-grouping";
 import { sessionsRangeReadout } from "../../../lib/sessions-range-readout";
-import { SESSIONS_DEFAULT_HIDDEN_COLUMN_IDS } from "../../../lib/sessions-table-columns";
+import {
+  SESSIONS_DEFAULT_HIDDEN_COLUMN_IDS,
+  SESSIONS_MERGE_COLUMN_ID,
+  SESSIONS_PR_COLUMN_ID,
+  SESSIONS_STATUS_COLUMN_ID,
+} from "../../../lib/sessions-table-columns";
+import { SessionsTable } from "../session-detail-table";
 import { createSessionTableRowFixture } from "../session-list-fixtures";
-import { SessionsTable, type SessionTableRow } from "../sessions-table";
-import { SessionsToolbar } from "../sessions-toolbar";
+import { sessionsColumnLabel } from "./sessions-column-label.test-helpers";
 
 vi.mock("@repo/design-system/components/ui/tooltip", () => tooltipMockModule);
 
@@ -31,13 +36,6 @@ vi.mock("@repo/design-system/components/ui/tooltip", () => tooltipMockModule);
 
 /** A container wider than the table, so no column folds out of the assertions. */
 const NATURAL_LAYOUT_CONTAINER_PX = 4000;
-
-/**
- * ISS-5975: matches ANY spelling of a reintroduced Refresh control, not the
- * exact accessible name the removed one happened to use, so the guard cannot be
- * defeated by relabelling.
- */
-const REFRESH_BUTTON_NAME_REGEX = /refresh/i;
 
 const ROW: SessionTableRow = createSessionTableRowFixture({
   autonomy: 88,
@@ -115,8 +113,8 @@ describe("Sessions columns — renames and the default-hidden set (ISS-5315)", (
     );
 
     const labels = headerLabels();
-    expect(labels).not.toContain("PR");
-    expect(labels).not.toContain("Merge");
+    expect(labels).not.toContain(sessionsColumnLabel(SESSIONS_PR_COLUMN_ID));
+    expect(labels).not.toContain(sessionsColumnLabel(SESSIONS_MERGE_COLUMN_ID));
     // The columns that DO ship visible are still there, in prototype order.
     expect(labels).toEqual([
       "Session",
@@ -128,7 +126,7 @@ describe("Sessions columns — renames and the default-hidden set (ISS-5315)", (
       "Harness",
       "Model",
       "Duration",
-      "Cost",
+      TOTAL_ESTIMATED_COST_LABEL,
       "Last active",
     ]);
   });
@@ -146,12 +144,16 @@ describe("Sessions columns — renames and the default-hidden set (ISS-5315)", (
     // ISS-6005: `updated` joins them — record-mutation recency, off by default
     // at operator direction until non-activity mutations (comments, tags,
     // status edits) make it earn its track.
+    // ISS-8712: `tags` joins them — the approved prototype ships the org-tag
+    // column default-OFF, and like the pair above its feature gate alone would
+    // not hold that once the gate opened.
     expect([...SESSIONS_DEFAULT_HIDDEN_COLUMN_IDS].sort()).toEqual([
       "issues",
       "merge",
       "pr",
       "projects",
       "started",
+      "tags",
       "updated",
     ]);
   });
@@ -205,8 +207,12 @@ describe("Sessions columns — renames and the default-hidden set (ISS-5315)", (
         visibleColumns={new Set(["status", "pr", "merge"])}
       />
     );
-    expect(headerLabels()).toContain("PR");
-    expect(headerLabels()).toContain("Merge");
+    expect(headerLabels()).toContain(
+      sessionsColumnLabel(SESSIONS_PR_COLUMN_ID)
+    );
+    expect(headerLabels()).toContain(
+      sessionsColumnLabel(SESSIONS_MERGE_COLUMN_ID)
+    );
   });
 });
 
@@ -231,12 +237,12 @@ describe("Session column value — the AI title (ISS-5315)", () => {
   it("falls back to the producer-derived name when no AI title was emitted", () => {
     render(
       <SessionsTable
-        items={[{ ...ROW, name: "example-repo" }]}
+        items={[{ ...ROW, name: "closedloop-ai" }]}
         mode="expanded"
         renderName={renderName}
       />
     );
-    expect(screen.getByRole("link", { name: "example-repo" })).toBeVisible();
+    expect(screen.getByRole("link", { name: "closedloop-ai" })).toBeVisible();
   });
 });
 
@@ -254,109 +260,7 @@ describe("Row overflow menu — removed (ISS-5315)", () => {
   });
 });
 
-describe("Sessions toolbar — Group by (ISS-5315), Refresh retired (ISS-5975)", () => {
-  function renderToolbar(
-    overrides: Partial<React.ComponentProps<typeof SessionsToolbar>> = {}
-  ) {
-    return render(
-      <AppCoreStoryProviders>
-        <SessionsToolbar
-          dateRange="7d"
-          filters={DEFAULT_SESSION_FACET_FILTERS}
-          onDateRangeChange={vi.fn()}
-          onFiltersChange={vi.fn()}
-          onToggleColumn={vi.fn()}
-          visibleColumns={new Set(["status"])}
-          {...overrides}
-        />
-      </AppCoreStoryProviders>
-    );
-  }
-
-  // ISS-5975 retired the Refresh control from this toolbar on BOTH surfaces.
-  // ISS-5315 added it and ISS-5478 placed it, but it only ever existed because
-  // the web shell had no automatic freshness (ISS-5976's root cause); with that
-  // restored, and desktop already driving its own, a manual re-read has nothing
-  // left to do.
-  //
-  // The assertion is deliberately name-agnostic (`/refresh/i` over the whole
-  // toolbar) rather than pinned to the old "Refresh sessions" accessible name:
-  // a reintroduction under any spelling — a bare "Refresh", an icon-only button
-  // labelled "Reload sessions" — should fail this, not slip past a stale exact
-  // string.
-  it("renders no Refresh control, with or without host callbacks", () => {
-    renderToolbar();
-
-    // The toolbar itself still renders — this is an absence check against a
-    // mounted component, not a component that failed to mount.
-    expect(screen.getByRole("button", { name: "View" })).toBeVisible();
-    expect(
-      screen.queryByRole("button", { name: REFRESH_BUTTON_NAME_REGEX })
-    ).toBeNull();
-  });
-
-  it("offers a Group by section in the View menu and reports the chosen dimension", async () => {
-    const user = userEvent.setup();
-    const onGroupByChange = vi.fn();
-    renderToolbar({ groupBy: SessionGroupBy.None, onGroupByChange });
-
-    await user.click(screen.getByRole("button", { name: "View" }));
-    expect(screen.getByText("Group by")).toBeVisible();
-    for (const label of ["None", "Status", "Harness", "Owner"]) {
-      expect(screen.getByRole("radio", { name: label })).toBeVisible();
-    }
-
-    await user.click(screen.getByRole("radio", { name: "Harness" }));
-    expect(onGroupByChange).toHaveBeenCalledWith(SessionGroupBy.Harness);
-  });
-
-  it("shows no Group by section when the host cannot band its rows", async () => {
-    const user = userEvent.setup();
-    renderToolbar();
-    await user.click(screen.getByRole("button", { name: "View" }));
-    expect(screen.queryByText("Group by")).toBeNull();
-  });
-
-  // #4480: while Status is banded the table has no Status column, so a Status
-  // show/hide checkbox reading "shown" was describing a column that is not
-  // there, and unchecking it changed nothing on screen.
-  it("drops the banded column from the show/hide list, and lists it again at None", async () => {
-    const user = userEvent.setup();
-    const { rerender } = renderToolbar({
-      groupBy: SessionGroupBy.Status,
-      onGroupByChange: vi.fn(),
-    });
-
-    await user.click(screen.getByRole("button", { name: "View" }));
-    expect(screen.queryByRole("switch", { name: "Status" })).toBeNull();
-    // Not vacuous: a sibling column is still listed.
-    expect(screen.getByRole("switch", { name: "Harness" })).toBeVisible();
-
-    rerender(
-      <AppCoreStoryProviders>
-        <SessionsToolbar
-          dateRange="7d"
-          filters={DEFAULT_SESSION_FACET_FILTERS}
-          groupBy={SessionGroupBy.None}
-          onDateRangeChange={vi.fn()}
-          onFiltersChange={vi.fn()}
-          onGroupByChange={vi.fn()}
-          onToggleColumn={vi.fn()}
-          visibleColumns={new Set(["status"])}
-        />
-      </AppCoreStoryProviders>
-    );
-    expect(screen.getByRole("switch", { name: "Status" })).toBeVisible();
-  });
-});
-
-/**
- * #4480 — the grouped column is removed by the SHARED table, from its own
- * `groupBy` prop, so both shells behave identically. The deletion previously
- * lived only in `apps/app`'s Sessions page, so the desktop renderer banded the
- * rows and then repeated the banded value in every row beneath the band.
- */
-describe("Group by — the banded column is stated once (#4480)", () => {
+describe("Group by — banded column handling (#4480)", () => {
   it("removes the banded column from the grid and keeps every other one", () => {
     render(
       <SessionsTable
@@ -367,8 +271,23 @@ describe("Group by — the banded column is stated once (#4480)", () => {
       />
     );
 
-    expect(headerLabels()).not.toContain("Status");
+    expect(headerLabels()).not.toContain(
+      sessionsColumnLabel(SESSIONS_STATUS_COLUMN_ID)
+    );
     expect(headerLabels()).toContain("Harness");
+  });
+
+  it("preserves the legacy compact-card status badge when the champion is off", () => {
+    render(
+      <SessionsTable
+        groupBy={SessionGroupBy.Status}
+        items={[ROW]}
+        mode="compact"
+        renderName={renderName}
+      />
+    );
+
+    expect(screen.getAllByText("Active")).toHaveLength(2);
   });
 
   it("keeps the column when nothing is banded, so the removal is not unconditional", () => {
@@ -381,7 +300,9 @@ describe("Group by — the banded column is stated once (#4480)", () => {
       />
     );
 
-    expect(headerLabels()).toContain("Status");
+    expect(headerLabels()).toContain(
+      sessionsColumnLabel(SESSIONS_STATUS_COLUMN_ID)
+    );
   });
 
   // The band header names the value; a bare number beside it would read as the

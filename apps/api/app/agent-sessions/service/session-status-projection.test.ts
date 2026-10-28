@@ -1,25 +1,24 @@
 import {
   DISPLAYED_SESSION_STATUS,
+  type DisplayedSessionStatus,
   SESSION_STATUS,
+  type SessionStatus,
 } from "@repo/api/src/types/session-status";
 import { describe, expect, it } from "vitest";
-import {
-  displayedStatusRank,
-  projectDisplayedSessionStatus,
-} from "./session-status-projection";
+import { projectDisplayedSessionStatus } from "./session-status-projection";
 
 const AWAITING = new Date("2026-05-20T17:05:00.000Z");
 const ENDED = new Date("2026-05-20T17:10:00.000Z");
 
 describe("projectDisplayedSessionStatus (FEA-4301)", () => {
-  it("projects an awaiting-input, non-ended, non-terminal row to Waiting even though it stores active", () => {
+  it("ISS-10364: no longer projects Waiting for an awaiting-input, non-ended, non-terminal row — it reads the raw active status", () => {
     expect(
       projectDisplayedSessionStatus({
         status: SESSION_STATUS.ACTIVE,
         awaitingInputSince: AWAITING,
         sessionEndedAt: null,
       })
-    ).toBe(DISPLAYED_SESSION_STATUS.WAITING);
+    ).toBe(SESSION_STATUS.ACTIVE);
   });
 
   it("keeps the raw active status when the row is not awaiting input", () => {
@@ -33,6 +32,9 @@ describe("projectDisplayedSessionStatus (FEA-4301)", () => {
   });
 
   it("does NOT project Waiting once the session has ended (mirrors the facet sessionEndedAt guard)", () => {
+    // ISS-4559's fall-through: a row that cannot project Waiting falls through
+    // to the raw `active` status, same as any other non-Waiting row. ISS-12430
+    // retired the reconciliation that used to answer this one differently.
     expect(
       projectDisplayedSessionStatus({
         status: SESSION_STATUS.ACTIVE,
@@ -61,10 +63,7 @@ describe("projectDisplayedSessionStatus staleness + unknown folds (ISS-5366)", (
   const LONG_AGO = new Date("2026-05-15T17:00:00.000Z");
   const RECENT = new Date("2026-05-20T16:00:00.000Z");
 
-  it("folds a long-silent active row to Stale, so the served status matches the badge", () => {
-    // The defect this closes: the client mapper badged this row "Stale" while
-    // the server served the raw `active`, so the Active facet returned a page
-    // whose badges said Stale.
+  it("ISS-10364: no longer folds a long-silent active row to Stale — it stays Active", () => {
     expect(
       projectDisplayedSessionStatus(
         {
@@ -76,7 +75,7 @@ describe("projectDisplayedSessionStatus staleness + unknown folds (ISS-5366)", (
         },
         NOW
       )
-    ).toBe(DISPLAYED_SESSION_STATUS.STALE);
+    ).toBe(SESSION_STATUS.ACTIVE);
   });
 
   it("keeps a recently-active row Active", () => {
@@ -94,9 +93,7 @@ describe("projectDisplayedSessionStatus staleness + unknown folds (ISS-5366)", (
     ).toBe(SESSION_STATUS.ACTIVE);
   });
 
-  it("falls back to sessionStartedAt as the staleness anchor when lastActivityAt is null", () => {
-    // whitlockk (#4324): reading only lastActivityAt would exempt precisely the
-    // least-evidenced rows from the fold.
+  it("ISS-10364: a null lastActivityAt with a long-ago sessionStartedAt still displays Active — the staleness fold that fed on this fallback is gone", () => {
     expect(
       projectDisplayedSessionStatus(
         {
@@ -108,7 +105,7 @@ describe("projectDisplayedSessionStatus staleness + unknown folds (ISS-5366)", (
         },
         NOW
       )
-    ).toBe(DISPLAYED_SESSION_STATUS.STALE);
+    ).toBe(SESSION_STATUS.ACTIVE);
   });
 
   it("does NOT fold to Stale when no timestamp is available at all", () => {
@@ -127,9 +124,7 @@ describe("projectDisplayedSessionStatus staleness + unknown folds (ISS-5366)", (
     ).toBe(SESSION_STATUS.ACTIVE);
   });
 
-  it("exempts an awaiting-input row from the staleness fold — Waiting is a stored fact, not an inference", () => {
-    // A run blocked on a human for three days genuinely IS still awaiting input,
-    // and the WAITING facet keys on awaitingInputSince with no cutoff.
+  it("ISS-10364: a long-silent awaiting-input row now displays Active — both the Waiting projection and the staleness fold are gone", () => {
     expect(
       projectDisplayedSessionStatus(
         {
@@ -141,7 +136,7 @@ describe("projectDisplayedSessionStatus staleness + unknown folds (ISS-5366)", (
         },
         NOW
       )
-    ).toBe(DISPLAYED_SESSION_STATUS.WAITING);
+    ).toBe(SESSION_STATUS.ACTIVE);
   });
 
   it("exempts terminal statuses from the staleness fold — age does not expire a reached conclusion", () => {
@@ -161,7 +156,7 @@ describe("projectDisplayedSessionStatus staleness + unknown folds (ISS-5366)", (
     }
   });
 
-  it("folds an unrecognized status to Unknown rather than fail-open Active", () => {
+  it("ISS-10364: an unrecognized status now fails OPEN to Active, matching the version-skew compatibility path", () => {
     expect(
       projectDisplayedSessionStatus(
         {
@@ -173,7 +168,7 @@ describe("projectDisplayedSessionStatus staleness + unknown folds (ISS-5366)", (
         },
         NOW
       )
-    ).toBe(DISPLAYED_SESSION_STATUS.UNKNOWN);
+    ).toBe(SESSION_STATUS.ACTIVE);
   });
 
   it("is unchanged for callers that pass no staleness anchor (back-compat)", () => {
@@ -189,30 +184,76 @@ describe("projectDisplayedSessionStatus staleness + unknown folds (ISS-5366)", (
   });
 });
 
-describe("displayedStatusRank (FEA-4301 / ISS-4586)", () => {
-  it("ranks statuses in the lifecycle order Active < Waiting < Inactive < Error", () => {
-    const order = [
-      SESSION_STATUS.ACTIVE,
-      DISPLAYED_SESSION_STATUS.WAITING,
-      SESSION_STATUS.INACTIVE,
-      SESSION_STATUS.ERROR,
-    ];
-    const ranks = order.map(displayedStatusRank);
-    // Strictly increasing.
-    for (let i = 1; i < ranks.length; i++) {
-      expect(ranks[i]).toBeGreaterThan(ranks[i - 1]);
-    }
+/**
+ * ISS-7019: ported from `projections.session-state.test.ts`, which covered the
+ * same contract against the deleted `toAgentSessionState`. The subject moved —
+ * the detail Status row now derives from this projection — so the coverage
+ * follows it rather than being dropped with the function.
+ */
+describe("projectDisplayedSessionStatus — exhaustive lifecycle mapping", () => {
+  // ISS-8485: a pinned instant, not `new Date()`. The projection folds a
+  // long-silent row to Stale, so a fixture whose anchor is "now" was asserting
+  // against a clock the assertion could not name — and the freshness rule in the
+  // root AGENTS.md requires the cutoff be pinned.
+  const NOW = new Date("2026-05-20T17:00:00.000Z");
+
+  it("maps EVERY lifecycle status to the exact status it displays", () => {
+    // ISS-8485: this asserted `toBeDefined()` and `not.toBe("")` — which every
+    // legal value satisfies, and so does every ILLEGAL one that is a non-empty
+    // string. Measured: stubbing `projectDisplayedSessionStatus` to return
+    // `unknown` for every input left this case green, so the whole mapping it
+    // claims to cover was unpinned.
+    //
+    // A total `Record<SessionStatus, …>` rather than a loop over the const: it
+    // keeps the "a member added to SESSION_STATUS is covered the moment it
+    // exists" property (a widened union fails `tsc` here), and unlike the loop
+    // it also has to say what each member MEANS.
+    const expected: Record<SessionStatus, DisplayedSessionStatus> = {
+      [SESSION_STATUS.ACTIVE]: DISPLAYED_SESSION_STATUS.ACTIVE,
+      [SESSION_STATUS.INACTIVE]: DISPLAYED_SESSION_STATUS.INACTIVE,
+      [SESSION_STATUS.ERROR]: DISPLAYED_SESSION_STATUS.ERROR,
+    };
+
+    const projected = Object.fromEntries(
+      Object.values(SESSION_STATUS).map((status) => [
+        status,
+        projectDisplayedSessionStatus(
+          {
+            status,
+            awaitingInputSince: null,
+            sessionEndedAt: null,
+            lastActivityAt: NOW,
+            sessionStartedAt: NOW,
+          },
+          NOW
+        ),
+      ])
+    );
+    expect(projected).toEqual(expected);
   });
 
-  it("ranks an unknown status AFTER every known status so it degrades to the end", () => {
-    const maxKnown = Math.max(
-      ...[
-        SESSION_STATUS.ACTIVE,
-        DISPLAYED_SESSION_STATUS.WAITING,
-        SESSION_STATUS.INACTIVE,
-        SESSION_STATUS.ERROR,
-      ].map(displayedStatusRank)
+  it("lands every lifecycle status on a value the displayed vocabulary declares", () => {
+    // The weaker claim the deleted assertions were reaching for, stated so it
+    // can actually fail: a projection that invented a spelling no badge, facet,
+    // or rank models would pass `toBeDefined()` and reds here.
+    const displayedVocabulary = new Set<string>(
+      Object.values(DISPLAYED_SESSION_STATUS)
     );
-    expect(displayedStatusRank("some-future-status")).toBeGreaterThan(maxKnown);
+    for (const status of Object.values(SESSION_STATUS)) {
+      expect(
+        displayedVocabulary.has(
+          projectDisplayedSessionStatus(
+            {
+              status,
+              awaitingInputSince: null,
+              sessionEndedAt: null,
+              lastActivityAt: NOW,
+              sessionStartedAt: NOW,
+            },
+            NOW
+          )
+        )
+      ).toBe(true);
+    }
   });
 });

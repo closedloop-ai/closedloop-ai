@@ -14,21 +14,18 @@ vi.mock("@/lib/auth/with-any-auth", () => ({
       handler({ user: mocks.user, clerkUserId: null }, request),
 }));
 
+// ISS-7097: the reason vocabulary moved to its own leaf module, so this mock no
+// longer has to hand-copy it to satisfy the helper's import — the real const is
+// imported below and used in the assertions instead of re-declared literals.
 vi.mock("../service", () => ({
   transcriptSyncService: { complete: mocks.complete },
-  TranscriptSyncErrorReason: {
-    Forbidden: "forbidden",
-    RateLimited: "rate_limited",
-    InvalidRequest: "invalid_request",
-    StaleUpload: "stale_upload",
-    Internal: "internal",
-  },
 }));
 
 vi.mock("@/app/search/transcript-search-indexer", () => ({
   transcriptSearchIndexService: { indexAfterCommit: mocks.indexAfterCommit },
 }));
 
+import { TranscriptSyncErrorReason } from "../transcript-sync-error-reason";
 import { POST } from "./route";
 
 const VALID_BODY = {
@@ -103,5 +100,43 @@ describe("POST /desktop/transcripts/complete", () => {
     );
     expect(response.status).toBe(400);
     expect(mocks.complete).not.toHaveBeenCalled();
+  });
+
+  // ISS-7097. The desktop discards the response body on a non-2xx, so the STATUS
+  // CODE is the only discriminator it has, and it decides on that code whether
+  // to spend one of five per-row retry attempts. That makes this mapping a wire
+  // contract rather than presentation: a lane-wide failure answered with a 4xx
+  // would march healthy transcripts to a `retries_exhausted` skip during any
+  // cloud outage. Neither status had a route-level test before.
+  it("answers a genuinely stale upload with 409 so the desktop re-plans", async () => {
+    mocks.complete.mockResolvedValue({
+      ok: false,
+      error: TranscriptSyncErrorReason.StaleUpload,
+    });
+    const response = await POST(request(VALID_BODY), ctx);
+    expect(response.status).toBe(409);
+  });
+
+  it("answers an upstream failure with 503, not the 409 it used to share", async () => {
+    mocks.complete.mockResolvedValue({
+      ok: false,
+      error: TranscriptSyncErrorReason.UpstreamUnavailable,
+    });
+    const response = await POST(request(VALID_BODY), ctx);
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Retry-After")).toBe("60");
+  });
+
+  // ISS-8689 / PRD-699 Appendix A: an unset TRANSCRIPTS_BUCKET shares the 503
+  // status with a transient outage but answers with a far longer Retry-After,
+  // since only an admin fixing configuration resolves it.
+  it("answers a storage-not-configured failure with 503 and a long Retry-After", async () => {
+    mocks.complete.mockResolvedValue({
+      ok: false,
+      error: TranscriptSyncErrorReason.UpstreamNotConfigured,
+    });
+    const response = await POST(request(VALID_BODY), ctx);
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Retry-After")).toBe("3600");
   });
 });

@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   organizationsService: {
     findById: vi.fn(),
     findBySlug: vi.fn(),
+    findDetailById: vi.fn(),
     update: vi.fn(),
   },
 }));
@@ -35,7 +36,16 @@ vi.mock("@/lib/auth/clerk-service", () => ({
   },
 }));
 
+// ISS-7200 moved the gate onto `getOrgAdminStatus`. Production's `isOrgAdmin`
+// IS `getOrgAdminStatus(...).isAdmin`, so this stub mirrors that instead of
+// adding a second lever: every `mocks.isOrgAdmin` use below still works.
 vi.mock("@/lib/auth/org-admin", () => ({
+  getOrgAdminStatus: async (clerkOrgId: string, clerkUserId: string) => {
+    const isAdmin = await mocks.isOrgAdmin(clerkOrgId, clerkUserId);
+    return isAdmin
+      ? { isAdmin: true, reason: "admin" }
+      : { isAdmin: false, reason: "not_admin" };
+  },
   isOrgAdmin: mocks.isOrgAdmin,
 }));
 
@@ -47,8 +57,9 @@ vi.mock("@repo/observability/error", () => ({
 vi.mock("@repo/observability/log", () => ({
   log: {
     error: mocks.logError,
-    flush: vi.fn().mockResolvedValue(undefined),
+    flush: vi.fn(async () => undefined),
     info: vi.fn(),
+    warn: vi.fn(),
   },
 }));
 
@@ -63,14 +74,22 @@ vi.mock("../service", () => ({
 import { PUT } from "./route";
 
 const ORG_ID = "org-1";
+const CLERK_ORG_ID = "clerk-org-1";
+/**
+ * A Clerk org that is NOT the authenticated caller's. Fixtures that use it as
+ * the organization ROW's `clerkId` split the two values an admin gate could
+ * read apart, so a test can tell which one the decision actually used. A
+ * fixture where both are `CLERK_ORG_ID` cannot: it passes whichever source the
+ * gate reads.
+ */
+const FOREIGN_CLERK_ORG_ID = "clerk-org-2";
 const BASE_ORGANIZATION = {
   active: true,
-  clerkId: "clerk-org-1",
+  clerkId: CLERK_ORG_ID,
   createdAt: new Date("2026-01-01T00:00:00Z"),
   id: ORG_ID,
   name: "Acme",
   searchIncludeTranscripts: false,
-  sessionSyncPolicyEnabled: false,
   settings: {},
   slug: "acme",
   updatedAt: new Date("2026-01-01T00:00:00Z"),
@@ -81,6 +100,9 @@ describe("PUT /organizations/[id]", () => {
     vi.clearAllMocks();
     mocks.authContext.user.organizationId = ORG_ID;
     mocks.organizationsService.findById.mockResolvedValue(BASE_ORGANIZATION);
+    mocks.organizationsService.findDetailById.mockResolvedValue(
+      BASE_ORGANIZATION
+    );
     mocks.organizationsService.findBySlug.mockResolvedValue(null);
     mocks.organizationsService.update.mockResolvedValue({
       ...BASE_ORGANIZATION,
@@ -104,6 +126,7 @@ describe("PUT /organizations/[id]", () => {
       name: "Updated Acme",
     });
     expect(mocks.organizationsService.findById).not.toHaveBeenCalled();
+    expect(mocks.organizationsService.findDetailById).not.toHaveBeenCalled();
     expect(mocks.isOrgAdmin).not.toHaveBeenCalled();
     expect(mocks.clerkUpdateOrganization).toHaveBeenCalledWith("clerk-org-1", {
       name: "Updated Acme",
@@ -146,13 +169,15 @@ describe("PUT /organizations/[id]", () => {
 
     expect(response.status).toBe(400);
     expect(body.success).toBe(false);
-    expect(mocks.organizationsService.findById).toHaveBeenCalledWith(ORG_ID);
+    expect(mocks.organizationsService.findDetailById).toHaveBeenCalledWith(
+      ORG_ID
+    );
     expect(mocks.organizationsService.update).not.toHaveBeenCalled();
     expect(mocks.clerkUpdateOrganization).not.toHaveBeenCalled();
   });
 
   it("returns 404 when the organization is not found during slug update", async () => {
-    mocks.organizationsService.findById.mockResolvedValue(null);
+    mocks.organizationsService.findDetailById.mockResolvedValue(null);
 
     const response = await putOrganization({ slug: "new-acme" });
 
@@ -166,6 +191,7 @@ describe("PUT /organizations/[id]", () => {
 
     expect(response.status).toBe(403);
     expect(mocks.organizationsService.findById).not.toHaveBeenCalled();
+    expect(mocks.organizationsService.findDetailById).not.toHaveBeenCalled();
     expect(mocks.organizationsService.update).not.toHaveBeenCalled();
   });
 
@@ -208,7 +234,15 @@ describe("PUT /organizations/[id]", () => {
       name: "Updated Acme",
       settings: { theme: "dark" },
     });
-    expect(mocks.isOrgAdmin).not.toHaveBeenCalled();
+    // Consulted because this body carries `settings`, which ISS-7121 made
+    // admin-only (operator decision, 2026-08-19). The caller here is an admin,
+    // so the same-slug strip and the Clerk name sync this case exists to pin
+    // are unaffected. The peer cases whose bodies carry no admin-only field
+    // still assert the check is never reached.
+    expect(mocks.isOrgAdmin).toHaveBeenCalledWith(
+      "clerk-org-1",
+      "clerk-user-1"
+    );
     expect(mocks.clerkUpdateOrganization).toHaveBeenCalledWith("clerk-org-1", {
       name: "Updated Acme",
     });
@@ -253,7 +287,9 @@ describe("PUT /organizations/[id]", () => {
       ...BASE_ORGANIZATION,
       slug: "org_legacy_clerk_id",
     };
-    mocks.organizationsService.findById.mockResolvedValue(legacyOrganization);
+    mocks.organizationsService.findDetailById.mockResolvedValue(
+      legacyOrganization
+    );
 
     const response = await putOrganization({
       name: "Updated Acme",
@@ -379,14 +415,31 @@ describe("PUT /organizations/[id]", () => {
     expect(waitUntil).toHaveBeenCalled();
   });
 
+  // ISS-8804: the `meta` shapes, not just the target values. adapter-pg — the
+  // driver this app actually runs on — populates `driverAdapterError` and
+  // leaves `target` UNSET, so before the fix only the legacy rows below could
+  // ever pass and the 409 was unreachable in production.
   it.each([
-    { target: "Organization_slug_key" },
-    { target: ["slug"] },
-  ])("maps Prisma slug conflicts for target $target", async ({ target }) => {
+    {
+      label: "adapter-pg index name",
+      meta: {
+        driverAdapterError: {
+          cause: { constraint: { index: "organizations_slug_key" } },
+        },
+      },
+    },
+    {
+      label: "adapter-pg column list",
+      meta: {
+        driverAdapterError: { cause: { constraint: { fields: ["slug"] } } },
+      },
+    },
+    { label: "legacy meta.target column list", meta: { target: ["slug"] } },
+  ])("maps Prisma slug conflicts for $label", async ({ meta }) => {
     const { waitUntil } = await import("@vercel/functions");
     mocks.organizationsService.update.mockRejectedValue({
       code: "P2002",
-      meta: { target },
+      meta,
     });
 
     const response = await putOrganization({ slug: "new-acme" });
@@ -400,18 +453,31 @@ describe("PUT /organizations/[id]", () => {
     expect(waitUntil).toHaveBeenCalled();
   });
 
-  it("does not map unrelated Prisma conflicts to slug unavailable", async () => {
-    mocks.organizationsService.update.mockRejectedValue({
-      code: "P2002",
-      meta: { target: "Other_key" },
-    });
+  it.each([
+    { label: "legacy meta.target", meta: { target: "Other_key" } },
+    {
+      label: "adapter-pg, a real sibling unique on the same table",
+      meta: {
+        driverAdapterError: {
+          cause: { constraint: { index: "organizations_clerk_id_key" } },
+        },
+      },
+    },
+  ])(
+    "does not map unrelated Prisma conflicts to slug unavailable ($label)",
+    async ({ meta }) => {
+      mocks.organizationsService.update.mockRejectedValue({
+        code: "P2002",
+        meta,
+      });
 
-    const response = await putOrganization({ slug: "new-acme" });
-    const body = await response.json();
+      const response = await putOrganization({ slug: "new-acme" });
+      const body = await response.json();
 
-    expect(response.status).toBe(500);
-    expect(body.error).toBe("Failed to update organization");
-  });
+      expect(response.status).toBe(500);
+      expect(body.error).toBe("Failed to update organization");
+    }
+  );
 
   it("lets an admin toggle the transcript search gate", async () => {
     mocks.isOrgAdmin.mockResolvedValue(true);
@@ -454,46 +520,114 @@ describe("PUT /organizations/[id]", () => {
     expect(mocks.organizationsService.update).not.toHaveBeenCalled();
   });
 
-  it("lets an admin toggle the session-sync policy and persists it", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(true);
-    mocks.organizationsService.update.mockResolvedValue({
+  describe("when the organization row's clerkId is not the caller's org", () => {
+    const foreignOrganization = {
       ...BASE_ORGANIZATION,
-      sessionSyncPolicyEnabled: true,
+      clerkId: FOREIGN_CLERK_ORG_ID,
+    };
+
+    beforeEach(() => {
+      mocks.organizationsService.findById.mockResolvedValue(
+        foreignOrganization
+      );
+      mocks.organizationsService.findDetailById.mockResolvedValue(
+        foreignOrganization
+      );
     });
 
-    const response = await putOrganization({ sessionSyncPolicyEnabled: true });
-    const body = await response.json();
+    // Admin of the row's org, member of their own. Reading the row's clerkId
+    // admits; reading the authenticated context denies.
+    function admitOnlyTheForeignOrg() {
+      mocks.isOrgAdmin.mockImplementation((clerkOrgId: string) =>
+        Promise.resolve(clerkOrgId === FOREIGN_CLERK_ORG_ID)
+      );
+    }
 
-    expect(response.status).toBe(200);
-    expect(body.success).toBe(true);
-    expect(body.data.sessionSyncPolicyEnabled).toBe(true);
-    expect(mocks.isOrgAdmin).toHaveBeenCalledWith(
-      "clerk-org-1",
-      "clerk-user-1"
-    );
-    expect(mocks.organizationsService.update).toHaveBeenCalledWith(ORG_ID, {
-      sessionSyncPolicyEnabled: true,
+    it("denies a privacy-toggle write when only the row's org admits", async () => {
+      admitOnlyTheForeignOrg();
+
+      const response = await putOrganization({
+        searchIncludeTranscripts: true,
+      });
+
+      expect(response.status).toBe(403);
+      expect(mocks.organizationsService.update).not.toHaveBeenCalled();
     });
-  });
 
-  it("returns 403 when a non-admin tries to toggle the session-sync policy", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(false);
+    it("denies a slug change when only the row's org admits", async () => {
+      admitOnlyTheForeignOrg();
 
-    const response = await putOrganization({ sessionSyncPolicyEnabled: true });
+      const response = await putOrganization({ slug: "new-acme" });
 
-    expect(response.status).toBe(403);
-    expect(mocks.organizationsService.update).not.toHaveBeenCalled();
-  });
+      expect(response.status).toBe(403);
+      expect(mocks.clerkUpdateOrganization).not.toHaveBeenCalled();
+      expect(mocks.organizationsService.update).not.toHaveBeenCalled();
+    });
 
-  it("returns 404 when toggling the session-sync policy on an unknown org", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(true);
-    mocks.organizationsService.findById.mockResolvedValue(null);
+    it("writes the slug to the caller's own Clerk org, never the row's", async () => {
+      mocks.isOrgAdmin.mockImplementation((clerkOrgId: string) =>
+        Promise.resolve(clerkOrgId === CLERK_ORG_ID)
+      );
+      mocks.organizationsService.update.mockResolvedValue({
+        ...foreignOrganization,
+        slug: "new-acme",
+      });
 
-    const response = await putOrganization({ sessionSyncPolicyEnabled: false });
+      const response = await putOrganization({ slug: "new-acme" });
 
-    expect(response.status).toBe(404);
-    expect(mocks.isOrgAdmin).not.toHaveBeenCalled();
-    expect(mocks.organizationsService.update).not.toHaveBeenCalled();
+      expect(response.status).toBe(200);
+      expect(mocks.clerkUpdateOrganization).toHaveBeenCalledWith(CLERK_ORG_ID, {
+        slug: "new-acme",
+      });
+    });
+
+    it("syncs a name-only rename to the caller's own Clerk org", async () => {
+      mocks.organizationsService.update.mockResolvedValue({
+        ...foreignOrganization,
+        name: "Updated Acme",
+      });
+
+      const response = await putOrganization({ name: "Updated Acme" });
+
+      expect(response.status).toBe(200);
+      expect(mocks.clerkUpdateOrganization).toHaveBeenCalledWith(CLERK_ORG_ID, {
+        name: "Updated Acme",
+      });
+    });
+
+    it("syncs an unchanged-slug rename to the caller's own Clerk org", async () => {
+      mocks.organizationsService.update.mockResolvedValue({
+        ...foreignOrganization,
+        name: "Updated Acme",
+      });
+
+      const response = await putOrganization({
+        name: "Updated Acme",
+        slug: "acme",
+      });
+
+      expect(response.status).toBe(200);
+      expect(mocks.clerkUpdateOrganization).toHaveBeenCalledWith(CLERK_ORG_ID, {
+        name: "Updated Acme",
+      });
+    });
+
+    it("rolls back against the Clerk org it wrote, not the row's", async () => {
+      mocks.isOrgAdmin.mockImplementation((clerkOrgId: string) =>
+        Promise.resolve(clerkOrgId === CLERK_ORG_ID)
+      );
+      mocks.organizationsService.update.mockRejectedValue(
+        new Error("database down")
+      );
+
+      const response = await putOrganization({ slug: "new-acme" });
+
+      expect(response.status).toBe(500);
+      expect(mocks.clerkUpdateOrganization).toHaveBeenLastCalledWith(
+        CLERK_ORG_ID,
+        { slug: "acme" }
+      );
+    });
   });
 });
 

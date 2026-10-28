@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
-import { afterEach, describe, test } from "node:test";
+import { afterEach, describe, test } from "vitest";
 import { parseSessionFile as parseClaudeFile } from "../src/main/collectors/claude/claude-parser.js";
 import {
   cleanupTempDirs,

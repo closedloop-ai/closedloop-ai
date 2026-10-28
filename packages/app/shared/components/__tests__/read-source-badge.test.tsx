@@ -27,26 +27,6 @@ describe("ReadSourceBadge", () => {
     expect(screen.queryByTestId("read-source-badge")).toBeNull();
   });
 
-  it("marks a known-incomplete cloud read as visibly distinct, not a calm blue Cloud", () => {
-    const { unmount } = render(
-      <ReadSourceBadge readSource={ReadSource.Cloud} />
-    );
-    const drained = screen.getByTestId("read-source-badge");
-    const drainedTone = drained.className;
-    expect(drained.textContent).toBe("Cloud");
-    expect(drained.getAttribute("data-read-source-incomplete")).toBeNull();
-    unmount();
-
-    render(<ReadSourceBadge incomplete readSource={ReadSource.Cloud} />);
-    const short = screen.getByTestId("read-source-badge");
-    // Still a cloud read (provenance is unchanged) but it must not look
-    // identical to the drained one with the whole difference inside a tooltip.
-    expect(short.getAttribute("data-read-source")).toBe(ReadSource.Cloud);
-    expect(short.getAttribute("data-read-source-incomplete")).toBe("true");
-    expect(short.textContent).toContain("partial");
-    expect(short.className).not.toBe(drainedTone);
-  });
-
   it("never mislabels a source — cloud rows never render a local badge", () => {
     render(<ReadSourceBadge readSource={ReadSource.Cloud} />);
     const badge = screen.getByTestId("read-source-badge");

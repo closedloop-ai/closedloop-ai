@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 
 const consoleCallPattern = /(?<![\w$.])console\.([A-Za-z_$][\w$]*)/g;
 const gatewayLoggerPath = path.normalize("src/main/logging/gateway-logger.ts");

@@ -14,6 +14,7 @@ import {
 import {
   type PrestampClient,
   prestampSkippableMigrationsViaSql,
+  TABLES_WITHOUT_MIGRATION_HISTORY_SQL,
 } from "../scripts/preview-prestamp";
 
 const PREVIEW_SCHEMA = "preview_my_branch_abc12345";
@@ -33,6 +34,9 @@ const STAMPED_RE = /Pre-stamped .* as applied on/;
 const ALREADY_APPLIED_RE =
   /already applied on .* \(lock-free preview skip already in effect\)/;
 const COULD_NOT_READ_RE = /could not read/i;
+const DECLINED_TO_PRESTAMP_RE = /declining to pre-stamp/i;
+const UNUSABLE_PROBE_ROW_RE =
+  /Migration-history probe for preview_my_branch_abc12345 returned an unusable row/;
 // A perf-only (never plain-build) entry, used to prove the FAIL-OPEN half of the
 // per-category read contract without depending on list ordering.
 const PERF_ONLY_MIGRATION = SKIPPABLE.find((name) => !PLAIN_BUILD.has(name));
@@ -48,6 +52,15 @@ const LATIN1_MIGRATION_BYTES = Buffer.from(
 function makeClient(
   overrides: Partial<PrestampClient> & {
     queryImpl?: (text: string, values?: unknown[]) => Promise<unknown>;
+    /**
+     * ISS-6466: what the baseline probe finds. `true` is the defective shape —
+     * base tables present, `_prisma_migrations` absent — the ONE state the
+     * pre-stamp must decline. Default `false`: every other test in this file
+     * describes a fresh or already-baselined schema.
+     */
+    unbaselined?: boolean;
+    /** The probe's raw answer, for the malformed case. Wins over `queryImpl`. */
+    probeImpl?: (values?: unknown[]) => Promise<unknown>;
   } = {}
 ) {
   const calls: { text: string; values?: unknown[] }[] = [];
@@ -56,12 +69,39 @@ function makeClient(
     end: overrides.end ?? vi.fn(() => Promise.resolve()),
     query: vi.fn((text: string, values?: unknown[]) => {
       calls.push({ text, values });
-      return overrides.queryImpl
-        ? overrides.queryImpl(text, values)
-        : Promise.resolve({ rowCount: 1 });
+      const isProbe = text === TABLES_WITHOUT_MIGRATION_HISTORY_SQL;
+      if (isProbe && overrides.probeImpl) {
+        return overrides.probeImpl(values);
+      }
+      // `queryImpl` still sees the probe, so a test that makes EVERY statement
+      // reject still exercises the module's first query — which is now the
+      // probe, not the CREATE TABLE.
+      if (overrides.queryImpl) {
+        return overrides.queryImpl(text, values);
+      }
+      if (isProbe) {
+        return Promise.resolve({
+          rows: [{ unbaselined: overrides.unbaselined ?? false }],
+        });
+      }
+      return Promise.resolve({ rowCount: 1 });
     }),
   };
   return { client, calls };
+}
+
+/**
+ * The statements the pre-stamp issues, minus the ISS-6466 baseline probe.
+ *
+ * Callers that use this must still bound the TOTAL statement count themselves:
+ * filtering the probe out and then asserting a length would let a regression
+ * that issues the probe once per migration, or re-adds a per-migration presence
+ * SELECT, stay green while adding a round trip per entry inside the gate.
+ */
+function writeStatements<T extends { text: string }>(calls: T[]): T[] {
+  return calls.filter(
+    (call) => call.text !== TABLES_WITHOUT_MIGRATION_HISTORY_SQL
+  );
 }
 
 function makeLogger() {
@@ -110,11 +150,20 @@ describe("prestampSkippableMigrationsViaSql", () => {
     // 1 CREATE TABLE IF NOT EXISTS, then exactly one INSERT per skippable
     // migration — no follow-up presence query, because `NOT EXISTS` leaves only
     // one reason for the INSERT to affect zero rows.
-    expect(calls).toHaveLength(1 + SKIPPABLE.length);
-    expect(calls[0].text).toContain("CREATE TABLE IF NOT EXISTS");
-    expect(calls[0].text).toContain(`"${PREVIEW_SCHEMA}"."_prisma_migrations"`);
+    // ISS-6466: the baseline probe comes first and asks about THIS schema —
+    // and the TOTAL is bounded, so the probe stays once per run and no
+    // per-migration presence query creeps back in.
+    expect(calls).toHaveLength(2 + SKIPPABLE.length);
+    expect(calls[0].text).toBe(TABLES_WITHOUT_MIGRATION_HISTORY_SQL);
+    expect(calls[0].values).toEqual([PREVIEW_SCHEMA]);
+    const writes = writeStatements(calls);
+    expect(writes).toHaveLength(1 + SKIPPABLE.length);
+    expect(writes[0].text).toContain("CREATE TABLE IF NOT EXISTS");
+    expect(writes[0].text).toContain(
+      `"${PREVIEW_SCHEMA}"."_prisma_migrations"`
+    );
     for (const [i, migrationName] of SKIPPABLE.entries()) {
-      const insert = calls[i + 1];
+      const insert = writes[i + 1];
       expect(insert.text).toContain("INSERT INTO");
       expect(insert.values).toEqual([
         migrationName,
@@ -134,7 +183,12 @@ describe("prestampSkippableMigrationsViaSql", () => {
     // The INSERT's `NOT EXISTS` guard matches nothing (row already there) → 0
     // rows → benign, no false CONCURRENTLY-risk warning, no throw.
     const { client } = makeClient({
-      queryImpl: () => Promise.resolve({ rowCount: 0 }),
+      queryImpl: (text) =>
+        Promise.resolve(
+          text === TABLES_WITHOUT_MIGRATION_HISTORY_SQL
+            ? { rows: [{ unbaselined: false }] }
+            : { rowCount: 0 }
+        ),
     });
     const logger = makeLogger();
     await prestampSkippableMigrationsViaSql("postgres://x", PREVIEW_SCHEMA, {
@@ -290,7 +344,9 @@ describe("prestampSkippableMigrationsViaSql", () => {
       freshSchema: true,
     });
 
-    const stamped = calls.slice(1).map((call) => String(call.values?.[0]));
+    const stamped = writeStatements(calls)
+      .slice(1)
+      .map((call) => String(call.values?.[0]));
     const perfOnly = migrationsToPrestampForPreview(PREVIEW_SCHEMA, {
       freshSchema: true,
     });
@@ -352,6 +408,116 @@ describe("prestampSkippableMigrationsViaSql", () => {
         logger,
       })
     ).rejects.toThrow(REFUSING_ON_ERROR_RE);
+  });
+
+  // ————————————————————————————————————————————————————————————————
+  // ISS-6466: the pre-stamp must not delete P3005's precondition.
+  //
+  // `CREATE TABLE IF NOT EXISTS _prisma_migrations` runs before migrate deploy,
+  // and P3005 fires only on a schema with tables and NO history. Creating the
+  // history table first makes Prisma see an apparently-migrated schema, so the
+  // reset never fires, `didReset` stays false and the pipeline skips the clone —
+  // a preview serving stale data while reporting success.
+  // ————————————————————————————————————————————————————————————————
+
+  it("declines to stamp a preview schema holding tables but NO migration history (ISS-6466)", async () => {
+    const { client, calls } = makeClient({ unbaselined: true });
+    const logger = makeLogger();
+
+    await prestampSkippableMigrationsViaSql("postgres://x", PREVIEW_SCHEMA, {
+      createClient: () => client,
+      readMigrationSql: fakeMigrationSql,
+      logger,
+    });
+
+    // Positive control on the precondition: the probe really asked the server
+    // about THIS schema, so the declined path was reached on its answer and not
+    // because some unrelated guard short-circuited first.
+    expect(calls).toHaveLength(1);
+    expect(calls[0].text).toBe(TABLES_WITHOUT_MIGRATION_HISTORY_SQL);
+    expect(calls[0].values).toEqual([PREVIEW_SCHEMA]);
+    // The masking write is what must not happen. Asserting its ABSENCE (rather
+    // than that the call resolved) is the point: the whole defect is that
+    // nothing throws.
+    expect(writeStatements(calls)).toEqual([]);
+    expect(logger.log).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining(PREVIEW_SCHEMA)
+    );
+    expect(String(logger.warn.mock.calls[0][0])).toMatch(
+      DECLINED_TO_PRESTAMP_RE
+    );
+    expect(client.end).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not probe at all on a FRESH schema, which is empty by construction (ISS-6466)", async () => {
+    // `isNew` and every post-reset recovery re-stamp pass `freshSchema`. Those
+    // paths keep today's exact statement sequence — no extra round trip inside
+    // the serialize gate, and no new way for them to fail. `unbaselined: true`
+    // would decline if the probe ran, so this cannot pass by the probe
+    // answering false.
+    const { client, calls } = makeClient({ unbaselined: true });
+    const logger = makeLogger();
+
+    await prestampSkippableMigrationsViaSql("postgres://x", PREVIEW_SCHEMA, {
+      createClient: () => client,
+      readMigrationSql: fakeMigrationSql,
+      logger,
+      freshSchema: true,
+    });
+
+    expect(
+      calls.some((call) => call.text === TABLES_WITHOUT_MIGRATION_HISTORY_SQL)
+    ).toBe(false);
+    expect(calls[0].text).toContain("CREATE TABLE IF NOT EXISTS");
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("still stamps when the same fixture reports an already-baselined schema (ISS-6466)", async () => {
+    // The discriminating half of the pair above: identical setup, probe answer
+    // flipped. Without it, a stamp broken for ANY reason would satisfy the
+    // "declines" assertion.
+    const { client, calls } = makeClient({ unbaselined: false });
+    const logger = makeLogger();
+
+    await prestampSkippableMigrationsViaSql("postgres://x", PREVIEW_SCHEMA, {
+      createClient: () => client,
+      readMigrationSql: fakeMigrationSql,
+      logger,
+    });
+
+    expect(writeStatements(calls)).toHaveLength(1 + SKIPPABLE.length);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("is fail-closed on a malformed probe answer rather than guessing (ISS-6466)", async () => {
+    // "Is it safe to stamp" has no safe default: guessing false re-creates the
+    // mask, guessing true re-arms the CONCURRENTLY build. With a plain-build
+    // entry in scope this module already refuses on any query anomaly.
+    const { client, calls } = makeClient({
+      probeImpl: () => Promise.resolve({ rows: [{}] }),
+    });
+    const logger = makeLogger();
+
+    await expect(
+      prestampSkippableMigrationsViaSql("postgres://x", PREVIEW_SCHEMA, {
+        createClient: () => client,
+        readMigrationSql: fakeMigrationSql,
+        logger,
+      })
+    ).rejects.toThrow(REFUSING_ON_ERROR_RE);
+    // The refusal must name the schema and the probe: it is the only thing an
+    // operator staring at a red preview deploy sees.
+    await expect(
+      prestampSkippableMigrationsViaSql("postgres://x", PREVIEW_SCHEMA, {
+        createClient: () =>
+          makeClient({ probeImpl: () => Promise.resolve({}) }).client,
+        readMigrationSql: fakeMigrationSql,
+        logger,
+      })
+    ).rejects.toThrow(UNUSABLE_PROBE_ROW_RE);
+    expect(writeStatements(calls)).toEqual([]);
+    expect(client.end).toHaveBeenCalledTimes(1);
   });
 
   it("is fail-closed: a query error propagates (connection still closed)", async () => {

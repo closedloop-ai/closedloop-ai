@@ -1,7 +1,4 @@
-import {
-  FeedRail,
-  FeedRailTab,
-} from "@repo/design-system/components/ui/feed-rail";
+import { FeedRail } from "@repo/design-system/components/ui/feed-rail";
 import { render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -28,12 +25,8 @@ function stubMatchMedia(matcher: (query: string) => boolean) {
 }
 
 const commonProps = {
-  activeTab: FeedRailTab.Feed,
-  chatPanel: null,
   feedPanel: <div data-testid="feed-panel">Feed body</div>,
-  hasChat: false,
   onClose: vi.fn(),
-  onTabChange: vi.fn(),
   onWidthChange: vi.fn(),
   visible: true,
   width: 380,

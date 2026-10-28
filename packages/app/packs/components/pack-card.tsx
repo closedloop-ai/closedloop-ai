@@ -114,7 +114,7 @@ export const PackCard = ({
   const summary = contentSummary(pack);
   const showInstallers =
     context.capabilities.showTeamUsage &&
-    (pack.teamUsage?.installers.length ?? 0) > 0;
+    (pack.teamUsage?.installers?.length ?? 0) > 0;
 
   return (
     <Card
@@ -196,7 +196,7 @@ export const PackCard = ({
         ) : null}
 
         <div className="mt-auto flex items-center justify-between gap-3 border-border border-t pt-3">
-          {showInstallers && pack.teamUsage ? (
+          {showInstallers && pack.teamUsage?.installers ? (
             <InstallerStack max={3} users={pack.teamUsage.installers} />
           ) : (
             <span />

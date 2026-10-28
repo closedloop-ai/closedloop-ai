@@ -1,6 +1,13 @@
 "use client";
 
-import { Button } from "@repo/design-system/components/ui/button";
+import {
+  compareListQueryText,
+  ListQueryTextOrdering,
+} from "@repo/api/src/types/list-query-ordering-semantics";
+import {
+  Button,
+  type ButtonProps,
+} from "@repo/design-system/components/ui/button";
 import {
   Command,
   CommandEmpty,
@@ -16,7 +23,7 @@ import {
 } from "@repo/design-system/components/ui/popover";
 import { cn } from "@repo/design-system/lib/utils";
 import { FolderIcon } from "lucide-react";
-import { useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 
 /**
  * A ClosedLoop project as the typeahead needs it — the display name plus the
@@ -34,6 +41,26 @@ export type ProjectSelectPopoverProps = {
   value?: ProjectOption | null;
   /** Fires with the picked project, or null when the selection is cleared. */
   onSelect: (project: ProjectOption | null) => void;
+  /**
+   * Offer "Clear selection" once a project is chosen. The Session and Branch
+   * Project rows pass false: `batch-move` accepts a clear since ISS-12858, but
+   * offering one on those rows is not yet decided (ISS-12859 owns the Details
+   * row).
+   */
+  allowClear?: boolean;
+  /**
+   * Fires when the popover opens or closes, so a consumer can defer loading
+   * `projects` until the list is actually asked for (`@repo/app` AGENTS.md:
+   * menu data is gated, not fetched on mount). The trigger renders from
+   * `value` alone, so nothing above needs the list to paint.
+   */
+  onOpenChange?: (open: boolean) => void;
+  /**
+   * The trigger's button treatment. `outline` is the boxed form a dialog field
+   * wants; `ghost` is the hover-only form an inline table or Details row wants
+   * (ISS-12252: editability is hover and cursor, never a border or a badge).
+   */
+  variant?: ButtonProps["variant"];
   /** The projects to choose from (already loaded by the parent). */
   projects: readonly ProjectOption[];
   /** Trigger placeholder when nothing is selected. */
@@ -59,6 +86,25 @@ export type ProjectSelectPopoverProps = {
    * false empty state that would present a failed fetch as "no projects".
    */
   isError?: boolean;
+  /**
+   * What the trigger shows when nothing is selected, instead of the muted
+   * {@link placeholder}.
+   *
+   * An inline table cell passes the shared empty sentinel, because a column of
+   * facts must keep stating the fact: "Select project…" repeated down every
+   * unfiled row turns the column into a list of instructions, and the sibling
+   * editable cells already resolve this the same way (`EntityTagsCell`'s
+   * `emptyValue`, `ArtifactPriorityEditor`'s dash inside the button). A dialog
+   * field keeps the placeholder, where an instruction is what the reader wants.
+   */
+  emptyMark?: ReactNode;
+  /**
+   * Whether the trigger leads with the folder glyph. A boxed form field wants
+   * it; an inline cell does not — its read-only twin is bare text, so the glyph
+   * would make one field look like two depending on write access, and it
+   * restates a column already headed "Owning project" on every row.
+   */
+  leadingIcon?: boolean;
 };
 
 /**
@@ -78,8 +124,22 @@ export function ProjectSelectPopover({
   ariaLabel,
   isLoading = false,
   isError = false,
+  emptyMark,
+  leadingIcon = true,
+  allowClear = true,
+  variant = "outline",
+  onOpenChange,
 }: ProjectSelectPopoverProps) {
   const [open, setOpen] = useState(false);
+  const sortedProjects = useMemo(
+    () => [...projects].sort(compareProjectsByName),
+    [projects]
+  );
+
+  const handleOpenChange = (next: boolean) => {
+    setOpen(next);
+    onOpenChange?.(next);
+  };
 
   const currentValueLabel = value?.name ?? placeholder;
   const triggerAriaLabel = ariaLabel
@@ -88,16 +148,16 @@ export function ProjectSelectPopover({
 
   const handleSelect = (project: ProjectOption) => {
     onSelect(project);
-    setOpen(false);
+    handleOpenChange(false);
   };
 
   const handleClear = () => {
     onSelect(null);
-    setOpen(false);
+    handleOpenChange(false);
   };
 
   return (
-    <Popover onOpenChange={setOpen} open={open}>
+    <Popover onOpenChange={handleOpenChange} open={open}>
       <PopoverTrigger asChild>
         <Button
           aria-expanded={open}
@@ -106,26 +166,40 @@ export function ProjectSelectPopover({
           disabled={disabled}
           id={id}
           role="combobox"
-          variant="outline"
+          variant={variant}
         >
-          <FolderIcon aria-hidden className="shrink-0" />
+          {leadingIcon ? <FolderIcon aria-hidden className="shrink-0" /> : null}
           {value ? (
-            <span className="truncate">{value.name}</span>
+            // `min-w-0` is what lets `truncate` fire at all: a flex child
+            // defaults to `min-width:auto`, so without it the span sizes to its
+            // text and a long project name leaves the trigger's box instead of
+            // ellipsising inside it.
+            <span className="min-w-0 truncate">{value.name}</span>
           ) : (
-            <span className="text-muted-foreground">{placeholder}</span>
+            (emptyMark ?? (
+              <span className="text-muted-foreground">{placeholder}</span>
+            ))
           )}
         </Button>
       </PopoverTrigger>
       <PopoverContent
         align="start"
         className="w-[var(--radix-popover-trigger-width)] p-0"
+        // marisolashgrove, ISS-12454: a `CommandItem` is `div role=option`, which
+        // `INTERACTIVE_CELL_CONTENT_SELECTOR` does not list, and React bubbles
+        // the pick out of the portal up to the grid row's `onClick` — so filing
+        // one row replaced a six-row bulk selection with that row. This marker
+        // is that selector's own opt-out. Unconditional rather than per
+        // presentation: a project option is never a row-selection target in any
+        // host, and a flag to say so is a flag that can be wired wrong.
+        data-no-row-select
       >
         <Command label="Search projects">
           <CommandInput placeholder="Search projects…" />
           <CommandList>
             <CommandEmpty>{emptyStateMessage(isLoading, isError)}</CommandEmpty>
             <CommandGroup>
-              {value ? (
+              {value && allowClear ? (
                 <CommandItem
                   className="cursor-pointer text-muted-foreground hover:bg-muted hover:text-foreground"
                   onSelect={handleClear}
@@ -133,7 +207,7 @@ export function ProjectSelectPopover({
                   Clear selection
                 </CommandItem>
               ) : null}
-              {projects.map((project) => (
+              {sortedProjects.map((project) => (
                 <CommandItem
                   className="cursor-pointer hover:bg-muted"
                   key={project.id}
@@ -181,4 +255,11 @@ function emptyStateMessage(isLoading: boolean, isError: boolean): string {
     return "Couldn't load projects. Check your connection and try again.";
   }
   return "No projects found.";
+}
+
+function compareProjectsByName(a: ProjectOption, b: ProjectOption): number {
+  return (
+    compareListQueryText(a.name, b.name, ListQueryTextOrdering.Collated) ||
+    compareListQueryText(a.id, b.id, ListQueryTextOrdering.CodeUnit)
+  );
 }

@@ -8,7 +8,7 @@
  */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   ArtifactKind,
   artifactIdFromIdentityKey,
@@ -21,28 +21,28 @@ const HEX_16_RE = /^[0-9a-f]{16}$/;
 test("FEA-1899: commit key uses repoFullName scope and sha", () => {
   const key = computeIdentityKey({
     kind: ArtifactKind.Commit,
-    repoFullName: "closedloop-ai/example-repo",
+    repoFullName: "closedloop-ai/closedloop-ai",
     sha: "abc123",
   });
-  assert.equal(key, "commit:closedloop-ai/example-repo:abc123");
+  assert.equal(key, "commit:closedloop-ai/closedloop-ai:abc123");
 });
 
 test("FEA-1899: branch key uses repoFullName scope and branchName", () => {
   const key = computeIdentityKey({
     kind: ArtifactKind.Branch,
-    repoFullName: "closedloop-ai/example-repo",
+    repoFullName: "closedloop-ai/closedloop-ai",
     branchName: "feat/fea-1899",
   });
-  assert.equal(key, "branch:closedloop-ai/example-repo:feat/fea-1899");
+  assert.equal(key, "branch:closedloop-ai/closedloop-ai:feat/fea-1899");
 });
 
 test("FEA-1899: pull_request key uses the 'pr' prefix and pr number", () => {
   const key = computeIdentityKey({
     kind: ArtifactKind.PullRequest,
-    repoFullName: "closedloop-ai/example-repo",
+    repoFullName: "closedloop-ai/closedloop-ai",
     prNumber: 1644,
   });
-  assert.equal(key, "pr:closedloop-ai/example-repo:1644");
+  assert.equal(key, "pr:closedloop-ai/closedloop-ai:1644");
 });
 
 test("FEA-1899: closedloop_artifact key is repo-agnostic — slug alone, no scope", () => {
@@ -50,8 +50,8 @@ test("FEA-1899: closedloop_artifact key is repo-agnostic — slug alone, no scop
     kind: ArtifactKind.ClosedloopArtifact,
     slug: "FEA-1899",
     // repo fields are deliberately set to prove they are ignored for cl docs.
-    repoFullName: "closedloop-ai/example-repo",
-    gitDir: "/home/u/ws/example-repo/.git",
+    repoFullName: "closedloop-ai/closedloop-ai",
+    gitDir: "/home/u/ws/closedloop-ai/.git",
   });
   assert.equal(key, "cldoc:FEA-1899");
 });
@@ -59,10 +59,10 @@ test("FEA-1899: closedloop_artifact key is repo-agnostic — slug alone, no scop
 test("FEA-1899: gitDir is the scope fallback when repoFullName is absent", () => {
   const key = computeIdentityKey({
     kind: ArtifactKind.Commit,
-    gitDir: "/home/u/ws/example-repo/.git",
+    gitDir: "/home/u/ws/closedloop-ai/.git",
     sha: "deadbeef",
   });
-  assert.equal(key, "commit:/home/u/ws/example-repo/.git:deadbeef");
+  assert.equal(key, "commit:/home/u/ws/closedloop-ai/.git:deadbeef");
 });
 
 test("FEA-1899: repoFullName wins over gitDir when both are present", () => {

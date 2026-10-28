@@ -47,20 +47,6 @@ Every artifact produced during a loop is written to the session work directory (
 
 That directory is the durable record of what the loop did and why.
 
-## The self-learning feedback loop
-
-After every iteration, a post-run pipeline:
-
-1. Computes relevance scores for captured learnings using changed-files context.
-2. Evaluates the run against the active goal (`reduce-failures`, `swe-bench`, etc.).
-3. Verifies citations in learnings are real and point to existing code.
-4. Updates `outcomes.log` with build, goal, and relevance signals.
-5. Classifies pending learnings with the LLM.
-6. Atomically writes the organization pattern store (`org-patterns.toon`).
-7. Recomputes success rates per pattern and flags underperformers.
-
-This is the **outer loop** — the loop around the loop. It is what turns individual runs into organizational knowledge.
-
 ## Human-in-the-loop checkpoints
 
 Humans are still required at specific points:

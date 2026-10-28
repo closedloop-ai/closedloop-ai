@@ -151,8 +151,8 @@ async function insertSession(
   await client.query(
     `INSERT INTO session_detail
        (artifact_id, compute_target_id, external_session_id, source_loop_id,
-        session_started_at, session_updated_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $6)`,
+        session_started_at, session_updated_at, last_activity_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $5, $6)`,
     [
       artifactId,
       TARGET_ID,

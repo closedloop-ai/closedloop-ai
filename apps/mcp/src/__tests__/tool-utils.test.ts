@@ -1,10 +1,14 @@
-import { DocumentType } from "@repo/api/src/types/document.js";
+import {
+  DOCUMENT_ROUTE_PREFIX,
+  DocumentType,
+} from "@repo/api/src/types/document.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { McpApiError } from "../api-error.js";
 import {
   buildPaginatedPayload,
   createUrlBuilder,
   extractArrayItems,
+  requiredIdOrSlug,
   shapeParentArtifact,
   withErrorHandling,
 } from "../tools/tool-utils.js";
@@ -81,6 +85,31 @@ describe("withErrorHandling", () => {
   });
 });
 
+describe("requiredIdOrSlug", () => {
+  const schema = requiredIdOrSlug(
+    "Document",
+    ["PRD-7", "PLN-12"],
+    "Use list-documents to find one."
+  );
+
+  it.each([undefined, "", "   ", ".", ".."])(
+    "rejects an unsafe required identifier: %j",
+    (value) => {
+      const result = schema.safeParse(value);
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0]?.message).toContain("required");
+        expect(result.error.issues[0]?.message).toContain("list-documents");
+      }
+    }
+  );
+
+  it("trims a valid identifier", () => {
+    expect(schema.parse("  PRD-7  ")).toBe("PRD-7");
+  });
+});
+
 describe("extractArrayItems", () => {
   it("returns a bare array unchanged", () => {
     expect(extractArrayItems([1, 2, 3])).toEqual([1, 2, 3]);
@@ -153,7 +182,9 @@ describe("buildDocumentUrlFromRecord route prefixes", () => {
       slug: "PRD-7",
       type: DocumentType.Prd,
     });
-    expect(url).toBe("https://app.closedloop.ai/prds/PRD-7");
+    expect(url).toBe(
+      `https://app.closedloop.ai/${DOCUMENT_ROUTE_PREFIX}/PRD-7`
+    );
   });
 
   it("builds a URL for IMPLEMENTATION_PLAN documents", () => {
@@ -161,17 +192,20 @@ describe("buildDocumentUrlFromRecord route prefixes", () => {
       slug: "PLN-4",
       type: DocumentType.ImplementationPlan,
     });
-    expect(url).toBe("https://app.closedloop.ai/implementation-plans/PLN-4");
+    expect(url).toBe(
+      `https://app.closedloop.ai/${DOCUMENT_ROUTE_PREFIX}/PLN-4`
+    );
   });
 
-  // FEA-4137: FEATURE documents route under /issues/ (the FEA- slug is a compat
-  // alias that still resolves; only the route path changed).
+  // The FEA- slug is a compat alias that still resolves (FEA-4137).
   it("builds a URL for FEATURE documents", () => {
     const url = orglessUrls.buildDocumentUrlFromRecord({
       slug: "FEA-42",
       type: DocumentType.Feature,
     });
-    expect(url).toBe("https://app.closedloop.ai/issues/FEA-42");
+    expect(url).toBe(
+      `https://app.closedloop.ai/${DOCUMENT_ROUTE_PREFIX}/FEA-42`
+    );
   });
 
   it("falls back to /documents/ prefix for TEMPLATE type", () => {
@@ -195,7 +229,9 @@ describe("buildDocumentUrlFromRecord route prefixes", () => {
       slug: "../../admin",
       type: DocumentType.Prd,
     });
-    expect(url).toBe("https://app.closedloop.ai/prds/..%2F..%2Fadmin");
+    expect(url).toBe(
+      `https://app.closedloop.ai/${DOCUMENT_ROUTE_PREFIX}/..%2F..%2Fadmin`
+    );
   });
 });
 
@@ -205,7 +241,9 @@ describe("buildDocumentUrlFromRecord", () => {
       slug: "FEA-42",
       type: DocumentType.Feature,
     });
-    expect(url).toBe("https://app.closedloop.ai/issues/FEA-42");
+    expect(url).toBe(
+      `https://app.closedloop.ai/${DOCUMENT_ROUTE_PREFIX}/FEA-42`
+    );
   });
 
   it("returns null when slug is missing", () => {
@@ -223,18 +261,19 @@ describe("buildDocumentUrlFromRecord", () => {
   it("returns null for empty record", () => {
     expect(orglessUrls.buildDocumentUrlFromRecord({})).toBeNull();
   });
-});
 
-describe("buildLoopUrl", () => {
-  it("builds a URL with a UUID", () => {
-    const id = "019abc12-3456-7890-abcd-ef0123456789";
-    const url = orglessUrls.buildLoopUrl(id);
-    expect(url).toBe(`https://app.closedloop.ai/loops/${id}`);
-  });
-
-  it("encodes special characters in loop ID", () => {
-    const url = orglessUrls.buildLoopUrl("../evil");
-    expect(url).toBe("https://app.closedloop.ai/loops/..%2Fevil");
+  it("returns null, not a throw, for a dot-segment slug", () => {
+    // encodePathSegment rejects a dot segment, but this builder runs per row
+    // inside a .map(): a throw here would fail the whole list response instead
+    // of leaving one row's webUrl null.
+    for (const slug of [".", ".."]) {
+      expect(
+        orglessUrls.buildDocumentUrlFromRecord({
+          slug,
+          type: DocumentType.Feature,
+        })
+      ).toBeNull();
+    }
   });
 });
 
@@ -247,13 +286,7 @@ describe("org-scoped URLs via createUrlBuilder", () => {
         slug: "FEA-42",
         type: DocumentType.Feature,
       })
-    ).toBe("https://app.closedloop.ai/acme/issues/FEA-42");
-  });
-
-  it("includes org slug in loop URLs", () => {
-    expect(acmeUrls.buildLoopUrl("abc-123")).toBe(
-      "https://app.closedloop.ai/acme/loops/abc-123"
-    );
+    ).toBe(`https://app.closedloop.ai/acme/${DOCUMENT_ROUTE_PREFIX}/FEA-42`);
   });
 
   it("includes org slug in buildDocumentUrlFromRecord", () => {
@@ -262,7 +295,7 @@ describe("org-scoped URLs via createUrlBuilder", () => {
         slug: "PRD-7",
         type: DocumentType.Prd,
       })
-    ).toBe("https://app.closedloop.ai/acme/prds/PRD-7");
+    ).toBe(`https://app.closedloop.ai/acme/${DOCUMENT_ROUTE_PREFIX}/PRD-7`);
   });
 
   // ISS-6570 regression: the slug is captured per builder (one per MCP
@@ -273,14 +306,14 @@ describe("org-scoped URLs via createUrlBuilder", () => {
   it("keeps each builder's org slug independent of later builders", () => {
     const orgA = createUrlBuilder(() => "org-a");
     const orgB = createUrlBuilder(() => "org-b");
-    expect(orgB.buildLoopUrl("abc")).toBe(
-      "https://app.closedloop.ai/org-b/loops/abc"
-    );
+    expect(
+      orgB.buildDocumentUrlFromRecord({ slug: "PRD-7", type: DocumentType.Prd })
+    ).toBe(`https://app.closedloop.ai/org-b/${DOCUMENT_ROUTE_PREFIX}/PRD-7`);
     expect(
       orgA.buildDocumentUrlFromRecord({ slug: "PRD-7", type: DocumentType.Prd })
-    ).toBe("https://app.closedloop.ai/org-a/prds/PRD-7");
-    expect(orgA.buildLoopUrl("abc")).toBe(
-      "https://app.closedloop.ai/org-a/loops/abc"
+    ).toBe(`https://app.closedloop.ai/org-a/${DOCUMENT_ROUTE_PREFIX}/PRD-7`);
+    expect(orgA.withOrgPrefix("/sessions/abc")).toBe(
+      "https://app.closedloop.ai/org-a/sessions/abc"
     );
   });
 
@@ -290,7 +323,7 @@ describe("org-scoped URLs via createUrlBuilder", () => {
         slug: "PRD-7",
         type: DocumentType.Prd,
       })
-    ).toBe("https://app.closedloop.ai/prds/PRD-7");
+    ).toBe(`https://app.closedloop.ai/${DOCUMENT_ROUTE_PREFIX}/PRD-7`);
   });
 });
 
@@ -313,9 +346,9 @@ describe("WEBAPP_URL env var fallback", () => {
 
     const mod = await import("../tools/tool-utils.js");
 
-    expect(mod.createUrlBuilder(() => null).buildLoopUrl("abc")).toBe(
-      "https://custom.example.com/loops/abc"
-    );
+    expect(
+      mod.createUrlBuilder(() => null).withOrgPrefix("/sessions/abc")
+    ).toBe("https://custom.example.com/sessions/abc");
     expect(
       mod
         .createUrlBuilder(() => null)
@@ -323,7 +356,7 @@ describe("WEBAPP_URL env var fallback", () => {
           slug: "FEA-1",
           type: DocumentType.Feature,
         })
-    ).toBe("https://custom.example.com/issues/FEA-1");
+    ).toBe(`https://custom.example.com/${DOCUMENT_ROUTE_PREFIX}/FEA-1`);
   });
 
   it("strips trailing slashes from WEBAPP_URL", async () => {
@@ -332,9 +365,11 @@ describe("WEBAPP_URL env var fallback", () => {
 
     const mod = await import("../tools/tool-utils.js");
 
-    expect(mod.createUrlBuilder(() => null).buildLoopUrl("abc")).toBe(
-      "https://custom.example.com/loops/abc"
-    );
+    expect(
+      mod
+        .createUrlBuilder(() => null)
+        .buildDocumentUrlFromRecord({ slug: "PRD-7", type: DocumentType.Prd })
+    ).toBe(`https://custom.example.com/${DOCUMENT_ROUTE_PREFIX}/PRD-7`);
   });
 
   it("falls back to https://app.closedloop.ai when WEBAPP_URL is undefined", async () => {
@@ -344,9 +379,11 @@ describe("WEBAPP_URL env var fallback", () => {
 
     const mod = await import("../tools/tool-utils.js");
 
-    expect(mod.createUrlBuilder(() => null).buildLoopUrl("abc")).toBe(
-      "https://app.closedloop.ai/loops/abc"
-    );
+    expect(
+      mod
+        .createUrlBuilder(() => null)
+        .buildDocumentUrlFromRecord({ slug: "PRD-7", type: DocumentType.Prd })
+    ).toBe(`https://app.closedloop.ai/${DOCUMENT_ROUTE_PREFIX}/PRD-7`);
   });
 });
 

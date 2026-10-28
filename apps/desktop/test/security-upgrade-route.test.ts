@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import { OperationDispatcher } from "../src/server/operation-dispatcher.js";
 import { registerSecurityUpgradeRoutes } from "../src/server/operations/security-upgrade.js";
 

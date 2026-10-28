@@ -41,6 +41,7 @@ import {
   commandUserTurnId,
   normalizeCommandComponentKey,
 } from "@repo/lib/sessions/command-user-turn-id";
+import { isTccProtectedPath } from "../../shared/sandbox-policy.js";
 import { gatewayLog } from "../logging/gateway-logger.js";
 import { resolveClaudeHome, resolveCodexHome } from "./claude-home.js";
 import {
@@ -58,11 +59,8 @@ import {
   sha256Hex,
   upsertDefinitionVersion,
 } from "./definition-variant-fold.js";
-import {
-  getRecentProjectRoots,
-  type PackScannerDb,
-  parseSkillFrontmatter,
-} from "./pack-scanner.js";
+import { getRecentProjectRoots, type PackScannerDb } from "./pack-scanner.js";
+import { parseSkillFrontmatter } from "./skill-files.js";
 
 export type DefinitionCollectorSummary = {
   upserted: number;
@@ -304,14 +302,19 @@ function focusedInvocations(session: NormalizedSession): FocusedInvocation[] {
 }
 
 function defaultFocusedRoots(cwd: string | null): DefinitionCollectorRoots {
-  const projectSkillRoots = cwd
+  // ISS-11914: no reads inside a TCC-protected folder, which would raise a macOS
+  // permission prompt.
+  const projectCwd = cwd && !isTccProtectedPath(cwd) ? cwd : null;
+  const projectSkillRoots = projectCwd
     ? [
-        path.join(cwd, ".claude", "skills"),
-        path.join(cwd, ".agents", "skills"),
-        path.join(cwd, ".codex", "skills"),
+        path.join(projectCwd, ".claude", "skills"),
+        path.join(projectCwd, ".agents", "skills"),
+        path.join(projectCwd, ".codex", "skills"),
       ]
     : [];
-  const projectClaudeRoots = cwd ? [path.join(cwd, ".claude")] : [];
+  const projectClaudeRoots = projectCwd
+    ? [path.join(projectCwd, ".claude")]
+    : [];
   return {
     skillRoots: [
       ...projectSkillRoots,

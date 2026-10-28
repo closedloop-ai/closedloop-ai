@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import { activateOnEnterOrSpace } from "@closedloop-ai/design-system/lib/keyboard-activation";
+import { describe, test } from "vitest";
 import { keyboardEvent } from "./keyboard-activation-test-utils";
 
 describe("activateOnEnterOrSpace", () => {

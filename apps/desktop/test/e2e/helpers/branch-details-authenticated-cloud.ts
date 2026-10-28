@@ -7,21 +7,34 @@ import {
   type ServerResponse,
 } from "node:http";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import {
-  type ElectronApplication,
-  _electron as electron,
-  type Page,
-} from "@playwright/test";
+import { type ElectronApplication, expect } from "@playwright/test";
+import { CollaboratorArtifactType } from "@repo/api/src/types/artifact-collaborators.ts";
 import type {
   BranchAnalytics,
   BranchListResponse,
   BranchPageDetail,
 } from "@repo/api/src/types/branch";
 import type { BranchTraceResponse } from "@repo/api/src/types/branch-trace";
+import { CommentSurface } from "@repo/api/src/types/comment.ts";
 import { GitHubRepositorySource } from "@repo/api/src/types/github.ts";
 import {
+  GitHubFetchCredentialType,
+  GitHubFetchMechanism,
+  GitHubFetchTrigger,
+} from "@repo/api/src/types/github-read-model.ts";
+import {
+  RepositoryDefaultAvailability,
+  RepositoryDefaultCompleteness,
+  RepositoryDefaultSource,
+} from "@repo/api/src/types/repository-default-identity.ts";
+import { VcsProviderKind } from "@repo/api/src/types/vcs-provider-kind.ts";
+import { artifactCollaboratorBatchFixture } from "@repo/app/shared/__tests__/fixtures/artifact-collaborators.ts";
+import { z } from "zod";
+import { branchActivityPage } from "../../../../../e2e/helpers/branch-details-comprehensive-activity";
+import {
   commentsFor,
+  nativeComment,
+  sessionNativeComment,
   timingIncompleteTraceResponse,
   traceResponse,
 } from "../../../../../e2e/helpers/branch-details-comprehensive-comments-trace";
@@ -33,19 +46,7 @@ import {
   HISTORICAL_PR,
   timingIncompleteDetailFor,
 } from "../../../../../e2e/helpers/branch-details-comprehensive-data";
-import type { CloudReadReadinessSnapshot } from "../../../src/shared/cloud-read-readiness-contract.js";
-import {
-  closeElectronApp,
-  cloudReadReadinessEnv,
-  cloudReadReadinessLaunchArgs,
-  cloudSyncProgressEnv,
-  type E2eCloudSyncProgress,
-  e2eAppLaunchArgs,
-  MAIN_JS,
-} from "./desktop-app";
-import { completeFakeGitHubAuthority } from "./fake-github-authority-server";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+import { evaluateElectronSynchronously } from "./evaluate-electron-synchronously";
 
 export const AUTHENTICATED_ACCESS_TOKEN = "desktop-branch-details-access-token";
 const REFRESH_TOKEN = "desktop-branch-details-refresh-token";
@@ -55,49 +56,23 @@ export const AUTHENTICATED_ORGANIZATION_ID =
   "desktop-branch-details-organization";
 const TOKEN_EXPIRY = "2027-08-07T00:00:00.000Z";
 export const AUTHENTICATED_GATEWAY_ID = "44734473-4473-4473-8473-447344734473";
+/** Closed fixture IDs used to prove a repeated-ID Cloud batch over the launched IPC bridge. */
+export const CLOUD_COLLABORATOR_ARTIFACT_IDS = [
+  "55555555-5555-4555-8555-555555555551",
+  "55555555-5555-4555-8555-555555555552",
+] as const;
 
 export type AuthenticatedCloudRequest = {
   authorization: string | null;
   method: string;
   pathname: string;
+  search: string;
 };
 
 export type AuthenticatedBranchCloudServer = {
   close: () => Promise<void>;
   origin: string;
   requests: AuthenticatedCloudRequest[];
-};
-
-/** Launched Electron state needed by the authenticated Branch E2E fixture. */
-export type AuthenticatedDesktopApp = {
-  app: ElectronApplication;
-  cleanup: () => Promise<void>;
-  page: Page;
-  pageErrors: Error[];
-};
-
-/** Inputs for an isolated authenticated Desktop fixture launch. */
-export type AuthenticatedDesktopLaunchOptions = {
-  beforeLaunch?: (userDataDir: string) => void;
-  env?: Record<string, string>;
-  userDataDir: string;
-  /**
-   * ISS-5714: the readiness snapshot the read-source cutover consults. An
-   * authenticated launch that asserts the CLOUD Branch path must supply a
-   * drained one — signing in no longer moves Branches to the cloud until the
-   * upload backlog has demonstrably drained, and the production sampler cannot
-   * answer inside a spec's lifetime (see `cloudReadReadinessLaunchArgs`).
-   */
-  cloudReadReadiness?: CloudReadReadinessSnapshot;
-  /**
-   * ISS-5489 (PLN-1694 M2): the `cloudSync` half of the runtime-status payload.
-   * A spec asserting anything the SESSION lanes report — counts, a progress bar,
-   * a drained claim — needs it, because `identified` is true only while the
-   * cloud socket is up with a compute target, which no E2E fixture stands up.
-   * Without it those surfaces can only ever render their unmeasured state, and
-   * the runtime-status → preload → poller chain goes unexercised.
-   */
-  cloudSyncProgress?: E2eCloudSyncProgress;
 };
 
 type AuthenticatedBranchCloudServerOptions = {
@@ -113,64 +88,19 @@ type AuthenticatedBranchCloudServerOptions = {
   repositoryFullNames?: readonly string[];
   timingIncomplete?: boolean;
   traceFactory?: () => BranchTraceResponse;
+  /**
+   * Routes the calling spec owns that are NOT the Branches surface — the tag
+   * reads and writes a Branches row's tag cell issues, for instance. Return
+   * `true` once the response has been written.
+   *
+   * Consulted after the session handshake and BEFORE the GET-only rejection
+   * below, because a spec asserting a mutation needs its POST/PATCH answered
+   * rather than 404'd. Keeping it here, instead of standing up a second server
+   * per spec, keeps ONE origin minting the session for
+   * {@link AUTHENTICATED_ACCESS_TOKEN} (see {@link routeDesktopSessionRefresh}).
+   */
+  extraRoutes?: (request: IncomingMessage, response: ServerResponse) => boolean;
 };
-
-/**
- * Launches the authenticated fixture with a deterministic Linux safeStorage
- * backend. Headless CI cannot expose a usable OS secret key to Electron, so a
- * test-only preload enables Electron's documented basic backend before the
- * production app restores its session; macOS and Windows keep native storage.
- */
-export async function launchAuthenticatedDesktopApp({
-  beforeLaunch,
-  cloudReadReadiness,
-  env,
-  userDataDir,
-  cloudSyncProgress,
-}: AuthenticatedDesktopLaunchOptions): Promise<AuthenticatedDesktopApp> {
-  fs.mkdirSync(userDataDir, { recursive: true });
-  beforeLaunch?.(userDataDir);
-  const linuxSafeStorageArgs =
-    process.platform === "linux"
-      ? [
-          "-r",
-          path.join(__dirname, "linux-safe-storage-preload.cjs"),
-          "--password-store=basic",
-        ]
-      : [];
-  const app = await electron.launch({
-    // Chromium switches must precede Electron's app entrypoint. After MAIN_JS
-    // they are application arguments and do not select the Linux password store.
-    args: [
-      ...linuxSafeStorageArgs,
-      ...cloudReadReadinessLaunchArgs(cloudReadReadiness),
-      MAIN_JS,
-      `--user-data-dir=${userDataDir}`,
-      ...e2eAppLaunchArgs(false),
-    ],
-    env: {
-      ...process.env,
-      ...cloudReadReadinessEnv(cloudReadReadiness),
-      ...cloudSyncProgressEnv(cloudSyncProgress),
-      CLOSEDLOOP_DISABLE_AUTO_UPDATE: "1",
-      ELECTRON_DISABLE_SECURITY_WARNINGS: "1",
-      OTEL_SDK_DISABLED: "1",
-      ...env,
-    },
-  });
-  const page = await app.firstWindow();
-  const pageErrors: Error[] = [];
-  page.on("pageerror", (error) => {
-    pageErrors.push(error);
-  });
-  await page.waitForLoadState("domcontentloaded");
-  return {
-    app,
-    page,
-    pageErrors,
-    cleanup: () => closeElectronApp(app),
-  };
-}
 
 /**
  * Encrypts a first-party Desktop session with Electron safeStorage so the next
@@ -184,31 +114,33 @@ export async function seedAuthenticatedDesktopSession(
   const privateKeyPkcs8Pem = privateKey
     .export({ format: "pem", type: "pkcs8" })
     .toString();
-  const encrypted = await app.evaluate(
-    ({ safeStorage }, payload) => {
-      if (!safeStorage.isEncryptionAvailable()) {
-        throw new Error("Electron safeStorage is unavailable for auth E2E.");
-      }
-      return {
-        session: safeStorage
-          .encryptString(payload.serializedSession)
-          .toString("base64"),
-        signingKey: safeStorage
-          .encryptString(payload.privateKeyPkcs8Pem)
-          .toString("base64"),
-      };
-    },
-    {
-      privateKeyPkcs8Pem,
-      serializedSession: JSON.stringify({
-        refreshToken: REFRESH_TOKEN,
-        refreshTokenExpiresAt: TOKEN_EXPIRY,
-        userId: AUTHENTICATED_USER_ID,
-        organizationId: AUTHENTICATED_ORGANIZATION_ID,
-        gatewayId: AUTHENTICATED_GATEWAY_ID,
-      }),
-    }
-  );
+  // Settle the startup context before writing each encrypted fixture file once.
+  let encrypted!: { session: string; signingKey: string };
+  await expect(async () => {
+    encrypted = await evaluateElectronSynchronously(
+      app,
+      ({ safeStorage }, payload) => {
+        if (!safeStorage.isEncryptionAvailable()) {
+          throw new Error("Electron safeStorage is unavailable for auth E2E.");
+        }
+        return {
+          session: safeStorage
+            .encryptString(payload.serializedSession)
+            .toString("base64"),
+          signingKey: safeStorage
+            .encryptString(payload.privateKeyPkcs8Pem)
+            .toString("base64"),
+        };
+      },
+      {
+        privateKeyPkcs8Pem,
+        serializedSession: JSON.stringify(
+          createAuthenticatedDesktopSessionRecord()
+        ),
+      },
+      encryptedDesktopSeedSchema
+    );
+  }).toPass({ intervals: [100, 250, 500], timeout: 10_000 });
 
   fs.writeFileSync(
     path.join(userDataDir, "desktop-session.json"),
@@ -232,10 +164,12 @@ export async function startAuthenticatedBranchCloudServer(
 ): Promise<AuthenticatedBranchCloudServer> {
   const requests: AuthenticatedCloudRequest[] = [];
   const server = createServer((request, response) => {
+    const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
     requests.push({
       authorization: request.headers.authorization ?? null,
       method: request.method ?? "GET",
-      pathname: new URL(request.url ?? "/", "http://127.0.0.1").pathname,
+      pathname: requestUrl.pathname,
+      search: requestUrl.search,
     });
     routeRequest(request, response, options);
   });
@@ -282,7 +216,7 @@ export function routeDesktopSessionRefresh(
 }
 
 export function isAuthenticatedBranchRequest(
-  request: AuthenticatedCloudRequest
+  request: Pick<AuthenticatedCloudRequest, "authorization" | "pathname">
 ): boolean {
   return (
     request.pathname.startsWith(`/branches/${BRANCH_ID}`) &&
@@ -300,6 +234,10 @@ function routeRequest(
   if (routeDesktopSessionRefresh(request, response)) {
     return;
   }
+  if (pathname === "/artifacts/collaborators") {
+    routeCollaborators(request, response, requestUrl);
+    return;
+  }
   if (
     pathname.startsWith("/branches") &&
     request.headers.authorization !== `Bearer ${AUTHENTICATED_ACCESS_TOKEN}`
@@ -307,8 +245,11 @@ function routeRequest(
     rejectUnauthorized(response);
     return;
   }
+  if (options.extraRoutes?.(request, response)) {
+    return;
+  }
   if (request.method !== "GET") {
-    reject(response);
+    rejectNotFound(response);
     return;
   }
   if (
@@ -352,11 +293,39 @@ function routeRequest(
     writeApiResult(response, branchTraceFixture(options));
     return;
   }
-  if (pathname.endsWith("/trace-comments")) {
-    writeApiResult(response, []);
+  if (pathname === `/branches/${BRANCH_ID}/activity`) {
+    writeApiResult(response, branchActivityPage());
     return;
   }
-  reject(response);
+  if (routeTraceCommentRequest(requestUrl, response)) {
+    return;
+  }
+  rejectNotFound(response);
+}
+
+function routeCollaborators(
+  request: IncomingMessage,
+  response: ServerResponse,
+  url: URL
+): void {
+  if (
+    request.headers.authorization !== `Bearer ${AUTHENTICATED_ACCESS_TOKEN}`
+  ) {
+    rejectUnauthorized(response);
+    return;
+  }
+  const artifactType = url.searchParams.get("artifactType");
+  const ids = url.searchParams.getAll("artifactIds");
+  if (
+    request.method !== "GET" ||
+    (artifactType !== CollaboratorArtifactType.Branch &&
+      artifactType !== CollaboratorArtifactType.Session) ||
+    ids.join() !== CLOUD_COLLABORATOR_ARTIFACT_IDS.join()
+  ) {
+    rejectNotFound(response);
+    return;
+  }
+  writeApiResult(response, artifactCollaboratorBatchFixture(artifactType, ids));
 }
 
 function selectedPullRequestNumber(requestUrl: URL): number {
@@ -371,7 +340,8 @@ function projectDetail(
   return projector?.(detail) ?? detail;
 }
 
-function writeApiResult(response: ServerResponse, data: unknown): void {
+/** The `{success, data}` envelope every cloud BFF route answers in. */
+export function writeApiResult(response: ServerResponse, data: unknown): void {
   writeJson(response, { success: true, data });
 }
 
@@ -380,17 +350,20 @@ function writeJson(response: ServerResponse, data: unknown): void {
   response.end(JSON.stringify(data));
 }
 
-function reject(response: ServerResponse): void {
+/** 404 in that same envelope, for a path a stand-in deliberately does not model. */
+export function rejectNotFound(response: ServerResponse): void {
   response.statusCode = 404;
   writeApiResult(response, { error: "not found" });
 }
 
-function rejectUnauthorized(response: ServerResponse): void {
+/** 401 in that same envelope, for a read that arrived without the bearer token. */
+export function rejectUnauthorized(response: ServerResponse): void {
   response.statusCode = 401;
   writeApiResult(response, { error: "unauthorized" });
 }
 
-async function closeServer(server: Server): Promise<void> {
+/** Closes a stand-in's listener, surfacing a close error rather than hanging. */
+export async function closeServer(server: Server): Promise<void> {
   await new Promise<void>((resolve, rejectClose) => {
     server.close((error) => {
       if (error) {
@@ -409,7 +382,7 @@ function authenticatedRepositoryFixture(fullName: string, index: number) {
     fullName,
     githubRepoId: providerRepositoryId,
     source: GitHubRepositorySource.Installation,
-    repositoryDefaultAuthority: completeFakeGitHubAuthority(
+    repositoryDefaultAuthority: completeRepositoryAuthority(
       fullName,
       providerRepositoryId
     ),
@@ -468,4 +441,71 @@ function branchTraceFixture(
     return timingIncompleteTraceResponse();
   }
   return options.traceFactory?.() ?? traceResponse();
+}
+
+function isBranchCommentBatchRequest(requestUrl: URL): boolean {
+  return (
+    requestUrl.pathname === `/branches/${BRANCH_ID}/trace-comments` &&
+    requestUrl.searchParams.get("surface") === CommentSurface.BranchTimeline &&
+    requestUrl.searchParams.get("includeSessions") === "true"
+  );
+}
+
+function routeTraceCommentRequest(
+  requestUrl: URL,
+  response: ServerResponse
+): boolean {
+  if (!requestUrl.pathname.endsWith("/trace-comments")) {
+    return false;
+  }
+  if (isBranchCommentBatchRequest(requestUrl)) {
+    writeApiResult(response, [
+      nativeComment(CommentSurface.BranchTimeline),
+      sessionNativeComment(),
+    ]);
+  } else {
+    writeApiResult(response, []);
+  }
+  return true;
+}
+
+const encryptedDesktopSeedSchema = z
+  .object({ session: z.string().min(1), signingKey: z.string().min(1) })
+  .strict();
+
+/** Canonical synthetic session claims reused by both authenticated fixture seed paths. */
+export function createAuthenticatedDesktopSessionRecord() {
+  return {
+    refreshToken: REFRESH_TOKEN,
+    refreshTokenExpiresAt: TOKEN_EXPIRY,
+    userId: AUTHENTICATED_USER_ID,
+    organizationId: AUTHENTICATED_ORGANIZATION_ID,
+    gatewayId: AUTHENTICATED_GATEWAY_ID,
+  };
+}
+
+function completeRepositoryAuthority(
+  fullName: string,
+  providerRepositoryId: string
+) {
+  return {
+    repository: {
+      provider: VcsProviderKind.GitHub,
+      providerRepositoryId,
+      fullName,
+    },
+    evidence: {
+      availability: RepositoryDefaultAvailability.Available,
+      completeness: RepositoryDefaultCompleteness.Complete,
+      defaultBranch: "main",
+    },
+    provenance: {
+      source: RepositoryDefaultSource.InstallationRepositoriesRest,
+      mechanism: GitHubFetchMechanism.Rest,
+      trigger: GitHubFetchTrigger.SurfaceOpen,
+      credentialType: GitHubFetchCredentialType.GitHubApp,
+      observationKey: `desktop-e2e:${fullName}`,
+      observedAt: "2026-08-11T12:00:00.000Z",
+    },
+  };
 }

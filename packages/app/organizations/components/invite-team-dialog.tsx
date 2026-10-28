@@ -1,6 +1,9 @@
 "use client";
 
-import { OrgInviteRole } from "@repo/api/src/types/onboarding";
+import {
+  InviteMemberStatus,
+  OrgInviteRole,
+} from "@repo/api/src/types/onboarding";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Dialog,
@@ -130,7 +133,7 @@ export function InviteTeamDialog({
       // (per-email `status: "failed"`). Inspect the batch outcome rather than
       // assuming success: only reset + close when every invite landed.
       const failedEmails = result.results
-        .filter((r) => r.status === "failed")
+        .filter((r) => r.status === InviteMemberStatus.Failed)
         .map((r) => r.email);
 
       if (failedEmails.length > 0 || result.invited === 0) {
@@ -172,32 +175,45 @@ export function InviteTeamDialog({
         </DialogHeader>
 
         <div className="space-y-2">
-          {rows.map((row) => (
-            <div className="flex items-center gap-2" key={row.id}>
-              <Input
-                aria-label="Email address"
-                className="flex-1"
-                disabled={isSending}
-                onChange={(e) => updateRow(row.id, e.target.value)}
-                placeholder="teammate@company.com"
-                type="email"
-                value={row.email}
-              />
-              {rows.length > 1 && (
-                <Button
-                  aria-label="Remove email row"
-                  className="shrink-0 text-muted-foreground hover:text-destructive"
+          {rows.map((row, index) => {
+            // Only rows past the first need a distinguishing number in their
+            // label — with a single row "Email address" is already unambiguous,
+            // and appending "row 1" there would just be noise. Once a second
+            // row exists, every row's Input and remove button would otherwise
+            // share the exact same aria-label, and a screen reader user tabbing
+            // through the list would have no way to tell which is which.
+            const rowNumber = rows.length > 1 ? index + 1 : null;
+            return (
+              <div className="flex items-center gap-2" key={row.id}>
+                <Input
+                  aria-label={
+                    rowNumber
+                      ? `Email address, row ${rowNumber}`
+                      : "Email address"
+                  }
+                  className="flex-1"
                   disabled={isSending}
-                  onClick={() => removeRow(row.id)}
-                  size="icon"
-                  type="button"
-                  variant="ghost"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              )}
-            </div>
-          ))}
+                  onChange={(e) => updateRow(row.id, e.target.value)}
+                  placeholder="teammate@company.com"
+                  type="email"
+                  value={row.email}
+                />
+                {rowNumber && (
+                  <Button
+                    aria-label={`Remove email row ${rowNumber}`}
+                    className="shrink-0 text-muted-foreground hover:text-destructive"
+                    disabled={isSending}
+                    onClick={() => removeRow(row.id)}
+                    size="icon"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                )}
+              </div>
+            );
+          })}
           <Button
             className="text-muted-foreground"
             disabled={isSending}

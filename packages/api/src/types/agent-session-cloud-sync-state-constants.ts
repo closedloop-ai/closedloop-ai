@@ -3,10 +3,8 @@
  * constants half. The plain const-object enum, its union type, values tuple, and
  * type guard live here so client bundles that only need the enum for a
  * comparison/render (e.g. `SyncedSessionsTable`, imported by the dashboard,
- * insights, and telemetry mini-tables) do NOT pull `zod` in transitively. The
- * strict boundary schema lives in the sibling `agent-session-cloud-sync-state`
- * module, which imports these constants (codex #3449 review: split the badge
- * constants out of Zod-backed modules).
+ * insights, and telemetry mini-tables) do NOT pull `zod` in transitively
+ * (codex #3449 review: keep the badge constants out of Zod-backed modules).
  *
  * Unlike `ReadSource` — a RESPONSE-level discriminator that stamps the WHOLE
  * list with which store produced it (in desktop/local mode every row reads
@@ -36,9 +34,26 @@ export const AgentSessionCloudSyncState = {
    * the row was read from the cloud store — the cloud is caught up for this row.
    */
   Synced: "synced",
+  /**
+   * ISS-11427: the local sync lane dead-lettered this session and WILL retry
+   * it — on its retry-after schedule, or by the idle revisit. Desktop-local
+   * only; the cloud never stamps it. Classified by
+   * `apps/desktop/src/main/agent-sync/agent-session-dead-letter-sync-state.ts`.
+   */
+  DeadLetter: "dead_letter",
+  /**
+   * ISS-11427: the local sync lane dead-lettered this session and no path in
+   * the running lane can reach it. Same producer and classifier as above.
+   */
+  Abandoned: "abandoned",
 } as const;
 export type AgentSessionCloudSyncState =
   (typeof AgentSessionCloudSyncState)[keyof typeof AgentSessionCloudSyncState];
+
+/** ISS-11427: the two states a dead-lettered session's row can report. */
+export type DeadLetteredCloudSyncState =
+  | typeof AgentSessionCloudSyncState.DeadLetter
+  | typeof AgentSessionCloudSyncState.Abandoned;
 
 export const agentSessionCloudSyncStateValues = Object.values(
   AgentSessionCloudSyncState
@@ -68,4 +83,6 @@ function assertCloudSyncStateKeysCovered(
 assertCloudSyncStateKeysCovered({
   pending: true,
   synced: true,
+  dead_letter: true,
+  abandoned: true,
 });

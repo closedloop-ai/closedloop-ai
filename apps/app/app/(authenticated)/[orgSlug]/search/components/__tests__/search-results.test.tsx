@@ -1,15 +1,13 @@
-import type {
-  GlobalSearchResponse,
-  SearchHit,
-} from "@repo/api/src/types/search";
+import type { GlobalSearchResponse } from "@repo/api/src/types/search";
 import { SearchEntityType } from "@repo/api/src/types/search-entity-kind";
 import type { SearchPanelState } from "@repo/app/search/hooks/use-search";
+import type { OfferedSearchHit } from "@repo/app/search/lib/search-display";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { SearchResults } from "../search-results";
 
-const RE_ALPHA_LOOP = /Alpha loop/;
+const RE_ALPHA_SESSION = /Alpha session/;
 const RE_SEARCH_ERROR = /Couldn't load results/;
 // Matches the count strip in BOTH the singular and plural forms. `/result for/`
 // alone silently missed every plural line ("0 results for …"), which let the
@@ -25,6 +23,15 @@ const useGlobalSearchMock = vi.fn();
 const useSearchPanelStateMock = vi.fn();
 
 let searchParams = new URLSearchParams("q=alpha");
+
+// ISS-9414: the panel now reads `portable-search-surface` at its mount site, and
+// these cases are the flag-OFF (`UnifiedSearchResults`) branch. Mocked rather
+// than provider-wrapped so the branch under test is NAMED — without it the hook
+// throws for want of a `FeatureFlagAdapterProvider`, and with a blanket `true`
+// every case below would silently move to the other surface.
+vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
+  useFeatureFlagEnabled: () => false,
+}));
 
 vi.mock("next/navigation", () => ({
   useParams: () => ({ orgSlug: "acme" }),
@@ -127,13 +134,13 @@ describe("SearchResults", () => {
       panelState({
         results: [
           hit({
-            title: "Alpha loop",
-            snippet: "run the <b>alpha</b> loop",
-            entityType: SearchEntityType.Loop,
-            // The Loop route is built from `entityId` (id-keyed), so the id must
-            // match the asserted `/loops/loop-1` route, not the default doc id.
-            entityId: "loop-1",
-            deepLink: "/loops/loop-1",
+            title: "Alpha session",
+            snippet: "run the <b>alpha</b> session",
+            entityType: SearchEntityType.AgentSession,
+            // The session route is built from `entityId` (id-keyed), so the id
+            // must match the asserted route, not the default doc id.
+            entityId: "session-1",
+            deepLink: "/sessions/session-1",
           }),
         ],
       })
@@ -143,12 +150,11 @@ describe("SearchResults", () => {
 
     // The hit's meta line names its type; the in-list type-facet strip is hidden
     // on this surface (the query bar's Type control owns kind filtering).
-    expect(screen.getByText("Loop")).toBeInTheDocument();
+    expect(screen.getByText("Session")).toBeInTheDocument();
     expect(screen.getByText("alpha")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: RE_ALPHA_LOOP })).toHaveAttribute(
-      "href",
-      "/acme/loops/loop-1"
-    );
+    expect(
+      screen.getByRole("link", { name: RE_ALPHA_SESSION })
+    ).toHaveAttribute("href", "/acme/sessions/session-1");
   });
 
   test("submitting the query bar commits the raw query to the URL q param", async () => {
@@ -158,10 +164,10 @@ describe("SearchResults", () => {
 
     const input = screen.getByRole("textbox", { name: "Search query" });
     await user.clear(input);
-    await user.type(input, "beta type:loop{Enter}");
+    await user.type(input, "beta type:project{Enter}");
 
     expect(routerReplaceMock).toHaveBeenLastCalledWith(
-      "/acme/search?q=beta+type%3Aloop",
+      "/acme/search?q=beta+type%3Aproject",
       { scroll: false }
     );
   });
@@ -269,20 +275,80 @@ describe("SearchResults", () => {
     expect(screen.queryAllByText(RE_NO_RESULTS)).toHaveLength(0);
   });
 
+  test("renders a SETTLED empty search as the empty state plus an honest 0-count", () => {
+    // ISS-6724. The suite already proves what a FAILED search must not show;
+    // nothing proved what a genuinely empty one MUST show, so "no result rows"
+    // was the only evidence either state had — and that is equally true of a
+    // thrown query, a stale org scope, and a component that never fetched.
+    // Pinning the empty state's own copy AND its 0-count is what makes the two
+    // states distinguishable in the DOM rather than by absence.
+    useSearchPanelStateMock.mockReturnValue(
+      panelState({ results: [], isError: false, isLoading: false })
+    );
+
+    render(<SearchResults />);
+
+    // Both halves of the empty state, so renaming either one trips this rather
+    // than passing on the survivor.
+    expect(screen.getByText("No results")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Nothing matched your query. Try broadening the terms or removing a filter."
+      )
+    ).toBeInTheDocument();
+    // The count strip renders twice (visible line + sr-only aria-live) and is
+    // suppressed outright on the error path, so its presence here is the second,
+    // independent signal that the query settled with a real empty result set.
+    expect(screen.getAllByText('0 results for "alpha"').length).toBe(2);
+    // ...and the failure copy the error path renders is absent.
+    expect(screen.queryByText(RE_SEARCH_ERROR)).toBeNull();
+    // The query actually ran against the committed URL query — an empty state
+    // rendered by a component that never fetched would satisfy everything above.
+    expect(useSearchPanelStateMock).toHaveBeenCalledWith({ query: "alpha" });
+  });
+
+  test("does not render the empty state's copy on a failed search", () => {
+    // The inverse of the case above, and the ticket's headline: a failed search
+    // must not read as "nothing matched". Asserted as its own test so the
+    // empty-state test above cannot pass by rendering copy both states share.
+    useSearchPanelStateMock.mockReturnValue(
+      panelState({ results: [], isError: true })
+    );
+
+    render(<SearchResults />);
+
+    expect(screen.getByText(RE_SEARCH_ERROR)).toBeInTheDocument();
+    expect(screen.queryAllByText(RE_NO_RESULTS)).toHaveLength(0);
+  });
+
+  test("distinguishes a still-loading search from a settled empty one", () => {
+    // A permanently-loading panel and an empty one both render zero rows. The
+    // strip must say "Searching…", never claim a 0-result total for a query
+    // that has not come back.
+    useSearchPanelStateMock.mockReturnValue(
+      panelState({ results: [], isLoading: true })
+    );
+
+    render(<SearchResults />);
+
+    expect(screen.getAllByText('Searching for "alpha"…').length).toBe(2);
+    expect(screen.queryByText('0 results for "alpha"')).toBeNull();
+  });
+
   test("forwards a legacy ?types= param as an inline type: token and normalizes the URL", () => {
     // A bookmark/shared link from the previous UI carried the entity filter as
-    // `?types=loop`; the panel must fold it into the query so the filter is not
+    // `?types=project`; the panel must fold it into the query so the filter is not
     // silently dropped, and rewrite the URL to the new `type:`-token grammar.
-    searchParams = new URLSearchParams("q=alpha&types=loop");
+    searchParams = new URLSearchParams("q=alpha&types=project");
     useSearchPanelStateMock.mockReturnValue(panelState({ results: [hit()] }));
 
     render(<SearchResults />);
 
     expect(useSearchPanelStateMock).toHaveBeenCalledWith({
-      query: "alpha type:loop",
+      query: "alpha type:project",
     });
     expect(routerReplaceMock).toHaveBeenCalledWith(
-      "/acme/search?q=alpha+type%3Aloop",
+      "/acme/search?q=alpha+type%3Aproject",
       { scroll: false }
     );
   });
@@ -361,6 +427,7 @@ function panelState(
   return {
     results: [],
     isLoading: false,
+    isRetrying: false,
     isError: false,
     filterErrorMessage: undefined,
     nextCursor: null,
@@ -369,7 +436,7 @@ function panelState(
   };
 }
 
-function hit(overrides: Partial<SearchHit> = {}): SearchHit {
+function hit(overrides: Partial<OfferedSearchHit> = {}): OfferedSearchHit {
   return {
     entityType: SearchEntityType.Document,
     entityId: "doc-1",

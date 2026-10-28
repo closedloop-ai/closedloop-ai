@@ -3,6 +3,10 @@ import type {
   CreateDesktopCommandInput,
   RelayOperationDispatchRequest,
 } from "@repo/api/src/types/compute-target";
+import {
+  normalizeLenientRelayDispatchResult,
+  type RelayDispatchResult,
+} from "@repo/api/src/types/relay-dispatch";
 import { log } from "@repo/observability/log";
 import { env } from "@/env";
 import type {
@@ -159,23 +163,21 @@ export async function dispatchRelayCommandToRelay(input: {
       signal: AbortSignal.timeout(5000),
     });
     if (response.ok) {
-      const result = (await response
-        .json()
-        .catch(() => ({ delivered: true }))) as {
-        delivered?: unknown;
-        reason?: unknown;
-      };
+      const result = normalizeLenientRelayDispatchResult(
+        await response.json().catch(() => null),
+        true
+      );
       log.info("Relay dispatch result", {
         targetId: input.targetId,
         computeTargetId: input.targetId,
         commandId: input.commandId,
         delivered: result.delivered,
         reason: result.reason,
+        diagnosticReason: result.diagnosticReason,
+        peerStatusCode: result.peerStatusCode,
+        peerErrorCode: result.peerErrorCode,
       });
-      return {
-        delivered: result.delivered !== false,
-        reason: typeof result.reason === "string" ? result.reason : undefined,
-      };
+      return result;
     }
     const body = await response.text().catch(() => "");
     log.error("Relay dispatch failed", {
@@ -197,7 +199,4 @@ export async function dispatchRelayCommandToRelay(input: {
   }
 }
 
-export type RelayDispatchResult = {
-  delivered: boolean;
-  reason?: string;
-};
+export type { RelayDispatchResult } from "@repo/api/src/types/relay-dispatch";

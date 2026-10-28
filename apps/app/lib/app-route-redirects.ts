@@ -1,5 +1,4 @@
 import {
-  DocumentType,
   LEGACY_TYPE_ROUTE_PREFIXES,
   TYPE_ROUTE_PREFIX,
 } from "@repo/api/src/types/document";
@@ -8,6 +7,10 @@ import {
   SETTINGS_INTEGRATION_CALLBACK_PARAMS,
   SettingsTab,
 } from "@/app/(authenticated)/[orgSlug]/settings/settings-tabs";
+import {
+  LEGACY_ISSUE_LIST_ROUTE_SEGMENTS,
+  resolveLegacyDocumentRouteRewrite,
+} from "./legacy-document-route-redirects";
 
 /**
  * Path-level redirect decisions for the app proxy (`apps/app/proxy.ts`).
@@ -21,18 +24,8 @@ import {
  * rewrite without its query, or vice versa.
  */
 
-// The Issue route prefix and its retired `/features` alias come from the
-// document contract, which owns them ("a future prefix rename only edits this
-// map"). Re-declaring the strings here is exactly the drift that map exists to
-// prevent. `TYPE_ROUTE_PREFIX` is Partial, so a missing entry degrades to "no
-// rename" rather than a hardcoded fallback that would silently disagree with it.
-const ISSUE_ROUTE_SEGMENT = TYPE_ROUTE_PREFIX[DocumentType.Feature];
-const LEGACY_ISSUE_ROUTE_SEGMENTS = new Set<string>(
-  LEGACY_TYPE_ROUTE_PREFIXES[DocumentType.Feature] ?? []
-);
-
-// Document routes derive from the same contract; the rest are app surfaces with
-// no document type behind them.
+// Document routes derive from the document contract; the rest are app surfaces
+// with no document type behind them.
 const DOCUMENT_ROUTE_DIRECTORIES: string[] = [
   ...Object.values(TYPE_ROUTE_PREFIX),
   ...Object.values(LEGACY_TYPE_ROUTE_PREFIXES).flat(),
@@ -79,8 +72,8 @@ const SECOND_SEGMENT_INDEX = 2;
 // stalls at the original URL or trips the root error boundary ("This page
 // couldn't load"), which is exactly how the e2e `loops list route redirects to
 // Sessions` failed. A proxy redirect runs before any rendering, so it can't
-// degrade. ONLY the bare list forwards; the still-functional sub-routes
-// (`/loops/[id]`, `/loops/usage`, `/loops/monitoring`) are left untouched.
+// degrade. ONLY the bare list forwards; `/loops/monitoring` keeps its own
+// redirect, and `/loops/[id]` and `/loops/usage` are gone (PRD-795).
 //
 // ISS-5011 adds `/organization` on the same mechanism, for the same reason. That
 // route was a leftover stub — a heading, the subtitle "Manage your organization
@@ -187,9 +180,10 @@ export const RedirectStatus = {
   // `/organization`). Also the DEFAULT — a new rewrite is temporary until
   // someone proves its target is URL-deterministic.
   Temporary: 302,
-  // The FEA-3955 `/features` → `/issues` rename, which that spec called for
-  // verbatim ("add a permanent `/features/*` → `/issues/*` redirect"), and only
-  // on a path that already carries its org prefix.
+  // The FEA-3955 `/features` alias only, which that spec called for verbatim
+  // ("add a permanent `/features/*` → `/issues/*` redirect"), and only on a
+  // path that already carries its org prefix. Since ISS-12855 its detail form
+  // lands on `/documents/:slug` in the same hop.
   //
   // 308 rather than 301: 301 permits a client to rewrite the method to GET, and
   // this alias fronts a whole route subtree rather than one GET page. 308 keeps
@@ -220,11 +214,13 @@ export type AppRouteRedirect = {
  * Two rewrites compose here, in one pass, so a legacy link costs ONE redirect
  * rather than one per rewrite:
  *
- * 1. **FEA-4137 `/features` → `/issues`.** That change renamed the Feature
- *    artifact to Issue and moved both the list and detail routes. Legacy
- *    `/features` links — Slack unfurls, MCP-emitted URLs, PR bodies, external
- *    bookmarks — must keep resolving, so the rename is a redirect, not a
- *    removal.
+ * 1. **Legacy document routes.** A legacy detail prefix (`/prds/:slug`,
+ *    `/implementation-plans/:slug`, `/issues/:slug`, `/features/:slug`) goes to
+ *    `/documents/:slug` (ISS-12855), and the bare `/features` list goes to
+ *    `/issues` (FEA-4137, which renamed the Feature artifact to Issue). Legacy
+ *    links — Slack unfurls, MCP-emitted URLs, PR bodies, external bookmarks —
+ *    must keep resolving, so each rename is a redirect, not a removal
+ *    (`legacy-document-route-redirects.ts`).
  *
  *    This belongs HERE, in the proxy, and NOT in a `redirect()`-only Server
  *    Component page. That page also exported an async `generateMetadata` which
@@ -241,10 +237,10 @@ export type AppRouteRedirect = {
  *
  * 2. **Org-slug prefix.** A bare `/my-tasks` becomes `/{orgSlug}/my-tasks`.
  *
- * Rewrite 1 alone is permanent; rewrite 2 — and therefore any request that needs
- * both — is not. `/features/ISS-6` is ONE URL shared by every user and resolves
- * to each caller's own org, so a cached 308 on it would send the next org's
- * members somewhere they cannot read.
+ * Rewrite 1 is permanent only for the `/features` alias; rewrite 2 — and
+ * therefore any request that needs both — is not. `/features/ISS-6` is ONE URL
+ * shared by every user and resolves to each caller's own org, so a cached 308 on
+ * it would send the next org's members somewhere they cannot read.
  *
  * The legacy `FEA-###` slug is deliberately NOT rewritten to its canonical
  * `ISS-###` form here, preserving the choice #3886 documented. `findBySlug`
@@ -295,15 +291,14 @@ export function resolveRedirect(
   ) {
     segments[routeSegmentIndex] = "my-tasks";
   }
-  let renamedLegacyIssueRoute = false;
-  if (
-    ISSUE_ROUTE_SEGMENT &&
-    routeSegment &&
-    LEGACY_ISSUE_ROUTE_SEGMENTS.has(routeSegment)
-  ) {
-    segments[routeSegmentIndex] = ISSUE_ROUTE_SEGMENT;
-    renamedLegacyIssueRoute = true;
+  const legacyRewrite = resolveLegacyDocumentRouteRewrite(
+    segments,
+    routeSegmentIndex
+  );
+  if (legacyRewrite) {
+    segments[routeSegmentIndex] = legacyRewrite.segment;
   }
+  const renamedLegacyIssueRoute = legacyRewrite?.permanent ?? false;
 
   // ISS-4477 / ISS-5011: forward a RETIRED route (`.../loops`, `.../organization`
   // — and only the bare route, nothing after it) to its successor. Applied after
@@ -374,7 +369,9 @@ export function shouldRewriteLegacyIssueUnfurl(
   const { routeSegmentIndex } = resolveRouteSegmentPosition(segments, orgSlug);
   const routeSegment = segments[routeSegmentIndex];
 
-  return Boolean(routeSegment && LEGACY_ISSUE_ROUTE_SEGMENTS.has(routeSegment));
+  return Boolean(
+    routeSegment && LEGACY_ISSUE_LIST_ROUTE_SEGMENTS.has(routeSegment)
+  );
 }
 
 /**
@@ -445,7 +442,7 @@ export function resolveRedirectSearchParams(
  * everywhere else gets the wrong answer. An org may legally be slugged
  * `organization` (it is not in `RESERVED_ORG_SLUGS`), and for that org the
  * equality check reads `/organization` as its own org prefix, drops through to
- * `[orgSlug]/page.tsx`, and lands the user on `/organization/my-tasks` — so the
+ * `[orgSlug]/page.tsx`, and lands the user on `/organization/dashboard` — so the
  * one org whose members are most likely to type the retired URL is the only one
  * the forward silently skips (whitlockk, PR #4501). A single segment that names a
  * retired route cannot be an org-scoped route *inside* that org anyway: there is

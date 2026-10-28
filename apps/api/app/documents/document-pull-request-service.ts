@@ -9,6 +9,8 @@ import {
 import { ArtifactType, type Prisma, withDb } from "@repo/database";
 import { branchArtifactToInfo } from "@/lib/artifact-adapters";
 import { artifactLinksService } from "../artifact-links/service";
+import { branchProductEligibilityService } from "../branches/branch-product-eligibility-service";
+import { matchingGitHubPullRequestUrl } from "../branches/branch-provider-fallback-service";
 import { parseStoredSnapshot } from "./repository-snapshot-helpers";
 
 type BranchArtifactRow = Prisma.ArtifactGetPayload<{
@@ -90,9 +92,19 @@ async function queryBranchArtifacts(
   return { rows, primaryRepoFullName };
 }
 
-function branchRowToInfo(row: BranchArtifactRow): BranchInfo | null {
+function branchRowToInfo(
+  row: BranchArtifactRow,
+  productEligibility: BranchInfo["productEligibility"]
+): BranchInfo | null {
+  const hasCompatibilityProviderFallback = Boolean(
+    matchingGitHubPullRequestUrl(row.branch?.currentPullRequestDetail)
+  );
   return branchArtifactToInfo(row, {
     externalLinkId: row.id,
+    productEligibility,
+    ...(hasCompatibilityProviderFallback && {
+      hasCompatibilityProviderFallback: true,
+    }),
   });
 }
 
@@ -126,8 +138,13 @@ export const documentPullRequestService = {
       return [];
     }
 
+    const eligibilityById = await branchProductEligibilityService.findByIds(
+      organizationId,
+      rows.map((row) => row.id)
+    );
+
     const infos = rows
-      .map(branchRowToInfo)
+      .map((row) => branchRowToInfo(row, eligibilityById.get(row.id)))
       .filter((info): info is BranchInfo => info !== null);
 
     const primary = pickBranchForRepo(infos, primaryRepoFullName);

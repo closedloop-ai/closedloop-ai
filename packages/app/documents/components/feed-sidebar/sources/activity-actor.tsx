@@ -5,22 +5,24 @@ import {
   ActivityFeedActorKind,
 } from "@repo/api/src/types/artifact-activity-feed";
 import type { User } from "@repo/api/src/types/user";
+import { ActivityInlineSkeleton } from "@repo/app/documents/components/artifact-activity/activity-parts";
 import { UserLink } from "@repo/app/shared/components/user-link";
-import {
-  getInitials,
-  getUserDisplayName,
-} from "@repo/app/shared/lib/user-utils";
+import { getInitials } from "@repo/app/shared/lib/user-utils";
 import {
   Avatar,
   AvatarFallback,
   AvatarImage,
 } from "@repo/design-system/components/ui/avatar";
+import { Badge } from "@repo/design-system/components/ui/badge";
+import { CHIP_FOCUS_RING_CLASS } from "@repo/design-system/components/ui/chip";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
+import { cn } from "@repo/design-system/lib/utils";
 import { Bot, Cog, User as UserIcon } from "lucide-react";
 import {
-  type ActivityDirectory,
-  ActivityDirectoryStatus,
-} from "./activity-directory";
+  type ActivityActorDescription,
+  resolveActivityActor,
+} from "./activity-formatting";
+import type { ActivityDirectory } from "./activity-types";
 
 /**
  * The row's ONE visual statement of actor kind: three distinct glyphs, never a
@@ -50,60 +52,18 @@ const ACTOR_FALLBACK_ICON = {
 } as const;
 
 /**
- * Resolve a human actor's id to its org-user record so the row can show a real
- * name + avatar. Agents / system actors are not org users, so they short-circuit
- * to null without touching the map.
- */
-function resolveUser(
-  actor: ActivityFeedActor,
-  directory: ActivityDirectory<User>
-): User | null {
-  if (actor.kind !== ActivityFeedActorKind.Human || actor.id === null) {
-    return null;
-  }
-  return directory.find(actor.id);
-}
-
-/**
- * The label for an actor we could not resolve to a profile.
- *
- * "Unknown user" is a claim — that we looked the id up and nobody is there —
- * so it is reserved for a settled directory. When the directory is unavailable
- * (the read failed, or the viewer can see no org users at all) the row says
- * only what it actually knows: a member of this org did this.
- */
-function actorFallbackLabel(
-  actor: ActivityFeedActor,
-  status: ActivityDirectoryStatus
-): string {
-  if (actor.kind === ActivityFeedActorKind.Agent) {
-    return "Agent";
-  }
-  if (actor.kind === ActivityFeedActorKind.System) {
-    return "System";
-  }
-  return status === ActivityDirectoryStatus.Ready ? "Unknown user" : "Member";
-}
-
-/** A human actor whose directory has not settled names nobody meanwhile. */
-function isAwaitingName(
-  actor: ActivityFeedActor,
-  status: ActivityDirectoryStatus
-): boolean {
-  return (
-    actor.kind === ActivityFeedActorKind.Human &&
-    actor.id !== null &&
-    status === ActivityDirectoryStatus.Pending
-  );
-}
-
-/**
  * Actor cell for an activity row: avatar + display name.
  *
  * A human actor resolves to its org-user profile (name, avatar, profile link).
- * Agents and the system have no profile to anchor on, so the avatar falls back
- * to a kind glyph and the name IS the kind word — the whole statement, once
- * (ISS-5767). All from design-system primitives — no hand-rolled avatar, no
+ * The system has no profile to anchor on, so its avatar falls back to a kind
+ * glyph and the name IS the kind word — the whole statement, once (ISS-5767).
+ * An agent row is an API-key write, and the feed's actor id is the KEY OWNER's
+ * user id (ISS-10994), so it resolves to the owner's avatar and name plus an
+ * "API" badge (Nerys, 2026-10-07): it must never read as the owner's own edit.
+ * The badge shows only beside a RESOLVED owner. An agent whose owner cannot be
+ * resolved reads "Agent" with the robot glyph and no badge: the badge there
+ * would state the machine kind a third time.
+ * "API" names the channel, not the actor kind. All from design-system primitives — no hand-rolled avatar, no
  * per-instance sizing overrides.
  *
  * WHAT THIS DOES AND DOES NOT MATCH, stated precisely so the next reader does
@@ -144,16 +104,9 @@ export function ActivityActor({
    */
   directory: ActivityDirectory<User>;
 }>) {
-  const user = resolveUser(actor, directory);
-  const FallbackIcon = ACTOR_FALLBACK_ICON[actor.kind];
+  const resolved = resolveActivityActor(actor, directory);
 
-  const awaitingName = isAwaitingName(actor, directory.status);
-  const displayName = user
-    ? getUserDisplayName(user)
-    : actorFallbackLabel(actor, directory.status);
-  const initials = user ? getInitials(displayName) : "";
-
-  if (awaitingName) {
+  if (resolved.pending) {
     return (
       <div className="flex min-w-0 items-center gap-2">
         <Skeleton className="size-6 shrink-0 rounded-full" />
@@ -164,37 +117,142 @@ export function ActivityActor({
 
   return (
     <div className="flex min-w-0 items-center gap-2">
-      <Avatar className="size-6">
-        {/*
-         * This `alt`, and the initials below, restate the NAME that the span
-         * two nodes down already carries. Left alone deliberately: that is the
-         * name axis, not the kind axis this gate covers, and `alt=""` is a
-         * separate a11y call (ISS-6174).
-         *
-         * Whoever takes it: jsdom never loads the image, so no `<img>` exists
-         * at unit level and an assertion on this `alt` passes vacuously either
-         * way. `e2e/document-activity-actor-kind.spec.ts` is where it is
-         * observable, and it pins today's behaviour.
-         */}
-        {user?.avatarUrl ? (
-          <AvatarImage alt={displayName} src={user.avatarUrl} />
-        ) : null}
-        <AvatarFallback>
-          {initials || <FallbackIcon aria-hidden className="size-3" />}
-        </AvatarFallback>
-      </Avatar>
-      <span className="min-w-0 truncate font-medium text-foreground text-sm">
-        {user ? (
-          <UserLink
-            className="text-foreground hover:underline"
-            userId={user.id}
-          >
-            {displayName}
-          </UserLink>
-        ) : (
-          displayName
-        )}
-      </span>
+      <ActivityActorAvatar actor={resolved} />
+      <ActivityActorName actor={resolved} />
+      {actor.kind === ActivityFeedActorKind.Agent && resolved.user !== null ? (
+        <ActivityApiBadge />
+      ) : null}
     </div>
+  );
+}
+
+/**
+ * The actor's avatar alone, 24px everywhere it is drawn (the rail card and the
+ * Activity tab's timeline). Same ISS-5955 rule everywhere: the image is
+ * unnamed because the row always states the name in text.
+ *
+ * `kindGlyph` is the Activity tab's rule (Nerys, 2026-10-09): a person is
+ * their photo, or their initials without one; System is the cog and an agent
+ * is the robot, even when the agent's API key resolves to an owner with a
+ * photo. The rail card leaves it off and keeps showing the key owner's
+ * picture on an agent row.
+ */
+export function ActivityActorAvatar({
+  actor,
+  kindGlyph = false,
+  className,
+}: Readonly<{
+  actor: ActivityActorDescription;
+  /** Draw the kind's glyph for every non-person actor (the timeline look). */
+  kindGlyph?: boolean;
+  className?: string;
+}>) {
+  if (actor.pending) {
+    return (
+      <ActivityInlineSkeleton
+        className={cn("size-6 shrink-0 rounded-full", className)}
+      />
+    );
+  }
+  const FallbackIcon = ACTOR_FALLBACK_ICON[actor.kind];
+  const person =
+    kindGlyph && actor.kind !== ActivityFeedActorKind.Human ? null : actor.user;
+  const initials = person && actor.name ? getInitials(actor.name) : "";
+  // Stays hand-rolled (ISS-12343): the fallback is a NODE, not a string —
+  // initials or the actor-kind glyph — and `PersonAvatar` types `initials` as
+  // a string. The ISS-5955 and ISS-6174 rulings below ride on that glyph.
+  return (
+    <Avatar className={cn("size-6", className)}>
+      {/*
+       * ISS-5955: empty, because the name in the same row is the SAME string —
+       * naming the image made a screen reader announce the person twice on
+       * every human row (WCAG 1.1.1 / H67). Already the house pattern:
+       * `member-row`, `members-tab-content`, `loop-usage-tables`,
+       * `branch-comment-card` and `approved-branches-table` all do this. It is
+       * NOT a blanket rule for avatars: ISS-7746 gave
+       * `shared/components/assignee-avatar.tsx` an accessible name because on
+       * most of its consumers it is the ONLY statement of identity. Safe here
+       * because every row that draws this avatar also draws
+       * {@link ActivityActorName}; the coverage is in
+       * `__tests__/sources/activity-actor-name-announcement.test.tsx`.
+       *
+       * ISS-8972: `AvatarImage` itself is always mounted, `src` possibly
+       * undefined — see table-cell-list-primitives.tsx's ReferenceChip for why
+       * (a conditionally-unmounted AvatarImage leaves Radix's Avatar context
+       * believing a since-removed picture is still "loaded", hiding the
+       * fallback forever).
+       */}
+      <AvatarImage alt="" src={person?.avatarUrl ?? undefined} />
+      {/*
+       * The glyph is `aria-hidden` and the initials beside it are NOT, which
+       * looks arbitrary and is not. Both are rulings, not oversights: the
+       * glyph restates the KIND the name already carries (ISS-5767), while
+       * "DR" is a derived abbreviation rather than the name, so ISS-5955 left
+       * it alone. Hiding it was the other half of ISS-6174, which was
+       * canceled — so a screen reader on a photo-less human row still gets
+       * "D R" before the link. Reopen that, do not quietly fold it in here.
+       */}
+      {/*
+       * Initials sized for the 24px activity avatar; the DS fallback's own
+       * text size is for larger avatars and crowds the edge here.
+       */}
+      {/*
+       * On the timeline (`kindGlyph`) the initials are hidden too: the name is
+       * announced right beside the avatar, so "E C Emily Carter" would say the
+       * person twice (ISS-12330). The rail card keeps ISS-6174's behaviour.
+       */}
+      <AvatarFallback
+        aria-hidden={kindGlyph || undefined}
+        className="font-medium text-[10px]"
+      >
+        {initials || <FallbackIcon aria-hidden className="size-3" />}
+      </AvatarFallback>
+    </Avatar>
+  );
+}
+
+/** The actor's name: a profile link for a person, the kind word otherwise. */
+export function ActivityActorName({
+  actor,
+  className,
+}: Readonly<{ actor: ActivityActorDescription; className?: string }>) {
+  if (actor.pending || actor.name === null) {
+    // Inline: the name sits inside the row's sentence (a `<p>`).
+    return <ActivityInlineSkeleton className={cn("h-4 w-24", className)} />;
+  }
+  return (
+    <span
+      className={cn(
+        "min-w-0 truncate font-medium text-foreground text-sm",
+        className
+      )}
+    >
+      {actor.user ? (
+        <UserLink
+          className={cn(
+            "rounded-sm text-foreground hover:underline",
+            CHIP_FOCUS_RING_CLASS
+          )}
+          userId={actor.user.id}
+        >
+          {actor.name}
+        </UserLink>
+      ) : (
+        actor.name
+      )}
+    </span>
+  );
+}
+
+/**
+ * The API-key badge on an agent row (Nerys, 2026-10-07). It states the
+ * CHANNEL the change came through; the person beside it is the key owner,
+ * and it is drawn only when that owner is resolved.
+ */
+export function ActivityApiBadge() {
+  return (
+    <Badge className="shrink-0" variant="muted">
+      API
+    </Badge>
   );
 }

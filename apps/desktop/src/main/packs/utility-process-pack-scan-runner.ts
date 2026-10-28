@@ -6,14 +6,20 @@
  * the db-host owns the DB read (recent project roots) and the DB write (plan
  * replay), while this runner owns only the request/response cycle with the
  * worker that does the CPU-heavy scan. The pack-scan coordinator drives one
- * request at a time, so a single long-lived child is reused across scans and
- * torn down on failure/timeout.
+ * request at a time, so a single child is reused across a burst of scans and
+ * torn down on failure/timeout or once it has sat idle for
+ * `HELPER_IDLE_TEARDOWN_MS`.
  *
  * Mirrors `collectors/engine/utility-process-historical-parse-runner.ts`.
  */
 
 import { fileURLToPath } from "node:url";
 import electron from "electron";
+import {
+  createIdleTeardownTimer,
+  HELPER_IDLE_TEARDOWN_MS,
+  type IdleTeardownTimer,
+} from "../util/idle-teardown-timer.js";
 import type { DefinitionScanRoots } from "./definition-discovery.js";
 import {
   type DefinitionWire,
@@ -117,11 +123,13 @@ export function createUtilityProcessPackScanRunner(options?: {
   log?: (message: string) => void;
   forkWorker?: PackScanWorkerFork;
   scanTimeoutMs?: number;
+  idleTeardownMs?: number;
 }): PackScanRunner {
   return new UtilityProcessPackScanRunner(
     options?.log ?? (() => {}),
     options?.forkWorker ?? forkPackScanWorker,
-    options?.scanTimeoutMs ?? DEFAULT_SCAN_TIMEOUT_MS
+    options?.scanTimeoutMs ?? DEFAULT_SCAN_TIMEOUT_MS,
+    options?.idleTeardownMs ?? HELPER_IDLE_TEARDOWN_MS
   );
 }
 
@@ -133,15 +141,22 @@ class UtilityProcessPackScanRunner implements PackScanRunner {
   private readonly exitingChildren = new Set<PackScanWorkerProcess>();
   private child: PackScanWorkerProcess | null = null;
   private nextRequestId = 0;
+  private readonly idleTeardown: IdleTeardownTimer;
 
   constructor(
     log: (message: string) => void,
     forkWorker: PackScanWorkerFork,
-    scanTimeoutMs: number
+    scanTimeoutMs: number,
+    idleTeardownMs: number
   ) {
     this.log = log;
     this.forkWorker = forkWorker;
     this.scanTimeoutMs = scanTimeoutMs;
+    this.idleTeardown = createIdleTeardownTimer(idleTeardownMs, () => {
+      if (this.pending.size === 0) {
+        this.killChild();
+      }
+    });
   }
 
   computeScan(recentProjectRoots: string[]): Promise<PackScanComputeResult> {
@@ -197,6 +212,7 @@ class UtilityProcessPackScanRunner implements PackScanRunner {
       return Promise.reject(new Error("invalid pack scan request"));
     }
     const request = parsedRequest.data;
+    this.idleTeardown.cancel();
     let child: PackScanWorkerProcess;
     try {
       child = this.ensureChild();
@@ -205,7 +221,7 @@ class UtilityProcessPackScanRunner implements PackScanRunner {
         error instanceof Error ? error : new Error(String(error))
       );
     }
-    return new Promise<T>((resolve, reject) => {
+    const scan = new Promise<T>((resolve, reject) => {
       const timeout = setTimeout(() => {
         const error = new Error("pack scan worker timed out");
         this.rejectPendingForChild(child, error);
@@ -224,9 +240,17 @@ class UtilityProcessPackScanRunner implements PackScanRunner {
         reject(error instanceof Error ? error : new Error(String(error)));
       }
     });
+    const armIfQuiet = () => {
+      if (this.child && this.pending.size === 0) {
+        this.idleTeardown.arm();
+      }
+    };
+    scan.then(armIfQuiet, armIfQuiet);
+    return scan;
   }
 
   stop(): void {
+    this.idleTeardown.cancel();
     this.rejectPending(new Error("pack scan worker stopped"));
     this.exitingChildren.clear();
     this.killChild();

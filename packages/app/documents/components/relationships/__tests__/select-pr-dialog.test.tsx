@@ -1,9 +1,11 @@
 import { ArtifactType, LinkType } from "@repo/api/src/types/artifact";
+import { ChecksStatus } from "@repo/api/src/types/branch-checks";
 import {
   GitHubPRState,
   type GitHubPullRequestSummary,
 } from "@repo/api/src/types/github";
-import { RepoSource } from "@repo/app/loops/hooks/use-resolved-job-repos";
+import { RepoSource } from "@repo/app/documents/editors/shared/job-repositories/use-resolved-job-repos";
+import { PULL_REQUEST_ROW_PROJECTION_FIELDS_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -42,6 +44,18 @@ const MULTI_REPO_PR_C_REGEX = /PR C from repo-1 tracked by repo-2/i;
 const LINKED_BADGE_REGEX = /^Linked$/i;
 const BRANCH_TRACKED_PR_REGEX = /tracked by branch key/i;
 const BRANCH_UNTRACKED_PR_REGEX = /visible untracked branch/i;
+/** The words an unattributed PR renders once ISS-8155's flag is on. */
+const AUTHOR_UNKNOWN_TEXT = "Author unknown";
+/** Any `by <login>` byline, measured or fabricated. */
+const AUTHOR_BY_LINE_REGEX = /^by\b/;
+/** The placeholder the Branches table gives an unmeasured base ref. */
+const BASE_BRANCH_MISSING_TEXT = "—";
+/** No producer reported a rollup — distinct from a reported `UNKNOWN`. */
+const CHECKS_UNREPORTED_TEXT = "Checks not reported";
+const CHECKS_UNKNOWN_TEXT = "Checks unknown";
+const CHECKS_FAILING_TEXT = "Checks failing";
+/** A measured base ref, distinctive enough not to collide with a branch name. */
+const BASE_BRANCH_MEASURED_REGEX = /release\/24/;
 
 class MockResizeObserver {
   observe() {}
@@ -56,6 +70,12 @@ vi.mock("@repo/api/src/types/project", async () => {
     getProjectSettings: () => ({}),
   };
 });
+
+const enabledFlags = vi.hoisted(() => new Set<string>());
+
+vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
+  useFeatureFlagEnabled: (key: string) => enabledFlags.has(key),
+}));
 
 vi.mock("@repo/design-system/components/ui/sonner", () => ({
   toast: {
@@ -106,16 +126,21 @@ const mockUseResolvedJobRepos = vi.fn();
 
 // PLN-529: dialog resolves the project's primary via the shared resolver.
 // The repoId is the only field this dialog consumes.
-vi.mock("@repo/app/loops/hooks/use-resolved-job-repos", async () => {
-  const actual = await vi.importActual<
-    typeof import("@repo/app/loops/hooks/use-resolved-job-repos")
-  >("@repo/app/loops/hooks/use-resolved-job-repos");
-  return {
-    ...actual,
-    useResolvedJobRepos: (...args: unknown[]) =>
-      mockUseResolvedJobRepos(...args),
-  };
-});
+vi.mock(
+  "@repo/app/documents/editors/shared/job-repositories/use-resolved-job-repos",
+  async () => {
+    const actual = await vi.importActual<
+      typeof import("@repo/app/documents/editors/shared/job-repositories/use-resolved-job-repos")
+    >(
+      "@repo/app/documents/editors/shared/job-repositories/use-resolved-job-repos"
+    );
+    return {
+      ...actual,
+      useResolvedJobRepos: (...args: unknown[]) =>
+        mockUseResolvedJobRepos(...args),
+    };
+  }
+);
 
 function makePullRequest(
   overrides: Partial<GitHubPullRequestSummary> = {}
@@ -142,6 +167,9 @@ function makePullRequest(
 describe("SelectPullRequestDialog", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // `clearAllMocks` does not touch a hoisted Set, and a flag left on would
+    // silently change the branch every later case renders.
+    enabledFlags.clear();
     vi.stubGlobal("ResizeObserver", MockResizeObserver);
 
     mockUseProject.mockReturnValue({
@@ -156,7 +184,6 @@ describe("SelectPullRequestDialog", () => {
         id: "repo-1",
         fullName: "acme/repo",
         source: RepoSource.TeamDefault,
-        inPool: false,
       },
       additional: [],
       pool: [],
@@ -220,6 +247,232 @@ describe("SelectPullRequestDialog", () => {
       sourceId: "feature-1",
       targetId: "pr-artifact-101",
     });
+  });
+
+  // ISS-8155. The route's validator is `z.string().min(1)`, so submitting the
+  // `""` an unmeasured base now arrives as would 400 the whole link. The server
+  // takes the branch's base from the live PR it re-fetches, so the honest move is
+  // to decline the assertion rather than invent one — the key is omitted, and the
+  // request still carries every field the server does read.
+  it("omits an unmeasured base branch from the link request", async () => {
+    const user = userEvent.setup();
+    mockGet.mockResolvedValue({
+      pullRequests: [makePullRequest({ baseBranch: "" })],
+      trackedPrUrls: [],
+    });
+
+    renderWithQueryClient(
+      <SelectPullRequestDialog
+        documentId="feature-1"
+        onOpenChange={vi.fn()}
+        open={true}
+        projectId="project-1"
+      />
+    );
+
+    await waitFor(() => screen.getByText(PR_TITLE_REGEX));
+    await user.click(screen.getByText(PR_TITLE_REGEX));
+
+    await waitFor(() => expect(mockPost).toHaveBeenCalled());
+    const [, payload] = mockPost.mock.calls[0];
+    expect(payload).not.toHaveProperty("baseBranch");
+    expect(payload).toMatchObject({ githubId: "gh-pr-101", number: 101 });
+  });
+
+  it("sends a measured base branch on the link request", async () => {
+    const user = userEvent.setup();
+
+    renderWithQueryClient(
+      <SelectPullRequestDialog
+        documentId="feature-1"
+        onOpenChange={vi.fn()}
+        open={true}
+        projectId="project-1"
+      />
+    );
+
+    await waitFor(() => screen.getByText(PR_TITLE_REGEX));
+    await user.click(screen.getByText(PR_TITLE_REGEX));
+
+    await waitFor(() => expect(mockPost).toHaveBeenCalled());
+    expect(mockPost.mock.calls[0][1]).toMatchObject({ baseBranch: "main" });
+  });
+
+  // ISS-8155 AC-5. The producers serve `""` for a PR nobody reported an author
+  // for; these pin the WORDS that absence renders as, so a later `?? "unknown"`
+  // or any other default cannot quietly take its place. Each negative assertion
+  // has the opposite-state sibling below it.
+  it("names an unattributed PR as unknown rather than as a login", async () => {
+    mockGet.mockResolvedValue({
+      pullRequests: [makePullRequest({ author: "" })],
+      trackedPrUrls: [],
+    });
+
+    renderWithQueryClient(
+      <SelectPullRequestDialog
+        documentId="feature-1"
+        onOpenChange={vi.fn()}
+        open={true}
+        projectId="project-1"
+      />
+    );
+
+    await waitFor(() => screen.getByText(PR_TITLE_REGEX));
+    expect(screen.getByText(AUTHOR_UNKNOWN_TEXT)).toBeInTheDocument();
+    // Any `by <something>` here would be a name for an author nobody reported.
+    expect(screen.queryByText(AUTHOR_BY_LINE_REGEX)).toBeNull();
+  });
+
+  it("names the author when the producer measured one", async () => {
+    mockGet.mockResolvedValue({
+      pullRequests: [makePullRequest({ author: "octocat" })],
+      trackedPrUrls: [],
+    });
+
+    renderWithQueryClient(
+      <SelectPullRequestDialog
+        documentId="feature-1"
+        onOpenChange={vi.fn()}
+        open={true}
+        projectId="project-1"
+      />
+    );
+
+    await waitFor(() => screen.getByText(PR_TITLE_REGEX));
+    expect(screen.getByText(AUTHOR_BY_LINE_REGEX)).toHaveTextContent(
+      "by octocat"
+    );
+    expect(screen.queryByText(AUTHOR_UNKNOWN_TEXT)).toBeNull();
+  });
+
+  // ISS-8155, operator decision 2026-08-26: this expectation CHANGED, and the
+  // reason is that the behavior it pinned was the defect. It required an
+  // unattributed PR to render the literal `by unknown` whenever the flag was
+  // off — a login a real GitHub account can hold, which is exactly the
+  // fabrication this ticket exists to remove. Naming an absent author honestly
+  // is a bug fix under ISS-4779's already-intended-behavior exemption, not a
+  // gated UI change, so there is no longer an "off" arm for it to assert.
+  it("never renders the fabricated login, with no flag enabled at all", async () => {
+    mockGet.mockResolvedValue({
+      pullRequests: [makePullRequest({ author: "" })],
+      trackedPrUrls: [],
+    });
+
+    renderWithQueryClient(
+      <SelectPullRequestDialog
+        documentId="feature-1"
+        onOpenChange={vi.fn()}
+        open={true}
+        projectId="project-1"
+      />
+    );
+
+    await waitFor(() => screen.getByText(PR_TITLE_REGEX));
+    expect(screen.getByText(AUTHOR_UNKNOWN_TEXT)).toBeInTheDocument();
+    // Any `by <something>` here would name an author nobody reported.
+    expect(screen.queryByText(AUTHOR_BY_LINE_REGEX)).toBeNull();
+  });
+
+  // ISS-8155 AC-1 (davetho review): `baseBranch` and `checksStatus` are on
+  // `GitHubPullRequestSummary` and this row rendered neither, so the projection
+  // served the fields and the surface dropped them.
+  it("states the base ref and the checks rollup the projection reported", async () => {
+    enabledFlags.add(PULL_REQUEST_ROW_PROJECTION_FIELDS_FEATURE_FLAG_KEY);
+    mockGet.mockResolvedValue({
+      pullRequests: [
+        makePullRequest({
+          baseBranch: "release/24",
+          checksStatus: ChecksStatus.Failing,
+        }),
+      ],
+      trackedPrUrls: [],
+    });
+
+    renderWithQueryClient(
+      <SelectPullRequestDialog
+        documentId="feature-1"
+        onOpenChange={vi.fn()}
+        open={true}
+        projectId="project-1"
+      />
+    );
+
+    await waitFor(() => screen.getByText(PR_TITLE_REGEX));
+    expect(screen.getByText(BASE_BRANCH_MEASURED_REGEX)).toBeInTheDocument();
+    expect(screen.getByText(CHECKS_FAILING_TEXT)).toBeInTheDocument();
+  });
+
+  it("names an unmeasured base ref and an unreported rollup rather than hiding them", async () => {
+    enabledFlags.add(PULL_REQUEST_ROW_PROJECTION_FIELDS_FEATURE_FLAG_KEY);
+    mockGet.mockResolvedValue({
+      pullRequests: [
+        makePullRequest({ baseBranch: "", checksStatus: undefined }),
+      ],
+      trackedPrUrls: [],
+    });
+
+    renderWithQueryClient(
+      <SelectPullRequestDialog
+        documentId="feature-1"
+        onOpenChange={vi.fn()}
+        open={true}
+        projectId="project-1"
+      />
+    );
+
+    await waitFor(() => screen.getByText(PR_TITLE_REGEX));
+    expect(screen.getByText(BASE_BRANCH_MISSING_TEXT)).toBeInTheDocument();
+    expect(screen.getByText(CHECKS_UNREPORTED_TEXT)).toBeInTheDocument();
+    // An absent rollup must not borrow the provider's MEASURED "no conclusion".
+    expect(screen.queryByText(CHECKS_UNKNOWN_TEXT)).toBeNull();
+  });
+
+  it("keeps a reported UNKNOWN rollup distinct from an unreported one", async () => {
+    enabledFlags.add(PULL_REQUEST_ROW_PROJECTION_FIELDS_FEATURE_FLAG_KEY);
+    mockGet.mockResolvedValue({
+      pullRequests: [makePullRequest({ checksStatus: ChecksStatus.Unknown })],
+      trackedPrUrls: [],
+    });
+
+    renderWithQueryClient(
+      <SelectPullRequestDialog
+        documentId="feature-1"
+        onOpenChange={vi.fn()}
+        open={true}
+        projectId="project-1"
+      />
+    );
+
+    await waitFor(() => screen.getByText(PR_TITLE_REGEX));
+    expect(screen.getByText(CHECKS_UNKNOWN_TEXT)).toBeInTheDocument();
+    expect(screen.queryByText(CHECKS_UNREPORTED_TEXT)).toBeNull();
+  });
+
+  it("shows neither base ref nor checks while the flag is off", async () => {
+    mockGet.mockResolvedValue({
+      pullRequests: [
+        makePullRequest({
+          baseBranch: "release/24",
+          checksStatus: ChecksStatus.Failing,
+        }),
+      ],
+      trackedPrUrls: [],
+    });
+
+    renderWithQueryClient(
+      <SelectPullRequestDialog
+        documentId="feature-1"
+        onOpenChange={vi.fn()}
+        open={true}
+        projectId="project-1"
+      />
+    );
+
+    await waitFor(() => screen.getByText(PR_TITLE_REGEX));
+    // Closed default: the row is exactly the one that shipped.
+    expect(screen.queryByText(BASE_BRANCH_MEASURED_REGEX)).toBeNull();
+    expect(screen.queryByText(CHECKS_FAILING_TEXT)).toBeNull();
+    expect(screen.queryByText(CHECKS_UNREPORTED_TEXT)).toBeNull();
   });
 
   it("links a selected PR to the plan when a plan exists", async () => {
@@ -432,14 +685,12 @@ describe("SelectPullRequestDialog", () => {
         id: "repo-1",
         fullName: "acme/repo",
         source: RepoSource.TeamDefault,
-        inPool: false,
       },
       additional: [
         {
           id: "repo-2",
           fullName: "acme/repo-fork",
           source: RepoSource.ProjectOverride,
-          inPool: false,
         },
       ],
       pool: [],
@@ -553,14 +804,12 @@ describe("SelectPullRequestDialog", () => {
         id: "repo-1",
         fullName: "acme/repo",
         source: RepoSource.TeamDefault,
-        inPool: false,
       },
       additional: [
         {
           id: "repo-2",
           fullName: "acme/repo-2",
           source: RepoSource.ProjectOverride,
-          inPool: false,
         },
       ],
       pool: [],
@@ -614,14 +863,12 @@ describe("SelectPullRequestDialog", () => {
         id: "repo-1",
         fullName: "acme/repo",
         source: RepoSource.TeamDefault,
-        inPool: false,
       },
       additional: [
         {
           id: "repo-2",
           fullName: "acme/repo-fork",
           source: RepoSource.ProjectOverride,
-          inPool: false,
         },
       ],
       pool: [],

@@ -1,15 +1,6 @@
+import { DebugIpcChannel } from "../../shared/debug-ipc-channel.js";
 import type { LocalSessionStore } from "../auth/local-session-store.js";
 import { assertTrustedIpcSender } from "./ipc-trusted-sender.js";
-
-export const DebugIpcChannel = {
-  GetDangerousAutoApprove: "desktop:get-dangerous-auto-approve",
-  SetDangerousAutoApprove: "desktop:set-dangerous-auto-approve",
-  IsDebugAuthEnabled: "desktop:is-debug-auth-enabled",
-  MintDebugToken: "desktop:mint-debug-token",
-} as const;
-
-export type DebugIpcChannel =
-  (typeof DebugIpcChannel)[keyof typeof DebugIpcChannel];
 
 type IpcMainLike = {
   handle: (

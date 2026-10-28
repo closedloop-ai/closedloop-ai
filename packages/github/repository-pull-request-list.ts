@@ -1,6 +1,7 @@
 import type { GitHubPullRequestSummary } from "@repo/api/src/types/github";
 import type { GitHubReadModelPullRequest } from "@repo/api/src/types/github-read-model";
 import { GitHubPRState } from "@repo/api/src/types/github-status";
+import { gitHubConfirmedHeadBranch } from "@repo/api/src/types/pull-request-github-head";
 
 export type RepositoryPullRequestListItem = GitHubPullRequestSummary;
 
@@ -47,8 +48,14 @@ export function selectRepositoryPullRequestsForList(
 
 /** Map the provider read model to the existing additive API list contract. */
 export function mapRepositoryPullRequest(
-  pullRequest: GitHubReadModelPullRequest
+  pullRequest: GitHubReadModelPullRequest,
+  repositoryFullName: string
 ): RepositoryPullRequestListItem {
+  const gitHubHeadBranch = gitHubConfirmedHeadBranch({
+    headBranch: pullRequest.headBranch,
+    headRepositoryFullName: pullRequest.headRepository?.repository.fullName,
+    repositoryFullName,
+  });
   return {
     githubId: pullRequest.githubId,
     number: pullRequest.number,
@@ -66,7 +73,11 @@ export function mapRepositoryPullRequest(
     mergedAt: pullRequest.mergedAt,
     mergeCommitSha: pullRequest.mergeCommitSha,
     updatedAt: pullRequest.updatedAt ?? "",
-    author: pullRequest.author ?? "unknown",
+    // ISS-8155: an unattributed PR (a deleted or ghosted GitHub account) is an
+    // absence, and "unknown" is a login a real account can hold. Serving the
+    // absent form keeps this producer in agreement with the projection read and
+    // lets the surface say unknown in its own words.
+    author: pullRequest.author ?? "",
     checksStatus: pullRequest.checksStatus,
     reviewDecision: pullRequest.reviewDecision,
     ...(pullRequest.headRepository === undefined
@@ -77,5 +88,6 @@ export function mapRepositoryPullRequest(
       : {
           headRepositoryUnavailable: pullRequest.headRepositoryUnavailable,
         }),
+    ...(gitHubHeadBranch === undefined ? {} : { gitHubHeadBranch }),
   };
 }

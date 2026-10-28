@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   AnalyticsData,
   EventWithSession,
@@ -11,9 +11,15 @@ import {
 import type {
   AgentCoachingFeedbackEvent,
   AgentCoachingInput,
+  AgentCoachingTip,
 } from "../agent-coaching-types";
+import { useGermanDefaultLocale } from "./german-default-locale";
 
 const GENERATED_AT = new Date("2026-06-18T12:00:00.000Z");
+/** `1.234` / `5.000.000` — dot-grouped thousands, the de-DE rendering. */
+const GERMAN_GROUPED_NUMBER = /\d{1,3}(?:\.\d{3})+(?!\d)/;
+/** `1,234` / `5,000,000` — comma-grouped thousands, the canonical rendering. */
+const US_GROUPED_NUMBER = /\d{1,3}(?:,\d{3})+(?!\d)/;
 const GARBLED_SESSION_ID_SLUG_PATTERN = /session-id-[0-9a-f-]{8,}/;
 const GIANT_SLUG_PATTERN = /[a-z0-9]+(?:-[a-z0-9]+){8,}/;
 
@@ -405,6 +411,98 @@ describe("buildAgentCoachingTips candidate pool (FEA-3265)", () => {
   });
 });
 
+describe("seed-tip figures under a non-US default locale (ISS-7336)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("renders the context tip's figures in the canonical locale", () => {
+    useGermanDefaultLocale();
+    const tip = buildAgentCoachingTips(makeInput()).find(
+      (candidate) => candidate.id === "context-checkpoint"
+    );
+
+    // 150k tokens over 10 sessions. The sibling cost builder pins the same
+    // locale, so one tip list cannot mix two number systems.
+    expect(tip?.body).toContain("15,000 tokens");
+    expect(tip?.body).not.toContain("15.000 tokens");
+    expect(tip?.evidence).toContain("1,000 captured events");
+    expect(tip?.evidence).not.toContain("1.000 captured events");
+  });
+
+  /**
+   * Covers every grouped figure the seed builders emit, not just the ones a
+   * named assertion happens to reach: a future call site that forgets the
+   * locale fails here even though no test mentions it by name.
+   */
+  it("emits no German-grouped figure anywhere in the generated tips", () => {
+    useGermanDefaultLocale();
+    const prose = groupedInputVariants().flatMap((input) =>
+      allTipProse(buildAgentCoachingTips(input))
+    );
+
+    // Without this the negative below is vacuous — a corpus whose every figure
+    // is under 1000 has no grouped number to get wrong in either locale.
+    expect(prose.some((line) => US_GROUPED_NUMBER.test(line))).toBe(true);
+    expect(prose.filter((line) => GERMAN_GROUPED_NUMBER.test(line))).toEqual(
+      []
+    );
+  });
+});
+
+/**
+ * Inputs chosen so different builders WIN their shared lever, because
+ * `rankCandidatePool` emits one tip per lever and caps the set — a figure in a
+ * candidate that loses its contest never reaches the assertion. Without the
+ * second variant the shell-probe tip always takes `reuse` and the skills
+ * builder's own count goes unchecked.
+ */
+function groupedInputVariants(): AgentCoachingInput[] {
+  const withoutShellEvidence = makeGroupedInput();
+  withoutShellEvidence.recentEvents = [];
+  return [makeGroupedInput(), withoutShellEvidence];
+}
+
+/**
+ * An input whose every builder-visible magnitude clears 1000, so each pinned
+ * figure actually renders a grouping separator. The default fixture's
+ * `invocationCount: 4` / `totalSessions: 10` render identically in both
+ * locales, which would let a reverted pin pass the invariant above.
+ */
+function makeGroupedInput(): AgentCoachingInput {
+  const analytics = makeAnalytics();
+  analytics.totalSessions = 4321;
+  analytics.totalEvents = 987_654;
+  analytics.tokens.totalInputTokens = 12_345_678;
+  analytics.tokens.totalOutputTokens = 2_345_678;
+  analytics.toolUsage = [
+    { count: 54_321, toolName: "Bash" },
+    { count: 12_345, toolName: "Read" },
+    { count: 11_111, toolName: "Agent" },
+  ];
+  return makeInput({
+    analytics,
+    recentEvents: Array.from({ length: 1500 }, (_, index) => ({
+      ...makeEvents()[0],
+      id: `bulk-${index}`,
+    })),
+    skills: [{ invocationCount: 98_765 }],
+  });
+}
+
+/** Every rendered string a tip can put in front of a reader. */
+function allTipProse(tips: AgentCoachingTip[]): string[] {
+  return tips.flatMap((tip) => [
+    tip.body,
+    tip.whyItMatters,
+    tip.experiment,
+    ...tip.evidence,
+    tip.detail.whatThisMeans,
+    tip.detail.whyThisRecommendation,
+    ...tip.detail.howToAct,
+  ]);
+}
+
 function makeInput(
   overrides: Partial<AgentCoachingInput> = {}
 ): AgentCoachingInput {
@@ -452,11 +550,9 @@ function makeAnalytics(): AnalyticsData {
 
 function makeWorkflow(): WorkflowQueryData {
   return {
-    cooccurrence: [],
     effectiveness: [],
     orchestration: {
       compactions: { sessions: 0, total: 0 },
-      edges: [],
       mainCount: 10,
       outcomes: [],
       sessionCount: 10,
@@ -481,15 +577,10 @@ function makeWorkflow(): WorkflowQueryData {
       avgDurationSec: 100,
       avgSubagents: 1,
       successRate: 0.9,
-      topFlow: null,
       totalAgents: 20,
       totalCompactions: 0,
       totalSessions: 10,
       totalSubagents: 12,
-    },
-    toolFlow: {
-      toolCounts: [],
-      transitions: [],
     },
   };
 }

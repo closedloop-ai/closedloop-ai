@@ -28,6 +28,14 @@
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import {
+  SESSION_LIST_MAX_FILTER_VALUES,
+  SESSION_LIST_MAX_OFFSET,
+} from "@repo/api/src/types/agent-session-list-limits";
+import {
+  LIST_QUERY_EXPRESSION_MAX_LENGTH,
+  LIST_QUERY_EXPRESSION_PARAM,
+} from "@repo/api/src/types/list-query-expression";
 import { describe, expect, it } from "vitest";
 import {
   AGENT_SESSION_LIST_QUERY_PARAM_NAMES,
@@ -62,7 +70,15 @@ type OpenApiParameter = {
   explode?: boolean;
   deprecated?: boolean;
   description?: string;
-  schema?: { type?: string; enum?: string[] };
+  schema?: {
+    type?: string;
+    enum?: string[];
+    items?: { pattern?: string };
+    minimum?: number;
+    maximum?: number;
+    maxItems?: number;
+    maxLength?: number;
+  };
 };
 
 type OpenApiDoc = {
@@ -137,6 +153,20 @@ describe("openapi.json GET /agent-sessions parameter contract (ISS-6039)", () =>
     expect(sortBy?.schema?.enum).toEqual([...AGENT_SESSION_SORT_COLUMNS]);
   });
 
+  it("allows every canonical column in the repeatable sorts pattern", () => {
+    const sorts = documentedParameters.find(
+      (parameter) => parameter.name === "sorts"
+    );
+    const pattern = sorts?.schema?.items?.pattern;
+
+    expect(pattern).toBeDefined();
+    const acceptedSort = new RegExp(pattern ?? "a^");
+    for (const column of AGENT_SESSION_SORT_COLUMNS) {
+      expect(acceptedSort.test(`${column}:asc`)).toBe(true);
+      expect(acceptedSort.test(`${column}:desc`)).toBe(true);
+    }
+  });
+
   it("declares each repeatable facet as a repeatable (exploded form) array", () => {
     const documentedByName = new Map(
       documentedParameters.map((parameter) => [parameter.name, parameter])
@@ -155,6 +185,28 @@ describe("openapi.json GET /agent-sessions parameter contract (ISS-6039)", () =>
     }
   });
 
+  it("pins the documented offset bounds to the shared constant (ISS-8528)", () => {
+    // A spec that advertises a wider bound than the route enforces compiles a
+    // client that 400s at runtime. The expectation comes from the constant the
+    // validator uses, never from the document under test.
+    const offset = documentedParameters.find(
+      (parameter) => parameter.name === "offset"
+    );
+
+    expect({
+      minimum: offset?.schema?.minimum,
+      maximum: offset?.schema?.maximum,
+    }).toEqual({ minimum: 0, maximum: SESSION_LIST_MAX_OFFSET });
+  });
+
+  it("pins the documented listQuery length cap to the parser's (ISS-9477)", () => {
+    const listQuery = documentedParameters.find(
+      (parameter) => parameter.name === LIST_QUERY_EXPRESSION_PARAM
+    );
+
+    expect(listQuery?.schema?.maxLength).toBe(LIST_QUERY_EXPRESSION_MAX_LENGTH);
+  });
+
   it("declares no param the route reads as a scalar as an array", () => {
     const documentedArrays = documentedParameters
       .filter((parameter) => parameter.schema?.type === "array")
@@ -163,5 +215,23 @@ describe("openapi.json GET /agent-sessions parameter contract (ISS-6039)", () =>
     expect([...documentedArrays].sort()).toEqual(
       [...AGENT_SESSION_REPEATABLE_QUERY_PARAM_NAMES].sort()
     );
+  });
+});
+
+describe("GET /agent-sessions repeatable facet bounds (ISS-9073)", () => {
+  it("pins every repeatable facet's documented maxItems to the shared constant", () => {
+    // Same rule as the offset case: a spec advertising a wider bound than the
+    // validator enforces compiles a client that 400s at runtime. The
+    // expectation is the validator's constant, never the document under test.
+    const documentedByName = new Map(
+      documentedParameters.map((parameter) => [parameter.name, parameter])
+    );
+
+    for (const name of AGENT_SESSION_REPEATABLE_QUERY_PARAM_NAMES) {
+      expect({
+        name,
+        maxItems: documentedByName.get(name)?.schema?.maxItems,
+      }).toEqual({ name, maxItems: SESSION_LIST_MAX_FILTER_VALUES });
+    }
   });
 });

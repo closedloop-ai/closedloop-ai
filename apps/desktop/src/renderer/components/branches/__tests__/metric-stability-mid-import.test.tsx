@@ -40,9 +40,6 @@ const { openGitHubConnectMock, useDesktopAuthMock } = vi.hoisted(() => ({
 vi.mock("@repo/app/branches/components/branches-table", () => ({
   BranchesTable: () => null,
 }));
-vi.mock("@repo/app/branches/components/branches-toolbar", () => ({
-  BranchesToolbar: () => null,
-}));
 vi.mock("@repo/app/branches/data-source/branches-live-bridge", () => ({
   BranchesLiveBridge: () => null,
 }));
@@ -54,18 +51,31 @@ vi.mock("../../../shared-agent-sessions/desktop-auth-provider", () => ({
 vi.mock("@repo/app/shared/hooks/use-shared-date-range", () => ({
   useSharedDateRange: () => ({ dateRange: "all", setDateRange: vi.fn() }),
 }));
-vi.mock("@repo/app/branches/hooks/use-branch-view-state", () => ({
-  useBranchViewState: () => ({
-    sortKey: "updated",
-    sortDir: "desc",
-    dateRange: "all",
-    visibleColumns: new Set<string>(["repo"]),
-    setSort: vi.fn(),
-    toggleSortDir: vi.fn(),
-    setDateRange: vi.fn(),
-    toggleColumn: vi.fn(),
-  }),
-}));
+vi.mock(
+  "@repo/app/branches/hooks/use-branch-view-state",
+  async (importOriginal) => ({
+    // ISS-8909: the v2 list surface is the only Branches arm now, and its
+    // toolbar reads more of this module than the v1 one did. Stand down only
+    // the hook these cases pin; a bare factory drops the rest.
+    ...(await importOriginal<
+      typeof import("@repo/app/branches/hooks/use-branch-view-state")
+    >()),
+    useBranchViewState: () => ({
+      // ISS-8127: the view gates presentation on this, so a stub omitting it
+      // reads as "never restored" and withholds every row. These suites are
+      // not about the restore, so the view is already settled.
+      isViewReady: true,
+      sortKey: "updated",
+      sortDir: "desc",
+      dateRange: "all",
+      visibleColumns: new Set<string>(["repo"]),
+      setSort: vi.fn(),
+      toggleSortDir: vi.fn(),
+      setDateRange: vi.fn(),
+      toggleColumn: vi.fn(),
+    }),
+  })
+);
 
 /** Analytics with a caller-chosen ACTIVE BRANCHES count; other cards are inert. */
 function analyticsWithActive(activeBranchCount: number): BranchAnalytics {

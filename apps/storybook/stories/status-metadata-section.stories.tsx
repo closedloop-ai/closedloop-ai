@@ -39,9 +39,9 @@ const options = [
 ];
 
 const meta = {
-  title: "Design System/Configuration & Admin/Status Metadata Section",
+  title: "Composites v1.0/Feedback & Status/Status Metadata Section",
   component: StatusMetadataSection,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   args: {
     assignee: users[0],
     onAssigneeChange: () => undefined,

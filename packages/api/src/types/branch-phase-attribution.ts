@@ -24,6 +24,8 @@ export const BranchPhaseAttributionCompletenessReason = {
   LifecycleIncomplete: "lifecycle_incomplete",
   PricingIncomplete: "pricing_incomplete",
   MissingActivitySegments: "missing_activity_segments",
+  MissingBranchDivisor: "missing_branch_divisor",
+  CohortIncomplete: "cohort_incomplete",
 } as const;
 export type BranchPhaseAttributionCompletenessReason =
   (typeof BranchPhaseAttributionCompletenessReason)[keyof typeof BranchPhaseAttributionCompletenessReason];

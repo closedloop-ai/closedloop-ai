@@ -1,6 +1,8 @@
 import { type SearchHit, searchHitRoute } from "@repo/api/src/types/search";
 import {
-  PHASE_1_SEARCH_ENTITY_TYPES,
+  isOfferedSearchType,
+  OFFERED_SEARCH_ENTITY_TYPES,
+  type OfferedSearchEntityType,
   SearchEntityType,
 } from "@repo/api/src/types/search-entity-kind";
 import {
@@ -11,20 +13,21 @@ import {
   GitPullRequestIcon,
   type LucideIcon,
   MessageSquareIcon,
-  RotateCcwIcon,
   TerminalIcon,
 } from "lucide-react";
 
 /**
- * Human-facing label per unified-search entity type, shown on the type facet
- * chip of each hit. Exhaustive over {@link SearchEntityType} so a new corpus
- * member fails typecheck here until it is given a label (the Phase-2 members are
- * forward-declared and never emitted yet, but kept mapped for stability).
+ * Human-facing label per offered unified-search entity type, shown on the type
+ * facet chip of each hit. Exhaustive over {@link OfferedSearchEntityType} so a
+ * new offered member fails typecheck here until it is given a label. The
+ * retired `Loop` member is accepted by the API but never offered (PRD-795).
  */
-export const SEARCH_ENTITY_TYPE_LABELS: Record<SearchEntityType, string> = {
+export const SEARCH_ENTITY_TYPE_LABELS: Record<
+  OfferedSearchEntityType,
+  string
+> = {
   [SearchEntityType.Document]: "Document",
   [SearchEntityType.Project]: "Project",
-  [SearchEntityType.Loop]: "Loop",
   [SearchEntityType.Comment]: "Comment",
   [SearchEntityType.PullRequest]: "Pull Request",
   [SearchEntityType.Branch]: "Branch",
@@ -36,13 +39,15 @@ export const SEARCH_ENTITY_TYPE_LABELS: Record<SearchEntityType, string> = {
  * A quiet, tokenized per-kind glyph used as the type marker at the head of a
  * result row and in the mouse-first Type control (FEA-4134, faithful to the
  * FEA-4031 prototype — no colored-circle chrome). Exhaustive over
- * {@link SearchEntityType} so a new corpus member fails typecheck until it is
- * given an icon.
+ * {@link OfferedSearchEntityType} so a new offered member fails typecheck until
+ * it is given an icon.
  */
-export const SEARCH_ENTITY_TYPE_ICONS: Record<SearchEntityType, LucideIcon> = {
+export const SEARCH_ENTITY_TYPE_ICONS: Record<
+  OfferedSearchEntityType,
+  LucideIcon
+> = {
   [SearchEntityType.Document]: FileTextIcon,
   [SearchEntityType.Project]: FolderIcon,
-  [SearchEntityType.Loop]: RotateCcwIcon,
   [SearchEntityType.Comment]: MessageSquareIcon,
   [SearchEntityType.PullRequest]: GitPullRequestIcon,
   [SearchEntityType.Branch]: GitBranchIcon,
@@ -51,11 +56,11 @@ export const SEARCH_ENTITY_TYPE_ICONS: Record<SearchEntityType, LucideIcon> = {
 };
 
 /**
- * Stable display order for the mouse-first Type control — the queryable corpus
+ * Stable display order for the mouse-first Type control: the offered corpus
  * order, so the control lists exactly the kinds a `type:` filter can match.
  */
-export const SEARCH_TYPE_CONTROL_ORDER: readonly SearchEntityType[] =
-  PHASE_1_SEARCH_ENTITY_TYPES;
+export const SEARCH_TYPE_CONTROL_ORDER: readonly OfferedSearchEntityType[] =
+  OFFERED_SEARCH_ENTITY_TYPES;
 
 /** A parsed run of snippet text, flagged when it was a `ts_headline` match. */
 export type SnippetSegment = {
@@ -110,7 +115,7 @@ export function parseSnippetSegments(snippet: string): SnippetSegment[] {
 
 /**
  * Prepend the org slug to an org-relative route fragment
- * (`/prds/<slug>` → `/<org>/prds/<slug>`). The API cannot know the requester's
+ * (`/documents/<slug>` → `/<org>/documents/<slug>`). The API cannot know the requester's
  * org, so surfaces own this prefix.
  */
 export function orgScopedDeepLink(orgSlug: string, deepLink: string): string {
@@ -144,4 +149,17 @@ function pushSegment(
       highlighted,
     });
   }
+}
+
+/**
+ * A hit of a kind this build offers. The API restricts hits to the offered set
+ * (PRD-795 retired `Loop`), so the search hooks keep only these and every row
+ * can index the offered label and icon maps.
+ */
+export type OfferedSearchHit = SearchHit & {
+  entityType: OfferedSearchEntityType;
+};
+
+export function isOfferedSearchHit(hit: SearchHit): hit is OfferedSearchHit {
+  return isOfferedSearchType(hit.entityType);
 }

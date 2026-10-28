@@ -13,6 +13,13 @@ type UseInlineEditModeConfig = {
    */
   editor?: TiptapEditor | null;
   /**
+   * Whether the editor body is displayed. The scaffold keeps the body
+   * `invisible` until its content is ready (ISS-7058), and the browser refuses
+   * focus on an invisible element, so focusing before then is a silent no-op
+   * that would still latch. Focus waits for this to be true.
+   */
+  isEditorReady: boolean;
+  /**
    * Seed `isEditing` to `true` on first mount so the surface opens straight into
    * edit mode with the cursor placed (ISS-4382). Used by the org-level Document
    * (DOC) editor when landing on an empty latest version, whose entire job is
@@ -35,6 +42,7 @@ type UseInlineEditModeConfig = {
 export function useInlineEditMode({
   readOnly,
   editor,
+  isEditorReady,
   initialEditing = false,
 }: UseInlineEditModeConfig) {
   const [isEditing, setIsEditing] = useState(initialEditing);
@@ -69,10 +77,15 @@ export function useInlineEditMode({
 
   const effectiveIsEditing = isEditing && !readOnly;
 
-  // Focus the editor the first time both edit mode is active AND the editor
-  // instance is available. Runs after child effects have flipped `editable`.
+  // Focus the editor the first time edit mode is active, the editor instance
+  // is available, and its body is displayed. Runs after child effects have
+  // flipped `editable`.
   useEffect(() => {
-    if (!(effectiveIsEditing && editor) || hasFocusedRef.current) {
+    if (
+      !(effectiveIsEditing && editor && isEditorReady) ||
+      editor.isDestroyed ||
+      hasFocusedRef.current
+    ) {
       return;
     }
     const pos = pendingFocusPosRef.current;
@@ -83,7 +96,7 @@ export function useInlineEditMode({
     }
     hasFocusedRef.current = true;
     pendingFocusPosRef.current = null;
-  }, [effectiveIsEditing, editor]);
+  }, [effectiveIsEditing, editor, isEditorReady]);
 
   return {
     isEditing: effectiveIsEditing,

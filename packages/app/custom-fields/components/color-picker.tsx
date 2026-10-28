@@ -1,20 +1,19 @@
 "use client";
 
+import {
+  CUSTOM_FIELD_OPTION_COLOR_CLASSES,
+  CustomFieldOptionColor,
+  isCustomFieldOptionColor,
+} from "@repo/app/custom-fields/lib/option-colors";
 import { ColorSwatchPicker } from "@repo/app/shared/components/color-swatch-picker";
 
-export const COLOR_PALETTE = [
-  { name: "none", colorClass: "bg-gray-300" },
-  { name: "red", colorClass: "bg-red-500" },
-  { name: "orange", colorClass: "bg-orange-500" },
-  { name: "yellow", colorClass: "bg-yellow-400" },
-  { name: "green", colorClass: "bg-green-500" },
-  { name: "teal", colorClass: "bg-teal-500" },
-  { name: "blue", colorClass: "bg-blue-500" },
-  { name: "purple", colorClass: "bg-purple-500" },
-  { name: "pink", colorClass: "bg-pink-500" },
-] as const;
+export type ColorName = CustomFieldOptionColor;
 
-export type ColorName = (typeof COLOR_PALETTE)[number]["name"];
+export const COLOR_PALETTE: readonly { name: ColorName; colorClass: string }[] =
+  Object.values(CustomFieldOptionColor).map((name) => ({
+    name,
+    colorClass: CUSTOM_FIELD_OPTION_COLOR_CLASSES[name],
+  }));
 
 export type ColorPickerProps = {
   value: ColorName | null;
@@ -22,12 +21,18 @@ export type ColorPickerProps = {
   disabled?: boolean;
 };
 
+/**
+ * The prop type says `color` is canonical, but a PERSISTED row can carry
+ * anything — including the add-field dialog's Tailwind class from before
+ * ISS-8215 — so the unknown-value fallback to grey is load-bearing rather than
+ * defensive. Resolving such a value to the colour its author picked is the
+ * caller's job (`storedOptionColor`), not this renderer's.
+ */
 function getColorClass(color: ColorName | null): string {
-  if (!color || color === "none") {
-    return "bg-gray-300";
-  }
-  const entry = COLOR_PALETTE.find((c) => c.name === color);
-  return entry ? entry.colorClass : "bg-gray-300";
+  const known = color !== null && isCustomFieldOptionColor(color);
+  return CUSTOM_FIELD_OPTION_COLOR_CLASSES[
+    known ? color : CustomFieldOptionColor.None
+  ];
 }
 
 export function ColorPicker({
@@ -40,7 +45,7 @@ export function ColorPicker({
       columns={5}
       disabled={disabled}
       onSelect={(name) =>
-        onChange(name === "none" ? null : (name as ColorName))
+        onChange(name === CustomFieldOptionColor.None ? null : name)
       }
       palette={COLOR_PALETTE}
       selectedName={value ?? "none"}

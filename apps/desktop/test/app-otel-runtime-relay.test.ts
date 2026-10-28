@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { afterEach, test } from "node:test";
+import { AgentMonitorRuntimeStatusKind } from "@closedloop-ai/telemetry-contract/app";
 import { AppExceptionOrigin } from "@closedloop-ai/telemetry-contract/app-exception-origin";
 import { TelemetryAttribute } from "@closedloop-ai/telemetry-contract/attributes";
 import {
@@ -15,12 +15,17 @@ import {
   trace,
 } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
+import {
+  ListQueryExecution,
+  ListQuerySource,
+} from "@repo/api/src/types/list-query-observability";
 import { KeylessTelemetrySignal } from "@repo/shared-platform/keyless-telemetry";
-import { vi } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import {
   asOtlpRecordArray,
   decodeOtlpAttributes,
   decodeOtlpBytesToHex,
+  walkOtlpLogRecords,
   walkOtlpTraceSpans,
 } from "../src/main/otlp/decode-utilities.js";
 import {
@@ -29,10 +34,10 @@ import {
 } from "../src/main/otlp/proto-descriptor.js";
 import {
   createDesktopOtelRuntime,
-  DesktopIpcOperation,
   type DesktopOtelRuntime,
   DesktopSyncBatchOutcome,
 } from "../src/main/telemetry/app-otel-runtime.js";
+import { DesktopIpcOperation } from "../src/main/telemetry/app-otel-runtime-ipc.js";
 import {
   DesktopAppLifecycleEvent,
   DesktopAppOperatingMode,
@@ -237,9 +242,13 @@ test("parents IPC perf spans to the cl-desktop activity root in relay OTLP outpu
     operation: DesktopIpcOperation.List,
     startTimeUnixMs: 1_700_000_000_000,
     durationMs: 37,
+    matchedCount: 18,
     payloadBytes: 4096,
     resultCount: 12,
+    scannedCount: 27,
     sessionCount: 34,
+    source: ListQuerySource.Canonical,
+    execution: ListQueryExecution.DatabasePage,
   });
   await runtime.shutdown();
 
@@ -273,8 +282,66 @@ test("parents IPC perf spans to the cl-desktop activity root in relay OTLP outpu
   assert.equal(ipcSpan?.attributes[TelemetryAttribute.DurationMs], 37);
   assert.equal(ipcSpan?.attributes[TelemetryAttribute.IpcPayloadBytes], 4096);
   assert.equal(ipcSpan?.attributes[TelemetryAttribute.IpcResultCount], 12);
+  assert.equal(ipcSpan?.attributes[TelemetryAttribute.IpcMatchedCount], 18);
+  assert.equal(
+    ipcSpan?.attributes[TelemetryAttribute.IpcQueryExecution],
+    ListQueryExecution.DatabasePage
+  );
+  assert.equal(
+    ipcSpan?.attributes[TelemetryAttribute.IpcQuerySource],
+    ListQuerySource.Canonical
+  );
+  assert.equal(ipcSpan?.attributes[TelemetryAttribute.IpcScannedCount], 27);
   assert.equal(ipcSpan?.attributes[TelemetryAttribute.IpcSessionCount], 34);
   assert.equal(ipcSpan?.statusCode, SpanStatusCode.UNSET);
+});
+
+test("ships a failed IPC perf span whose session count was never measured", async () => {
+  // ISS-8773: `emitIpcPerfEvent` validates against the closed-world `ipc`
+  // contract and swallows the throw, so a schema that requires
+  // `ipc.session_count` drops the ENTIRE event when the follow-up COUNT failed
+  // alongside the handler — losing the `error.type` that is the only reason a
+  // failed call is emitted at all. Driven through the real runtime rather than
+  // the instrumentation wrapper, because the wrapper only ever sees the input.
+  const transport = createStubTransport();
+  vi.spyOn(Date, "now").mockImplementation(() => 1_700_000_000_000);
+  const runtime = createDesktopOtelRuntime({
+    appVersion: "9.9.9",
+    env: { CLOSEDLOOP_DEPLOYMENT_ENVIRONMENT_NAME: "desktop-prod" },
+    getAppInstallationId: () => "install_relay_unmeasured_count",
+    isPackaged: false,
+    telemetryTransport: transport,
+  });
+  activeRuntime = runtime;
+  await runtime.start();
+
+  runtime.emitIpcPerfEvent({
+    operation: DesktopIpcOperation.Usage,
+    startTimeUnixMs: 1_700_000_000_000,
+    durationMs: 51,
+    payloadBytes: 0,
+    resultCount: 0,
+    errorType: "DbHostExitError",
+  });
+  await runtime.shutdown();
+
+  const ipcSpan = decodeExportedTraceSpans(transport).find(
+    (span) => span.name === "ipc.usage"
+  );
+  assert.ok(
+    ipcSpan,
+    "the failed IPC perf span must survive contract validation"
+  );
+  assert.equal(
+    ipcSpan.attributes[TelemetryAttribute.ErrorType],
+    "DbHostExitError"
+  );
+  assert.equal(
+    ipcSpan.attributes[TelemetryAttribute.IpcSessionCount],
+    undefined,
+    "a count nobody measured is absent, never fabricated"
+  );
+  assert.equal(ipcSpan.statusCode, SpanStatusCode.ERROR);
 });
 
 test("ships converted lifecycle sync and exception spans through relay OTLP output", async () => {
@@ -635,3 +702,64 @@ test("flush() is a no-op before start and after shutdown", async () => {
     "a shut-down runtime must not reach the torn-down transport"
   );
 });
+
+test("carries the Agent Monitor capture verdict to relay OTLP heartbeat output (ISS-9082)", async () => {
+  // The heartbeat is a LOG, not a span, so the span-decoding cases above never
+  // touch the lane this attribute actually rides, and the record-level coverage
+  // in agent-monitor-capture-alive-heartbeat.test.ts stops at the buffer. An
+  // exporter or routing regression drops it on the wire with both of those
+  // still green.
+  const transport = createStubTransport();
+  const runtime = createDesktopOtelRuntime({
+    appVersion: "9.9.9",
+    env: { CLOSEDLOOP_DEPLOYMENT_ENVIRONMENT_NAME: "desktop-prod" },
+    getAppInstallationId: () => "install_relay_capture_verdict",
+    isPackaged: false,
+    telemetryTransport: transport,
+  });
+  activeRuntime = runtime;
+  await runtime.start();
+
+  runtime.emitAppLifecycleEvent({
+    event: DesktopAppLifecycleEvent.Heartbeat,
+    operatingMode: DesktopAppOperatingMode.SinglePlayer,
+    agentMonitorRuntimeStatus: AgentMonitorRuntimeStatusKind.Failed,
+  });
+  await runtime.shutdown();
+
+  const heartbeat = decodeExportedLogAttributes(transport).find(
+    (attributes) =>
+      attributes[TelemetryAttribute.AppLifecycleEvent] ===
+      DesktopAppLifecycleEvent.Heartbeat
+  );
+  assert.ok(
+    heartbeat,
+    "the heartbeat never reached the relay transport as a log record"
+  );
+  assert.equal(
+    heartbeat[TelemetryAttribute.AppAgentMonitorRuntimeStatus],
+    AgentMonitorRuntimeStatusKind.Failed
+  );
+});
+
+/** Decoded attributes of every log record the transport shipped. */
+function decodeExportedLogAttributes(
+  transport: StubTransport
+): Record<string, unknown>[] {
+  const logRequestType = getOtlpRequestType(OtlpExportKind.Logs);
+  const decoded: Record<string, unknown>[] = [];
+  for (const shipment of transport.shipments.filter(
+    (item) => item.signal === KeylessTelemetrySignal.Logs
+  )) {
+    const request = logRequestType.toObject(
+      logRequestType.decode(shipment.body),
+      { bytes: String, longs: String }
+    ) as { resourceLogs?: unknown };
+    for (const record of walkOtlpLogRecords(
+      asOtlpRecordArray(request.resourceLogs)
+    )) {
+      decoded.push(decodeOtlpAttributes(asOtlpRecordArray(record.attributes)));
+    }
+  }
+  return decoded;
+}

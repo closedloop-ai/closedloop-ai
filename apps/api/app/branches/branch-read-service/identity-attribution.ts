@@ -1,19 +1,52 @@
+import { ArtifactType } from "@repo/api/src/types/artifact";
 import {
-  BranchCollaboratorSource,
   type BranchCollaborators,
-  BranchIdentityAvailability,
   type BranchOwnerIdentity,
-  type BranchPerson,
   type BranchPersonCandidate,
   BranchPersonProvider,
-  projectBranchPeople,
 } from "@repo/api/src/types/branch-identity";
-import { ThreadSource } from "@repo/api/src/types/comment";
-import { BRANCH_PUSH_METHODS } from "@repo/api/src/types/session-artifact-link";
 import type { PrismaClient } from "@repo/database";
-import { parseGitHubAuthorProviderDetailActorType } from "@/app/comments/github-author-provider-detail";
-import { displayUserName } from "@/lib/user-display-name";
-import { collectBranchOwnerIds, resolveOwnerNames } from "./owner-attribution";
+import {
+  type DirectParticipationEntry,
+  directParticipationService,
+  type KnownThreadComment,
+  mergeDirectArtifactPeople,
+} from "@/app/artifacts/collaborators/direct-participation-service";
+import { chunksOf } from "@/lib/chunks-of";
+import type { BranchOwnerEvidence } from "./batch-session-link-evidence";
+import { BRANCH_MEMBERSHIP_SESSION_LIMIT } from "./branch-membership-limit";
+import {
+  assigneeOwnerIdentity,
+  type GitHubConnection,
+  gitHubPersonForLogin,
+  isPushMethod,
+  ownerPersonForUser,
+  type PushOwnerEvidence,
+  projectOwner,
+} from "./branch-owner-projection";
+import {
+  type BranchCommentEvidence,
+  type NativeUser,
+  projectBranchCollaborators,
+} from "./collaborator-projection";
+import {
+  type BranchContributorEvidence,
+  readBranchContributorEvidence,
+} from "./collaborator-source-evidence";
+import {
+  attachSessionOwnerProfiles,
+  collectBranchOwnerIds,
+  type OwnerProfile,
+  ownerDisplayNames,
+  readOwnerDirectory,
+  sessionOwnerProfileFromUser,
+  sessionOwnerProfiles,
+} from "./owner-attribution";
+import {
+  groupByBranch,
+  readPageCommentEvidence,
+} from "./page-comment-evidence";
+import { readPushSessionCreators } from "./push-session-creator-read";
 import {
   getBranchLifetimeUsage,
   getSessionUsageByBranch,
@@ -23,41 +56,33 @@ import {
   type SessionUsageDateWindow,
 } from "./session-usage-window";
 
-/**
- * The per-Branch comment-evidence cap. Exported so the ISS-6004 fan-out
- * regression test asserts the page-wide bound against this value rather than
- * re-declaring it (AGENTS.md: tests import contract constants).
- */
-export const COMMENT_EVIDENCE_LIMIT = 1000;
-
-/**
- * Bind-parameter bound on the session-id `IN (…)` list, matching
- * `SESSION_USAGE_BRANCH_ID_CHUNK_SIZE` — the same id list, bounded the same way.
- * Exported so the ISS-6004 fan-out regression test asserts against this value
- * rather than re-declaring it (AGENTS.md: tests import contract constants).
- */
-export const SESSION_COMMENT_ID_CHUNK_SIZE = 1000;
-
-/**
- * `createdAt` and `id` are selected, not just filtered on, so the ordering the
- * per-Branch cap depends on survives a chunked read.
- */
-const NATIVE_COMMENT_SELECT = {
-  authorId: true,
-  createdAt: true,
-  id: true,
-  thread: { select: { artifactId: true } },
-} as const;
-
 type BranchIdentityReadClient = Pick<
   PrismaClient,
-  "comment" | "gitHubCommentProjection" | "gitHubUserConnection" | "user"
+  | "$queryRaw"
+  | "artifact"
+  | "comment"
+  | "gitHubCommentProjection"
+  | "gitHubUserConnection"
+  | "user"
+  | "branchDetail"
+  | "pullRequestDetail"
+  | "branchPushContribution"
+  | "externalCommentAuthor"
 >;
 
 export type BranchIdentityInput = {
   branchId: string;
+  /** The branch artifact's assignee, which is its Owner (ISS-12463). */
+  assigneeId: string | null;
   firstPushedAt: Date | null;
   associatedPullRequestCount: number;
+  /**
+   * ISS-11752: the branch's PR authors, in the read's PR order, which the
+   * PR-author Collaborator candidates resolve. Empty-string logins are the
+   * ABSENT form (ISS-8155) and are dropped before they reach here, never
+   * treated as a real account.
+   */
+  pullRequestAuthorLogins?: readonly string[];
 };
 
 export type BranchIdentityProjection = {
@@ -73,28 +98,62 @@ export async function resolveBranchIdentities(
   db: BranchIdentityReadClient,
   organizationId: string,
   branches: readonly BranchIdentityInput[],
-  linkEvidence: readonly SessionBranchIdentityEvidence[]
+  linkEvidence: readonly SessionBranchIdentityEvidence[],
+  options: {
+    /** Filled with each Branch's direct participation, for callers that need its comment count. */
+    directParticipationOut?: Map<string, DirectParticipationEntry>;
+    /** Extra ids to resolve in THIS read rather than a second one (ISS-8972). */
+    sessionOwnerIds?: Iterable<string>;
+    /** Filled with every resolved user, for callers that need name + picture. */
+    ownerProfilesOut?: Map<string, OwnerProfile>;
+    /** Canonical SQL Owner decisions let batch reads avoid retaining every link. */
+    ownerEvidenceByBranch?: ReadonlyMap<string, BranchOwnerEvidence>;
+    /** Full persisted-link comment window, including the overflow signal. */
+    sessionCommentRowsByBranch?: ReadonlyMap<
+      string,
+      readonly { authorId: string }[]
+    >;
+  } = {}
 ): Promise<Map<string, BranchIdentityProjection>> {
   if (branches.length === 0) {
     return new Map();
   }
   const sessionIdsByBranch = new Map<string, Set<string>>();
+  const linksByBranch = groupByBranch(linkEvidence, (link) => [link.targetId]);
   for (const link of linkEvidence) {
     const sessionIds =
       sessionIdsByBranch.get(link.targetId) ?? new Set<string>();
     sessionIds.add(link.sourceId);
     sessionIdsByBranch.set(link.targetId, sessionIds);
   }
-  const evidenceByBranch = await readPageCommentEvidence(
-    db,
-    organizationId,
-    branches.map((branch) => branch.branchId),
-    sessionIdsByBranch
+  const branchIds = branches.map((branch) => branch.branchId);
+  const branchComments = new Map<string, KnownThreadComment[]>();
+  const [evidenceByBranch, contributorByBranch, pusherBySessionId] =
+    await Promise.all([
+      readPageCommentEvidence(
+        db,
+        organizationId,
+        branches,
+        sessionIdsByBranch,
+        options.sessionCommentRowsByBranch,
+        branchComments
+      ),
+      readBranchContributorEvidence(db, organizationId, branchIds),
+      readPushSessionCreators(
+        db,
+        organizationId,
+        projectedPushSessionIds(linkEvidence, options.ownerEvidenceByBranch)
+      ),
+    ]);
+  const providerIds = collectContributorProviderIds(
+    evidenceByBranch,
+    contributorByBranch
   );
-  const userIds = new Set<string>();
+  const userIds = ownerUserIds(branches, options.ownerEvidenceByBranch);
   for (const link of linkEvidence) {
-    if (link.userId && isPushMethod(link.branchParticipationMethod)) {
-      userIds.add(link.userId);
+    const pusherUserId = pusherBySessionId.get(link.sourceId);
+    if (pusherUserId && isPushMethod(link.branchParticipationMethod)) {
+      userIds.add(pusherUserId);
     }
   }
   for (const evidence of evidenceByBranch.values()) {
@@ -105,249 +164,188 @@ export async function resolveBranchIdentities(
       userIds.add(comment.authorId);
     }
   }
-  const [users, connections] = await Promise.all([
+  const authorLogins = collectPullRequestAuthorLogins(branches);
+  const [connections, verifiedConnections, directByArtifact] =
+    await Promise.all([
+      readGitHubIdentityConnections(
+        db,
+        organizationId,
+        [...userIds],
+        [],
+        false,
+        [...authorLogins]
+      ),
+      readGitHubIdentityConnections(db, organizationId, [], providerIds, true),
+      // Direct Comments reuse the page's Branch comments rather than scanning
+      // them again; nothing else here waits on this read.
+      readDirectBranchParticipation(
+        db,
+        organizationId,
+        branchIds,
+        branchComments
+      ),
+    ]);
+  for (const [artifactId, entry] of directByArtifact) {
+    options.directParticipationOut?.set(artifactId, entry);
+  }
+  const profileUserIds = profileUserIdsFor(
+    userIds,
+    options.sessionOwnerIds,
+    connections
+  );
+  const users = await readIdentityChunks([...profileUserIds], (idChunk) =>
     db.user.findMany({
-      where: { organizationId, id: { in: [...userIds] } },
+      where: { organizationId, id: { in: idChunk } },
       select: {
         id: true,
+        clerkId: true,
         email: true,
         firstName: true,
         lastName: true,
         avatarUrl: true,
       },
-    }),
-    db.gitHubUserConnection.findMany({
-      where: { organizationId, userId: { in: [...userIds] } },
-      select: {
-        userId: true,
-        githubUserId: true,
-        login: true,
-        avatarUrl: true,
-        profileUrl: true,
-      },
-    }),
-  ]);
+    })
+  );
   const usersById = new Map(users.map((user) => [user.id, user]));
+  fillOwnerProfiles(users, options.ownerProfilesOut);
   const connectionsByUserId = new Map(
     connections.map((connection) => [connection.userId, connection])
   );
+  const connectionsByLogin = new Map(
+    connections.map((connection) => [connection.login, connection])
+  );
+  const verifiedGitHubUserIds = verifiedProviderAccountIds(verifiedConnections);
   const projections = new Map<string, BranchIdentityProjection>();
   for (const branch of branches) {
-    const evidence = evidenceByBranch.get(branch.branchId);
-    const ownerIdentity = projectOwner(
-      branch,
-      linkEvidence,
+    const ownerEvidence = options.ownerEvidenceByBranch?.get(branch.branchId);
+    const ownerLinks = withPushers(
+      linksByBranch.get(branch.branchId),
+      pusherBySessionId
+    );
+    const ownerIdentity = assigneeOwnerIdentity(
+      branch.assigneeId,
       connectionsByUserId,
       usersById
     );
-    const candidates = [
-      ...nativeCandidates(evidence?.branchComments ?? [], usersById),
-      ...nativeCandidates(evidence?.sessionComments ?? [], usersById),
-      ...githubCandidates(evidence?.githubComments ?? []),
-    ];
+    const observedOwnerIdentity = ownerEvidence
+      ? {
+          availability: ownerEvidence.observedAvailability,
+          person: ownerPersonForUser(
+            ownerEvidence.observedUserId,
+            connectionsByUserId,
+            usersById
+          ),
+        }
+      : projectOwner(branch, connectionsByUserId, usersById, ownerLinks);
     projections.set(branch.branchId, {
       ownerIdentity,
-      collaborators: projectBranchPeople(candidates, {
-        [BranchCollaboratorSource.PullRequestComments]:
-          pullRequestCommentAvailability(branch, evidence),
-        [BranchCollaboratorSource.BranchComments]: evidence?.branchCapped
-          ? BranchIdentityAvailability.Incomplete
-          : BranchIdentityAvailability.Complete,
-        [BranchCollaboratorSource.SessionComments]: evidence?.sessionCapped
-          ? BranchIdentityAvailability.Incomplete
-          : BranchIdentityAvailability.Complete,
+      collaborators: projectBranchCollaborators({
+        associatedPullRequestCount: branch.associatedPullRequestCount,
+        ownerIdentity: observedOwnerIdentity,
+        evidence: evidenceByBranch.get(branch.branchId),
+        contributors: contributorByBranch.get(branch.branchId),
+        pullRequestAuthors: pullRequestAuthorCandidates(
+          branch,
+          connectionsByLogin,
+          usersById
+        ),
+        usersById,
+        verifiedGitHubUserIds,
       }),
     });
   }
+  mergeBranchDirectParticipation(projections, directByArtifact);
   return projections;
 }
 
-function projectOwner(
-  branch: BranchIdentityInput,
-  links: readonly SessionBranchIdentityEvidence[],
-  connectionsByUserId: ReadonlyMap<string, GitHubConnection>,
-  usersById: ReadonlyMap<string, NativeUser>
-): BranchOwnerIdentity {
-  if (!branch.firstPushedAt) {
-    return {
-      availability: links.some(
-        (link) =>
-          link.targetId === branch.branchId &&
-          isPushMethod(link.branchParticipationMethod)
-      )
-        ? BranchIdentityAvailability.Incomplete
-        : BranchIdentityAvailability.Complete,
-      person: null,
-    };
-  }
-  const pushLinks = links.filter(
-    (link) =>
-      link.targetId === branch.branchId &&
-      isPushMethod(link.branchParticipationMethod) &&
-      link.branchParticipationObservedAt
-  );
-  const earliestLinks = authoritativeOwnerLinks(branch, pushLinks);
-  const exactCandidates: BranchPerson[] = [];
-  for (const link of earliestLinks) {
-    const userId = link.userId;
-    const connection = userId ? connectionsByUserId.get(userId) : undefined;
-    const user = userId ? usersById.get(userId) : undefined;
-    if (!(userId && connection)) {
-      continue;
+/**
+ * Distinct PR-author logins across the page, which the PR-author Collaborator
+ * candidates resolve through the login arm of the one connection read
+ * (ISS-11752).
+ */
+function collectPullRequestAuthorLogins(
+  branches: readonly BranchIdentityInput[]
+): Set<string> {
+  const logins = new Set<string>();
+  for (const branch of branches) {
+    for (const login of branch.pullRequestAuthorLogins ?? []) {
+      logins.add(login);
     }
-    exactCandidates.push({
-      provider: BranchPersonProvider.GitHub,
-      id: connection.githubUserId,
-      userId,
-      login: connection.login,
-      displayName: user ? displayUserName(user) : undefined,
-      avatarUrl: connection.avatarUrl ?? undefined,
-      profileUrl: connection.profileUrl ?? undefined,
-    });
   }
-  exactCandidates.sort((left, right) => left.id.localeCompare(right.id));
-  const complete =
-    exactCandidates.length > 0 &&
-    exactCandidates.length === earliestLinks.length;
+  return logins;
+}
+
+/**
+ * The users this read resolves a display label from.
+ *
+ * Three sources, and only the first drives WHO a projection names:
+ *  - `userIds` — the assignees (each branch's Owner, ISS-12463), push-link
+ *    owners and native comment authors the projections resolve; this same set
+ *    drives the connection read above.
+ *  - ISS-8972 — the extra Session owners a caller asked for, resolved by the
+ *    User statement this read ALREADY issues rather than a second one (a second
+ *    `user.findMany` broke the ISS-6004 fan-out bound).
+ *  - ISS-11762 (tamsinb review) — every connection this read resolved, which
+ *    is what puts a PR-author Collaborator's user id in reach. A PR author is
+ *    found by LOGIN, so its user id is not known until the connection read
+ *    returns; with the User read in the earlier tier `gitHubPersonForLogin` found
+ *    no user, left `displayName` undefined, and the same person appeared under
+ *    their real name in one place and under their bare GitHub login in
+ *    another. `apps/api/app/branches/AGENTS.md` names that split: "Resolve a
+ *    person's display label once for the surface."
+ *
+ * Widening this set cannot change which person any projection names: it feeds
+ * only `usersById`, which is read by key and never enumerated, and the
+ * connection read that DOES drive resolution is already issued by the time this
+ * set is built.
+ */
+function profileUserIdsFor(
+  userIds: ReadonlySet<string>,
+  sessionOwnerIds: Iterable<string> | undefined,
+  connections: readonly { userId: string }[]
+): Set<string> {
+  const ids = new Set(userIds);
+  for (const ownerId of sessionOwnerIds ?? []) {
+    ids.add(ownerId);
+  }
+  for (const connection of connections) {
+    ids.add(connection.userId);
+  }
+  return ids;
+}
+
+/**
+ * The connection read's org-scoped predicate.
+ *
+ * The login arm is added ONLY when this page actually has PR authors to
+ * resolve, so a page without them issues the exact predicate it always did
+ * rather than a one-armed `OR` that reads as a change where none happened.
+ */
+function branchConnectionWhere(
+  organizationId: string,
+  userIds: ReadonlySet<string>,
+  authorLogins: ReadonlySet<string>
+) {
+  if (authorLogins.size === 0) {
+    return { organizationId, userId: { in: [...userIds] } };
+  }
   return {
-    availability: complete
-      ? BranchIdentityAvailability.Complete
-      : BranchIdentityAvailability.Incomplete,
-    person: complete ? exactCandidates[0] : null,
+    organizationId,
+    OR: [
+      { userId: { in: [...userIds] } },
+      { login: { in: [...authorLogins] } },
+    ],
   };
 }
-
-function authoritativeOwnerLinks(
-  branch: BranchIdentityInput,
-  pushLinks: readonly SessionBranchIdentityEvidence[]
-): readonly SessionBranchIdentityEvidence[] {
-  if (pushLinks.length <= 1) {
-    return pushLinks;
-  }
-  return pushLinks.filter(
-    (link) =>
-      link.branchParticipationObservedAt?.getTime() ===
-      branch.firstPushedAt?.getTime()
-  );
-}
-
-function nativeCandidates(
-  comments: readonly NativeComment[],
-  usersById: ReadonlyMap<string, NativeUser>
-): BranchPersonCandidate[] {
-  return comments.map((comment) => {
-    const user = usersById.get(comment.authorId);
-    return user
-      ? {
-          person: {
-            provider: BranchPersonProvider.ClosedLoop,
-            id: user.id,
-            userId: user.id,
-            displayName: displayUserName(user),
-            avatarUrl: user.avatarUrl ?? undefined,
-          },
-        }
-      : {};
-  });
-}
-
-function githubCandidates(
-  comments: readonly GitHubComment[]
-): BranchPersonCandidate[] {
-  return comments.map((comment) => {
-    const author = comment.externalAuthor;
-    const actorType = parseGitHubAuthorProviderDetailActorType(
-      author?.providerDetail
-    );
-    const candidate: BranchPersonCandidate = author
-      ? {
-          actorType,
-          person: {
-            provider: BranchPersonProvider.GitHub,
-            id: author.providerUserId,
-            userId: author.userId,
-            login: author.providerLogin,
-            displayName: author.displayName ?? undefined,
-            avatarUrl: author.avatarUrl ?? undefined,
-            profileUrl: author.profileUrl ?? undefined,
-            ...(actorType ? { actorType } : {}),
-          },
-        }
-      : {};
-    return candidate;
-  });
-}
-
-function isPushMethod(method: string | null): boolean {
-  return method !== null && BRANCH_PUSH_METHODS.has(method);
-}
-
-function pullRequestCommentAvailability(
-  branch: BranchIdentityInput,
-  _evidence: BranchCommentEvidence | undefined
-): BranchIdentityAvailability {
-  if (branch.associatedPullRequestCount === 0) {
-    return BranchIdentityAvailability.Complete;
-  }
-  // Persisted child rows prove known people, not that both independently
-  // fetched GitHub comment lanes completed (including a successful empty
-  // fetch). Until that existing acquisition boundary persists lane-level proof,
-  // this downstream projection must not claim a complete collaborator corpus.
-  return BranchIdentityAvailability.Incomplete;
-}
-
-type NativeComment = {
-  authorId: string;
-};
-/** A native comment row as the page-wide read selects it (ISS-6004). */
-type PageNativeComment = NativeComment & {
-  createdAt: Date;
-  id: string;
-  thread: { artifactId: string | null };
-};
-type GitHubComment = {
-  threadProjection: {
-    branchArtifactId: string;
-    pullRequestDetailId: string;
-    fetchResultReason: string | null;
-  };
-  externalAuthor: {
-    providerUserId: string;
-    providerLogin: string;
-    displayName: string | null;
-    avatarUrl: string | null;
-    profileUrl: string | null;
-    userId: string;
-    providerDetail: unknown;
-  } | null;
-};
-type BranchCommentEvidence = {
-  branchComments: NativeComment[];
-  sessionComments: NativeComment[];
-  githubComments: GitHubComment[];
-  branchCapped: boolean;
-  sessionCapped: boolean;
-  githubCapped: boolean;
-};
-type NativeUser = {
-  id: string;
-  email: string;
-  firstName: string | null;
-  lastName: string | null;
-  avatarUrl: string | null;
-};
-type GitHubConnection = {
-  userId: string;
-  githubUserId: string;
-  login: string;
-  avatarUrl: string | null;
-  profileUrl: string | null;
-};
 
 type BranchIdentityRow = {
   id: string;
+  assigneeId: string | null;
   branch: { firstPushedAt: Date | null };
-  pullRequestDetails: readonly unknown[];
+  // ISS-11752: narrowed from `readonly unknown[]` — this read counts the PRs
+  // AND now reads their authors. `authorLogin` is optional so a caller whose
+  // select predates it still typechecks and simply infers no owner.
+  pullRequestDetails: readonly { authorLogin?: string | null }[];
 };
 
 type BranchIdentityClient = BranchIdentityReadClient & SessionUsageClient;
@@ -357,26 +355,42 @@ export async function resolveBranchListIdentityData(
   db: BranchIdentityClient,
   organizationId: string,
   rows: readonly BranchIdentityRow[],
-  dateWindow: SessionUsageDateWindow | undefined
-): Promise<{
-  windowed: Map<string, SessionUsage>;
-  lifetime: Map<string, SessionUsage>;
-  identityByBranch: Map<string, BranchIdentityProjection>;
-}> {
+  dateWindow: SessionUsageDateWindow | undefined,
+  preloaded?: BranchListIdentityData
+): Promise<BranchListIdentityData> {
   const evidence: SessionBranchIdentityEvidence[] = [];
   const usage = await getBranchLifetimeUsage(
     db,
     organizationId,
     rows.map((row) => row.id),
     dateWindow,
-    evidence
+    preloaded ? undefined : evidence,
+    { includeLifecycleEvents: false, includeSessionPhaseSegments: false }
   );
-  const identityByBranch = await resolveBranchIdentities(
-    db,
-    organizationId,
-    identityInputs(rows),
-    evidence
-  );
+  // ISS-8972 — resolved by the identity read below, in its profile lookup.
+  const ownerProfiles = new Map<string, OwnerProfile>();
+  for (const previousUsage of preloaded?.lifetime.values() ?? []) {
+    for (const [sessionId, profile] of previousUsage.sessionOwnerProfileById) {
+      const ownerId = previousUsage.sessionOwnerById.get(sessionId);
+      if (ownerId) {
+        ownerProfiles.set(ownerId, profile);
+      }
+    }
+  }
+  const identityByBranch =
+    preloaded?.identityByBranch ??
+    (await resolveBranchIdentities(
+      db,
+      organizationId,
+      identityInputs(rows),
+      evidence,
+      {
+        sessionOwnerIds: describedSessionOwnerIds(usage.lifetime),
+        ownerProfilesOut: ownerProfiles,
+      }
+    ));
+  attachSessionOwnerProfiles(usage.lifetime, ownerProfiles);
+  attachSessionOwnerProfiles(usage.windowed, ownerProfiles);
   return { ...usage, identityByBranch };
 }
 
@@ -395,300 +409,360 @@ export async function resolveBranchDetailIdentityData(
     db,
     organizationId,
     [row.id],
-    { includeReviewedParticipation: true, identityEvidenceOut: evidence }
+    { identityEvidenceOut: evidence }
   );
-  const [identityByBranch, nameById] = await Promise.all([
+  const [identityByBranch, ownerDirectory] = await Promise.all([
     resolveBranchIdentities(
       db,
       organizationId,
       identityInputs([row]),
       evidence
     ),
-    resolveOwnerNames(db, organizationId, collectBranchOwnerIds(usageByBranch)),
+    // ISS-11738: the PROFILES, not just the names. This path resolved names
+    // only, so `usage.sessionOwnerProfileById` stayed empty and the canonical
+    // projection's `!profile && ownerId` test (canonical-projection.ts) was true
+    // for EVERY session that has an owner — stamping `ownerUnavailable: true`,
+    // the flag reserved for an owner nobody could look up, on sessions whose
+    // owner the same response names in `ownerUserName`. One org-scoped read
+    // feeds both derivations, so taking the profiles costs no extra query.
+    readOwnerDirectory(
+      db,
+      organizationId,
+      collectBranchOwnerIds(usageByBranch)
+    ),
   ]);
-  return { usageByBranch, identityByBranch, nameById };
+  // `sessionOwnerProfiles` (name parts only), never the directory's
+  // `displayUserName` (email fallback): the chip profile reaches the wire as
+  // `ownerName`, and an email there is a private address published as a display
+  // name (whitlockk review, ISS-11738). `nameById` keeps the display-name
+  // derivation it has always had — it feeds `ownerUserName`, whose email
+  // fallback this change does not touch.
+  attachSessionOwnerProfiles(
+    usageByBranch,
+    sessionOwnerProfiles(ownerDirectory)
+  );
+  return {
+    usageByBranch,
+    identityByBranch,
+    nameById: ownerDisplayNames(ownerDirectory),
+  };
 }
 
-function identityInputs(
+/**
+ * Exported for the Branches-list identity SQL oracle (ISS-11765): the parity
+ * fixture has to hand `resolveBranchIdentities` the SAME input the production
+ * reads do, or it silently stops exercising the PR-creator rung and reports a
+ * SQL twin that ignores it as in agreement.
+ */
+export function identityInputs(
   rows: readonly BranchIdentityRow[]
 ): BranchIdentityInput[] {
   return rows.map((row) => ({
     branchId: row.id,
+    assigneeId: row.assigneeId,
     firstPushedAt: row.branch.firstPushedAt,
     associatedPullRequestCount: row.pullRequestDetails.length,
+    // ISS-8155: `""` is how an unfilled `authorLogin` reaches a read — the
+    // ABSENT form, deliberately not the literal "unknown" a real account could
+    // hold. Dropped here so no downstream lookup treats it as a login.
+    pullRequestAuthorLogins: row.pullRequestDetails
+      .map((pullRequest) => pullRequest.authorLogin)
+      .filter((login): login is string => Boolean(login)),
   }));
 }
 
 /**
- * Reads independently capped comment evidence for EVERY branch on the page in
- * THREE queries — not three per branch (ISS-6004).
+ * ISS-8972 (whitlockk review) — the owners of only the Sessions the projection will
+ * actually DESCRIBE, so this read's widened predicate is bounded by
+ * {@link BRANCH_MEMBERSHIP_SESSION_LIMIT} per branch rather than by a branch's
+ * total link count.
  *
- * The previous shape read one branch at a time through `mapWithDbConcurrency`,
- * so a 100-branch page issued 300 of the request's ~306 statements and 300
- * pooled connection checkouts, each its own round trip — the dominant term in a
- * 1.5–2.0 s `GET /branches`. All three reads are keyed on artifact ids the page
- * already holds, so they batch: one statement per evidence source with an
- * `IN (...)` over the whole page, grouped back per branch in memory.
- *
- * Per-branch cap semantics are preserved, because the wire
- * `BranchIdentityAvailability` is derived from them. BOTH native sources are
- * bounded by `COMMENT_EVIDENCE_LIMIT × <branches on the page>` — no looser than
- * the aggregate the per-branch reads already permitted, and keyed on the branch
- * count rather than the session count because a branch can only ever CONSUME its
- * own 1,000 rows however many sessions it links. Every branch's own cap is then
- * applied to its own group.
- *
- * KNOWN LIMIT, deliberate: that page-wide `take` is one flat budget spent in
- * global `createdAt` order, so if it is ever exhausted the branches owning the
- * OLDEST comments consume it and a branch whose comments are all newer can group
- * to empty — where the old per-branch `take` guaranteed each branch its own
- * earliest 1,000. Such a page reports every branch's source `Incomplete`, so the
- * availability signal stays honest and no branch claims a corpus it did not
- * read, but its people list can be shorter than it was. Reaching this needs
- * >100,000 native comments across ONE page's branches. The shape that would give
- * both a single statement AND per-branch fairness is a windowed read
- * (`ROW_NUMBER() OVER (PARTITION BY thread.artifact_id ORDER BY created_at, id)
- * <= 1000`) in `$queryRaw`; take that upgrade if the truncation is ever observed.
+ * It matters most on the server-page path, where identity resolution runs over
+ * the whole matching corpus BEFORE pagination: an unbounded set there would add
+ * one bind parameter per linked Session in the corpus to a statement that is
+ * already corpus-wide.
  */
-async function readPageCommentEvidence(
-  db: BranchIdentityReadClient,
-  organizationId: string,
-  branchIds: readonly string[],
-  sessionIdsByBranch: ReadonlyMap<string, ReadonlySet<string>>
-): Promise<Map<string, BranchCommentEvidence>> {
-  const branchIdsBySession = invertSessionIndex(sessionIdsByBranch);
-  const sessionIds = [...branchIdsBySession.keys()];
-  const pageCap = pageEvidenceCap(branchIds.length);
-  const [branchRows, sessionEvidence, githubRows] = await Promise.all([
-    db.comment.findMany({
-      where: {
-        deletedAt: null,
-        thread: {
-          organizationId,
-          source: ThreadSource.Native,
-          artifactId: { in: [...branchIds] },
-        },
-      },
-      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-      take: pageCap + 1,
-      select: NATIVE_COMMENT_SELECT,
-    }),
-    readSessionCommentRows(db, organizationId, sessionIds, pageCap),
-    db.gitHubCommentProjection.findMany({
-      where: {
-        githubDeletedAt: null,
-        comment: { deletedAt: null },
-        threadProjection: {
-          branchArtifactId: { in: [...branchIds] },
-          deletedAt: null,
-        },
-      },
-      orderBy: [{ comment: { createdAt: "asc" } }, { commentId: "asc" }],
-      take: pageCap + 1,
-      select: {
-        threadProjection: {
-          select: {
-            branchArtifactId: true,
-            pullRequestDetailId: true,
-            fetchResultReason: true,
-          },
-        },
-        externalAuthor: {
-          select: {
-            providerUserId: true,
-            providerLogin: true,
-            displayName: true,
-            avatarUrl: true,
-            profileUrl: true,
-            userId: true,
-            providerDetail: true,
-          },
-        },
-      },
-    }),
-  ]);
-  const branchPageTruncated = branchRows.length > pageCap;
-  const githubPageTruncated = githubRows.length > pageCap;
-  // `CommentThread.artifactId` is nullable, and an unattached thread belongs to
-  // no Branch. The `artifactId: { in: … }` predicate already excludes those rows
-  // (SQL `NULL IN (…)` is never true), so this is the type-level counterpart of
-  // that filter, not a second policy.
-  const branchCommentsByBranch = groupByBranch(branchRows, (row) =>
-    row.thread.artifactId ? [row.thread.artifactId] : []
-  );
-  const sessionCommentsByBranch = groupByBranch(sessionEvidence.rows, (row) =>
-    row.thread.artifactId
-      ? (branchIdsBySession.get(row.thread.artifactId) ?? [])
-      : []
-  );
-  const githubByBranch = groupByBranch(githubRows, (row) => [
-    row.threadProjection.branchArtifactId,
-  ]);
-  const evidenceByBranch = new Map<string, BranchCommentEvidence>();
-  for (const branchId of branchIds) {
-    const branchComments = branchCommentsByBranch.get(branchId) ?? [];
-    const sessionComments = sessionCommentsByBranch.get(branchId) ?? [];
-    const githubComments = githubByBranch.get(branchId) ?? [];
-    evidenceByBranch.set(branchId, {
-      branchComments: branchComments.slice(0, COMMENT_EVIDENCE_LIMIT),
-      sessionComments: sessionComments.slice(0, COMMENT_EVIDENCE_LIMIT),
-      githubComments: githubComments.slice(0, COMMENT_EVIDENCE_LIMIT),
-      branchCapped:
-        branchPageTruncated || branchComments.length > COMMENT_EVIDENCE_LIMIT,
-      sessionCapped:
-        sessionEvidence.truncated ||
-        sessionComments.length > COMMENT_EVIDENCE_LIMIT,
-      githubCapped:
-        githubPageTruncated || githubComments.length > COMMENT_EVIDENCE_LIMIT,
-    });
+function describedSessionOwnerIds(
+  lifetime: Map<string, SessionUsage>
+): Set<string> {
+  const ownerIds = new Set<string>();
+  for (const usage of lifetime.values()) {
+    for (const session of usage.sessions.slice(
+      0,
+      BRANCH_MEMBERSHIP_SESSION_LIMIT
+    )) {
+      const ownerId = usage.sessionOwnerById.get(session.sessionId);
+      if (ownerId) {
+        ownerIds.add(ownerId);
+      }
+    }
   }
-  return evidenceByBranch;
+  return ownerIds;
 }
 
 /**
- * The page's session-linked native comments, in one ordered list.
+ * ISS-8972 — record each resolved user as a chip-ready profile, through the
+ * same `sessionOwnerProfileFromUser` derivation the detail path uses, so the
+ * two cannot name one user differently (ISS-11738).
  *
- * The session-id list is the union across every branch on the page, so unlike
- * the branch-id list it is not bounded by the page size — a Prisma `IN (…)`
- * emits one bind parameter per id, and Postgres rejects a statement past 65,535
- * of them. Chunking it keeps a link-heavy org from turning `GET /branches` into
- * a 500, and matches how `getSessionUsageByBranch` and `getSessionBranchCounts`
- * already bound the same id list. Chunk count is `ceil(sessions / 1000)` — small
- * and page-bounded, not per-branch.
- *
- * Chunk results are concatenated, so the merged list is chunk-major rather than
- * globally ordered; {@link sortByCommentOrder} restores the query's
- * `createdAt, id` order before any branch's cap is applied.
- *
- * `pageCap + 1` is ONE budget for the whole page, spent across the chunks — not
- * a per-chunk allowance. Giving each chunk its own full `take` bounds a single
- * statement while leaving the accumulated set at `chunks × (pageCap + 1)`, so an
- * org with 30k linked sessions could hold ~3M rows before the sort and group.
- * Each chunk therefore takes only the remainder, and once the remainder is spent
- * the read stops issuing statements and reports `truncated` — the same thing it
- * reports for a chunk that filled its own `take`: rows matched that this read did
- * not return, so no branch may claim a complete corpus.
+ * Extracted so `resolveBranchIdentities` stays under the cognitive-complexity
+ * ceiling. The out map is optional because only the LIST path gets its profiles
+ * from THIS read; the detail path resolves them from its own owner directory,
+ * and every other caller resolves identities without paying for them.
  */
-async function readSessionCommentRows(
+function fillOwnerProfiles(
+  users: readonly NativeUser[],
+  out: Map<string, OwnerProfile> | undefined
+): void {
+  if (!out) {
+    return;
+  }
+  for (const user of users) {
+    const profile = sessionOwnerProfileFromUser(user);
+    if (profile) {
+      out.set(user.id, profile);
+    }
+  }
+}
+
+async function readIdentityChunks<T>(
+  ids: readonly string[],
+  readChunk: (ids: string[]) => Promise<T[]>
+): Promise<T[]> {
+  const chunks = chunksOf(ids, BRANCH_IDENTITY_READ_CHUNK_SIZE);
+  const rows: T[] = [];
+  for (const chunk of chunks.length > 0 ? chunks : [[]]) {
+    rows.push(...(await readChunk(chunk)));
+  }
+  return rows;
+}
+
+/** Maximum platform user IDs bound by one Branch identity lookup. */
+export const BRANCH_IDENTITY_READ_CHUNK_SIZE = 1000;
+
+function pullRequestAuthorCandidates(
+  branch: BranchIdentityInput,
+  connectionsByLogin: ReadonlyMap<string, GitHubConnection>,
+  usersById: ReadonlyMap<string, NativeUser>
+): BranchPersonCandidate[] {
+  const candidates: BranchPersonCandidate[] = [];
+  const seen = new Set<string>();
+  for (const login of branch.pullRequestAuthorLogins ?? []) {
+    if (seen.has(login)) {
+      continue;
+    }
+    seen.add(login);
+    const person = gitHubPersonForLogin(login, connectionsByLogin, usersById);
+    if (person) {
+      candidates.push({ person, actorType: person.actorType });
+    }
+  }
+  return candidates;
+}
+
+function collectContributorProviderIds(
+  comments: ReadonlyMap<string, BranchCommentEvidence>,
+  contributors: ReadonlyMap<string, BranchContributorEvidence>
+): string[] {
+  const ids = new Set<string>();
+  for (const evidence of comments.values()) {
+    for (const comment of evidence.githubComments) {
+      if (comment.externalAuthor) {
+        ids.add(comment.externalAuthor.providerUserId);
+      }
+    }
+  }
+  for (const evidence of contributors.values()) {
+    for (const candidate of [...evidence.authors, ...evidence.pushes]) {
+      if (candidate.person?.provider === BranchPersonProvider.GitHub) {
+        ids.add(candidate.person.id);
+      }
+    }
+  }
+  return [...ids];
+}
+
+async function readGitHubIdentityConnections(
   db: BranchIdentityReadClient,
   organizationId: string,
-  sessionIds: readonly string[],
-  pageCap: number
-): Promise<{ rows: PageNativeComment[]; truncated: boolean }> {
-  const rows: PageNativeComment[] = [];
-  let truncated = false;
+  userIds: readonly string[],
+  providerIds: readonly string[],
+  currentVerifiedOnly = false,
+  ownerLogins: readonly string[] = []
+): Promise<GitHubConnection[]> {
+  if (currentVerifiedOnly && providerIds.length === 0) {
+    return [];
+  }
+  const userChunks = chunksOf(userIds, BRANCH_IDENTITY_READ_CHUNK_SIZE);
+  const providerChunks = chunksOf(providerIds, BRANCH_IDENTITY_READ_CHUNK_SIZE);
+  const loginChunks = chunksOf(ownerLogins, BRANCH_IDENTITY_READ_CHUNK_SIZE);
+  const rows: GitHubConnection[] = [];
   for (
-    let start = 0;
-    start < sessionIds.length;
-    start += SESSION_COMMENT_ID_CHUNK_SIZE
+    let index = 0;
+    index <
+    Math.max(1, userChunks.length, providerChunks.length, loginChunks.length);
+    index++
   ) {
-    // Every `take` is the remainder, so `rows.length` can never pass the budget
-    // and `remaining` can never go negative. The guard also keeps the `take`
-    // below positive: a chunk either runs with `remaining >= 1` or not at all.
-    const remaining = pageCap + 1 - rows.length;
-    if (remaining <= 0) {
-      truncated = true;
-      break;
-    }
-    const idChunk = sessionIds.slice(
-      start,
-      start + SESSION_COMMENT_ID_CHUNK_SIZE
-    );
-    const chunkRows = await db.comment.findMany({
-      where: {
-        deletedAt: null,
-        thread: {
+    const idChunk = userChunks[index] ?? [];
+    const providerChunk = providerChunks[index] ?? [];
+    const loginChunk = loginChunks[index] ?? [];
+    rows.push(
+      ...(await db.gitHubUserConnection.findMany({
+        where: {
           organizationId,
-          source: ThreadSource.Native,
-          artifactId: { in: idChunk },
+          ...(currentVerifiedOnly
+            ? { revokedAt: null, user: { organizationId, active: true } }
+            : {}),
+          ...(providerChunk.length > 0
+            ? {
+                user: {
+                  organizationId,
+                  ...(currentVerifiedOnly ? { active: true } : {}),
+                },
+                OR: [
+                  { userId: { in: idChunk } },
+                  { githubUserId: { in: providerChunk } },
+                  ...(currentVerifiedOnly &&
+                  providerChunk.some((id) => id.startsWith("node:"))
+                    ? [
+                        {
+                          githubNodeId: {
+                            in: providerChunk
+                              .filter((id) => id.startsWith("node:"))
+                              .map((id) => id.slice(5)),
+                          },
+                        },
+                      ]
+                    : []),
+                ],
+              }
+            : branchConnectionWhere(
+                organizationId,
+                new Set(idChunk),
+                new Set(loginChunk)
+              )),
         },
-      },
-      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-      take: remaining,
-      select: NATIVE_COMMENT_SELECT,
-    });
-    // A chunk that filled its `take` may have left matching rows behind. On the
-    // first chunk `remaining` is `pageCap + 1`, so this is exactly the
-    // `> pageCap` test the per-chunk budget used — unchanged for the single-chunk
-    // read every page under 1,000 sessions performs.
-    truncated = truncated || chunkRows.length >= remaining;
-    for (const row of chunkRows) {
-      rows.push(row);
+        select: {
+          userId: true,
+          githubUserId: true,
+          ...(currentVerifiedOnly ? { githubNodeId: true } : {}),
+          login: true,
+          avatarUrl: true,
+          profileUrl: true,
+        },
+      }))
+    );
+  }
+  return rows;
+}
+
+/** A stable alias resolves only when the verified rows agree on one account. */
+function verifiedProviderAccountIds(
+  connections: readonly GitHubConnection[]
+): Map<string, string> {
+  const accounts = new Map<string, Set<string>>();
+  for (const connection of connections) {
+    const aliases = [connection.githubUserId];
+    if (connection.githubNodeId) {
+      aliases.push(`node:${connection.githubNodeId}`);
+    }
+    for (const alias of aliases) {
+      const users = accounts.get(alias) ?? new Set<string>();
+      users.add(connection.userId);
+      accounts.set(alias, users);
     }
   }
-  sortByCommentOrder(rows);
-  return { rows, truncated };
-}
-
-/**
- * Restore the read's `createdAt, id` order over rows that may have arrived in
- * separate chunks, so each branch's cap keeps the SAME earliest rows the
- * per-branch `take` kept.
- */
-function sortByCommentOrder(rows: PageNativeComment[]): void {
-  rows.sort((left, right) => {
-    const byCreatedAt = left.createdAt.getTime() - right.createdAt.getTime();
-    if (byCreatedAt !== 0) {
-      return byCreatedAt;
-    }
-    return left.id.localeCompare(right.id);
-  });
-}
-
-/**
- * Session id → the branches that link it. A session shared by N branches feeds
- * all N, exactly as N per-branch reads each returning that session's comments
- * did.
- */
-function invertSessionIndex(
-  sessionIdsByBranch: ReadonlyMap<string, ReadonlySet<string>>
-): Map<string, string[]> {
-  const branchIdsBySession = new Map<string, string[]>();
-  for (const [branchId, sessionIds] of sessionIdsByBranch) {
-    for (const sessionId of sessionIds) {
-      const branches = branchIdsBySession.get(sessionId);
-      if (branches) {
-        branches.push(branchId);
-      } else {
-        branchIdsBySession.set(sessionId, [branchId]);
-      }
+  const resolved = new Map<string, string>();
+  for (const [alias, users] of accounts) {
+    const [userId] = users;
+    if (users.size === 1 && userId) {
+      resolved.set(alias, userId);
     }
   }
-  return branchIdsBySession;
+  return resolved;
 }
 
-/**
- * The page-wide row bound for one evidence source: every BRANCH on the page may
- * still contribute its own full `COMMENT_EVIDENCE_LIMIT`, which is all any
- * branch can consume. Floors the count at 1 so an empty page still asks for a
- * positive `take`.
- */
-function pageEvidenceCap(branchCount: number): number {
-  return COMMENT_EVIDENCE_LIMIT * Math.max(1, branchCount);
+/** Request-local identity evidence shared by date arms of the same snapshot.
+ * Identity is lifetime-scoped; windowed usage is still read for each arm. */
+export type BranchListIdentityData = {
+  windowed: Map<string, SessionUsage>;
+  lifetime: Map<string, SessionUsage>;
+  identityByBranch: Map<string, BranchIdentityProjection>;
+};
+
+async function readDirectBranchParticipation(
+  db: BranchIdentityReadClient,
+  organizationId: string,
+  artifactIds: readonly string[],
+  knownComments: ReadonlyMap<string, readonly KnownThreadComment[]>
+): Promise<ReadonlyMap<string, DirectParticipationEntry>> {
+  const entries = await directParticipationService.read(
+    db,
+    organizationId,
+    ArtifactType.Branch,
+    artifactIds,
+    knownComments
+  );
+  return new Map(entries.map((entry) => [entry.artifactId, entry]));
 }
 
-/**
- * Bucket page-wide rows by the branch(es) they belong to in ONE pass over the
- * ordered result. A filtered subsequence of an ordered list stays ordered, so
- * each bucket keeps the query's `createdAt, id` order — including a branch whose
- * session comments come from several interleaved session ids — and every
- * branch's cap therefore retains the SAME earliest rows the per-branch `take`
- * retained.
- */
-function groupByBranch<T>(
-  rows: readonly T[],
-  branchesOf: (row: T) => readonly string[]
-): Map<string, T[]> {
-  const grouped = new Map<string, T[]>();
-  for (const row of rows) {
-    for (const branchId of branchesOf(row)) {
-      const bucket = grouped.get(branchId);
-      if (bucket) {
-        bucket.push(row);
-      } else {
-        grouped.set(branchId, [row]);
-      }
+function mergeBranchDirectParticipation(
+  projections: Map<string, BranchIdentityProjection>,
+  directByArtifact: ReadonlyMap<string, DirectParticipationEntry>
+): void {
+  for (const [artifactId, projection] of projections) {
+    const direct = directByArtifact.get(artifactId);
+    if (direct) {
+      projection.collaborators = mergeDirectArtifactPeople(
+        projection.collaborators,
+        direct.collaborators
+      );
     }
   }
-  return grouped;
+}
+
+/**
+ * The pushing sessions whose creator `projectOwner` needs. A Branch whose
+ * observed-push rung the batch SQL already read never reaches `projectOwner`, so
+ * its links cost no creator lookup.
+ */
+function projectedPushSessionIds(
+  linkEvidence: readonly SessionBranchIdentityEvidence[],
+  ownerEvidenceByBranch: ReadonlyMap<string, BranchOwnerEvidence> | undefined
+): string[] {
+  return linkEvidence
+    .filter(
+      (link) =>
+        isPushMethod(link.branchParticipationMethod) &&
+        !ownerEvidenceByBranch?.has(link.targetId)
+    )
+    .map((link) => link.sourceId);
+}
+
+function withPushers(
+  links: readonly SessionBranchIdentityEvidence[] | undefined,
+  pusherBySessionId: ReadonlyMap<string, string | null>
+): PushOwnerEvidence[] {
+  return (links ?? []).map((link) => ({
+    ...link,
+    pusherUserId: pusherBySessionId.get(link.sourceId) ?? null,
+  }));
+}
+
+function ownerUserIds(
+  branches: readonly BranchIdentityInput[],
+  ownerEvidenceByBranch: ReadonlyMap<string, BranchOwnerEvidence> | undefined
+): Set<string> {
+  const userIds = new Set<string>();
+  for (const branch of branches) {
+    if (branch.assigneeId) {
+      userIds.add(branch.assigneeId);
+    }
+  }
+  for (const owner of ownerEvidenceByBranch?.values() ?? []) {
+    if (owner.observedUserId) {
+      userIds.add(owner.observedUserId);
+    }
+  }
+  return userIds;
 }

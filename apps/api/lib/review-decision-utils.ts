@@ -62,6 +62,7 @@ export async function recomputeAndUpdateAggregate(
   await tx.pullRequestDetail.update({
     where: { id: pullRequestDetailId },
     data: { reviewDecision: aggregateDecision },
+    select: { id: true },
   });
 
   return aggregateDecision;

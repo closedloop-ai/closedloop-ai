@@ -1,8 +1,11 @@
-import { randomUUID } from "node:crypto";
+import {
+  type DataSyncLevel,
+  RECOMMENDED_DATA_SYNC_LEVEL,
+} from "@repo/api/src/types/data-sync-level";
 import Store from "electron-store";
+import { CLAUDE_CODE_OTEL_CAPTURE_FEATURE_FLAG_KEY } from "../../shared/claude-code-otel-capture-flag.js";
 import {
   type AlwaysAllowRule,
-  type DataSyncLevel,
   DEFAULT_DESKTOP_SETTINGS,
   type DeclinedDistributionRecord,
   type DesktopSettings,
@@ -12,7 +15,6 @@ import {
 } from "../../shared/contracts.js";
 import {
   coercePersistedDataSyncLevel,
-  DEFAULT_DATA_SYNC_LEVEL,
   dataSyncLevelToBooleans,
   reconcileDataSyncLevel,
 } from "../../shared/data-sync-level.js";
@@ -27,17 +29,29 @@ import {
   validateSandboxBaseDirectory,
 } from "../../shared/sandbox-policy.js";
 import type { SyncConsentRecord } from "../../shared/sync-consent.js";
-import { type BinaryPaths, mergeBinaryPaths } from "./binary-paths.js";
+import {
+  isAlwaysAllowRule,
+  parseAlwaysAllowRules,
+} from "../approvals/always-allow-rules.js";
+import {
+  type BinaryPaths,
+  filterCurrentBinaryPaths,
+  filterPersistedBinaryPaths,
+  mergeBinaryPaths,
+} from "./binary-paths.js";
 import {
   normalizeAndValidateOrigin,
   normalizeWebAppOrigin,
 } from "./origin-policy.js";
 import {
+  applySavedConfigManagedPatch,
   assertNameAvailable,
+  clearSavedConfigManagedMetadata,
+  createSavedConfig,
   DEFAULT_MANAGED_ONBOARDING_CONFIG_NAME,
+  ensureSavedConfigGatewayId,
   getAvailableConfigName,
   isSavedConfig,
-  isUuidV4,
   type SaveConfigOptions,
   type SavedConfigConnectionPatch,
   type SavedConfigManagedPatch,
@@ -46,6 +60,7 @@ import {
   validateConfigName,
 } from "./saved-config.js";
 import { runSettingsMigrations } from "./settings-migrations.js";
+import { SignOutCleanupStateStore } from "./sign-out-cleanup-state.js";
 
 export type SettingsStoreOptions = {
   cwd?: string;
@@ -54,19 +69,22 @@ export type SettingsStoreOptions = {
 
 export class SettingsStore {
   private readonly store: Store<DesktopSettings>;
+  private readonly signOutCleanup: SignOutCleanupStateStore;
 
   constructor(options?: SettingsStoreOptions) {
     this.store = new Store<DesktopSettings>({
       name: options?.name ?? "desktop-settings",
       cwd: options?.cwd,
     });
+    this.signOutCleanup = new SignOutCleanupStateStore({
+      cwd: options?.cwd,
+      name: options?.name
+        ? `${options.name}-sign-out-cleanup`
+        : "desktop-sign-out-cleanup",
+    });
 
-    // One-time, boot-time store reconciliation (legacy-key cleanup, origin
-    // rename, approval-tier rewrite, saved-config init, FEA-3462 sync-consent
-    // floor, FEA-3907 data-sync-level backfill, managed-key reconcile). Each
-    // block is idempotent and guarded on the legacy state it reconciles. Lives
-    // in `settings-migrations.ts` so this file stays under the 1,000-line
-    // ceiling; `this` satisfies `SettingsMigrationTarget` structurally.
+    // Boot-time store reconciliation lives in settings-migrations.ts; `this`
+    // satisfies `SettingsMigrationTarget` structurally.
     runSettingsMigrations(this);
   }
 
@@ -84,9 +102,27 @@ export class SettingsStore {
   }
 
   getAll(): DesktopSettings {
+    const persisted = this.store.store;
     return {
       ...DEFAULT_DESKTOP_SETTINGS,
-      ...this.store.store,
+      ...persisted,
+      // ISS-10554: the RECONCILED level, never the raw/default one. The declared
+      // default is the recommended level, but an install whose live connectivity
+      // flags contradict it reconciles DOWN (`reconcileDataSyncLevel`) — spreading
+      // the default here would report a level this store would not actually
+      // enforce.
+      dataSyncLevel: this.getDataSyncLevel(),
+      binaryPaths: filterCurrentBinaryPaths(
+        this.store.get("binaryPaths" as keyof DesktopSettings) as BinaryPaths
+      ),
+      // Normalizes the container only. Malformed ELEMENTS are left in place on
+      // purpose: GetSettings and the evaluator re-persist only when their prune
+      // shrinks the list, so filtering here would hide the garbage from the one
+      // path that cleans it off disk. Readers go through the prune or
+      // `isAlwaysAllowRule`.
+      alwaysAllowRules: Array.isArray(persisted.alwaysAllowRules)
+        ? persisted.alwaysAllowRules
+        : [...DEFAULT_DESKTOP_SETTINGS.alwaysAllowRules],
       savedConfigs: this.getSavedConfigs(),
     };
   }
@@ -157,14 +193,6 @@ export class SettingsStore {
   setFlag(key: FlagKey, value: boolean): void {
     getFlagDefinition(key); // validate key exists
     this.store.set(key as keyof DesktopSettings, value);
-    // PRD-566 / FEA-4348: `routines` (renamed from `scheduledTasks`) dual-writes
-    // its legacy shadow so the rename is not a one-way door — a downgrade to a
-    // pre-rename build still reads the current value instead of defaulting the
-    // scheduler off. See `migrateScheduledTasksToRoutines`. Retire with the
-    // shadow once all installs are past the rename (Compatibility Guardrail).
-    if (key === "routines") {
-      this.store.set("scheduledTasks" as keyof DesktopSettings, value);
-    }
   }
 
   /** Returns the source of the effective value: env override, user-set, or registry default. */
@@ -206,10 +234,6 @@ export class SettingsStore {
     return this.getFlag("cloudCommandsPaused");
   }
 
-  getUpdateAndRestartEnabled(): boolean {
-    return this.getFlag("updateAndRestartEnabled");
-  }
-
   getCloudConnectionEnabled(): boolean {
     return this.getFlag("cloudConnectionEnabled");
   }
@@ -240,12 +264,13 @@ export class SettingsStore {
     };
   }
 
-  getCommandSigningEnforcementEnabled(): boolean {
-    return this.getFlag("commandSigningEnforcementEnabled");
-  }
-
-  getLoopCompletedNotificationsEnabled(): boolean {
-    return this.getFlag("loopCompletedNotificationsEnabled");
+  /**
+   * ISS-7352: whether the OTLP receiver's decoded Claude Code signals reach the
+   * local store. Default OFF — the receiver binds and ACKs regardless, so this
+   * only decides persistence.
+   */
+  getClaudeCodeOtelCaptureEnabled(): boolean {
+    return this.getFlag(CLAUDE_CODE_OTEL_CAPTURE_FEATURE_FLAG_KEY);
   }
 
   getTranscriptSyncEnabled(): boolean {
@@ -265,6 +290,21 @@ export class SettingsStore {
 
   setSyncObservabilityTier(tier: SyncObservabilityTier): void {
     this.store.set("syncObservabilityTier", tier);
+  }
+
+  /**
+   * ISS-8768 (marisolashgrove review) — has this device EVER recorded a tier,
+   * whether an explicit choice or an explicit `null` ("not yet")?
+   * `getSyncObservabilityTier()` cannot answer this: `DEFAULT_DESKTOP_SETTINGS
+   * .syncObservabilityTier` is itself `null`, so a device that has never been
+   * asked and one that explicitly answered "not yet" both read back `null`
+   * through that accessor — correct for the egress gate, which must fail
+   * closed on either, but not for a consumer that needs to tell them apart.
+   * Only key PRESENCE separates them (same pattern as
+   * {@link hasSyncConsentOrganizationBinding}).
+   */
+  hasSyncObservabilityTierBeenSet(): boolean {
+    return this.store.has("syncObservabilityTier");
   }
 
   /**
@@ -319,6 +359,15 @@ export class SettingsStore {
     this.store.set("syncObservabilityTier", null);
   }
 
+  /** ISS-10890 — see {@link DesktopSettings.sessionAnalysisAgreed}. */
+  getSessionAnalysisAgreed(): boolean {
+    return this.store.get("sessionAnalysisAgreed") === true;
+  }
+
+  recordSessionAnalysisAgreement(): void {
+    this.store.set("sessionAnalysisAgreed", true);
+  }
+
   /**
    * FEA-3907 — the graduated data sync level for the "Data & Sync" control.
    * Returns the recommended default when unset rather than `null`. The persisted
@@ -339,7 +388,7 @@ export class SettingsStore {
     // the live flags instead of feeding it into `reconcileDataSyncLevel` →
     // `dataSyncLevelToBooleans`, whose exhaustiveness guard would throw.
     const persisted = coercePersistedDataSyncLevel(
-      this.store.get("dataSyncLevel", DEFAULT_DATA_SYNC_LEVEL),
+      this.store.get("dataSyncLevel", RECOMMENDED_DATA_SYNC_LEVEL),
       liveFlags
     );
     return reconcileDataSyncLevel(persisted, liveFlags);
@@ -401,12 +450,19 @@ export class SettingsStore {
     this.store.set("dashboardWelcomeSeen", dashboardWelcomeSeen);
   }
 
-  setCloudCommandsPaused(cloudCommandsPaused: boolean): void {
-    this.setFlag("cloudCommandsPaused", cloudCommandsPaused);
+  getAttributionEvidenceParsePolicyOrganizationId(): string | null {
+    return this.store.get(
+      "attributionEvidenceParsePolicyOrganizationId",
+      DEFAULT_DESKTOP_SETTINGS.attributionEvidenceParsePolicyOrganizationId
+    );
   }
 
-  setUpdateAndRestartEnabled(updateAndRestartEnabled: boolean): void {
-    this.setFlag("updateAndRestartEnabled", updateAndRestartEnabled);
+  setAttributionEvidenceParsePolicyOrganizationId(onFor: string | null): void {
+    this.store.set("attributionEvidenceParsePolicyOrganizationId", onFor);
+  }
+
+  setCloudCommandsPaused(cloudCommandsPaused: boolean): void {
+    this.setFlag("cloudCommandsPaused", cloudCommandsPaused);
   }
 
   setCloudConnectionEnabled(cloudConnectionEnabled: boolean): void {
@@ -415,15 +471,6 @@ export class SettingsStore {
 
   setPlanExtractionEnabled(planExtractionEnabled: boolean): void {
     this.setFlag("planExtractionEnabled", planExtractionEnabled);
-  }
-
-  setCommandSigningEnforcementEnabled(
-    commandSigningEnforcementEnabled: boolean
-  ): void {
-    this.setFlag(
-      "commandSigningEnforcementEnabled",
-      commandSigningEnforcementEnabled
-    );
   }
 
   setDefaultApprovalTier(defaultApprovalTier: RiskTier): void {
@@ -455,13 +502,26 @@ export class SettingsStore {
     this.store.set("autoApprovalRules", autoApprovalRules);
   }
 
+  /**
+   * ISS-9175: drops malformed elements before the write, so no caller can put
+   * `[null]` on disk. Valid elements are stored as the original objects, so a
+   * field added by a newer build survives. A non-array value is not written.
+   */
   setAlwaysAllowRules(alwaysAllowRules: AlwaysAllowRule[]): void {
-    this.store.set("alwaysAllowRules", alwaysAllowRules);
+    if (!Array.isArray(alwaysAllowRules)) {
+      return;
+    }
+    this.store.set(
+      "alwaysAllowRules",
+      alwaysAllowRules.filter(isAlwaysAllowRule)
+    );
   }
 
   getBinaryPaths(): BinaryPaths {
-    return (this.store.get("binaryPaths" as keyof DesktopSettings) ??
-      {}) as BinaryPaths;
+    return filterPersistedBinaryPaths(
+      (this.store.get("binaryPaths" as keyof DesktopSettings) ??
+        {}) as BinaryPaths
+    );
   }
 
   patchBinaryPaths(patch: Record<string, string | null>): BinaryPaths {
@@ -470,7 +530,7 @@ export class SettingsStore {
       "binaryPaths" as keyof DesktopSettings,
       merged as DesktopSettings["binaryPaths"]
     );
-    return merged;
+    return filterCurrentBinaryPaths(merged);
   }
 
   getSavedConfigs(): SavedConfig[] {
@@ -578,34 +638,15 @@ export class SettingsStore {
     const trimmedName = validateConfigName(name);
     const configs = this.getSavedConfigs();
     assertNameAvailable(configs, trimmedName);
-    const config: SavedConfig = {
-      id: randomUUID(),
-      name: trimmedName,
-      relayOrigin:
-        options?.relayOrigin === undefined
-          ? this.getRelayOrigin()
-          : normalizeAndValidateOrigin(options.relayOrigin),
-      apiOrigin:
-        options?.apiOrigin === undefined
-          ? this.getApiOrigin()
-          : normalizeAndValidateOrigin(options.apiOrigin),
-      webAppOrigin:
-        options?.webAppOrigin === undefined
-          ? this.getWebAppOrigin()
-          : normalizeWebAppOrigin(options.webAppOrigin),
-      apiKeySource: "USER_CREATED",
-      gatewayPort: options?.gatewayPort ?? null,
-      computeTarget: options?.computeTarget ?? null,
-      // FEA-4005: persist the per-profile sandbox only when provided, so older
-      // profiles / callers that omit it fall back to the global sandbox on apply.
-      ...(options?.sandboxBaseDirectory === undefined
-        ? {}
-        : {
-            sandboxBaseDirectory: validateSandboxBaseDirectory(
-              options.sandboxBaseDirectory
-            ),
-          }),
-    };
+    const config = createSavedConfig(
+      trimmedName,
+      {
+        relayOrigin: this.getRelayOrigin(),
+        apiOrigin: this.getApiOrigin(),
+        webAppOrigin: this.getWebAppOrigin(),
+      },
+      options
+    );
     configs.push(config);
     this.setSavedConfigs(configs);
     return config;
@@ -752,15 +793,7 @@ export class SettingsStore {
     if (index === -1) {
       throw new Error(`Config not found: ${id}`);
     }
-    const existing = configs[index].gatewayId;
-    if (existing && isUuidV4(existing)) {
-      return configs[index];
-    }
-    configs[index] = {
-      ...configs[index],
-      gatewayId: randomUUID(),
-      desktopSecurityUpgradeProtocolVersion: 1,
-    };
+    configs[index] = ensureSavedConfigGatewayId(configs[index]);
     this.setSavedConfigs(configs);
     return configs[index];
   }
@@ -775,19 +808,12 @@ export class SettingsStore {
     if (index === -1) {
       throw new Error(`Config not found: ${id}`);
     }
-    const hasChanges = Object.entries(patch).some(([key, value]) => {
-      const field = key as keyof SavedConfig;
-      return configs[index][field] !== value;
-    });
-    if (!hasChanges) {
-      return configs[index];
+    const updated = applySavedConfigManagedPatch(configs[index], patch);
+    if (updated !== configs[index]) {
+      configs[index] = updated;
+      this.setSavedConfigs(configs);
     }
-    configs[index] = {
-      ...configs[index],
-      ...patch,
-    };
-    this.setSavedConfigs(configs);
-    return configs[index];
+    return updated;
   }
 
   /** Updates managed-key metadata for the active saved profile when one exists. */
@@ -799,6 +825,25 @@ export class SettingsStore {
       return null;
     }
     return this.updateConfigManagedMetadata(activeConfigId, patch);
+  }
+
+  /** Clears managed-key metadata from every saved profile. */
+  clearAllConfigManagedMetadata(): void {
+    this.setSavedConfigs(
+      this.getSavedConfigs().map(clearSavedConfigManagedMetadata)
+    );
+  }
+
+  /** Whether any saved profile still carries managed-key lifecycle metadata. */
+  hasAnyConfigManagedMetadata(): boolean {
+    return this.getSavedConfigs().some(
+      (config) => clearSavedConfigManagedMetadata(config) !== config
+    );
+  }
+
+  /** Durable non-secret progress journal for local sign-out cleanup. */
+  getSignOutCleanupState(): SignOutCleanupStateStore {
+    return this.signOutCleanup;
   }
 
   /** Updates trusted origins for the active saved profile when one exists. */
@@ -857,8 +902,9 @@ export class SettingsStore {
     if (partial.autoApprovalRules) {
       this.store.set("autoApprovalRules", partial.autoApprovalRules);
     }
-    if (partial.alwaysAllowRules) {
-      this.store.set("alwaysAllowRules", partial.alwaysAllowRules);
+    const alwaysAllowRules = parseAlwaysAllowRules(partial.alwaysAllowRules);
+    if (alwaysAllowRules) {
+      this.store.set("alwaysAllowRules", alwaysAllowRules);
     }
     if (partial.defaultApprovalTier) {
       this.store.set("defaultApprovalTier", partial.defaultApprovalTier);

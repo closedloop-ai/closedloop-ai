@@ -1,0 +1,29 @@
+-- ISS-10725: persist the ISS-7796 findings funnel at the invocation grain.
+--
+-- Additive: two nullable columns with no default, so no existing row is
+-- rewritten and no existing column changes type. The cost side of this table
+-- has been complete since FEA-3981 (model, tokens, estimated_cost,
+-- footprint_tokens, usage_measurement) while the output side had nowhere to
+-- land — the denominator was persisted and the numerator was not.
+--
+-- NULL means "not measured", never "measured zero". A reviewer that genuinely
+-- emitted nothing stores 0; a component we never measured stays NULL. Those are
+-- different facts, so the columns must be able to hold both and legacy rows are
+-- correctly NULL.
+--
+-- EXACTLY TWO COLUMNS, deliberately. `findings_confirmed` is emitted minus
+-- invalidated and the invalidation rate is that pair over a population; both
+-- are DERIVED at read. Storing a third number is storing a number that can go
+-- stale against the two it came from. No per-finding cost column exists or may
+-- be added (PRD-753 R3/R8).
+--
+-- bigint, matching the token columns on this table rather than int4, so one
+-- bound — the JSON safe-integer range the wire boundary already enforces on
+-- every count — holds at the wire, in the desktop store, and here.
+--
+-- The desktop half is `20260925231500_iss10725_invocation_findings_funnel`,
+-- added in this same change: ISS-10718 is open only because FEA-4093 shipped a
+-- desktop column with no cloud twin, and a desktop-only column is one the web
+-- surface can never read.
+ALTER TABLE "agent_component_invocations" ADD COLUMN "findings_emitted" BIGINT;
+ALTER TABLE "agent_component_invocations" ADD COLUMN "findings_invalidated" BIGINT;

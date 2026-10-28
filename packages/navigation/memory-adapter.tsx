@@ -37,6 +37,8 @@ export type MemoryNavigation = {
    * so they stay rules-of-hooks clean.
    */
   navigate: (path: string) => void;
+  /** Replaces the current entry, as `navigate` does but without a push. */
+  replace: (path: string) => void;
 };
 
 export function createMemoryNavigation(
@@ -70,6 +72,8 @@ export function createMemoryNavigation(
         store.getSearchSnapshot,
         store.getSearchSnapshot
       ),
+    useNavigationEpoch: () =>
+      useSyncExternalStore(store.subscribe, store.getEpoch, store.getEpoch),
     // Stable closure over the fixed orgSlug option — no hook needed, same
     // rationale as useNavigationActions above.
     useOrgPathBuilder: () => buildOrgPath,
@@ -82,5 +86,6 @@ export function createMemoryNavigation(
     getHistory: store.getHistory,
     getRefreshCount: () => refreshCount,
     navigate: (path: string) => store.actions.navigate(path),
+    replace: (path: string) => store.actions.replace(path),
   };
 }

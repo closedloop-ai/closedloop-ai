@@ -1,31 +1,12 @@
 // @vitest-environment jsdom
 import { render, screen } from "@testing-library/react";
-import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// Stub the Liveblocks `InboxNotification.Custom` so the test can render the
-// domain component without a full Liveblocks provider tree. The stub surfaces
-// the `title` node and the `href` link target as inspectable DOM, which is
-// exactly the contract FEA-3969 changes: the visible title must be readable and
-// the raw session UUID may appear only as the link href.
-vi.mock("@liveblocks/react-ui", () => ({
-  InboxNotification: {
-    Custom: ({
-      title,
-      href,
-      children,
-    }: {
-      title: ReactNode;
-      href: string;
-      children: ReactNode;
-    }) => (
-      <a data-testid="notification" href={href}>
-        <span data-testid="title">{title}</span>
-        {children}
-      </a>
-    ),
-  },
-}));
+// Shared `@liveblocks/react-ui` stand-in; see the module for what it models.
+vi.mock(
+  "@liveblocks/react-ui",
+  () => import("./support/liveblocks-react-ui-stub")
+);
 
 const SESSION_UUID = "f9bdb32c-bebc-4d2a-a416-4f07a7a6b85e";
 const SESSION_URL = `https://app.example.com/sessions/${SESSION_UUID}`;
@@ -91,6 +72,15 @@ describe("AwaitingInputNotification", () => {
     const title = screen.getByTestId("title");
     expect(title).toHaveTextContent("Untitled session needs your input");
     expect(title.textContent).not.toContain(SESSION_UUID);
+  });
+
+  it("pins current behavior: an activity with no session URL renders an empty href", async () => {
+    // Pins what main does, not a contract. An empty href links back to the
+    // current page, so this row is clickable and goes nowhere. ISS-12566
+    // tracks the missing-URL handling; change this case when that lands.
+    await renderNotification({ sessionTitle: "Fix the login flow" });
+
+    expect(screen.getByTestId("notification")).toHaveAttribute("href", "");
   });
 
   it("keeps the legacy synthetic `Session <uuid>` name out of the visible label (FEA-3969)", async () => {

@@ -2,13 +2,13 @@ import { describe, expect, it } from "vitest";
 import { sanitizeElectronReleaseInfo } from "../electron-release-download";
 
 const VALID_DESKTOP_DOWNLOAD_URL =
-  "https://github.com/closedloop-ai/example-repo/releases/download/desktop-v0.15.115/Closedloop-0.15.115-universal.dmg";
+  "https://github.com/closedloop-ai/closedloop-ai/releases/download/desktop-v0.15.115/Closedloop-0.15.115-universal.dmg";
 const STALE_OLD_REPO_DOWNLOAD_URL =
   "https://github.com/closedloop-ai/closedloop-electron/releases/download/v0.15.115/Closedloop-0.15.115-universal.dmg";
 const MALFORMED_SYMPHONY_DOWNLOAD_URL =
-  "https://github.com/closedloop-ai/example-repo/releases/download/desktop-latest/Closedloop-0.15.115-universal.dmg";
+  "https://github.com/closedloop-ai/closedloop-ai/releases/download/desktop-latest/Closedloop-0.15.115-universal.dmg";
 // The public mirror of the signed DMG. Since FEA-3372 this — not the
-// example-repo URL — is what a successful release actually writes into
+// closedloop-ai URL — is what a successful release actually writes into
 // downloadUrl, so it is the normal path through this sanitizer.
 const PUBLIC_MIRROR_DOWNLOAD_URL =
   "https://github.com/closedloop-ai/closedloop-ai/releases/download/desktop-v0.15.115/Closedloop-0.15.115-universal.dmg";
@@ -40,7 +40,7 @@ describe("sanitizeElectronReleaseInfo", () => {
 
   it.each([
     ["stale old-repo URL", STALE_OLD_REPO_DOWNLOAD_URL],
-    ["malformed example-repo URL", MALFORMED_SYMPHONY_DOWNLOAD_URL],
+    ["malformed closedloop-ai URL", MALFORMED_SYMPHONY_DOWNLOAD_URL],
     ["third repo under the allowed owner", THIRD_REPO_DOWNLOAD_URL],
   ])("rejects %s", (_name, downloadUrl) => {
     expect(

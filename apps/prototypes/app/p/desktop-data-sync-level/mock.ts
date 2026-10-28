@@ -1,9 +1,10 @@
+import { RECOMMENDED_DATA_SYNC_LEVEL } from "@repo/api/src/types/data-sync-level";
+
 // The graduated "data sync level" (FEA-3907) — a single product control that
 // supersedes four scattered desktop Labs toggles (Cloud Connection, Transcript
 // Sync, Cloud Commands Paused, and the per-tool Data Collection switches). One
 // selected level answers the whole question: how much of my data goes to the
-// cloud? Ranked least-to-most exposure so the DEFAULT lands in the middle and
-// the most-permissive level can carry an elevated-risk affordance.
+// cloud? Ranked least-to-most exposure.
 export const DataSyncLevel = {
   Off: "off",
   Metadata: "metadata",
@@ -22,82 +23,23 @@ export const DATA_SYNC_LEVEL_RANK: Record<DataSyncLevel, number> = {
   [DataSyncLevel.Full]: 3,
 };
 
-// The recommended level — carries the DEFAULT chip. Metadata syncs enough to
-// unlock cloud insights without ever uploading prompt or file contents.
-export const DEFAULT_DATA_SYNC_LEVEL: DataSyncLevel = DataSyncLevel.Metadata;
+// The level the sandbox starts on: the one production recommends and the
+// shared card badges "Recommended". Imported rather than copied, so the
+// pre-selection cannot drift from the badge (ISS-12522).
+export const DEFAULT_DATA_SYNC_LEVEL: DataSyncLevel =
+  RECOMMENDED_DATA_SYNC_LEVEL;
 
-export type DataLine = {
-  label: string;
-  kind: "sync" | "local";
-};
-
-export type DataSyncLevelOption = {
-  level: DataSyncLevel;
-  title: string;
-  description: string;
-  // Short label for the current-level summary badge.
-  badgeLabel: string;
-  // What leaves the device vs. what stays local, described inline so the choice
-  // is informed.
-  dataLines: readonly DataLine[];
-  // The most-permissive level is elevated: it uploads full transcript bodies.
-  elevated?: boolean;
-  caveat?: string;
-};
-
-export const dataSyncLevelOptions: readonly DataSyncLevelOption[] = [
-  {
-    level: DataSyncLevel.Off,
-    title: "Off",
-    description:
-      "No cloud connection. Nothing leaves this device; your dashboard shows only what is on this machine.",
-    badgeLabel: "Off",
-    dataLines: [
-      { label: "Session shape, timing & cost", kind: "local" },
-      { label: "Tool calls & file outputs", kind: "local" },
-      { label: "Prompts & completions", kind: "local" },
-    ],
-    caveat: "You lose cloud insights and team sharing while this is selected.",
-  },
-  {
-    level: DataSyncLevel.Metadata,
-    title: "Metadata only",
-    description:
-      "Sync session shape, timing, and cost. The contents of a prompt or file never leave your machine.",
-    badgeLabel: "Metadata only",
-    dataLines: [
-      { label: "Session shape, timing & cost", kind: "sync" },
-      { label: "Tool calls & file outputs", kind: "local" },
-      { label: "Prompts & completions", kind: "local" },
-    ],
-  },
-  // Redacted (DataSyncLevel.Redacted) is intentionally omitted from the picker:
-  // the redaction lane is not plumbed yet, so production hides the option (it
-  // behaves like Metadata only until redaction ships). The enum value and rank
-  // are kept so a persisted/migrated `redacted` selection stays valid.
-  {
-    level: DataSyncLevel.Full,
-    title: "Full transcripts",
-    description:
-      "Upload complete session transcripts for the richest insights, replays, and team comparisons.",
-    badgeLabel: "Full transcripts",
-    elevated: true,
-    dataLines: [
-      { label: "Session shape, timing & cost", kind: "sync" },
-      { label: "Tool calls & file outputs", kind: "sync" },
-      { label: "Prompts & completions", kind: "sync" },
-    ],
-    caveat:
-      "Complete transcript bodies leave this device, including prompt and file contents.",
-  },
+// The levels the picker offers, most-permissive first, the order the
+// production picker renders. Titles and badge labels are not kept here: the
+// page reads them from DATA_SYNC_LEVEL_COPY, the same source the card prints,
+// so the radio's accessible name and its visible label cannot drift apart.
+//
+// Redacted (DataSyncLevel.Redacted) is intentionally omitted: the redaction
+// lane is not plumbed yet, so production hides the option (it behaves like
+// Metadata only until redaction ships). The enum value and rank are kept so a
+// persisted/migrated `redacted` selection stays valid.
+export const DATA_SYNC_PICKER_LEVELS: readonly DataSyncLevel[] = [
+  DataSyncLevel.Full,
+  DataSyncLevel.Metadata,
+  DataSyncLevel.Off,
 ];
-
-export function findDataSyncLevelOption(
-  level: DataSyncLevel
-): DataSyncLevelOption {
-  const option = dataSyncLevelOptions.find((o) => o.level === level);
-  if (!option) {
-    throw new Error(`Unknown data sync level: ${level}`);
-  }
-  return option;
-}

@@ -6,7 +6,7 @@ import { Pencil, Trash2 } from "lucide-react";
 /**
  * A saved gateway profile as projected onto the Settings → Relay/Gateway
  * profiles list. Extracted from SettingsPanel.tsx (FEA-4005) so that
- * grandfathered file trends smaller per the repo file-size discipline.
+ * file trends smaller per the repo file-size discipline.
  */
 export type GatewayProfileRowData = {
   id: string;
@@ -75,6 +75,7 @@ export function GatewayProfileRow({
   return (
     <div
       className={`rounded border p-3 text-sm ${isSelected ? "border-[var(--primary)] bg-[var(--primary)]/5" : ""}`}
+      data-testid={GATEWAY_PROFILE_ROW_TEST_ID}
     >
       <div className="flex items-center justify-between">
         <div className="min-w-0 flex-1">
@@ -216,3 +217,8 @@ export function GatewayProfileRow({
     </div>
   );
 }
+
+// A stable handle for the row element. Tests need to scope a query to ONE
+// profile's row, and the only other anchor is this element's Tailwind classes —
+// which makes a spacing tweak fail a suite that has nothing to do with spacing.
+export const GATEWAY_PROFILE_ROW_TEST_ID = "gateway-profile-row";

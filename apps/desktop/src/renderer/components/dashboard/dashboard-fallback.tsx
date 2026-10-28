@@ -1,5 +1,8 @@
+import {
+  DASHBOARD_PAGE_DESCRIPTION,
+  DASHBOARD_PAGE_TITLE,
+} from "@repo/app/insights/lib/dashboard-header-copy";
 import { PageShell } from "../layout/page-shell";
-import { DASHBOARD_PAGE_TITLE } from "./dashboard-constants";
 import { DashboardLoading } from "./dashboard-loading";
 
 /**
@@ -13,17 +16,21 @@ import { DashboardLoading } from "./dashboard-loading";
  * "blank → skeleton → values" two-stage flicker came from the lazy-load fallback
  * not matching the in-page loading treatment.
  *
- * This fallback renders the same PageShell title and `DashboardLoading` skeleton
+ * This fallback renders the same PageShell title, description and `DashboardLoading` skeleton
  * the page itself shows while its analytics resolve, so the skeleton is visible
  * immediately and stays put until the real values swap in — no blank frame.
  * (The page's header actions — date-range filter, Tour button — mount with the
- * page; only they fade in on top of the already-stable title + skeleton.)
+ * page; only they fade in on top of the already-stable header + skeleton.)
  * `analyticsPct={0}` because no dashboard read has resolved yet.
  */
 export function DashboardFallback() {
   return (
-    <PageShell fullWidth title={DASHBOARD_PAGE_TITLE}>
-      <DashboardLoading analyticsPct={0} />
+    <PageShell
+      description={DASHBOARD_PAGE_DESCRIPTION}
+      fullWidth
+      title={DASHBOARD_PAGE_TITLE}
+    >
+      <DashboardLoading />
     </PageShell>
   );
 }

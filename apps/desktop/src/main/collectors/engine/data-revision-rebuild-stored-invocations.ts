@@ -9,16 +9,16 @@
  * list — it takes no rebuild-pass state — so it moves whole.
  */
 
-import { DATA_REVISION } from "./data-revision.js";
 // Type-only, so this erases at compile time and creates no runtime import
 // cycle back into the module this was extracted from.
-import type {
-  DataRevisionRebuildDatabase,
-  DataRevisionRebuildSummary,
-} from "./data-revision-rebuild.js";
+import type { ParsePolicy } from "../../parse-policy/parse-policy.js";
+import { dataRevisionFor } from "./data-revision.js";
+import type { DataRevisionRebuildDatabase } from "./data-revision-rebuild.js";
+import type { DataRevisionRebuildSummary } from "./data-revision-rebuild-summary.js";
 
 export async function rebuildStoredComponentInvocations(
   sessionIds: string[],
+  parsePolicy: ParsePolicy,
   db: DataRevisionRebuildDatabase,
   summary: DataRevisionRebuildSummary,
   log: (message: string) => void,
@@ -42,6 +42,7 @@ export async function rebuildStoredComponentInvocations(
     }
     await applyStoredComponentInvocationRebuild(
       sessionId,
+      parsePolicy,
       rebuild,
       summary,
       log
@@ -52,6 +53,7 @@ export async function rebuildStoredComponentInvocations(
 
 async function applyStoredComponentInvocationRebuild(
   sessionId: string,
+  parsePolicy: ParsePolicy,
   rebuild: NonNullable<
     DataRevisionRebuildDatabase["rebuildComponentInvocationsFromStoredRows"]
   >,
@@ -59,12 +61,16 @@ async function applyStoredComponentInvocationRebuild(
   log: (message: string) => void
 ): Promise<void> {
   try {
-    const result = await rebuild(sessionId, DATA_REVISION);
+    const result = await rebuild(
+      sessionId,
+      dataRevisionFor(parsePolicy),
+      parsePolicy
+    );
     if (result.storageReset) {
       summary.storageReset = true;
     } else if (result.rebuilt) {
       summary.rebuilt++;
-      if (result.contentChanged) {
+      if (result.needsResync) {
         summary.changedSessionIds.push(sessionId);
       }
     } else if (result.activeRace) {

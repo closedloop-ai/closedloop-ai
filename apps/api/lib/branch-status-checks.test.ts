@@ -133,7 +133,6 @@ type ProjectionInput = Parameters<typeof projectBranchStatusChecks>[0];
 
 function makeInput(overrides: Partial<ProjectionInput> = {}): ProjectionInput {
   return {
-    artifactId: "art-1",
     headSha: "abc123",
     checksDetailHeadSha: "abc123",
     checksDetailTotalCount: 1,
@@ -181,9 +180,14 @@ describe("projectBranchStatusChecks", () => {
     ).toBeUndefined();
   });
 
-  it("returns empty items for ProviderUnavailable regardless of statusChecks", () => {
+  it("returns no items AND no counts for ProviderUnavailable regardless of statusChecks", () => {
     const result = projectBranchStatusChecks(
       makeInput({
+        // ISS-8241: a failed read never rewrites the counts, so these are the
+        // LAST SUCCESSFUL read's — of some earlier head. Serving them beside
+        // `provider_unavailable` presents that population as this head's.
+        checksDetailTotalCount: 28,
+        checksDetailTruncated: true,
         checksDetailProviderState:
           BranchViewChecksProviderState.ProviderUnavailable,
         checksDetailUnavailableReason:
@@ -204,6 +208,8 @@ describe("projectBranchStatusChecks", () => {
     );
     expect(result).toBeDefined();
     expect(result?.items).toHaveLength(0);
+    expect(result?.totalCount).toBe(0);
+    expect(result?.truncated).toBe(false);
     expect(result?.providerState).toBe(
       BranchViewChecksProviderState.ProviderUnavailable
     );

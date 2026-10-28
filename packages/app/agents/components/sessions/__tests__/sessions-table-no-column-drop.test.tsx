@@ -1,3 +1,5 @@
+import { TOTAL_ESTIMATED_COST_LABEL } from "@repo/api/src/types/total-estimated-cost-copy";
+import type { SessionTableRow } from "@repo/app/agents/lib/session-list-row";
 import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
 import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
 import { trackWidthsPx as widthsForTemplate } from "@repo/app/test/grid-track-geometry";
@@ -6,8 +8,8 @@ import { tooltipMockModule } from "@repo/app/test/mocks/tooltip";
 import { render, screen } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { SessionsTable } from "../session-detail-table";
 import { createSessionTableRowFixture } from "../session-list-fixtures";
-import { SessionsTable, type SessionTableRow } from "../sessions-table";
 
 vi.mock("@repo/design-system/components/ui/tooltip", () => tooltipMockModule);
 
@@ -37,7 +39,7 @@ const ROWS: SessionTableRow[] = [
     autonomy: 88,
     branch: "fix/iss-5704-desktop-branch-detail",
     id: "session-1",
-    repo: "closedloop-ai/example-repo",
+    repo: "closedloop-ai/closedloop-ai",
     status: "Active",
     user: { avatarUrl: null, name: "Pascoe Birchall" },
   }),
@@ -45,7 +47,7 @@ const ROWS: SessionTableRow[] = [
     autonomy: 74,
     branch: "test/iss-5593-sessions-detail",
     id: "session-2",
-    repo: "closedloop-ai/example-repo",
+    repo: "closedloop-ai/closedloop-ai",
     status: "Active",
     user: { avatarUrl: null, name: "Marisol Ashgrove" },
   }),
@@ -130,24 +132,31 @@ describe("Sessions grid renders every column (ISS-6245)", () => {
   // `Repository` is the track ISS-5813's budget yielded first, precisely because
   // it read `closedloop-ai/…` identically on every row. Naming it is the point:
   // a generic "some columns render" assertion would survive the regression.
-  it.each(
-    VIEWPORT_WIDTHS_PX
-  )("keeps the column the budget dropped first at a %spx viewport", (viewportWidthPx) => {
-    renderAt(viewportWidthPx - APP_CHROME_WIDTH_PX, sessionsTable());
-    const labels = renderedHeaderLabels();
-    expect(labels).toContain("Repository");
-    expect(labels).toEqual(
-      expect.arrayContaining(["Session", "Status", "Cost", "Owner"])
-    );
-  });
+  it.each(VIEWPORT_WIDTHS_PX)(
+    "keeps the column the budget dropped first at a %spx viewport",
+    (viewportWidthPx) => {
+      renderAt(viewportWidthPx - APP_CHROME_WIDTH_PX, sessionsTable());
+      const labels = renderedHeaderLabels();
+      expect(labels).toContain("Repository");
+      expect(labels).toEqual(
+        expect.arrayContaining([
+          "Session",
+          "Status",
+          TOTAL_ESTIMATED_COST_LABEL,
+          "Owner",
+        ])
+      );
+    }
+  );
 
-  it.each(
-    VIEWPORT_WIDTHS_PX
-  )("overflows its container at a %spx viewport, so the host scrolls sideways", (viewportWidthPx) => {
-    const containerWidthPx = viewportWidthPx - APP_CHROME_WIDTH_PX;
-    renderAt(containerWidthPx, sessionsTable());
-    expect(renderedTableWidthPx()).toBeGreaterThan(containerWidthPx);
-  });
+  it.each(VIEWPORT_WIDTHS_PX)(
+    "overflows its container at a %spx viewport, so the host scrolls sideways",
+    (viewportWidthPx) => {
+      const containerWidthPx = viewportWidthPx - APP_CHROME_WIDTH_PX;
+      renderAt(containerWidthPx, sessionsTable());
+      expect(renderedTableWidthPx()).toBeGreaterThan(containerWidthPx);
+    }
+  );
 
   it("ignores a stale enabled value for the retired width-budget flag", () => {
     const containerWidthPx = 1440 - APP_CHROME_WIDTH_PX;
