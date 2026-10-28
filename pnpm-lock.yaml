@@ -576,11 +576,11 @@ importers:
         specifier: workspace:*
         version: link:../../packages/loops-api
       '@datadog/browser-rum':
-        specifier: ^7.2.0
-        version: 7.2.0
+        specifier: ^7.16.1
+        version: 7.16.1
       '@datadog/browser-rum-nextjs':
         specifier: ^7.2.0
-        version: 7.2.0(@datadog/browser-rum@7.2.0)(next@16.4.1(@babel/core@7.29.7(supports-color@8.1.1))(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(@types/node@25.9.1)(babel-plugin-macros@3.1.0)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.9(react@19.2.9))(react@19.2.9))(react@19.2.9)
+        version: 7.2.0(@datadog/browser-rum@7.16.1)(next@16.4.1(@babel/core@7.29.7(supports-color@8.1.1))(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(@types/node@25.9.1)(babel-plugin-macros@3.1.0)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.9(react@19.2.9))(react@19.2.9))(react@19.2.9)
       '@dnd-kit/core':
         specifier: ^6.3.1
         version: 6.3.1(react-dom@19.2.9(react@19.2.9))(react@19.2.9)
@@ -4151,8 +4151,14 @@ packages:
     resolution: {integrity: sha512-OoKoR0f76dCY666JlcbhmVTs2drYj1GUXZTYTcbUgJjh9Nv41aFfZ21bPQTERm5+L5cBDo466NltB2lplS5GBw==}
     engines: {node: '>=20.19.0'}
 
+  '@datadog/browser-core@7.16.1':
+    resolution: {integrity: sha512-a/ShIFh9OvdznEL6tM0AIzqj5ZkIUPb8jPPpkChT6AUF4GKbPQMtK0M8yeXsluHlzXlcoTImyYYWxmSTa8aa1A==}
+
   '@datadog/browser-core@7.2.0':
     resolution: {integrity: sha512-/KOJiLyLP149qZTMs8W8P8MBKxmbrYYramChTDAplhbIXR+nBE+g97RRbluIBDec4GngnA1j13JWDEXBmT0AJw==}
+
+  '@datadog/browser-rum-core@7.16.1':
+    resolution: {integrity: sha512-ammzIkfu3xfyrDTqkpB+Rq3icCcNCqC4zw1KZPVNKAyqgeifF4IRpyYXJ7ntLmsdnAl6BBgUOu2BwVsfoH35CA==}
 
   '@datadog/browser-rum-core@7.2.0':
     resolution: {integrity: sha512-xYgKmBzgpPdXNWxGKBGgJc/EUq6387USzM3Tq22kSD843QTzgzG2jYWkBZZ1FAel1T/0hF2FMJ8Mxo5BwxpoJQ==}
@@ -4191,10 +4197,10 @@ packages:
       react-router-dom:
         optional: true
 
-  '@datadog/browser-rum@7.2.0':
-    resolution: {integrity: sha512-cPNTtSyrKSDcwtsWOq7C7662dseUoYmSqK3bJh2rJ0IPW/nVDTZrxt1a6cuGHLFjcE6KFCQJLrnC2YDdw8uJGw==}
+  '@datadog/browser-rum@7.16.1':
+    resolution: {integrity: sha512-S5I3CsRdz1bzOdUR5EV4tMym4A0CoSjbgv5WYc88WuD9Tr6ghv1ej4FEK+X8LEKyioGmtTjzgT7DWToYKKAbDA==}
     peerDependencies:
-      '@datadog/browser-logs': 7.2.0
+      '@datadog/browser-logs': 7.16.1
     peerDependenciesMeta:
       '@datadog/browser-logs':
         optional: true
@@ -4203,6 +4209,9 @@ packages:
     resolution: {integrity: sha512-ntTMp/UUBDzSxCS+nf6VYBXJHw12BeqkIJsVHlOIviw9iGDXONYCop+WbFr779XCFHUkXI/Cz0n3UBreX93ALA==}
     engines: {node: '>=20'}
     hasBin: true
+
+  '@datadog/js-core@0.0.18':
+    resolution: {integrity: sha512-aGriDAfBGmKtsoDY7/OUr3wieTagV8QWJNcY8ogp7NQKFlFGwJ7uj0jXxjnbysgDDWlVmgEuk9+nuqxDQS6NQg==}
 
   '@date-fns/tz@1.4.1':
     resolution: {integrity: sha512-P5LUNhtbj6YfI3iJjw5EL9eUAG6OitD0W3fWQcpQjDRc/QIsL0tRNuO1PcDvPccWL1fSTXXdE1ds+l95DV/OFA==}
@@ -9164,10 +9173,6 @@ packages:
     resolution: {integrity: sha512-/5NV/vDALVFDXgLmfsy9TRCBlKwO2LNBFzpzvb9iIj+jR+eSc6DLYYvVOdivT/jm7MtU6TebYuRmzEOI7w40UA==}
     engines: {node: '>=10.0.0'}
 
-  '@xmldom/xmldom@0.9.12':
-    resolution: {integrity: sha512-5AXjrcMClTryPe9LgZrygpB1lj7s0S9E0+W+AHaVKAVyHanafK86iPSvG5xHVSp/jC+VH1UXu0TAEmY279xH7A==}
-    engines: {node: '>=14.6'}
-
   abbrev@4.0.0:
     resolution: {integrity: sha512-a1wflyaL0tHtJSmLSOVybYhy22vRih4eduhhrkcjgrWGnRfrZtovJ2FRjxuTtkkj47O/baf0R86QU5OuYpz8fA==}
     engines: {node: ^20.17.0 || >=22.9.0}
@@ -12950,10 +12955,6 @@ packages:
     resolution: {integrity: sha512-uysumyrvkUX0rX/dEVqt8gC3sTBzd4zoWfLeS29nb53imdaXVvLINYXTI2GNqzaMuvacNx4uJQ8+b3zXR0pkgQ==}
     engines: {node: '>=10.4.0'}
 
-  plist@3.1.1:
-    resolution: {integrity: sha512-ZIfcLJC+7E7FBFnDxm9MPmt7D+DidyQ26lewieO75AdhA2ayMtsJSES0iWzqJQbcVRSrTufQoy0DR94xHue0oA==}
-    engines: {node: '>=10.4.0'}
-
   pluralize@8.0.0:
     resolution: {integrity: sha512-Nc3IT5yHzflTfbjgqWcCPpo7DaKy4FnpB0l/zCAW0Tc7jxAiuqSxHasntB3D7887LSrA93kDJ9IXovxJYxyLCA==}
     engines: {node: '>=4'}
@@ -16519,17 +16520,26 @@ snapshots:
 
   '@csstools/css-tokenizer@4.0.2': {}
 
+  '@datadog/browser-core@7.16.1':
+    dependencies:
+      '@datadog/js-core': 0.0.18
+
   '@datadog/browser-core@7.2.0': {}
+
+  '@datadog/browser-rum-core@7.16.1':
+    dependencies:
+      '@datadog/browser-core': 7.16.1
+      '@datadog/js-core': 0.0.18
 
   '@datadog/browser-rum-core@7.2.0':
     dependencies:
       '@datadog/browser-core': 7.2.0
 
-  '@datadog/browser-rum-nextjs@7.2.0(@datadog/browser-rum@7.2.0)(next@16.4.1(@babel/core@7.29.7(supports-color@8.1.1))(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(@types/node@25.9.1)(babel-plugin-macros@3.1.0)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.9(react@19.2.9))(react@19.2.9))(react@19.2.9)':
+  '@datadog/browser-rum-nextjs@7.2.0(@datadog/browser-rum@7.16.1)(next@16.4.1(@babel/core@7.29.7(supports-color@8.1.1))(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(@types/node@25.9.1)(babel-plugin-macros@3.1.0)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.9(react@19.2.9))(react@19.2.9))(react@19.2.9)':
     dependencies:
       '@datadog/browser-core': 7.2.0
       '@datadog/browser-rum-core': 7.2.0
-      '@datadog/browser-rum-react': 7.2.0(@datadog/browser-rum@7.2.0)(react@19.2.9)
+      '@datadog/browser-rum-react': 7.2.0(@datadog/browser-rum@7.16.1)(react@19.2.9)
     optionalDependencies:
       next: 16.4.1(@babel/core@7.29.7(supports-color@8.1.1))(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(@types/node@25.9.1)(babel-plugin-macros@3.1.0)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.9(react@19.2.9))(react@19.2.9)
       react: 19.2.9
@@ -16540,20 +16550,23 @@ snapshots:
       - react-router
       - react-router-dom
 
-  '@datadog/browser-rum-react@7.2.0(@datadog/browser-rum@7.2.0)(react@19.2.9)':
+  '@datadog/browser-rum-react@7.2.0(@datadog/browser-rum@7.16.1)(react@19.2.9)':
     dependencies:
       '@datadog/browser-core': 7.2.0
       '@datadog/browser-rum-core': 7.2.0
     optionalDependencies:
-      '@datadog/browser-rum': 7.2.0
+      '@datadog/browser-rum': 7.16.1
       react: 19.2.9
 
-  '@datadog/browser-rum@7.2.0':
+  '@datadog/browser-rum@7.16.1':
     dependencies:
-      '@datadog/browser-core': 7.2.0
-      '@datadog/browser-rum-core': 7.2.0
+      '@datadog/browser-core': 7.16.1
+      '@datadog/browser-rum-core': 7.16.1
+      '@datadog/js-core': 0.0.18
 
   '@datadog/datadog-ci@5.22.1': {}
+
+  '@datadog/js-core@0.0.18': {}
 
   '@date-fns/tz@1.4.1': {}
 
@@ -16650,7 +16663,7 @@ snapshots:
       fs-extra: 10.1.0
       isbinaryfile: 4.0.10
       minimist: 1.2.8
-      plist: 3.1.1
+      plist: 3.1.0
     transitivePeerDependencies:
       - supports-color
 
@@ -16673,7 +16686,7 @@ snapshots:
       dir-compare: 4.2.0
       fs-extra: 11.2.0
       minimatch: 10.2.5
-      plist: 3.1.1
+      plist: 3.1.0
     transitivePeerDependencies:
       - supports-color
 
@@ -17639,7 +17652,7 @@ snapshots:
     dependencies:
       '@types/estree': 1.0.9
       '@types/estree-jsx': 1.0.5
-      '@types/hast': 3.0.5
+      '@types/hast': 3.0.4
       '@types/mdx': 2.0.14
       acorn: 8.18.0
       collapse-white-space: 2.1.0
@@ -22194,8 +22207,6 @@ snapshots:
 
   '@xmldom/xmldom@0.8.15': {}
 
-  '@xmldom/xmldom@0.9.12': {}
-
   abbrev@4.0.0: {}
 
   abort-controller@3.0.0:
@@ -24302,7 +24313,7 @@ snapshots:
       es6-error: 4.1.1
       matcher: 3.0.0
       roarr: 2.15.4
-      semver: 7.8.5
+      semver: 7.7.4
       serialize-error: 7.0.1
     optional: true
 
@@ -26216,11 +26227,11 @@ snapshots:
 
   node-abi@4.31.0:
     dependencies:
-      semver: 7.8.5
+      semver: 7.7.4
 
   node-api-version@0.2.1:
     dependencies:
-      semver: 7.8.5
+      semver: 7.7.4
 
   node-fetch@2.7.0(encoding@0.1.13):
     dependencies:
@@ -26237,7 +26248,7 @@ snapshots:
       graceful-fs: 4.2.11
       nopt: 9.0.0
       proc-log: 6.1.0
-      semver: 7.8.5
+      semver: 7.7.4
       tar: 7.5.19
       tinyglobby: 0.2.17
       undici: 7.29.1
@@ -26591,12 +26602,6 @@ snapshots:
   plist@3.1.0:
     dependencies:
       '@xmldom/xmldom': 0.8.15
-      base64-js: 1.5.1
-      xmlbuilder: 15.1.1
-
-  plist@3.1.1:
-    dependencies:
-      '@xmldom/xmldom': 0.9.12
       base64-js: 1.5.1
       xmlbuilder: 15.1.1
 
@@ -27451,7 +27456,7 @@ snapshots:
   rehype-recma@1.0.0(supports-color@8.1.1):
     dependencies:
       '@types/estree': 1.0.9
-      '@types/hast': 3.0.5
+      '@types/hast': 3.0.4
       hast-util-to-estree: 3.1.3(supports-color@8.1.1)
     transitivePeerDependencies:
       - supports-color
